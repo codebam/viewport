@@ -386,6 +386,11 @@ impl ViewportState {
     /// Split out of [`Self::feed_casts`] so that the question "is this screen
     /// anybody's business" is asked once and answered before any of this runs,
     /// rather than being re-derived inside each of the four deliveries below.
+    ///
+    /// The shared-memory deliveries write each frame out of the readback
+    /// mapping itself: the pixels are handed to a sink while the mapping is
+    /// alive, so a consumer gets them in one copy rather than a copy into an
+    /// intermediate `Vec` and then another into its destination.
     fn feed_casts_from<R, B>(
         &mut self,
         output: &Output,
@@ -413,52 +418,22 @@ impl ViewportState {
 
         // Then the ones that need pixels in shared memory. One composite and
         // one readback serves every client watching this output.
+        //
+        // What each of the three deliveries would be fed is worked out while
+        // `self.casts` is still in the state; the casts then come out for the
+        // readbacks, because one of those borrows the whole compositor and the
+        // streams are part of it. That is also what lets a mapped frame go
+        // straight into a consumer instead of first into a `Vec`.
         let watching_output = self.casts.iter().zip(targets.iter()).any(|(cast, target)| {
             cast.stream.wants_frame(Self::CAST_RATE)
                 && !cast.stream.uses_dmabuf()
                 && matches!(target, Some(crate::screencast::Target::Output(o)) if o == output)
         });
-        if watching_output {
-            if let Some(size) = output
-                .current_mode()
-                .map(|mode| output.current_transform().transform_size(mode.size))
-            {
-                let region = smithay::utils::Rectangle::from_size((size.w, size.h).into());
-                // The cursor is drawn in: this is a picture of a screen rather
-                // than a screenshot of one, and a share without a pointer is
-                // hard to follow.
-                match self.read_output_pixels::<R, B>(output, region, true, renderer) {
-                    Ok(pixels) => self.push_to_casts(
-                        targets,
-                        |target| {
-                            matches!(target, crate::screencast::Target::Output(o) if o == output)
-                        },
-                        &pixels,
-                        size,
-                    ),
-                    Err(e) => tracing::warn!("could not read a frame for a screencast: {e}"),
-                }
-            }
-        }
-
-        // Then the whole desk, if anything is watching it — once per frame
-        // rather than once per monitor, on whichever output does the work.
         let watching_desk = self.casts.iter().zip(targets.iter()).any(|(cast, target)| {
             cast.stream.wants_frame(Self::CAST_RATE)
                 && !cast.stream.uses_dmabuf()
                 && matches!(target, Some(crate::screencast::Target::AllOutputs))
-        });
-        if watching_desk && self.desk_capture_output().as_ref() == Some(output) {
-            match self.read_desk_pixels::<R, B>(renderer) {
-                Ok((pixels, size)) => self.push_to_casts(
-                    targets,
-                    |target| matches!(target, crate::screencast::Target::AllOutputs),
-                    &pixels,
-                    size,
-                ),
-                Err(e) => tracing::warn!("could not read the desk for a screencast: {e}"),
-            }
-        }
+        }) && self.desk_capture_output().as_ref() == Some(output);
 
         // Then windows, one composite each. A window is shared as itself
         // rather than as the part of the screen it covers: whatever is on top
@@ -480,6 +455,66 @@ impl ViewportState {
             .collect();
         windows.sort_unstable();
         windows.dedup();
+
+        // Both taken out for the duration, the same way `draw_into_casts`
+        // takes them: the reads below borrow the whole state, and the streams
+        // being fed are part of it.
+        let mut casts = std::mem::take(&mut self.casts);
+        let pipewire = self.pipewire.take();
+
+        if watching_output {
+            if let Some(size) = output
+                .current_mode()
+                .map(|mode| output.current_transform().transform_size(mode.size))
+            {
+                let region = smithay::utils::Rectangle::from_size((size.w, size.h).into());
+                // The cursor is drawn in: this is a picture of a screen rather
+                // than a screenshot of one, and a share without a pointer is
+                // hard to follow.
+                let result = self.read_output_pixels_with::<R, B, _>(
+                    output,
+                    region,
+                    true,
+                    renderer,
+                    |pixels, size| {
+                        Self::push_to_casts(
+                            &mut casts,
+                            pipewire.as_ref(),
+                            targets,
+                            |target| {
+                                matches!(target, crate::screencast::Target::Output(o) if o == output)
+                            },
+                            pixels,
+                            size,
+                        );
+                        Ok(())
+                    },
+                );
+                if let Err(e) = result {
+                    tracing::warn!("could not read a frame for a screencast: {e}");
+                }
+            }
+        }
+
+        // Then the whole desk, if anything is watching it — once per frame
+        // rather than once per monitor, on whichever output does the work.
+        if watching_desk {
+            let result = self.read_desk_pixels::<R, B, _>(renderer, |pixels, size| {
+                Self::push_to_casts(
+                    &mut casts,
+                    pipewire.as_ref(),
+                    targets,
+                    |target| matches!(target, crate::screencast::Target::AllOutputs),
+                    pixels,
+                    size,
+                );
+                Ok(())
+            });
+            if let Err(e) = result {
+                tracing::warn!("could not read the desk for a screencast: {e}");
+            }
+        }
+
         for id in windows {
             // Only from the one output that serves it, so a window straddling
             // two screens is composited once per period and not once for each.
@@ -491,16 +526,26 @@ impl ViewportState {
             if !on_this_output {
                 continue;
             }
-            match self.read_window_pixels::<R, B>(id, renderer) {
-                Ok((pixels, size)) => self.push_to_casts(
+            let result = self.read_window_pixels::<R, B, _>(id, renderer, |pixels, size| {
+                Self::push_to_casts(
+                    &mut casts,
+                    pipewire.as_ref(),
                     targets,
-                    |target| matches!(target, crate::screencast::Target::Window(other) if *other == id),
-                    &pixels,
+                    |target| {
+                        matches!(target, crate::screencast::Target::Window(other) if *other == id)
+                    },
+                    pixels,
                     size,
-                ),
-                Err(e) => tracing::warn!("could not read a window for a screencast: {e}"),
+                );
+                Ok(())
+            });
+            if let Err(e) = result {
+                tracing::warn!("could not read a window for a screencast: {e}");
             }
         }
+
+        self.pipewire = pipewire;
+        self.casts = casts;
     }
 
     /// What a source names right now.
@@ -872,23 +917,28 @@ impl ViewportState {
     /// composite that feeds a stream naming that window outright. `targets`
     /// runs alongside `self.casts`; a share that resolves to nothing is fed
     /// nothing.
+    ///
+    /// The casts and the PipeWire connection are taken out of the state by the
+    /// caller rather than reached through `self`: the frame arrives from
+    /// inside a readback's sink, which borrows the compositor for the
+    /// duration.
     fn push_to_casts(
-        &mut self,
+        casts: &mut [crate::screencast::Cast],
+        pipewire: Option<&crate::screencast::stream::Pipewire>,
         targets: &[Option<crate::screencast::Target>],
         matches: impl Fn(&crate::screencast::Target) -> bool,
         pixels: &[u8],
         size: smithay::utils::Size<i32, smithay::utils::Physical>,
     ) {
-        let mut casts = std::mem::take(&mut self.casts);
-        if let Some(pipewire) = self.pipewire.as_ref() {
-            for (cast, target) in casts.iter_mut().zip(targets.iter()) {
-                let feed = !cast.stream.uses_dmabuf() && target.as_ref().is_some_and(&matches);
-                if feed {
-                    cast.stream.push(pixels, size, &pipewire.thread_loop);
-                }
+        let Some(pipewire) = pipewire else {
+            return;
+        };
+        for (cast, target) in casts.iter_mut().zip(targets.iter()) {
+            let feed = !cast.stream.uses_dmabuf() && target.as_ref().is_some_and(&matches);
+            if feed {
+                cast.stream.push(pixels, size, &pipewire.thread_loop);
             }
         }
-        self.casts = casts;
     }
 
     /// Whether a view is showing on this output at all.
@@ -931,11 +981,11 @@ impl ViewportState {
         <R as smithay::backend::renderer::RendererSuper>::TextureId: Clone + Send + Sync + 'static,
         <R as smithay::backend::renderer::RendererSuper>::Error: Send + Sync + 'static,
     {
-        let (pixels, size) = self.read_window_pixels::<R, B>(id, renderer)?;
-
-        blit_shm(buffer, &pixels, size, "the window")?;
-
-        Ok(())
+        // Straight from the readback mapping into the client's own memory,
+        // with no intermediate full-frame `Vec` in between.
+        self.read_window_pixels::<R, B, _>(id, renderer, |pixels, size| {
+            blit_shm(buffer, pixels, size, "the window")
+        })
     }
 
     /// Composite one window straight into a buffer a consumer will read.
@@ -1070,11 +1120,16 @@ impl ViewportState {
     /// Its own surface tree rather than the part of the screen it occupies:
     /// what is on top of a window belongs to the desktop, and a client that
     /// asked to share a window did not ask to share whatever is covering it.
-    fn read_window_pixels<R, B>(
+    ///
+    /// `sink` is handed the mapped pixels while the readback target is still
+    /// alive, so a caller that can consume a slice writes from the mapping
+    /// rather than from a copy of it.
+    fn read_window_pixels<R, B, F>(
         &mut self,
         id: u32,
         renderer: &mut R,
-    ) -> Result<(Vec<u8>, smithay::utils::Size<i32, smithay::utils::Physical>), String>
+        sink: F,
+    ) -> Result<(), String>
     where
         R: Renderer
             + Bind<B>
@@ -1086,6 +1141,10 @@ impl ViewportState {
             + crate::background_effect::BackgroundEffectRenderer,
         // Held between frames; see `capture_scratch`.
         B: 'static,
+        F: FnOnce(
+            &[u8],
+            smithay::utils::Size<i32, smithay::utils::Physical>,
+        ) -> Result<(), String>,
         <R as smithay::backend::renderer::RendererSuper>::TextureId: Clone + Send + Sync + 'static,
         <R as smithay::backend::renderer::RendererSuper>::Error: Send + Sync + 'static,
     {
@@ -1125,12 +1184,19 @@ impl ViewportState {
                 )
                 .map_err(|e| format!("reading a window back: {e}"))?
         };
-        let pixels = renderer
-            .map_texture(&mapping)
-            .map_err(|e| format!("mapping a window capture: {e}"))?
-            .to_vec();
+        // The sink runs while the mapping is alive, so a caller that can
+        // consume a slice never sees an intermediate frame-sized copy. The
+        // readback target goes back to the scratch pool whether the sink
+        // liked what it got or not: the pixels were read successfully either
+        // way.
+        let result = {
+            let pixels = renderer
+                .map_texture(&mapping)
+                .map_err(|e| format!("mapping a window capture: {e}"))?;
+            sink(pixels, size)
+        };
         self.keep_capture_target(format, buffer_size, target);
-        Ok((pixels, size))
+        result
     }
 
     /// Carry out what the portal asked for.

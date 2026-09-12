@@ -30,7 +30,7 @@ impl ViewportState {
 
     /// Whether capture work may run now, or has to wait for a carried fence.
     ///
-    /// A capture readback (`read_output_pixels`, `render_*_into`) waits on the
+    /// A capture readback (`read_output_pixels_with`, `render_*_into`) waits on the
     /// renderer's shared queue from this thread. A client acquire point that
     /// was carried rather than blocked may already be ahead of that queue
     /// entry, and waiting on it here would freeze input and every output until
@@ -621,7 +621,7 @@ impl ViewportState {
                     size: (1920, 1080).into(),
                     refresh: 60_000,
                 });
-            // The transform is part of the size: `read_output_pixels` renders
+            // The transform is part of the size: `read_output_pixels_with` renders
             // into `transform_size(mode.size)`, so a 90°/270° output has a
             // framebuffer the other way round. Asking to read back the
             // untransformed mode and encoding the result at that size is what
@@ -629,7 +629,7 @@ impl ViewportState {
             // axis. `service_image_capture` already does this.
             let size = output.current_transform().transform_size(mode.size);
             let region = smithay::utils::Rectangle::new((0, 0).into(), size);
-            match self.read_output_pixels::<R, B>(output, region, true, renderer) {
+            match self.read_output_pixels_owned::<R, B>(output, region, true, renderer) {
                 Ok(pixels) => {
                     // The encoding and the writing belong to nobody's frame:
                     // PNG over a full screen is tens of milliseconds at 1080p
@@ -1302,10 +1302,12 @@ impl ViewportState {
 
     /// Composite the whole desk and read it back, for a stream that cannot be
     /// drawn into directly.
-    fn read_desk_pixels<R, B>(
-        &mut self,
-        renderer: &mut R,
-    ) -> Result<(Vec<u8>, smithay::utils::Size<i32, smithay::utils::Physical>), String>
+    ///
+    /// `sink` is handed the mapped pixels while the readback target is still
+    /// alive, so a consumer that can take a slice — a client's shared memory
+    /// or a PipeWire shared-memory buffer — writes from the mapping rather
+    /// than from a copy of it.
+    fn read_desk_pixels<R, B, F>(&mut self, renderer: &mut R, sink: F) -> Result<(), String>
     where
         R: Renderer
             + Bind<B>
@@ -1317,13 +1319,17 @@ impl ViewportState {
             + crate::background_effect::BackgroundEffectRenderer,
         // Held between frames; see `capture_scratch`.
         B: 'static,
+        F: FnOnce(
+            &[u8],
+            smithay::utils::Size<i32, smithay::utils::Physical>,
+        ) -> Result<(), String>,
         <R as smithay::backend::renderer::RendererSuper>::TextureId: Clone + Send + Sync + 'static,
         <R as smithay::backend::renderer::RendererSuper>::Error: Send + Sync + 'static,
     {
         let (elements, size) = self.desk_elements(renderer)?;
 
         // The format it will be read back as, because the Vulkan renderer
-        // refuses to convert while copying — see `read_output_pixels`.
+        // refuses to convert while copying — see `read_output_pixels_with`.
         let format = smithay::backend::allocator::Fourcc::Xrgb8888;
         let buffer_size: smithay::utils::Size<i32, smithay::utils::Buffer> =
             (size.w, size.h).into();
@@ -1355,12 +1361,19 @@ impl ViewportState {
                 )
                 .map_err(|e| format!("reading the desk back: {e}"))?
         };
-        let pixels = renderer
-            .map_texture(&mapping)
-            .map_err(|e| format!("mapping a desk capture: {e}"))?
-            .to_vec();
+        // The sink runs while the mapping is alive, so a caller that can
+        // consume a slice never sees an intermediate frame-sized copy. The
+        // readback target goes back to the scratch pool whether the sink
+        // liked what it got or not: the pixels were read successfully either
+        // way.
+        let result = {
+            let pixels = renderer
+                .map_texture(&mapping)
+                .map_err(|e| format!("mapping a desk capture: {e}"))?;
+            sink(pixels, size)
+        };
         self.keep_capture_target(format, buffer_size, target);
-        Ok((pixels, size))
+        result
     }
 
     fn copy_one<R, B>(
@@ -1419,26 +1432,39 @@ impl ViewportState {
         <R as smithay::backend::renderer::RendererSuper>::TextureId: Clone + Send + Sync + 'static,
         <R as smithay::backend::renderer::RendererSuper>::Error: Send + Sync + 'static,
     {
-        let pixels = self.read_output_pixels::<R, B>(output, region, overlay_cursor, renderer)?;
-
-        // Into the client's own memory. The shm path is the only one a client
-        // can read without having allocated the buffer itself.
-        blit_shm(buffer, &pixels, region.size, "the copy")?;
-
-        Ok(())
+        // Straight from the readback mapping into the client's own memory.
+        // Reading the pixels into a fresh `Vec` first and copying that into
+        // the buffer afterwards was a second full-frame memcpy per copy.
+        self.read_output_pixels_with::<R, B, _>(
+            output,
+            region,
+            overlay_cursor,
+            renderer,
+            |pixels, size| {
+                // Into the client's own memory. The shm path is the only one a
+                // client can read without having allocated the buffer itself.
+                blit_shm(buffer, pixels, size, "the copy")
+            },
+        )
     }
 
     /// Composite an output and read it back, packed, four bytes to a pixel.
     ///
     /// The shared half of every capture that cannot be drawn into directly: a
     /// client's shared memory, and a PipeWire buffer.
-    pub fn read_output_pixels<R, B>(
+    ///
+    /// `sink` is handed the mapped pixels while the readback target is still
+    /// alive, so a caller that can consume a slice writes from the mapping
+    /// rather than from a copy of it. The owned form is
+    /// [`Self::read_output_pixels_owned`], for the portal-screenshot thread.
+    pub fn read_output_pixels_with<R, B, F>(
         &mut self,
         output: &Output,
         region: smithay::utils::Rectangle<i32, smithay::utils::Physical>,
         overlay_cursor: bool,
         renderer: &mut R,
-    ) -> Result<Vec<u8>, String>
+        sink: F,
+    ) -> Result<(), String>
     where
         R: Renderer
             + Bind<B>
@@ -1450,6 +1476,10 @@ impl ViewportState {
             + crate::background_effect::BackgroundEffectRenderer,
         // Held between frames; see `capture_scratch`.
         B: 'static,
+        F: FnOnce(
+            &[u8],
+            smithay::utils::Size<i32, smithay::utils::Physical>,
+        ) -> Result<(), String>,
         <R as smithay::backend::renderer::RendererSuper>::TextureId: Clone + Send + Sync + 'static,
         <R as smithay::backend::renderer::RendererSuper>::Error: Send + Sync + 'static,
     {
@@ -1527,11 +1557,61 @@ impl ViewportState {
                 )
                 .map_err(|e| format!("reading the copy back: {e}"))?
         };
-        let pixels = renderer
-            .map_texture(&mapping)
-            .map_err(|e| format!("mapping the copy: {e}"))?
-            .to_vec();
+        // The sink runs while the mapping is alive, so the shared-memory
+        // paths copy straight from it rather than through a frame-sized `Vec`
+        // of their own. The readback target goes back to the scratch pool
+        // whether the sink liked what it got or not: the pixels were read
+        // successfully either way.
+        let result = {
+            let pixels = renderer
+                .map_texture(&mapping)
+                .map_err(|e| format!("mapping the copy: {e}"))?;
+            sink(pixels, region.size)
+        };
         self.keep_capture_target(format, buffer_size, target);
+        result
+    }
+
+    /// [`Self::read_output_pixels_with`] with the pixels copied into an owned
+    /// `Vec`.
+    ///
+    /// Kept for the portal-screenshot thread, which encodes the frame after
+    /// this returns and so cannot borrow the mapping. A screenshot is not a
+    /// frame: one copy here is what it has always paid, while the per-frame
+    /// callers take the sink form and write the mapping straight into their
+    /// destination.
+    pub fn read_output_pixels_owned<R, B>(
+        &mut self,
+        output: &Output,
+        region: smithay::utils::Rectangle<i32, smithay::utils::Physical>,
+        overlay_cursor: bool,
+        renderer: &mut R,
+    ) -> Result<Vec<u8>, String>
+    where
+        R: Renderer
+            + Bind<B>
+            + Offscreen<B>
+            + ExportMem
+            + smithay::backend::renderer::ImportAll
+            + smithay::backend::renderer::ImportMem
+            + smithay::backend::renderer::ImportDma
+            + crate::background_effect::BackgroundEffectRenderer,
+        // Held between frames; see `capture_scratch`.
+        B: 'static,
+        <R as smithay::backend::renderer::RendererSuper>::TextureId: Clone + Send + Sync + 'static,
+        <R as smithay::backend::renderer::RendererSuper>::Error: Send + Sync + 'static,
+    {
+        let mut pixels = Vec::new();
+        self.read_output_pixels_with::<R, B, _>(
+            output,
+            region,
+            overlay_cursor,
+            renderer,
+            |mapped, _size| {
+                pixels = mapped.to_vec();
+                Ok(())
+            },
+        )?;
         Ok(pixels)
     }
 }
