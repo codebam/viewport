@@ -343,6 +343,18 @@ impl smithay::wayland::keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitHandl
         inhibitor.activate();
         self.shortcut_inhibitors.push(inhibitor);
     }
+
+    fn inhibitor_destroyed(
+        &mut self,
+        inhibitor: smithay::wayland::keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitor,
+    ) {
+        // Smithay has already removed it from its own list; without doing the
+        // same here the entry survives until the next `new_inhibitor` prunes
+        // the list. A held inhibitor owns its `WlSurface`, and through the
+        // surface's last committed buffer an shm client's whole pool stays
+        // mapped for as long as the entry does.
+        self.shortcut_inhibitors.retain(|held| held != &inhibitor);
+    }
 }
 
 /// Acting on the window list from outside: `rofi -show window`, wlrctl, a

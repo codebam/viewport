@@ -430,6 +430,22 @@ impl Dispatch<WpColorRepresentationSurfaceV1, WlSurface> for ViewportState {
             _ => {}
         }
     }
+
+    fn destroyed(
+        state: &mut Self,
+        _client: smithay::reexports::wayland_server::backend::ClientId,
+        object: &WpColorRepresentationSurfaceV1,
+        _surface: &WlSurface,
+    ) {
+        // The protocol's destroy is a destructor, so this runs for a client
+        // that destroys the object and for one that disconnects without it.
+        // Waiting for the next `get_surface` to reap would keep the held
+        // `WlSurface` alive in the meantime.
+        state
+            .color_representation
+            .surfaces
+            .retain(|(held, _)| held != object);
+    }
 }
 
 /// The declaration a surface is currently heading towards: what is parked

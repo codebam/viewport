@@ -30,6 +30,8 @@ use std::sync::{Arc, Mutex};
 
 use viewport_ipc::event::{Notification, NotificationAction};
 
+use crate::text::truncate;
+
 /// What the D-Bus thread sends the compositor.
 #[derive(Debug)]
 pub enum Message {
@@ -83,22 +85,6 @@ const MAX_ACTION_LABEL: usize = 256;
 const MAX_ACTIONS: usize = 64;
 /// The most an icon or art URL may contribute.
 const MAX_ART_URL: usize = 2048;
-
-/// A UTF-8-safe prefix of `text` no longer than `max` bytes.
-fn truncate(text: &str, max: usize, what: &str) -> String {
-    if text.len() <= max {
-        return text.to_owned();
-    }
-    let mut end = max;
-    while !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    tracing::debug!(
-        "notification {what} truncated from {} to {end} bytes",
-        text.len()
-    );
-    text[..end].to_owned()
-}
 
 /// The half of the service the compositor keeps.
 pub struct Notifications {
@@ -346,10 +332,10 @@ impl Server {
         // Caps before anything stores or forwards these. The D-Bus thread is
         // handling a message from any application on the session bus, and this
         // is the last place where the unbounded form is still ours to drop.
-        let app_name = truncate(&app_name, MAX_APP_NAME, "app name");
-        let icon = truncate(&app_icon, MAX_ART_URL, "icon");
-        let summary = truncate(&summary, MAX_SUMMARY, "summary");
-        let body = truncate(&body, MAX_BODY, "body");
+        let app_name = truncate(&app_name, MAX_APP_NAME, "notification app name");
+        let icon = truncate(&app_icon, MAX_ART_URL, "notification icon");
+        let summary = truncate(&summary, MAX_SUMMARY, "notification summary");
+        let body = truncate(&body, MAX_BODY, "notification body");
         let mut actions = actions;
         if actions.len() > MAX_ACTIONS * 2 {
             tracing::debug!(
@@ -652,8 +638,8 @@ impl crate::state::ViewportState {
 fn parse_actions(flat: &[String]) -> Vec<NotificationAction> {
     flat.chunks_exact(2)
         .map(|pair| NotificationAction {
-            key: truncate(&pair[0], MAX_ACTION_KEY, "action key"),
-            label: truncate(&pair[1], MAX_ACTION_LABEL, "action label"),
+            key: truncate(&pair[0], MAX_ACTION_KEY, "notification action key"),
+            label: truncate(&pair[1], MAX_ACTION_LABEL, "notification action label"),
         })
         .collect()
 }
@@ -1148,15 +1134,6 @@ mod tests {
         let mut hints = HashMap::new();
         hints.insert("urgency".to_owned(), zvariant::OwnedValue::from(2u32));
         assert_eq!(urgency(&hints), 2);
-    }
-
-    #[test]
-    fn truncation_never_splits_a_character() {
-        // `é` is two bytes; a two-byte cut through it would hand the shell a
-        // `String` that is not one.
-        assert_eq!(truncate("aé", 2, "test"), "a");
-        assert_eq!(truncate("aé", 3, "test"), "aé");
-        assert_eq!(truncate("short", 64, "test"), "short");
     }
 
     /// Every unbounded string a D-Bus sender chose reaches the compositor

@@ -72,6 +72,7 @@ mod sound;
 mod state;
 mod status;
 mod tearing;
+mod text;
 mod tray;
 mod udev;
 mod views;

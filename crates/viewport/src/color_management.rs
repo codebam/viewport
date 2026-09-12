@@ -880,6 +880,21 @@ impl Dispatch<WpColorManagementOutputV1, WlOutput> for ViewportState {
             _ => {}
         }
     }
+
+    fn destroyed(
+        state: &mut Self,
+        _client: smithay::reexports::wayland_server::backend::ClientId,
+        object: &WpColorManagementOutputV1,
+        _output: &WlOutput,
+    ) {
+        // Destroy is a destructor in this protocol, so the object is dead by
+        // the time this runs; drop it now rather than waiting for the next
+        // `get_output` to reap the list.
+        state
+            .color_management
+            .outputs
+            .retain(|(held, _)| held != object);
+    }
 }
 
 impl Dispatch<WpColorManagementSurfaceFeedbackV1, WlSurface> for ViewportState {
@@ -905,6 +920,20 @@ impl Dispatch<WpColorManagementSurfaceFeedbackV1, WlSurface> for ViewportState {
             Request::Destroy => {}
             _ => {}
         }
+    }
+
+    fn destroyed(
+        state: &mut Self,
+        _client: smithay::reexports::wayland_server::backend::ClientId,
+        object: &WpColorManagementSurfaceFeedbackV1,
+        _surface: &WlSurface,
+    ) {
+        // Same as the output objects: the protocol's destroy is a destructor,
+        // and the held `WlSurface` must not outlive it.
+        state
+            .color_management
+            .feedback
+            .retain(|entry| &entry.object != object);
     }
 }
 

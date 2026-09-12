@@ -32,9 +32,12 @@
 // problem.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
 use viewport_ipc::event::TrayItem;
+
+use crate::text::truncate;
 
 /// What the tray thread sends the compositor: the whole tray, whenever any
 /// part of it changes. See `Event::TrayUpdate` for why it is a snapshot.
@@ -72,6 +75,36 @@ const DEFAULT_PATH: &str = "/StatusNotifierItem";
 /// whatever it is given, so this only decides which of the sizes an
 /// application offers is the one worth sending.
 const ICON_SIZE: u32 = 22;
+
+/// The most an item's `Title` — or the `Id` it falls back to — may
+/// contribute. Generous next to a toolbar label, and far short of what a
+/// bus message can carry.
+const MAX_TITLE: usize = 1024;
+/// The most a tooltip's title and body together may contribute.
+const MAX_TOOLTIP: usize = 4 * 1024;
+/// The most an `IconName` may contribute before it goes into a lookup.
+/// Path-sized rather than name-sized, because an absolute path is what
+/// several toolkits publish and a real one can be nearly `PATH_MAX` long.
+const MAX_ICON_NAME: usize = 4096;
+/// The most an `IconThemePath` may contribute. Sized like a path for the same
+/// reason: an item that ships its icons deep in a private tree still has to
+/// resolve.
+const MAX_THEME_PATH: usize = 4096;
+/// How many resolved icons are cached.
+///
+/// Both this and the byte cap below exist because neither is a bound alone:
+/// a 512 KiB icon file becomes a ~683 KiB data URL, so 256 of the largest
+/// ones would be some 170 MiB. The entry cap bounds churn; the byte cap is
+/// the one that bounds memory.
+const MAX_ICON_CACHE_ENTRIES: usize = 256;
+/// The most the resolved-icon cache may hold, in bytes of data URLs.
+const MAX_ICON_CACHE_BYTES: usize = 8 << 20;
+
+/// The identity of one resolved icon file: where it really is, its size and
+/// its modification time. The strings an item published are deliberately not
+/// part of it: they are app-controlled, and the same file can be named by a
+/// different pair on every signal.
+type IconCacheKey = (PathBuf, u64, u128);
 
 /// How long one item gets to answer before the tray stops waiting.
 ///
@@ -525,7 +558,10 @@ struct Worker {
     /// the icon theme directories and an item that says its icon changed
     /// usually means its *status* changed and the icon with it — between two
     /// names, back and forth, for as long as the application runs.
-    icons: HashMap<String, String>,
+    icons: HashMap<IconCacheKey, String>,
+    /// The sum of the data URLs in `icons`, so the byte cap does not have to
+    /// be recomputed by walking the cache on every insert.
+    icon_bytes: usize,
     theme: String,
     /// Whether the names are currently held.
     enabled: bool,
@@ -553,6 +589,7 @@ impl Worker {
             entries: Vec::new(),
             registry,
             icons: HashMap::new(),
+            icon_bytes: 0,
             // What the configuration has not overridden. hicolor is searched
             // in either case; this is the theme searched before it.
             theme: "hicolor".to_owned(),
@@ -569,7 +606,7 @@ impl Worker {
                 Command::IconTheme(theme) => {
                     if theme != self.theme {
                         self.theme = theme;
-                        self.icons.clear();
+                        self.clear_icons();
                         for index in 0..self.entries.len() {
                             self.refresh_at(index, false);
                         }
@@ -704,7 +741,7 @@ impl Worker {
             self.menu_event(id, 0, "closed");
         }
         self.entries.clear();
-        self.icons.clear();
+        self.clear_icons();
         // The registry goes with them. The names are released, so whatever is
         // on the bus will re-register when the tray comes back; answering
         // `RegisteredStatusNotifierItems` with a list from the previous
@@ -850,6 +887,7 @@ impl Worker {
             .tooltip
             .map(|value| tooltip(&value))
             .unwrap_or_default();
+        let tooltip = truncate(&tooltip, MAX_TOOLTIP, "tray tooltip");
 
         let entry = &mut self.entries[index];
         // It answered, which is all the evidence of recovery needed.
@@ -892,10 +930,12 @@ impl Worker {
             };
             let attention = status == "needs-attention";
 
+            // `Id` is where an item with no `Title` falls back to, so both
+            // are capped here, before either is stored or broadcast.
             let title = {
-                let title = text("Title");
+                let title = truncate(&text("Title"), MAX_TITLE, "tray title/Id");
                 if title.is_empty() {
-                    text("Id")
+                    truncate(&text("Id"), MAX_TITLE, "tray title/Id")
                 } else {
                     title
                 }
@@ -1150,24 +1190,61 @@ impl Worker {
             .ok()
     }
 
-    /// An icon name resolved through the themes, cached by name and by the
-    /// item's own theme directory.
+    /// Forget every icon resolved for the current theme.
+    fn clear_icons(&mut self) {
+        self.icons.clear();
+        self.icon_bytes = 0;
+    }
+
+    /// Remember one resolved icon, evicting when either cap is reached.
+    ///
+    /// Which entry goes is arbitrary: every value is a cache of what the file
+    /// on disk already says, so eviction only decides what is read again.
+    fn cache_icon(&mut self, key: IconCacheKey, url: String) {
+        if url.len() > MAX_ICON_CACHE_BYTES {
+            return;
+        }
+        while !self.icons.is_empty()
+            && (self.icons.len() >= MAX_ICON_CACHE_ENTRIES
+                || self.icon_bytes + url.len() > MAX_ICON_CACHE_BYTES)
+        {
+            let Some(evicted) = self.icons.keys().next().cloned() else {
+                break;
+            };
+            if let Some(old) = self.icons.remove(&evicted) {
+                self.icon_bytes -= old.len();
+            }
+        }
+        self.icon_bytes += url.len();
+        self.icons.insert(key, url);
+    }
+
+    /// An icon name resolved through the themes, cached by where the name
+    /// resolved to rather than by the strings that named it.
     fn icon_by_name(&mut self, name: &str, theme_path: &str) -> Option<String> {
         if name.is_empty() {
             return None;
         }
-        let cache_key = format!("{theme_path}\u{1}{name}");
-        if let Some(url) = self.icons.get(&cache_key) {
-            return Some(url.clone());
-        }
+        // Both strings are the item's own, and both are joined into paths this
+        // process walks. Bound them before that, not after a lookup.
+        let name = truncate(name, MAX_ICON_NAME, "tray icon name");
+        let theme_path = truncate(theme_path, MAX_THEME_PATH, "tray icon theme path");
         let path = crate::icon::lookup(
-            name,
-            (!theme_path.is_empty()).then_some(theme_path),
+            &name,
+            (!theme_path.is_empty()).then_some(theme_path.as_str()),
             &self.theme,
             ICON_SIZE,
         )?;
+        let Some(key) = icon_cache_key(&path) else {
+            // No stable key means no cache entry, not no icon: a lookup that
+            // cannot be named is still worth answering.
+            return crate::icon::data_url(&path);
+        };
+        if let Some(url) = self.icons.get(&key) {
+            return Some(url.clone());
+        }
         let url = crate::icon::data_url(&path)?;
-        self.icons.insert(cache_key, url.clone());
+        self.cache_icon(key, url.clone());
         Some(url)
     }
 
@@ -1219,6 +1296,25 @@ impl Worker {
         let items = self.entries.iter().map(|e| e.item.clone()).collect();
         let _ = self.events.send(Message::Items(items));
     }
+}
+
+/// The cache key for an icon that resolved to `path`.
+///
+/// The `IconName`/`IconThemePath` pair an item publishes is app-controlled
+/// and may name the same file in a different way on every signal; keying the
+/// cache on the pair, as this once did, let one item insert a fresh entry —
+/// and a fresh value of up to ~683 KiB — per signal. The resolved path is
+/// what the item actually got, and the size and mtime make a file replaced in
+/// place a new entry rather than a permanently stale icon.
+fn icon_cache_key(path: &Path) -> Option<IconCacheKey> {
+    let canonical = std::fs::canonicalize(path).ok()?;
+    let meta = std::fs::metadata(&canonical).ok()?;
+    let modified = meta
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |since_epoch| since_epoch.as_nanos());
+    Some((canonical, meta.len(), modified))
 }
 
 /// One node of a menu layout: an id, its properties, and its children.
@@ -1357,5 +1453,23 @@ mod tests {
     fn a_malformed_tooltip_is_no_tooltip() {
         let value = zvariant::OwnedValue::try_from(zvariant::Value::from(1u32)).expect("a value");
         assert_eq!(tooltip(&value), "");
+    }
+
+    /// The key follows the file, not the string an item published. The cache
+    /// this replaced was keyed on `IconThemePath` + `IconName`, so one item
+    /// pointing a changing `theme_path` at the same file got a fresh entry,
+    /// and a fresh value of up to ~683 KiB, per signal.
+    #[test]
+    fn an_icon_cache_key_follows_the_resolved_file() {
+        let dir =
+            std::env::temp_dir().join(format!("viewport-tray-icon-cache-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temporary directory");
+        let file = dir.join("icon.png");
+        std::fs::write(&file, b"not really a png").expect("temporary icon");
+
+        let roundabout = dir.join(".").join("icon.png");
+        assert_eq!(icon_cache_key(&file), icon_cache_key(&roundabout));
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
