@@ -1254,6 +1254,13 @@ impl ViewportState {
         capabilities: u32,
         reply: async_channel::Sender<Result<u32, String>>,
     ) {
+        // A locked session is not asking anybody whether to open a portal:
+        // the only thing on screen is the lock screen, and a chooser drawn
+        // under it would take the password meant for it.
+        if self.locked {
+            let _ = reply.try_send(Err("the session is locked".to_owned()));
+            return;
+        }
         if self.picker.is_some() {
             let _ = reply.try_send(Err("something else is already being chosen".to_owned()));
             return;
@@ -1280,6 +1287,13 @@ impl ViewportState {
         restore: Option<crate::screencast::Remembered>,
         reply: async_channel::Sender<Result<crate::screencast::portal::Started, String>>,
     ) {
+        // A locked session answers no portal questions, remembered source or
+        // not: sharing the screen behind a lock screen is exactly what the
+        // lock is for, and a chooser would eat the password on top of it.
+        if self.locked {
+            let _ = reply.try_send(Err("the session is locked".to_owned()));
+            return;
+        }
         // One at a time. Two choosers on screen with one keyboard between them
         // is a race the user cannot see, let alone win.
         if self.picker.is_some() {
@@ -1423,6 +1437,14 @@ impl ViewportState {
                 shortcuts,
                 reply,
             } => {
+                // As for the portal choosers: a locked session is not
+                // granting new shortcuts to anything, because the chooser
+                // that asks about them cannot be shown and a grant that
+                // already exists is suspended by the key path anyway.
+                if self.locked {
+                    let _ = reply.try_send(Err("the session is locked".to_owned()));
+                    return;
+                }
                 let wanted: Vec<crate::shortcuts::Granted> = shortcuts
                     .iter()
                     .filter_map(|request| {
@@ -1609,6 +1631,13 @@ impl ViewportState {
         types: Option<u32>,
         reply: async_channel::Sender<Result<crate::screencast::remote::Started, String>>,
     ) {
+        // Nobody is at the desk to answer while it is locked, and a chooser
+        // behind the lock screen would take the password. Refused before the
+        // chooser is built, so no grant is left dangling.
+        if self.locked {
+            let _ = reply.try_send(Err("the session is locked".to_owned()));
+            return;
+        }
         if self.picker.is_some() {
             let _ = reply.try_send(Err("something else is already being chosen".to_owned()));
             return;
@@ -1971,6 +2000,12 @@ impl ViewportState {
     /// A window that has closed in the meantime is left alone: focus stays
     /// nowhere, which is what it would have been anyway.
     fn restore_focus(&mut self, id: u32) {
+        // The lock owns the keyboard while it is up. A chooser cancelled by
+        // a lock gets here through its ordinary path, and this is what keeps
+        // that path from handing the keyboard back to the window it found.
+        if self.locked {
+            return;
+        }
         if self.views.get(id).is_some_and(|view| view.mapped) {
             crate::apply::focus_view(self, id);
         }

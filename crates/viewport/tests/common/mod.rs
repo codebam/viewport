@@ -260,6 +260,14 @@ impl Builder {
         for (key, value) in &env {
             command.env(key, value);
         }
+        // The security model treats every raw control-socket peer as an
+        // untrusted same-UID process. This harness *is* the compositor's own
+        // test build talking to it, so name the test binary explicitly; the
+        // compositor honours this variable only in debug builds. See
+        // VIEWPORT_IPC_TRUST_EXE in src/ipc.rs.
+        if let Ok(exe) = std::env::current_exe() {
+            command.env("VIEWPORT_IPC_TRUST_EXE", exe);
+        }
         // Otherwise a config file in the developer's own home decides what
         // these tests see.
         if !env.iter().any(|(key, _)| key == "XDG_CONFIG_HOME") {

@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 use std::io::{ErrorKind, Read, Write};
 use std::os::fd::{AsFd, BorrowedFd};
-use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -80,6 +80,21 @@ struct Client {
     /// here — and a pid read from `SO_PEERCRED` is the kernel's answer, not the
     /// client's, so nothing can claim to be the desktop by saying so.
     pid: Option<i32>,
+    /// The executable on the other end, read from `/proc/<pid>/exe` at accept
+    /// time while the pid is fresh.
+    ///
+    /// Stored rather than re-read on demand: a pid is only meaningful for as
+    /// long as the process holds it, and by the time a broadcast asks, the
+    /// peer may be gone and the pid recycled. A missing entry — a race, a
+    /// process that exited between `SO_PEERCRED` and the read, a hardened
+    /// `/proc` — is stored as `None`, which classifies as untrusted.
+    exe: Option<PathBuf>,
+    /// Whether this connection may receive [`Event::is_private`] events.
+    ///
+    /// Decided once, at accept, from the pid the kernel reported: a shell
+    /// this compositor supervises, or the compositor binary itself. Both are
+    /// checks on the process, not on anything the client says.
+    trusted: bool,
     framer: Framer,
     /// What a short write left behind. Nothing else will send it, so the
     /// writable half of the source has to.
@@ -112,8 +127,51 @@ struct Client {
     dead: bool,
 }
 
+/// The executable behind a kernel-reported pid, if `/proc` will still say.
+///
+/// `read_link` on `/proc/<pid>/exe` is the kernel's answer about the process
+/// that owns the pid, and the returned link is canonicalized so two spellings
+/// of the same binary compare equal. Every failure — the process exited in
+/// the window between `SO_PEERCRED` and this read, pid reuse is refused
+/// permission, a system without procfs — is `None`, and `None` is untrusted.
+fn peer_executable(pid: i32) -> Option<PathBuf> {
+    let exe = std::fs::read_link(format!("/proc/{pid}/exe")).ok()?;
+    std::fs::canonicalize(exe).ok()
+}
+
+/// This process's executable, canonicalized the same way a peer's is.
+///
+/// Read once at startup: every accepted connection is compared against it,
+/// and a failure to resolve it just means no client is recognised this way.
+fn own_executable() -> Option<PathBuf> {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| std::fs::canonicalize(exe).ok())
+}
+
 pub struct Ipc {
     path: PathBuf,
+    /// This process's own executable, canonicalized once.
+    ///
+    /// What a peer's `/proc/<pid>/exe` is compared against to recognise the
+    /// compositor's own command-line tooling, which has no token and is
+    /// otherwise an ordinary same-user process.
+    self_exe: Option<PathBuf>,
+    /// A debug-build-only extra executable trusted on the control socket.
+    ///
+    /// `VIEWPORT_IPC_TRUST_EXE`, read once at startup and only honoured while
+    /// `debug_assertions` is on. The integration harness starts a real
+    /// compositor and talks to it from the test binary, which is a different
+    /// executable; without this every test connection would be an untrusted
+    /// same-user process and private-event tests could not work. A release
+    /// build ignores the variable entirely.
+    trust_exe: Option<PathBuf>,
+    /// The device and inode the control socket was born with.
+    ///
+    /// `Drop` only unlinks the well-known name while it still names this
+    /// inode. Without it, a compositor quitting after something else replaced
+    /// the socket would delete the replacement's socket out from under it.
+    socket_identity: Option<(u64, u64)>,
     clients: HashMap<u64, Client>,
     next_client: u64,
     /// For arming a client's write source from the send path, which is
@@ -262,6 +320,13 @@ impl Ipc {
         }
         listener.set_nonblocking(true)?;
 
+        // Recorded while the inode is certainly ours. `Drop` compares it
+        // before unlinking the well-known name, so a compositor that lost a
+        // race with a replacement socket does not delete the replacement.
+        let socket_identity = std::fs::symlink_metadata(&path)
+            .ok()
+            .map(|meta| (meta.dev(), meta.ino()));
+
         loop_handle
             .insert_source(
                 Generic::new(listener, Interest::READ, Mode::Level),
@@ -311,8 +376,43 @@ impl Ipc {
         unsafe { std::env::set_var("VIEWPORT_SOCKET", &path) };
         tracing::info!("control socket at {}", path.display());
 
+        // Read once, at startup: an executable the integration harness names
+        // as trusted. Release builds refuse the variable outright — the
+        // trust classification must not acquire an environment-variable
+        // escape hatch when it ships.
+        let trust_exe = if cfg!(debug_assertions) {
+            match std::env::var_os("VIEWPORT_IPC_TRUST_EXE") {
+                Some(path) => {
+                    let path = PathBuf::from(path);
+                    match std::fs::canonicalize(&path) {
+                        Ok(path) => Some(path),
+                        Err(e) => {
+                            tracing::debug!(
+                                "VIEWPORT_IPC_TRUST_EXE={}: could not canonicalize: {e}",
+                                path.display()
+                            );
+                            None
+                        }
+                    }
+                }
+                None => None,
+            }
+        } else {
+            None
+        };
+        if let Some(path) = &trust_exe {
+            tracing::warn!(
+                "VIEWPORT_IPC_TRUST_EXE={}: trusting that executable on the control \
+                 socket (debug build only)",
+                path.display()
+            );
+        }
+
         Ok(Self {
             path,
+            self_exe: own_executable(),
+            trust_exe,
+            socket_identity,
             clients: HashMap::new(),
             next_client: 1,
             loop_handle: loop_handle.clone(),
@@ -321,21 +421,35 @@ impl Ipc {
 
     /// Send to every connected client.
     ///
-    /// Note there is no origin filtering: a Viewport client is not one of
-    /// several peers, it is the shell drawing the desktop, and everything it
-    /// needs to know it needs to know on the channel it already listens to.
+    /// Public events go to everyone, as they always have: a Viewport client
+    /// is not one of several peers, it is the shell drawing the desktop, and
+    /// everything it needs to know it needs to know on the channel it already
+    /// listens to. Private events ([`Event::is_private`]) are different. The
+    /// 0600 socket keeps out other users but not their same-user processes,
+    /// and copied text, notification bodies, a saved session and AI account
+    /// data are not every process's to see — so those go only to clients this
+    /// compositor classified at accept as its supervised shell or the
+    /// compositor binary itself.
+    ///
+    /// The in-process shell does not pass through here at all; see
+    /// `ViewportState::notify` for the WebKit delivery that must keep
+    /// receiving private events regardless of the socket's clients.
     pub fn broadcast(&mut self, event: &Event) {
         let Ok(mut text) = viewport_ipc::to_string(event) else {
             tracing::error!("could not serialise {event:?}");
             return;
         };
         text.push('\n');
+        let private = event.is_private();
         // The write path can kill a client — the backlog rules, or a write
         // error — and its own callback never reaps, so anything it killed
         // would sit here holding its fd and both calloop sources until it
         // happened to speak again. Every send is therefore also a sweep.
         self.reap_clients();
         for client in self.clients.values_mut() {
+            if private && !client.trusted {
+                continue;
+            }
             client.send(text.as_bytes());
         }
         self.arm_writers();
@@ -354,21 +468,72 @@ impl Ipc {
             .map(|(id, _)| *id)
     }
 
+    /// Every live connection's id, for a trust refresh.
+    pub fn client_ids(&self) -> impl Iterator<Item = u64> + '_ {
+        self.clients.keys().copied()
+    }
+
+    /// Mark a connection trusted.
+    ///
+    /// Only ever called to add a supervised shell that connected in a window
+    /// where the shell list was momentarily not yet able to confirm it; it
+    /// never removes trust, so a shell that dies cannot demote a connection
+    /// whose fd is still in use by something else.
+    pub fn mark_trusted(&mut self, client_id: u64) {
+        if let Some(client) = self.clients.get_mut(&client_id) {
+            client.trusted = true;
+        }
+    }
+
+    /// Whether an executable read from `/proc` is one this compositor trusts
+    /// by path.
+    ///
+    /// The compositor's own binary, plus — in debug builds only — the
+    /// executable named by `VIEWPORT_IPC_TRUST_EXE` for the integration
+    /// harness.
+    fn executable_is_trusted(&self, exe: Option<&std::path::Path>) -> bool {
+        let Some(exe) = exe else {
+            return false;
+        };
+        self.self_exe.as_deref() == Some(exe) || self.trust_exe.as_deref() == Some(exe)
+    }
+
+    /// Whether the peer behind a connection is this compositor binary itself
+    /// (or the debug-build integration executable).
+    ///
+    /// Half of [`ViewportState::client_is_trusted`]; the other half, a shell
+    /// this compositor supervises, needs the pid list that lives on
+    /// `ViewportState` and so is resolved there.
+    pub fn client_is_same_executable(&self, client_id: u64) -> bool {
+        let Some(client) = self.clients.get(&client_id) else {
+            return false;
+        };
+        self.executable_is_trusted(client.exe.as_deref())
+    }
+
     /// Send to everything except the processes named.
     ///
     /// For an event that has a different answer per shell: each of them is sent
     /// its own, and this is what carries the plain one to everyone else. A
     /// script watching the socket is told what the machine is; a page is told
     /// what it covers.
+    ///
+    /// Private events are skipped for untrusted clients for the same reason
+    /// [`Self::broadcast`] does it, and additionally never sent to the named
+    /// processes.
     pub fn broadcast_except(&mut self, pids: &[i32], event: &Event) {
         let Ok(mut text) = viewport_ipc::to_string(event) else {
             tracing::error!("could not serialise {event:?}");
             return;
         };
         text.push('\n');
+        let private = event.is_private();
         self.reap_clients();
         for client in self.clients.values_mut() {
             if client.pid.is_some_and(|pid| pids.contains(&pid)) {
+                continue;
+            }
+            if private && !client.trusted {
                 continue;
             }
             client.send(text.as_bytes());
@@ -538,7 +703,20 @@ impl Ipc {
 
 impl Drop for Ipc {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
+        // Only unlink the socket this `Ipc` created. Another compositor may
+        // have replaced the well-known name while this one was quitting, and
+        // deleting its socket would be a worse goodbye than leaking our own.
+        // The fallback when no identity was recorded is the old unconditional
+        // unlink, because a missing `metadata` usually means there is nothing
+        // there and this process is the only one that could have made one.
+        let ours = match self.socket_identity {
+            Some(identity) => std::fs::symlink_metadata(&self.path)
+                .is_ok_and(|meta| (meta.dev(), meta.ino()) == identity),
+            None => true,
+        };
+        if ours {
+            let _ = std::fs::remove_file(&self.path);
+        }
     }
 }
 
@@ -654,11 +832,32 @@ impl ViewportState {
             .ok()
             .map(|cred| cred.pid.as_raw_nonzero().get());
 
+        // The exe is read here and now, while the pid still means something:
+        // a race with the peer exiting, a pid the kernel has already recycled,
+        // or a `/proc` that cannot be read all leave it `None`, and `None` is
+        // an ordinary untrusted client.
+        let exe = pid.and_then(peer_executable);
+        // The shell this compositor spawned is the one client allowed to see
+        // private events by pid; a page cannot claim this because the pid
+        // comes from `SO_PEERCRED` and the match is against our own children.
+        let supervised = pid.is_some_and(|pid| {
+            self.shell_clients
+                .iter()
+                .any(|shell| shell.pid() == Some(pid))
+        });
+        // The same-binary case is what keeps the documented `viewport msg`
+        // tooling working without a token: the compositor's own CLI is a
+        // second process of the same executable and nothing an arbitrary
+        // same-user client can arrange by any other means.
+        let trusted = supervised || self.ipc.executable_is_trusted(exe.as_deref());
+
         self.ipc.clients.insert(
             id,
             Client {
                 stream,
                 pid,
+                exe,
+                trusted,
                 framer: Framer::new(),
                 pending: Vec::new(),
                 stalled_since: None,
@@ -778,6 +977,34 @@ impl ViewportState {
         self.shell_clients
             .iter()
             .position(|shell| shell.pid() == Some(pid))
+    }
+
+    /// Whether a control-socket client may be handed private data or trusted
+    /// with privileged requests.
+    ///
+    /// The model is three classes, not two:
+    ///
+    /// * **Client 0** is the in-process page. It has no socket to spoof and
+    ///   is as much the compositor as the compositor code that calls this.
+    /// * **A supervised shell** is a process this compositor spawned and is
+    ///   still tracking, matched by the pid `SO_PEERCRED` reported at accept
+    ///   against the children in `shell_clients`. A client cannot choose its
+    ///   own pid, so this cannot be claimed by saying so.
+    /// * **The compositor binary itself** is the `viewport msg` CLI and any
+    ///   other invocation of this executable. At accept, `/proc/<pid>/exe`
+    ///   was read and canonicalized and compared to this process's
+    ///   canonicalized `std::env::current_exe()`; equality is the check. A
+    ///   debug build additionally trusts a path named by
+    ///   `VIEWPORT_IPC_TRUST_EXE` at startup, for the integration harness
+    ///   only; release builds ignore that variable.
+    ///
+    /// Anything else — every arbitrary same-UID process that can open the
+    /// 0600 socket — is untrusted. Race, a missing `/proc` entry or an
+    /// unreadable one leaves the executable unknown and is untrusted too.
+    pub fn client_is_trusted(&self, client_id: u64) -> bool {
+        client_id == 0
+            || self.shell_for_client(client_id).is_some()
+            || self.ipc.client_is_same_executable(client_id)
     }
 
     pub fn ipc_dispatch(&mut self, client_id: u64, bytes: &[u8]) {
@@ -974,5 +1201,61 @@ mod tests {
                 |_, _, _| Ok(PostAction::Continue),
             )
             .expect("the write half registers on its own fd");
+    }
+
+    /// The same-executable recognition rests on `/proc/<pid>/exe` resolving
+    /// to the path `current_exe` canonicalizes to. This is that contract on
+    /// the one pid a test can know: its own.
+    #[test]
+    fn the_peer_executable_of_this_process_is_this_executable() {
+        let me = i32::try_from(std::process::id()).expect("a test pid fits in i32");
+        assert_eq!(peer_executable(me), own_executable());
+    }
+
+    /// A pid with no process behind it is an untrusted client, not an error:
+    /// exit races and pid reuse end here.
+    #[test]
+    fn a_pid_that_does_not_exist_has_no_executable() {
+        assert!(peer_executable(i32::MAX).is_none());
+    }
+
+    /// The debug-only integration escape hatch: a path named by
+    /// `VIEWPORT_IPC_TRUST_EXE` at startup is trusted exactly as the
+    /// compositor's own executable is, and is visible to both the accept-time
+    /// flag (through [`Ipc::executable_is_trusted`]) and the public
+    /// classification path ([`Ipc::client_is_same_executable`]).
+    #[test]
+    fn a_debug_build_trusts_the_configured_extra_executable() {
+        let Some(me) = own_executable() else {
+            panic!("the test binary's executable must resolve");
+        };
+
+        /// Restores whatever the variable held before, even on a panic.
+        struct Restore(Option<std::ffi::OsString>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(previous) => unsafe {
+                        std::env::set_var("VIEWPORT_IPC_TRUST_EXE", previous)
+                    },
+                    None => unsafe { std::env::remove_var("VIEWPORT_IPC_TRUST_EXE") },
+                }
+            }
+        }
+
+        // SAFETY: the test harness may have other threads; this variable is
+        // read by `Ipc::new` only, and no other test in this binary owns it.
+        let _restore = Restore(std::env::var_os("VIEWPORT_IPC_TRUST_EXE"));
+        unsafe { std::env::set_var("VIEWPORT_IPC_TRUST_EXE", &me) };
+
+        let event_loop = smithay::reexports::calloop::EventLoop::<ViewportState>::try_new()
+            .expect("an event loop");
+        let dir = scratch();
+        let ipc = Ipc::new(dir.join("viewport-trust.sock"), &event_loop.handle())
+            .expect("a control socket");
+        assert_eq!(ipc.trust_exe.as_deref(), Some(me.as_path()));
+        assert!(ipc.executable_is_trusted(Some(me.as_path())));
+        drop(ipc);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

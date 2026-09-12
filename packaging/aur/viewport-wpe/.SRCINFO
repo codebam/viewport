@@ -41,7 +41,7 @@ pkgbase = viewport-wpe
 	conflicts = viewport-webkitgtk
 	conflicts = viewport-chromium
 	options = !lto
-	source = git+https://github.com/codebam/viewport.git#tag=v0.3.0
+	source = git+https://github.com/codebam/viewport.git#commit=f2ab73f622eb145e19870989b09e80365d9ed130
 	sha256sums = SKIP
 
 pkgname = viewport-wpe

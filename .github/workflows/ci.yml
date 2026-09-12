@@ -1,12 +1,14 @@
-# Three jobs, all of which run on every push and need nothing a hosted runner
+# Four jobs, all of which run on every push and need nothing a hosted runner
 # has not got.
 #
 # `shell` is the layout engine: plain JavaScript, node and nothing else.
 # `rust` is the compositor — fmt, clippy, the unit tests, the Wayland
-# integration tests, and a build of the packaged compositor. `asan` is the
-# same suite instrumented. There used to be a fourth; see below.
+# integration tests, and a build of the packaged compositor. `excluded-crates`
+# runs the dependency policy against the two manifests the workspace leaves
+# out. `asan` is the same suite instrumented. There used to be a fifth; see
+# below.
 #
-# That the last two run unassisted is recent and was not free. The headless
+# That `rust` and `asan` run unassisted is recent and was not free. The headless
 # backend renders through a surfaceless EGL display, so the integration tests
 # want no GPU and no DRM render node; and the compositor this builds draws its
 # shell with nixpkgs' prebuilt WebKitGTK, out of process, so there is no
@@ -28,6 +30,13 @@
 # ICD supplies one. They sat behind a repository variable from the day they
 # were written, so nobody found out.
 name: CI
+
+# Every job reads the repository and nothing else, so the token gets the
+# smallest useful scope. actions/checkout needs `contents: read`; the Nix
+# actions use the runner's own cache credentials rather than this token, so no
+# job needs a write scope.
+permissions:
+  contents: read
 
 # Back on every push. This was turned off because the `rust` job refused to
 # start when WPE WebKit was not substitutable — which was right, and which
@@ -69,6 +78,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # data/shell/vendor is committed rather than fetched during the build, so
+      # this checksum is what ties the file in the tree to what npm produced.
+      # --check needs no node_modules.
+      - name: Verify vendored GSAP
+        run: scripts/vendor-shell-deps.sh --check
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
@@ -188,6 +203,76 @@ jobs:
       # already run the suite outside it.
       - name: Build the packaged compositor
         run: nix build --print-build-logs .#cef .#webkitgtk
+
+  # The two crates the root manifest excludes, `viewport-shell-cef` and
+  # `viewport-shell-servo`, are outside the `cargo deny check` in `rust`
+  # because `cargo test --workspace` cannot build them. They carry their own
+  # locks and their own dependencies, so nothing else in this workflow sees
+  # them either; this job does.
+  #
+  # The first step is a ratchet. The one hard advisory either lock currently
+  # trips is RUSTSEC-2026-0258, in the h2 0.4.15 pinned by the Servo lock, so
+  # that id is ignored explicitly in the Servo check — and only that id, in
+  # only that manifest: a new advisory fails the job even while the known one
+  # is being worked around. The second step runs the whole root policy so
+  # source and license drift there is visible too.
+  excluded-crates:
+    name: Excluded crate dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: DeterminateSystems/nix-installer-action@65d7c888b2778e8cf30a07a88422ccb23499bfb8 # v4
+      - uses: DeterminateSystems/magic-nix-cache-action@8a218f9e264e9c3803c9a1ee1c30d8e4ab55be63 # v2
+
+      # TODO: drop the ignore once crates/viewport-shell-servo/Cargo.lock moves
+      # to h2 >= 0.4.16. Until then RUSTSEC-2026-0258 stays visible here as an
+      # ignored advisory with its reason, rather than as a job that can never
+      # go green and would hide a second finding beside it.
+      - name: Advisory ratchet for excluded manifests
+        run: |
+          nix develop .#rust --command bash -euo pipefail -c '
+            cfg=$(mktemp)
+            trap "rm -f $cfg" EXIT
+            printf "%s\n" \
+              "[advisories]" \
+              "ignore = [" \
+              "  { id = \"RUSTSEC-2026-0258\", reason = \"h2 0.4.15 in crates/viewport-shell-servo/Cargo.lock; needs h2 >= 0.4.16\" }," \
+              "]" > "$cfg"
+            # CEF is already clean under the root policy, so no ignore is
+            # applied to it: if it gains h2 later, that fails here.
+            cargo deny --locked \
+              --manifest-path crates/viewport-shell-cef/Cargo.toml \
+              check advisories
+            # The temporary config (and its single ignore) applies to Servo
+            # only.
+            cargo deny --config "$cfg" --locked \
+              --manifest-path crates/viewport-shell-servo/Cargo.toml \
+              check advisories
+          '
+
+      # TODO: remove `continue-on-error` once all three known findings are
+      # fixed; the advisory ratchet above is already hard, so this step exists
+      # only to keep the other two checks visible without letting either known
+      # source/license finding block unrelated work:
+      #   * Servo's h2 0.4.15 (RUSTSEC-2026-0258); needs h2 >= 0.4.16.
+      #   * Servo's own `servo` and `stylo` git sources, which root deny.toml
+      #     does not list under [sources] allow-git.
+      #   * `viewport-shell-cef`'s bzip2-1.0.6 (via libbz2-rs-sys), which root
+      #     deny.toml does not list under [licenses] allow.
+      - name: Full policy check for excluded manifests
+        continue-on-error: true
+        run: |
+          nix develop .#rust --command bash -euo pipefail -c '
+            status=0
+            for manifest in \
+              crates/viewport-shell-cef/Cargo.toml \
+              crates/viewport-shell-servo/Cargo.toml
+            do
+              cargo deny --locked --manifest-path "$manifest" check || status=1
+            done
+            exit "$status"
+          '
 
   # The same suite under AddressSanitizer.
   #

@@ -958,7 +958,12 @@ With **two monitors or more** the two readings come apart, so they are split:
 
 So `--url https://example.com` on a two-monitor desk is that site on the main
 screen and a working desktop — bar, windows, workspaces — on the other, rather
-than one page stretched across both and no window manager anywhere.
+than one page stretched across both and no window manager anywhere. A
+non-loopback remote URL is refused unless `VIEWPORT_ALLOW_REMOTE_SHELL=1` is
+set: the page can run commands through the shell bridge, so remote origins are
+an explicit trust decision rather than a value a config file can choose by
+itself. `file:` and loopback (`localhost`, `127.0.0.1`, `[::1]`) URLs need no
+override.
 
 `"url_span": true`, or `--url-span`, puts it back to one page across every
 screen. That is what a shell under development wants: it *is* the desktop, it

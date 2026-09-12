@@ -345,12 +345,27 @@ where
     // screen, which is where a fresh session begins.
     let origin = origin.unwrap_or(fallback);
 
-    let max_x = (origin.loc.x + origin.size.w) as f64 - 1.0;
-    let max_y = (origin.loc.y + origin.size.h) as f64 - 1.0;
-    Point::from((
-        to.x.clamp(origin.loc.x as f64, max_x),
-        to.y.clamp(origin.loc.y as f64, max_y),
-    ))
+    // i64 before the sum. `origin.loc.x + origin.size.w` is exactly the
+    // unchecked add a layout at either end of the `i32` range turned into an
+    // overflow, and a later pointer move is the only thing needed to reach
+    // it. An output with no (or negative) extent also puts max below min,
+    // which `f64::clamp` treats as a panic; pinning to the origin is the
+    // harmless reading of a rectangle with no room in it.
+    let min_x = f64::from(origin.loc.x);
+    let min_y = f64::from(origin.loc.y);
+    let max_x = i64::from(origin.loc.x).saturating_add(i64::from(origin.size.w)) as f64 - 1.0;
+    let max_y = i64::from(origin.loc.y).saturating_add(i64::from(origin.size.h)) as f64 - 1.0;
+    let x = if max_x >= min_x {
+        to.x.clamp(min_x, max_x)
+    } else {
+        min_x
+    };
+    let y = if max_y >= min_y {
+        to.y.clamp(min_y, max_y)
+    } else {
+        min_y
+    };
+    Point::from((x, y))
 }
 
 /// Which of the two cursor images is the one on screen.
@@ -674,6 +689,28 @@ mod tests {
             (100.0, -50.0).into(),
         );
         assert_eq!(clamped, Point::from((100.0, 0.0)));
+    }
+
+    #[test]
+    fn degenerate_outputs_do_not_panic_the_clamp() {
+        // The layout bound keeps ordinary monitors far from this, but the
+        // clamp is also the last line of defence: adding location and size in
+        // i32 used to overflow, and an output with no extent made `clamp`
+        // panic outright because its maximum sat below its minimum.
+        let near_max = Rectangle::new((i32::MAX - 1, i32::MAX - 1).into(), (2, 2).into());
+        let _ = clamp(
+            std::iter::once(near_max),
+            (0.0, 0.0).into(),
+            (f64::from(i32::MAX), f64::from(i32::MAX)).into(),
+        );
+
+        let empty = Rectangle::new((10, 10).into(), (0, 0).into());
+        let clamped = clamp(
+            std::iter::once(empty),
+            (0.0, 0.0).into(),
+            (100.0, 100.0).into(),
+        );
+        assert_eq!(clamped, Point::from((10.0, 10.0)));
     }
 
     #[test]

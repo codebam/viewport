@@ -68,6 +68,29 @@ pub struct Pending {
 /// lost the frame they describe. See [`Mailbox::messages`].
 const MAX_MAILBOX_MESSAGES: usize = 8192;
 
+/// The most serialised IPC text the command queue may hold for the web thread.
+///
+/// The compositor posts events into this queue from its own loop and the web
+/// thread drains it between GLib iterations. WebKit can be inside a long
+/// synchronous task or a slow frame for seconds; without a ceiling, a burst of
+/// events — a huge tray icon, a whole clipboard history, a page that stopped
+/// reading — accumulates in the compositor's heap for as long as the web
+/// thread takes. Four megabytes is many ordinary events and still less than a
+/// handful of the largest ones.
+const MAX_QUEUE_BYTES: usize = 4 << 20;
+
+/// The most commands of any kind the queue may hold.
+///
+/// The byte budget covers posts; key and button events are fixed-size structs
+/// and an unbounded run of them (a stuck web thread plus a key repeat, or an
+/// IPC client pumping `input.*`) would otherwise grow the deque at a few dozen
+/// bytes per event. This is several seconds of the most frantic input.
+const MAX_QUEUE_ENTRIES: usize = 4096;
+
+/// How often a full queue logs. The drop count still accumulates; only the
+/// line is rate-limited, so a flood cannot itself become the log flood.
+const QUEUE_DROP_LOG: std::time::Duration = std::time::Duration::from_secs(5);
+
 #[derive(Default)]
 pub struct Mailbox {
     /// Wakes the event loop once something has been posted. Without it a
@@ -197,6 +220,17 @@ struct Queue {
     commands: VecDeque<Command>,
     pending_motion: Option<Command>,
     pending_axis: Option<Command>,
+    /// Serialised JSON still held in `commands` for `Command::Post`.
+    ///
+    /// Counted separately because it is the only command whose size a page or
+    /// event can choose; the rest are fixed enum values.
+    post_bytes: usize,
+    /// Commands dropped because a budget was full. Kept so a test can see
+    /// that the overflow path ran, and so the rate-limited log can say how
+    /// many were lost when it does speak.
+    dropped: u64,
+    /// When the overflow was last logged.
+    last_drop_log: Option<std::time::Instant>,
 }
 
 impl Queue {
@@ -206,8 +240,57 @@ impl Queue {
             Command::PointerAxis { .. } => self.pending_axis = Some(command),
             command => {
                 self.seal();
+                if !self.has_room(&command) {
+                    self.note_drop();
+                    return;
+                }
+                if let Command::Post(json) = &command {
+                    self.post_bytes += json.len();
+                }
                 self.commands.push_back(command);
             }
+        }
+    }
+
+    /// Whether `command` fits both budgets.
+    ///
+    /// Checked after sealing, so the pending pointer events it would join are
+    /// part of the entry count. Dropping the newest command is deliberate: the
+    /// web thread is already behind, and the oldest queued work is the work
+    /// most likely to be obsolete.
+    fn has_room(&self, command: &Command) -> bool {
+        if self.entries() >= MAX_QUEUE_ENTRIES {
+            return false;
+        }
+        match command {
+            Command::Post(json) => self.post_bytes.saturating_add(json.len()) <= MAX_QUEUE_BYTES,
+            _ => true,
+        }
+    }
+
+    /// Everything queued now, sealed or still coalesced.
+    fn entries(&self) -> usize {
+        self.commands.len()
+            + (self.pending_motion.is_some() as usize)
+            + (self.pending_axis.is_some() as usize)
+    }
+
+    /// Drop the newest command and, at most every [`QUEUE_DROP_LOG`], say so.
+    fn note_drop(&mut self) {
+        self.dropped += 1;
+        let now = std::time::Instant::now();
+        if self
+            .last_drop_log
+            .is_none_or(|last| now.duration_since(last) >= QUEUE_DROP_LOG)
+        {
+            self.last_drop_log = Some(now);
+            tracing::warn!(
+                "shell command queue over budget ({} post bytes, {} entries); dropped {}; \
+                 dropping newest",
+                self.post_bytes,
+                self.entries(),
+                self.dropped
+            );
         }
     }
 
@@ -224,6 +307,7 @@ impl Queue {
 
     fn drain(&mut self) -> Vec<Command> {
         self.seal();
+        self.post_bytes = 0;
         self.commands.drain(..).collect()
     }
 }
@@ -1085,5 +1169,38 @@ mod tests {
             Some(format!("m{}", MAX_MAILBOX_MESSAGES + 9).as_str())
         );
         assert_eq!(held.dropped, 10);
+    }
+
+    /// A post larger than the byte budget is dropped rather than queued, and
+    /// what still fits is kept.
+    #[test]
+    fn a_runaway_post_queue_is_bounded_in_bytes() {
+        let mut queue = Queue::default();
+        let big = "x".repeat(MAX_QUEUE_BYTES * 3 / 4);
+        queue.push(Command::Post(big.clone()));
+        queue.push(Command::Post(big.clone())); // over the bytes: dropped
+        queue.push(Command::Post("small".to_owned()));
+        assert!(
+            queue.post_bytes <= MAX_QUEUE_BYTES,
+            "{} post bytes",
+            queue.post_bytes
+        );
+        assert_eq!(queue.dropped, 1);
+        assert_eq!(queue.drain().len(), 2);
+        assert_eq!(queue.post_bytes, 0, "draining releases the budget");
+    }
+
+    /// The byte budget only knows about posts, so the fixed-size commands
+    /// have their own entry ceiling. A stuck web thread cannot be made to
+    /// hold input or lifecycle commands without bound either.
+    #[test]
+    fn the_command_queue_has_an_entry_ceiling() {
+        let mut queue = Queue::default();
+        for _ in 0..MAX_QUEUE_ENTRIES + 10 {
+            queue.push(Command::Reload);
+        }
+        assert!(queue.entries() <= MAX_QUEUE_ENTRIES);
+        assert_eq!(queue.dropped, 10);
+        assert_eq!(queue.commands.len(), MAX_QUEUE_ENTRIES);
     }
 }

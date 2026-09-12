@@ -336,6 +336,10 @@ impl ViewportState {
         desktop: bool,
         degraded: bool,
     ) -> Result<()> {
+        // The last gate before a process is started. `--url` and a config-file
+        // URL were checked where they were resolved, but `VIEWPORT_SHELL_URL`
+        // can arrive on its own and every plan goes through here.
+        crate::config::ensure_shell_url_allowed(url, "the shell URL")?;
         let program = self.shell_backend.shell_program().ok_or_else(|| {
             anyhow!(
                 "{} does not run in a process of its own",

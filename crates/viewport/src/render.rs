@@ -1093,7 +1093,16 @@ pub fn overlay_side(
     let side =
         Rectangle::<i32, Logical>::new((side.x, side.y).into(), (side.width, side.height).into())
             .intersection(output)?;
-    Some(Rectangle::new(side.loc - output.loc, side.size))
+    // `intersection` holds the side inside `output` with saturating
+    // arithmetic; subtracting the output origin in i32 can still wrap when the
+    // two ends of the layout meet. i64 first, then back only if the result is
+    // a real rectangle in this output's own coordinates.
+    let x = i32::try_from(i64::from(side.loc.x).checked_sub(i64::from(output.loc.x))?).ok()?;
+    let y = i32::try_from(i64::from(side.loc.y).checked_sub(i64::from(output.loc.y))?).ok()?;
+    if x < 0 || y < 0 || side.size.w <= 0 || side.size.h <= 0 {
+        return None;
+    }
+    Some(Rectangle::new((x, y).into(), side.size))
 }
 
 /// Whether this output is one the shell drew this window's frame on.
@@ -1237,10 +1246,15 @@ pub fn desk_placement(
     scale: f64,
 ) -> (Rectangle<i32, Physical>, Point<i32, Physical>) {
     let bounds = Rectangle::from_size(geometry.size.to_f64().to_physical(scale).to_i32_round());
-    let at = (geometry.loc - union.loc)
-        .to_f64()
-        .to_physical(scale)
-        .to_i32_round();
+    // i64 before the subtraction: both points are layout coordinates the
+    // renderer reads, and `i32::MIN - i32::MAX` is not a vector it should ever
+    // have to form.
+    let at = Point::<f64, Logical>::from((
+        (i64::from(geometry.loc.x) - i64::from(union.loc.x)) as f64,
+        (i64::from(geometry.loc.y) - i64::from(union.loc.y)) as f64,
+    ))
+    .to_physical(scale)
+    .to_i32_round();
     (bounds, at)
 }
 

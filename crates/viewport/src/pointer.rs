@@ -90,17 +90,23 @@ pub fn over_overlay(overlays: &[Rectangle<i32, Logical>], at: Point<f64, Logical
 }
 
 fn contains(rect: Rectangle<i32, Logical>, at: Point<f64, Logical>) -> bool {
-    at.x >= rect.loc.x as f64
-        && at.y >= rect.loc.y as f64
-        && at.x < (rect.loc.x + rect.size.w) as f64
-        && at.y < (rect.loc.y + rect.size.h) as f64
+    // i64 for the far edge: these rectangles are client- or shell-supplied,
+    // and an i32 `loc + size` that wraps would move the edge to the wrong
+    // side of the rectangle instead of rejecting the point.
+    let right = i64::from(rect.loc.x) + i64::from(rect.size.w);
+    let bottom = i64::from(rect.loc.y) + i64::from(rect.size.h);
+    at.x >= f64::from(rect.loc.x)
+        && at.y >= f64::from(rect.loc.y)
+        && at.x < right as f64
+        && at.y < bottom as f64
 }
 
 fn nearest(rect: Rectangle<i32, Logical>, at: Point<f64, Logical>) -> Point<f64, Logical> {
     // One short of the far edge, because the rectangle is half-open and a
-    // point on the bound itself would be outside again.
-    let max_x = (rect.loc.x + rect.size.w) as f64 - 1.0;
-    let max_y = (rect.loc.y + rect.size.h) as f64 - 1.0;
+    // point on the bound itself would be outside again. The sum is widened
+    // first for the same reason `contains` is.
+    let max_x = (i64::from(rect.loc.x) + i64::from(rect.size.w)) as f64 - 1.0;
+    let max_y = (i64::from(rect.loc.y) + i64::from(rect.size.h)) as f64 - 1.0;
     Point::from((
         at.x.clamp(rect.loc.x as f64, max_x.max(rect.loc.x as f64)),
         at.y.clamp(rect.loc.y as f64, max_y.max(rect.loc.y as f64)),

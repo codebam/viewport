@@ -9,6 +9,7 @@
 #   ./scripts/arch-vm.sh --shell                 # a login shell, no compositor
 #   ./scripts/arch-vm.sh --url https://example.com   # a page rather than the shell
 #   ./scripts/arch-vm.sh --screens 2                 # two virtual monitors
+#   ARCHVM_SHA256=<sha256> ./scripts/arch-vm.sh      # verified image download
 #
 # `nix run .#vm` boots this compositor on NixOS, which proves the flake and
 # nothing about the three PKGBUILDs beside it. Those declare their own
@@ -34,6 +35,30 @@ cache=${XDG_CACHE_HOME:-$HOME/.cache}/viewport/arch-vm
 # month's Arch and not today's is a package that is broken, and pinning a
 # snapshot here would hide exactly that.
 image_url=https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2
+
+# The image's SHA-256, when the caller pins one. With ARCHVM_SHA256 set, both a
+# freshly downloaded image and any cached copy from an earlier run must match
+# it exactly, or the script refuses to boot anything. Without it the image is
+# trusted to HTTPS and the mirror, which authenticates the transport but not
+# the artifact, so the script warns rather than pretending that is a pin.
+image_sha256=${ARCHVM_SHA256:-}
+image_sha256=${image_sha256#sha256:}
+
+sha256_of() {
+    sha256sum "$1" | cut -d' ' -f1
+}
+
+verify_image() {
+    local file=$1 actual
+    actual=$(sha256_of "$file")
+    if [ "$actual" != "$image_sha256" ]; then
+        echo "error: $file does not match ARCHVM_SHA256" >&2
+        echo "  expected: $image_sha256" >&2
+        echo "  actual:   $actual" >&2
+        exit 1
+    fi
+    echo "cloud image digest verified: $actual" >&2
+}
 
 variant=
 package=
@@ -76,7 +101,7 @@ while [ $# -gt 0 ]; do
         # The overlay only. The base image is left alone, because re-downloading
         # 500 MB to undo a bad `pacman -U` is not a reset, it is a punishment.
         --fresh) fresh=1; shift ;;
-        -h|--help) sed -n '3,25p' "$0" | sed 's/^# \?//'; exit 0 ;;
+        -h|--help) sed -n '3,28p' "$0" | sed 's/^# \?//'; exit 0 ;;
         *) echo "unknown option $1" >&2; exit 2 ;;
     esac
 done
@@ -121,13 +146,27 @@ if ! command -v qemu-system-x86_64 >/dev/null || ! command -v cloud-localds >/de
     exec nix shell nixpkgs#qemu nixpkgs#cloud-utils --command "$0" "${again[@]}"
 fi
 
+if [ -n "$image_sha256" ]; then
+    echo "ARCHVM_SHA256 is set; the Arch cloud image will be digest-verified." >&2
+else
+    echo "WARNING: ARCHVM_SHA256 is not set. The Arch cloud image is downloaded" >&2
+    echo "         over TLS but is not pinned to a digest, so a substituted or" >&2
+    echo "         corrupted image would not be detected. Set ARCHVM_SHA256 to" >&2
+    echo "         the image's SHA-256 to make this run refuse one." >&2
+fi
+
 mkdir -p "$cache"
 base=$cache/arch-base.qcow2
 if [ ! -f "$base" ]; then
     echo "downloading the Arch cloud image (about 500 MB, once)..." >&2
     curl -L --fail --progress-bar -o "$base.part" "$image_url"
+    # Verify the partial file before it becomes the cached base, so a bad
+    # download is never mistaken for one this script has already accepted.
+    [ -z "$image_sha256" ] || verify_image "$base.part"
     mv "$base.part" "$base"
 fi
+# A cached base is as much a supply-chain input as a download: check it too.
+[ -z "$image_sha256" ] || verify_image "$base"
 
 # A fresh copy-on-write layer per run by default: this exists to find out what
 # installing the package does to a clean machine, and the second run of a

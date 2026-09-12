@@ -58,7 +58,54 @@ fn acts_while_locked(request: &Request) -> bool {
     )
 }
 
+/// Whether carrying this request out only asks for state, changing nothing.
+///
+/// The control socket is shared by the shell, by scripts and — through a
+/// page's own code — by whatever that page can reach. A query is safe to
+/// answer for any same-user client. Everything else acts on the session, the
+/// desktop or the host, and is held to the sender check in `apply`.
+///
+/// `OskKey` is deliberately absent from `acts_while_locked`: a synthetic key
+/// still has to reach the lock screen, so its refusal happens per key in
+/// `inject_key`.
+fn reads_only(request: &Request) -> bool {
+    // `SessionQuery` looks like a read but is not one: while locked it
+    // withdraws the lock screen state and asks the page to draw the lock
+    // again, so an untrusted caller could make that happen in a loop. It is
+    // privileged like the rest of the session messages; the shell and the
+    // CLI are trusted.
+    matches!(
+        request,
+        Request::ViewQuery | Request::ClipboardQuery | Request::NotificationList
+    )
+}
+
 pub fn apply(state: &mut ViewportState, request: Request) {
+    // Who is allowed to ask for what, before anything in here is allowed to
+    // touch the session.
+    //
+    // The shell runs with the same user id as the compositor — it has to, to
+    // write the config — so uid alone cannot tell a page that escaped its
+    // browser from the desktop. Only connections the compositor itself
+    // started are trusted; client zero is an in-process apply (the config
+    // file, the watchdog) and is the compositor. Everyone else may ask
+    // questions, and no one else may act.
+    if state.dispatch_client != 0
+        && !reads_only(&request)
+        && !state.client_is_trusted(state.dispatch_client)
+    {
+        tracing::warn!(
+            "refusing a privileged request from untrusted client {}",
+            state.dispatch_client
+        );
+        reject(
+            state,
+            "ipc",
+            "this client is not allowed to send that request",
+        );
+        return;
+    }
+
     // Everything except another layout pays off what the last run of layouts
     // left owing, first.
     //
@@ -380,7 +427,22 @@ pub fn apply(state: &mut ViewportState, request: Request) {
         // once, from the config.
         Request::SessionLock => state.lock_session(),
 
-        Request::SessionLockDrawn { generation } => state.lock_screen_drawn(generation),
+        Request::SessionLockDrawn { generation } => {
+            // The blanket sender check above already turned away every
+            // socket the compositor does not trust. Kept explicit as well:
+            // this is the one request whose whole meaning is "the lock
+            // screen is really mine", and it must still hold if the
+            // blanket rule is ever loosened.
+            if state.dispatch_client != 0 && !state.client_is_trusted(state.dispatch_client) {
+                reject(
+                    state,
+                    "session.lock.drawn",
+                    "this sender may not report the lock screen",
+                );
+                return;
+            }
+            state.lock_screen_drawn(generation);
+        }
 
         Request::SessionUnlock {
             generation,
@@ -837,7 +899,11 @@ pub fn apply(state: &mut ViewportState, request: Request) {
                 Some(path) => match crate::config::wallpaper_value(path, "config.wallpaper") {
                     Ok(url) => Some(Some(url)),
                     Err(e) => {
-                        reject(state, "config.wallpaper", &e.to_string());
+                        // Detailed in the log, generic to the sender: the
+                        // resolved path is an existence oracle for a page
+                        // that names paths it cannot otherwise read.
+                        tracing::warn!("config.wallpaper: {e:#}");
+                        reject(state, "config.wallpaper", "the wallpaper could not be set");
                         return;
                     }
                 },
@@ -847,6 +913,9 @@ pub fn apply(state: &mut ViewportState, request: Request) {
                 Some(mode) => match crate::config::parse_wallpaper_mode(mode) {
                     Ok(mode) => Some(mode),
                     Err(e) => {
+                        // The mode error names the modes the compositor
+                        // knows; unlike a path it is not a filesystem
+                        // oracle, so the sender keeps the useful message.
                         reject(state, "config.wallpaper", &e.to_string());
                         return;
                     }
@@ -1323,6 +1392,14 @@ fn view_layout(state: &mut ViewportState, mut layout: viewport_ipc::request::Vie
 }
 
 pub fn focus_view(state: &mut ViewportState, id: u32) {
+    // A locked session has one destination for the keyboard, and this is not
+    // it. The IPC path and the foreign-toplevel request already refuse while
+    // locked; this is the floor under every caller, including the portal
+    // picker whose focus restore runs as the chooser comes down.
+    if state.locked {
+        tracing::debug!("ignoring focus for view {id} while the session is locked");
+        return;
+    }
     // Activation is also restore. This covers shell taskbars, foreign
     // toplevels, and direct IPC with one rule rather than leaving a focused
     // surface omitted from layout.
@@ -1373,9 +1450,40 @@ fn output_configure(state: &mut ViewportState, config: OutputConfigure) {
     // carries both is refused whole rather than half-applied — the same
     // validate-everything-first rule the management path runs.
     if let Some(scale) = config.scale {
-        if scale <= 0.0 {
+        // `NaN <= 0.0` is false, so an infinite or NaN scale used to pass
+        // this and reach the renderer. Every use of it assumes a real,
+        // positive number.
+        if !scale.is_finite() || scale <= 0.0 {
             reject(state, "output.configure", &format!("scale {scale}"));
             return;
+        }
+    }
+    // The same bounds the wlr-output-management path enforces. This request
+    // comes from the shell or the CLI, so it is a trusted sender — but a page
+    // mistake must not become a compositor abort, and an unbounded custom mode
+    // here bypasses every check `apply_output_configuration` makes.
+    if let Some(mode) = config.mode {
+        use crate::output_management::custom_mode_size_ok;
+        if !custom_mode_size_ok(mode.width, mode.height) {
+            reject(
+                state,
+                "output.configure",
+                "mode is larger than the compositor will carry",
+            );
+            return;
+        }
+    }
+    {
+        use crate::output_management::layout_coord_ok;
+        for coord in [config.x, config.y].into_iter().flatten() {
+            if !layout_coord_ok(coord) {
+                reject(
+                    state,
+                    "output.configure",
+                    "position is outside the accepted layout",
+                );
+                return;
+            }
         }
     }
 

@@ -308,6 +308,14 @@ impl XdgShellHandler for ViewportState {
     /// appears and cannot be used. The grab is also what closes a menu when
     /// something else is clicked, and what makes Escape reach it.
     fn grab(&mut self, surface: PopupSurface, seat: wl_seat::WlSeat, serial: Serial) {
+        // A menu opened after the session locked must not take the keyboard.
+        // The popup is not drawn under the lock, but its grab would still
+        // receive keys — and Smithay's popup grab ignores the lock's later
+        // `set_focus` — so the request is refused outright while locked.
+        if self.locked {
+            tracing::debug!("popup: refusing a grab while the session is locked");
+            return;
+        }
         let Some(seat) = Seat::<Self>::from_resource(&seat) else {
             return;
         };

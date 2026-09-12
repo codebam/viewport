@@ -329,6 +329,13 @@ fn a_query_with_no_compositor_behind_the_socket_times_out_rather_than_hanging() 
     let path = format!("/tmp/viewport-msg-{}-mute.sock", std::process::id());
     let _ = std::fs::remove_file(&path);
     let listener = std::os::unix::net::UnixListener::bind(&path).expect("bind");
+    // The CLI now refuses a socket that is not the user's and mode 0600.
+    // That is what a real compositor's control socket is; the mock has to
+    // match it or this test would exercise validation instead of the timeout.
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("chmod");
+    }
     let accepting = std::thread::spawn(move || {
         // Held open until the test is done with it.
         let _kept = listener.accept();

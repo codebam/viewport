@@ -579,7 +579,8 @@ Options:
   -t, --type TYPE     the message to send, or `subscribe` to watch events
       --socket PATH   the socket to use. Otherwise $VIEWPORT_SOCKET, then
                       $XDG_RUNTIME_DIR/viewport-$WAYLAND_DISPLAY.sock, then
-                      the newest viewport-*.sock there
+                      the newest 0600 viewport-*.sock there. Every path must
+                      be this user's socket; no /tmp fallback.
       --timeout SECS  how long to wait for a reply (default 2; 0 waits)
       --pretty        indent the JSON that comes back
       --raw JSON      send this object verbatim, instead of -t and its fields
@@ -956,7 +957,17 @@ fn print_help() {
 
 fn run(invocation: Invocation) -> Result<(), String> {
     let path = match invocation.socket {
-        Some(path) => path,
+        Some(path) => {
+            // `--socket` stays the explicit override, but it names a socket
+            // the same way discovery does; an override is not a reason to
+            // connect to a symlink or a world-writable node. The error is
+            // phrased like the connect failure it stands in for, so the user
+            // sees one message about the path rather than a bare metadata
+            // complaint.
+            validate_socket(&path)
+                .map_err(|detail| format!("could not connect to {}: {detail}", path.display()))?;
+            path
+        }
         None => discover()?,
     };
 
@@ -1210,26 +1221,85 @@ fn print_event(event: &Value, pretty: bool) {
 /// session being escaped from is the one that was started last.
 fn discover() -> Result<PathBuf, String> {
     if let Some(path) = std::env::var_os("VIEWPORT_SOCKET") {
-        return Ok(PathBuf::from(path));
+        let path = PathBuf::from(path);
+        validate_socket(&path).map_err(|detail| {
+            format!(
+                "$VIEWPORT_SOCKET is set but unusable ({}): {detail}",
+                path.display()
+            )
+        })?;
+        return Ok(path);
     }
 
-    let runtime = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_owned());
+    // No `/tmp` fallback. `/tmp` is shared, world-writable and walkable, so a
+    // name there proves nothing about who made it or what it names — and this
+    // process is about to send a control message and read private answers.
+    // Without a private runtime directory there is no compositor this can
+    // safely reach; the caller can still name one with `--socket`.
+    let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR") else {
+        return Err(
+            "no compositor found: $VIEWPORT_SOCKET and XDG_RUNTIME_DIR are both unset, \
+             and there is no /tmp fallback. Name one with --socket"
+                .into(),
+        );
+    };
+    let runtime = PathBuf::from(runtime);
 
     if let Ok(display) = std::env::var("WAYLAND_DISPLAY") {
-        let path = PathBuf::from(format!("{runtime}/viewport-{display}.sock"));
-        if path.exists() {
+        let path = runtime.join(format!("viewport-{display}.sock"));
+        if validate_socket(&path).is_ok() {
             return Ok(path);
         }
     }
 
-    if let Some(path) = newest_socket(Path::new(&runtime)) {
+    if let Some(path) = newest_socket(&runtime) {
         return Ok(path);
     }
 
     Err(format!(
-        "no compositor found: nothing set $VIEWPORT_SOCKET and there is no \
-         viewport-*.sock in {runtime}. Name one with --socket"
+        "no compositor found: nothing valid set $VIEWPORT_SOCKET and there is no \
+         private 0600 viewport-*.sock in {}. Name one with --socket",
+        runtime.display()
     ))
+}
+
+/// Whether `meta` is a socket owned by this user and closed to everyone else.
+///
+/// The check is deliberately on `symlink_metadata`, so a symlink is refused
+/// whatever it points at — the mode on a link is never the mode a client would
+/// actually connect to.
+fn socket_is_private(meta: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::{FileTypeExt, MetadataExt};
+
+    meta.file_type().is_socket()
+        && meta.uid() == unsafe { libc::geteuid() }
+        && meta.mode() & 0o777 == 0o600
+}
+
+/// Refuse a socket path that is not a private socket of this user.
+///
+/// The returned error names the failed property without the path; callers
+/// compose it into the message their user saw and already have the path.
+fn validate_socket(path: &Path) -> Result<(), String> {
+    use std::os::unix::fs::{FileTypeExt, MetadataExt};
+
+    let meta = std::fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+    if !meta.file_type().is_socket() {
+        return Err(if meta.file_type().is_symlink() {
+            "not a socket (a symlink)".to_owned()
+        } else {
+            "not a socket".to_owned()
+        });
+    }
+    let euid = unsafe { libc::geteuid() };
+    if meta.uid() != euid {
+        return Err(format!("owned by uid {}, not uid {euid}", meta.uid()));
+    }
+    let mode = meta.mode() & 0o777;
+    if mode != 0o600 {
+        return Err(format!("mode {mode:04o}, not 0600"));
+    }
+    Ok(())
 }
 
 fn newest_socket(runtime: &Path) -> Option<PathBuf> {
@@ -1245,7 +1315,16 @@ fn newest_socket(runtime: &Path) -> Option<PathBuf> {
         if !name.starts_with("viewport-") || !name.ends_with(".sock") {
             continue;
         }
-        let Ok(modified) = entry.metadata().and_then(|data| data.modified()) else {
+        // `symlink_metadata`, never `entry.metadata()`: that may follow a
+        // symlink, and "newest" must not be a way around the checks in
+        // [`validate_socket`].
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if !socket_is_private(&meta) {
+            continue;
+        }
+        let Ok(modified) = meta.modified() else {
             continue;
         };
         if best.as_ref().is_none_or(|(newest, _)| modified > *newest) {
@@ -1672,5 +1751,80 @@ mod tests {
         ));
         assert!(matches!(reply_for("view.query"), Reply::Until(_)));
         assert!(matches!(reply_for("view.focus"), Reply::None));
+    }
+
+    /// A directory of this test's own, so the real XDG runtime directory is
+    /// never touched.
+    fn scratch(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("viewport-msg-test-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        dir
+    }
+
+    fn socket_at(path: &Path, mode: u32) {
+        use std::os::unix::fs::PermissionsExt;
+        use std::os::unix::net::UnixListener;
+        let listener = UnixListener::bind(path).expect("a socket");
+        drop(listener);
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+            .expect("the socket mode");
+    }
+
+    #[test]
+    fn only_a_private_socket_of_this_user_validates() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let dir = scratch("validation");
+        let socket = dir.join("viewport-test.sock");
+        socket_at(&socket, 0o600);
+        assert!(validate_socket(&socket).is_ok());
+
+        std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o666))
+            .expect("a widened mode");
+        assert!(validate_socket(&socket).is_err());
+
+        std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))
+            .expect("a restored mode");
+        // A symlink is not the thing its target's metadata describes.
+        let link = dir.join("link.sock");
+        symlink(&socket, &link).expect("a symlink");
+        assert!(validate_socket(&link).is_err());
+
+        // Nor is a regular file with the right mode.
+        let file = dir.join("file.sock");
+        std::fs::write(&file, b"not a socket").expect("a file");
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600))
+            .expect("a private mode");
+        assert!(validate_socket(&file).is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn discovery_skips_what_it_cannot_safely_connect_to() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let dir = scratch("newest");
+        let public = dir.join("viewport-public.sock");
+        let private = dir.join("viewport-private.sock");
+        socket_at(&public, 0o666);
+        // Make sure the private one is later, so "newest" would prefer it even
+        // if the public one were eligible.
+        std::thread::sleep(Duration::from_millis(20));
+        socket_at(&private, 0o600);
+        assert_eq!(newest_socket(&dir).as_deref(), Some(private.as_path()));
+
+        // A symlink with a socket's name is a candidate for the skip list,
+        // not a way to point discovery at its target.
+        let link = dir.join("viewport-link.sock");
+        symlink(&private, &link).expect("a symlink");
+        std::fs::set_permissions(&link, std::fs::Permissions::from_mode(0o600))
+            .expect("a mode on the link");
+        std::thread::sleep(Duration::from_millis(20));
+        assert_eq!(newest_socket(&dir).as_deref(), Some(private.as_path()));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -77,13 +77,14 @@ script, and the libraries this compositor opens at runtime rather than linking
 ## Cutting a release
 
 1. Tag the tree: `git tag -a vX.Y.Z && git push origin vX.Y.Z`.
-2. Point the three source recipes in `packaging/aur` at it: `_tag=vX.Y.Z` in the
-   source line, and `pkgver=X.Y.Z`. Between releases those recipes sit on a
-   plain commit instead — `_commit=` the commit, `#commit=` in the source line,
-   and `pkgver=X.Y.Z.rN.gSHORT`, the last release, how many commits past it,
-   and which one — which is what a snapshot built for someone to try should say
-   on sight. The version bump itself goes in the same commit the tag names, so
-   the recipes in the tagged tree already point at their own tag.
+2. Point the three source recipes in `packaging/aur` at it with an immutable
+   commit rather than a mutable tag: `_commit=$(git rev-parse vX.Y.Z^{commit})`
+   in the source line, `#commit=$_commit` in the source URL, and `pkgver=X.Y.Z`.
+   Between releases those recipes sit on a plain commit instead —
+   `pkgver=X.Y.Z.rN.gSHORT`, the last release, how many commits past it, and
+   which one — which is what a snapshot built for someone to try should say on
+   sight. The version bump itself goes in the same commit the tag names, so the
+   recipes in the tagged tree already point at their own commit.
 3. Build all three: `./packaging/build-in-container.sh <package>`.
 4. Upload the three `.pkg.tar.zst` to the GitHub release.
 5. Update the AUR packages — `pkgver`, and for the `-bin` packages the

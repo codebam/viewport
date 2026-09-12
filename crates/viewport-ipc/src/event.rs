@@ -535,6 +535,34 @@ pub enum Event {
     Error { context: String, message: String },
 }
 
+impl Event {
+    /// Whether this event carries data that is not every client's to see.
+    ///
+    /// The control socket is 0600, but 0600 is an owner check rather than an
+    /// identity one: any process running as this user may open it. What the
+    /// shell draws for that user — copied clipboard text, notification bodies,
+    /// the saved session, an AI account's usage and one-time login codes — is
+    /// personal even to another process of the same user, so it reaches only
+    /// clients the compositor can classify as either its supervised shell or
+    /// the compositor binary itself (see `ViewportState::client_is_trusted`).
+    ///
+    /// Everything else stays on the broadcast channel. Window titles and
+    /// network names are visible to every process through the protocols that
+    /// publish them, and making them private would break bars and scripts
+    /// written against the existing stream for no privacy gain.
+    pub fn is_private(&self) -> bool {
+        matches!(
+            self,
+            Self::ClipboardHistory { .. }
+                | Self::NotificationAdd(_)
+                | Self::NotificationHistory { .. }
+                | Self::SessionRestore { .. }
+                | Self::AiAuth { .. }
+                | Self::AiUsage { .. }
+        )
+    }
+}
+
 /// Transient feedback a shell should draw for a user-requested status change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -2380,5 +2408,59 @@ mod tests {
                 "error",
             ]
         );
+    }
+
+    #[test]
+    fn only_content_bearing_variants_are_private() {
+        // The exact set the broadcast filter is built around: a variant that
+        // is added here and forgotten in `is_private` leaks to every process
+        // of this user, and one that is private without being listed would
+        // starve the shell.
+        let private = [
+            Event::ClipboardHistory {
+                entries: Vec::new(),
+            },
+            Event::NotificationAdd(Notification {
+                id: 1,
+                app_name: String::new(),
+                icon: String::new(),
+                summary: String::new(),
+                body: String::new(),
+                urgency: 1,
+                timeout: -1,
+                actions: Vec::new(),
+                at: 0,
+            }),
+            Event::NotificationHistory {
+                entries: Vec::new(),
+            },
+            Event::SessionRestore {
+                state: "{}".to_owned(),
+            },
+            Event::AiAuth {
+                provider: "x".to_owned(),
+                state: "pending".to_owned(),
+                url: None,
+                code: None,
+                message: None,
+            },
+            Event::AiUsage { usage: Vec::new() },
+        ];
+        for event in &private {
+            assert!(event.is_private(), "{event:?} should be private");
+        }
+
+        let public = [
+            Event::NotificationClose { id: 1 },
+            Event::ViewFocused { id: 1 },
+            Event::OutputLayout {
+                outputs: Vec::new(),
+            },
+            Event::MprisUpdate { player: None },
+            Event::SessionUnlock,
+        ];
+        for event in &public {
+            assert!(!event.is_private(), "{event:?} should stay public");
+        }
     }
 }

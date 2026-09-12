@@ -25,6 +25,8 @@ use smithay::reexports::wayland_server::{
     Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New,
 };
 
+use crate::state::trusted_native;
+
 /// What the compositor has to be able to do for the request to mean anything.
 pub trait OutputPowerHandler {
     fn output_power_state(&mut self) -> &mut OutputPowerState;
@@ -79,6 +81,12 @@ where
         + OutputPowerHandler
         + 'static,
 {
+    /// Turning a monitor off is a whole-session action, not an application
+    /// one: a sandboxed client is not told the global exists.
+    fn can_view(client: Client, _global_data: &()) -> bool {
+        trusted_native(&client)
+    }
+
     fn bind(
         _state: &mut D,
         _dh: &DisplayHandle,
@@ -100,13 +108,17 @@ where
 {
     fn request(
         state: &mut D,
-        _client: &Client,
+        client: &Client,
         _manager: &ZwlrOutputPowerManagerV1,
         request: zwlr_output_power_manager_v1::Request,
         _data: &(),
         _dh: &DisplayHandle,
         data_init: &mut DataInit<'_, D>,
     ) {
+        if !trusted_native(client) {
+            tracing::debug!("output-power: ignoring a request from a sandboxed client");
+            return;
+        }
         let zwlr_output_power_manager_v1::Request::GetOutputPower { id, output } = request else {
             return;
         };
@@ -160,13 +172,17 @@ where
 {
     fn request(
         state: &mut D,
-        _client: &Client,
+        client: &Client,
         control: &ZwlrOutputPowerV1,
         request: zwlr_output_power_v1::Request,
         data: &ControlData,
         _dh: &DisplayHandle,
         _data_init: &mut DataInit<'_, D>,
     ) {
+        if !trusted_native(client) {
+            tracing::debug!("output-power: ignoring a mode request from a sandboxed client");
+            return;
+        }
         let zwlr_output_power_v1::Request::SetMode { mode } = request else {
             return;
         };

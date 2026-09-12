@@ -2570,7 +2570,7 @@ impl ViewportState {
                         .space
                         .outputs()
                         .filter_map(|o| self.space.output_geometry(o))
-                        .map(|geometry| geometry.loc.x + geometry.size.w)
+                        .map(|geometry| geometry.loc.x.saturating_add(geometry.size.w))
                         .max()
                         .unwrap_or(0);
 

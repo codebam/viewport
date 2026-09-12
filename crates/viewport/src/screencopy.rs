@@ -215,6 +215,28 @@ where
 
         let _ = state;
         let size = region.size;
+        let Some((width, height, stride)) = shm_buffer_layout(size) else {
+            // A dimension the protocol's `u32` fields cannot describe, or a
+            // frame too large to serve from shared memory. `failed` is this
+            // file's answer for a frame it cannot copy, and the object exists
+            // so the client is told rather than left waiting.
+            tracing::warn!(
+                "screencopy: refusing an unservable {}x{} frame",
+                size.w,
+                size.h
+            );
+            let frame = data_init.init(
+                frame,
+                FrameState {
+                    output,
+                    region,
+                    overlay_cursor,
+                    copied: Mutex::new(true),
+                },
+            );
+            frame.failed();
+            return;
+        };
         let frame = data_init.init(
             frame,
             FrameState {
@@ -231,12 +253,7 @@ where
         // XRGB rather than ARGB: a screenshot has no transparency to carry,
         // and a client that treats the fourth byte as alpha would show the
         // whole image as see-through.
-        frame.buffer(
-            wl_shm::Format::Xrgb8888,
-            size.w as u32,
-            size.h as u32,
-            size.w as u32 * 4,
-        );
+        frame.buffer(wl_shm::Format::Xrgb8888, width, height, stride);
         // buffer_done arrived in version 3. Sending it to a client that bound
         // an earlier one is a protocol error on an object that has no such
         // event, and the client drops the connection rather than the message.
@@ -306,7 +323,11 @@ pub fn finish(frame: &ZwlrScreencopyFrameV1, region: Rectangle<i32, Physical>, w
     // narrower damage would be a lie a recorder acts on. Damage arrived in
     // version 2.
     if with_damage && frame.version() >= 2 {
-        frame.damage(0, 0, region.size.w as u32, region.size.h as u32);
+        if let (Ok(width), Ok(height)) =
+            (u32::try_from(region.size.w), u32::try_from(region.size.h))
+        {
+            frame.damage(0, 0, width, height);
+        }
     }
 
     let now = std::time::SystemTime::now()
@@ -373,6 +394,33 @@ fn clamp_region(
         (x1 as i32, y1 as i32).into(),
         (width as u32 as i32, height as u32 as i32).into(),
     )
+}
+
+/// The largest frame this will offer a client as shared memory, in bytes.
+///
+/// The same 512 MiB the screencast path uses, and far past an 8K frame. The
+/// point is that a headless or custom mode can name dimensions whose packed
+/// byte count no longer fits the `u32` stride the protocol carries.
+const MAX_CAPTURE_BYTES: i64 = 512 << 20;
+
+/// The `zwlr_screencopy_frame_v1.buffer` values for `size`, or `None` when the
+/// frame cannot be described or served.
+///
+/// `width * 4` and `stride * height` used to be unchecked: the first wraps a
+/// `u32` above a billion pixels wide, and the second is the byte count behind
+/// the copy. Both dimensions are checked back into the protocol's `u32` too.
+fn shm_buffer_layout(size: Size<i32, Physical>) -> Option<(u32, u32, u32)> {
+    let width = u32::try_from(size.w).ok()?;
+    let height = u32::try_from(size.h).ok()?;
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let stride = width.checked_mul(4)?;
+    let total = i64::from(stride).checked_mul(i64::from(height))?;
+    if total > MAX_CAPTURE_BYTES {
+        return None;
+    }
+    Some((width, height, stride))
 }
 
 /// Wire the dispatch into a compositor state.
@@ -447,6 +495,20 @@ mod tests {
         assert!(clamp(10, 10, 100, 0).is_empty());
         assert!(clamp(10, 10, -5, 100).is_empty());
         assert!(clamp(10, 10, 100, -5).is_empty());
+    }
+
+    #[test]
+    fn buffer_event_arithmetic_is_checked() {
+        assert_eq!(
+            shm_buffer_layout(Size::from((1920, 1080))),
+            Some((1920, 1080, 7680))
+        );
+        // No extent, or an extent that cannot become a `u32` field.
+        assert_eq!(shm_buffer_layout(Size::from((0, 1080))), None);
+        assert_eq!(shm_buffer_layout(Size::from((i32::MAX, 1))), None);
+        // 8K is under the byte bound; a 16384-square frame is not.
+        assert!(shm_buffer_layout(Size::from((7680, 4320))).is_some());
+        assert_eq!(shm_buffer_layout(Size::from((16384, 16384))), None);
     }
 
     #[test]

@@ -301,7 +301,7 @@ pub fn add(state: &mut ViewportState) -> Option<String> {
         .space
         .outputs()
         .filter_map(|other| state.space.output_geometry(other))
-        .map(|geometry| geometry.loc.x + geometry.size.w)
+        .map(|geometry| geometry.loc.x.saturating_add(geometry.size.w))
         .max()
         .unwrap_or(0);
     state.space.map_output(&output, (x, 0));

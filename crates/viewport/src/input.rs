@@ -239,6 +239,28 @@ fn inject_touch_slot(slot: u32) -> smithay::backend::input::TouchSlot {
     smithay::backend::input::TouchSlot::from(Some(slot))
 }
 
+/// How many characters of an untrusted line reach the log.
+///
+/// A command line comes from a page and a child's stderr from any process that
+/// page started. The journal is line-oriented: an embedded newline or a
+/// terminal escape would let either forge a log entry or redraw the terminal
+/// reading it. Short enough that one chatty client cannot fill the log.
+const LOG_TEXT_CHARS: usize = 512;
+
+/// An untrusted string as one log field: truncated and `{:?}`-escaped.
+///
+/// `{:?}` is what turns control characters into visible escapes rather than
+/// bytes the journal or a terminal will act on.
+fn log_text(text: &str) -> String {
+    let mut chars = text.chars();
+    let head: String = chars.by_ref().take(LOG_TEXT_CHARS).collect();
+    if chars.next().is_some() {
+        format!("{head:?}…")
+    } else {
+        format!("{head:?}")
+    }
+}
+
 /// Run a command, detached, with variables added to its environment.
 ///
 /// Double-forked through a shell so the compositor does not accumulate
@@ -253,7 +275,8 @@ fn inject_touch_slot(slot: u32) -> smithay::backend::input::TouchSlot {
 pub fn spawn_with_env(command: &str, extra: &[(String, String)]) {
     use std::process::{Command, Stdio};
 
-    tracing::info!("exec: {command}");
+    let command_log = log_text(command);
+    tracing::info!("exec: {command_log}");
     let mut child = Command::new("/bin/sh");
     // Which engine *this* compositor draws its shell with is not a preference
     // to hand down.
@@ -287,7 +310,7 @@ pub fn spawn_with_env(command: &str, extra: &[(String, String)]) {
     match result {
         Ok(mut child) => {
             let stderr = child.stderr.take();
-            let what = command.to_owned();
+            let what = command_log;
             // Reaped on a thread of its own: sh execs the command, so this
             // waits for the application itself, which the compositor cannot.
             std::thread::spawn(move || {
@@ -305,7 +328,7 @@ pub fn spawn_with_env(command: &str, extra: &[(String, String)]) {
                 }
             });
         }
-        Err(e) => tracing::error!("could not run {command}: {e}"),
+        Err(e) => tracing::error!("could not run {command_log}: {e}"),
     }
 }
 
@@ -334,7 +357,7 @@ fn log_stderr(command: &str, stderr: std::process::ChildStderr) {
         }
         if lines < STDERR_LINES {
             lines += 1;
-            tracing::warn!("{command}: {line}");
+            tracing::warn!("{command}: {}", log_text(&line));
             if lines == STDERR_LINES {
                 tracing::warn!("{command}: further output is not logged");
             }
@@ -629,6 +652,12 @@ impl ViewportState {
     /// This is for driving the compositor's chords, not for pretending to be a
     /// keyboard.
     pub fn inject_key(&mut self, keycode: u32, pressed: bool) {
+        // The same floor as the physical key path: a grab installed after the
+        // lock must not receive the on-screen keyboard's keys either.
+        if self.locked {
+            self.release_input_grabs();
+            self.refocus_lock();
+        }
         let Some(keyboard) = self.seat.get_keyboard() else {
             return;
         };
@@ -642,17 +671,28 @@ impl ViewportState {
         // evdev codes are offset by 8 from xkb's, which is the difference
         // between what libinput reports and what a keymap is written against.
         let code = smithay::input::keyboard::Keycode::new(keycode.saturating_add(8));
+        // `inject_key` is reachable from the page through `osk.key`, so the
+        // lock rule has to live here as well as in the physical key path.
+        // Captured before the call rather than read in the closure: `input`
+        // borrows this state mutably.
+        let locked = self.locked;
         let action = keyboard.input::<Option<Action>, _>(
             self,
             code,
             state_bit,
             serial,
             time,
-            |_, modifiers, handle| {
+            move |_, modifiers, handle| {
                 if !pressed {
                     return FilterResult::Forward;
                 }
                 match shortcut(modifiers, handle.modified_sym()) {
+                    // A VT switch is the session's, even behind a lock. Every
+                    // other chord is forwarded rather than acted on, so the
+                    // synthetic key reaches the lock screen like a real one.
+                    Some(action) if locked && !matches!(&action, Action::SwitchVt(_)) => {
+                        FilterResult::Forward
+                    }
                     Some(action) => FilterResult::Intercept(Some(action)),
                     None => FilterResult::Forward,
                 }
@@ -1238,6 +1278,17 @@ impl ViewportState {
 
         match event {
             InputEvent::Keyboard { event, .. } => {
+                // A grab can be installed *after* the lock: an input method's
+                // `grab_keyboard`, or a menu opened by a client that was
+                // already running. Those request handlers have no lock check
+                // to consult, so this is the floor — before Smithay forwards
+                // the key to whatever grab is current, take that grab away and
+                // put the lock screen back on the seat. Locked keys pay for
+                // this; every other key pays nothing.
+                if self.locked {
+                    self.release_input_grabs();
+                    self.refocus_lock();
+                }
                 let serial = SERIAL_COUNTER.next_serial();
                 let time = Event::time(&event);
                 let Some(keyboard) = self.seat.get_keyboard() else {
@@ -3650,6 +3701,16 @@ impl smithay::wayland::virtual_keyboard::VirtualKeyboardKeyFilter for ViewportSt
         _time: u32,
     ) -> bool {
         use smithay::reexports::wayland_server::protocol::wl_keyboard::KeyState;
+
+        // Virtual keys arrive as their own protocol, not through the two
+        // entry points above, so the locked floor has to be repeated here.
+        // A grab installed after the lock must not receive the key; putting
+        // the lock surface back means an unhandled virtual key still lands on
+        // the password box rather than behind it.
+        if self.locked {
+            self.release_input_grabs();
+            self.refocus_lock();
+        }
 
         if state != KeyState::Pressed {
             // The release of a key whose press was kept is swallowed, or a

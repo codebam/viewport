@@ -46,6 +46,56 @@ const PLAYER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(4);
 /// and this one must never be what an honest player trips over.
 const CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
+// Byte ceilings on what a player may put on the bar. MPRIS metadata is D-Bus
+// from any application on the session bus, and the shell repaints the whole
+// widget from it: a track title is displayed, not stored, but an unbounded one
+// still crosses the control socket, enters the shell's queue and allocates in
+// a web page. The caps are generous next to real metadata.
+const MAX_TITLE: usize = 512;
+const MAX_ARTIST: usize = 512;
+const MAX_ALBUM: usize = 512;
+const MAX_ART: usize = 2048;
+/// A data: URL is already-encoded art, not a URL to bound: truncating it
+/// produces invalid base64, which is a broken image rather than a smaller
+/// one. `icon::art_data_url` has already capped the source file; this is only
+/// the outer bound on the string one player can publish.
+const MAX_ART_DATA: usize = 16 << 20;
+
+/// A UTF-8-safe prefix of `text` no longer than `max` bytes.
+fn truncate(mut text: String, max: usize, property: &str) -> String {
+    if text.len() <= max {
+        return text;
+    }
+    let mut end = max;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    tracing::debug!(
+        "mpris {property} truncated from {} to {end} bytes",
+        text.len()
+    );
+    text.truncate(end);
+    text
+}
+
+/// Bound cover art without corrupting it: a data URL that is too large is
+/// dropped whole, a remote URL is truncated like any other metadata string.
+fn bound_art(url: String) -> String {
+    let cap = if url.starts_with("data:") {
+        MAX_ART_DATA
+    } else {
+        MAX_ART
+    };
+    if url.len() <= cap {
+        return url;
+    }
+    tracing::debug!(
+        "mpris art is {} bytes, over the {cap} byte cap; dropped",
+        url.len()
+    );
+    String::new()
+}
+
 /// What the thread sends the compositor: which player the bar should show, or
 /// nothing when none is running.
 #[derive(Debug)]
@@ -397,12 +447,16 @@ impl Worker {
         };
         // Artists are a list, because a track can have several, and every
         // player sends one even for the single case.
-        let artist = metadata
-            .get("xesam:artist")
-            .and_then(|value| <Vec<String>>::try_from(value.clone()).ok())
-            .unwrap_or_default()
-            .join(", ");
-        let title = text("xesam:title");
+        let artist = truncate(
+            metadata
+                .get("xesam:artist")
+                .and_then(|value| <Vec<String>>::try_from(value.clone()).ok())
+                .unwrap_or_default()
+                .join(", "),
+            MAX_ARTIST,
+            "artist",
+        );
+        let title = truncate(text("xesam:title"), MAX_TITLE, "title");
 
         // A player that is running with nothing loaded — a browser that has
         // published the interface for a tab that has no media yet — has
@@ -420,9 +474,9 @@ impl Worker {
             id: name.strip_prefix(PREFIX).unwrap_or(name).to_owned(),
             title,
             artist,
-            album: text("xesam:album"),
+            album: truncate(text("xesam:album"), MAX_ALBUM, "album"),
             status: status.to_lowercase(),
-            art: art_url(&text("mpris:artUrl")),
+            art: bound_art(art_url(&text("mpris:artUrl"))),
             can_go_next,
             can_go_previous,
             // Two properties, and a player answers both — `CanPause` is false
@@ -610,5 +664,16 @@ mod tests {
             "the cover did not survive: {url}"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn metadata_is_capped_without_splitting_a_character() {
+        // A two-byte character at the cut point moves the cut one byte left.
+        assert_eq!(truncate("aé".to_owned(), 2, "title"), "a");
+        assert_eq!(truncate("aé".to_owned(), 3, "title"), "aé");
+        assert_eq!(truncate("short".to_owned(), 64, "title"), "short");
+
+        let long = "x".repeat(MAX_TITLE * 3);
+        assert_eq!(truncate(long, MAX_TITLE, "title").len(), MAX_TITLE);
     }
 }

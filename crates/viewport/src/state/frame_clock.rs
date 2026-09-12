@@ -10,7 +10,24 @@ impl ViewportState {
     /// The shell is not a socket client — it is spoken to through JavaScript —
     /// so anything that only broadcasts on the socket is invisible to the one
     /// thing that draws the desktop.
+    ///
+    /// The socket leg filters [`Event::is_private`] events down to trusted
+    /// clients (see `Ipc::broadcast`); the in-process pages posted to below
+    /// are part of this process and always receive everything.
     pub fn notify(&mut self, event: &Event) {
+        // A shell connection is trusted at accept, when its kernel-reported
+        // pid is matched against `shell_clients`. Re-affirm that here for a
+        // connection that raced the shell's registration, so the broadcast
+        // filter and `ViewportState::client_is_trusted` cannot disagree about
+        // a client that is a supervised shell.
+        if event.is_private() {
+            let ids: Vec<u64> = self.ipc.client_ids().collect();
+            for id in ids {
+                if self.shell_for_client(id).is_some() {
+                    self.ipc.mark_trusted(id);
+                }
+            }
+        }
         self.ipc.broadcast(event);
         #[cfg(feature = "wpe")]
         for page in &self.shells {

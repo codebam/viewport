@@ -21,16 +21,18 @@ arch=('x86_64' 'aarch64')
 url='https://github.com/codebam/viewport'
 license=('GPL-3.0-or-later')
 
-# The tag this package was cut from, and the whole of what makes it
-# reproducible: a branch would move under it, and a PKGBUILD that follows a
-# moving branch does not describe any particular package.
+# The commit this package was cut from, and the whole of what makes it
+# reproducible: a branch or a tag can be moved under it, and a PKGBUILD that
+# follows one describes whatever it points at when makepkg runs rather than
+# what was reviewed. `_commit` below is the commit `v0.3.0` names, so a moved
+# tag cannot change the build.
 #
 # A tag while there is one, a commit while there is not. Between releases this
 # carries `_commit` and a `pkgver` of the git-describe form — the last release,
 # how many commits past it, and which one — because naming a stale tag would be
-# a lie about what was built. At a release the two say the same thing and the
-# tag is the one anybody can check.
-_tag=v0.3.0
+# a lie about what was built. At a release the two say the same thing, and the
+# commit is still the stricter pin: it does not move when the tag does.
+_commit=f2ab73f622eb145e19870989b09e80365d9ed130
 
 depends=(
   'wayland'
@@ -102,7 +104,9 @@ provides=("viewport=$pkgver")
 conflicts=('viewport' 'viewport-webkitgtk' 'viewport-chromium')
 options=('!lto')
 
-source=("git+https://github.com/codebam/viewport.git#tag=$_tag")
+# makepkg skips checksums for VCS sources by design; the commit in `#commit=`
+# is the pin, not a tarball hash.
+source=("git+https://github.com/codebam/viewport.git#commit=$_commit")
 sha256sums=('SKIP')
 
 prepare() {

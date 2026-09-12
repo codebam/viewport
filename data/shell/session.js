@@ -106,6 +106,80 @@ function serialiseSession() {
 
 let saveTimer = null;
 
+/* A session file is state on disk: hand-editable, written by whichever version
+ * ran last, and handed back by the compositor unread. Restoring it is
+ * therefore a parser for untrusted data — a tree deeper than any layout this
+ * shell makes or wider than any desktop has is malformed or hostile, and
+ * recursing into it until the page dies is the failure this file must not
+ * have. */
+const MAX_SESSION_DEPTH = 64;
+const MAX_SESSION_NODES = 10000;
+const MAX_SESSION_WEIGHT = 1000000;
+
+/* A saved number only becomes layout state if it is a finite number; NaN and
+ * Infinity parse (1e400 parses to Infinity) and reach the DOM style as a
+ * string no layout can recover from. */
+function safeSessionWeight(value) {
+  if (!Number.isFinite(value) || value <= 0) return 1;
+  return Math.min(value, MAX_SESSION_WEIGHT);
+}
+
+/* Column widths in the scrolling strip are shares of the output, clamped the
+ * way a drag clamps them. null means "do not restore a width". */
+function safeSessionColumnWidth(value) {
+  if (!Number.isFinite(value)) return null;
+  return Math.max(0.1, Math.min(value, 1));
+}
+
+/* One floating slot, with every drawn field checked. Fields that do not pass
+ * are left off entirely rather than defaulted here, so setFloating's existing
+ * centring and natural-size fallbacks decide what a missing one means. */
+function sanitizeFloatingSlot(slot) {
+  const clean = {
+    app: slot.app,
+    workspace: Number(slot.workspace),
+  };
+  if (typeof slot.tag === 'string' && slot.tag) clean.tag = slot.tag;
+  for (const key of ['x', 'y', 'width', 'height']) {
+    if (Number.isFinite(slot[key])) clean[key] = slot[key];
+  }
+  if (typeof slot.output === 'string') clean.output = slot.output;
+  if (typeof slot.special === 'string' && slot.special) clean.special = slot.special;
+  if (typeof slot.hidden === 'boolean') clean.hidden = slot.hidden;
+  const pseudo = safePseudoDimensions(slot.pseudotile);
+  if (pseudo) clean.pseudotile = pseudo;
+  return clean;
+}
+
+/* The canvas's saved places and viewports, with the same suspicion applied.
+ * restoreCanvas already rejects some of this, but a finite check here is what
+ * keeps a wild number from becoming a world coordinate that is multiplied by
+ * zoom and turned back into window geometry. */
+function sanitizeCanvasState(saved) {
+  if (!saved || typeof saved !== 'object') return { places: [], viewports: {} };
+  const places = (Array.isArray(saved.places) ? saved.places : [])
+    .slice(0, MAX_SESSION_NODES)
+    .filter((slot) => slot && typeof slot === 'object'
+      && typeof slot.app === 'string' && slot.app
+      && Number.isFinite(slot.x) && Number.isFinite(slot.y)
+      && Number.isFinite(slot.width) && slot.width > 0
+      && Number.isFinite(slot.height) && slot.height > 0)
+    .map((slot) => ({
+      app: slot.app,
+      workspace: Number(slot.workspace),
+      x: slot.x, y: slot.y, width: slot.width, height: slot.height,
+    }));
+  const viewports = {};
+  for (const [workspace, viewport] of Object.entries(saved.viewports ?? {})) {
+    if (!viewport || typeof viewport !== 'object'
+        || !Number.isFinite(viewport.x) || !Number.isFinite(viewport.y)) continue;
+    viewports[workspace] = {
+      x: viewport.x, y: viewport.y, zoom: viewport.zoom,
+    };
+  }
+  return { places, viewports };
+}
+
 /* Debounced: the layout changes many times a second while dragging, and the
  * state only has to be right by the time the compositor next dies. */
 function saveSession() {
@@ -115,30 +189,59 @@ function saveSession() {
   }, 1000);
 }
 
-/* Rebuild the tree from a saved one, as slots waiting to be claimed. */
-function reviveNode(node) {
+/* Rebuild the tree from a saved one, as slots waiting to be claimed.
+ *
+ * What comes in is data from a file, not a tree this shell just made. `depth`
+ * and `budget` bound the walk so a hostile or corrupt file cannot recurse the
+ * page to death or build a tree no renderer can finish, and every number is
+ * checked before it becomes layout state. */
+function reviveNode(node, depth = 0, budget = { nodes: 0 }) {
+  if (!node || typeof node !== 'object' || Array.isArray(node)
+      || depth > MAX_SESSION_DEPTH || budget.nodes >= MAX_SESSION_NODES) {
+    return null;
+  }
+  budget.nodes += 1;
+
+  const weight = safeSessionWeight(node.weight);
+
   if (node.type === 'leaf') {
     const leaf = newLeaf(nextSlotId--);
-    leaf.app = node.app;
-    if (node.tag) leaf.tag = node.tag;
-    leaf.weight = node.weight ?? 1;
-    if (node.width !== undefined) leaf.width = node.width;
+    if (typeof node.app === 'string') leaf.app = node.app;
+    if (typeof node.tag === 'string' && node.tag) leaf.tag = node.tag;
+    leaf.weight = weight;
+    const width = safeSessionColumnWidth(node.width);
+    if (width !== null) leaf.width = width;
     const pseudo = safePseudoDimensions(node.pseudotile);
     if (pseudo) leaf.pseudotile = pseudo;
     slotsPending++;
     return leaf;
   }
 
+  /* Anything that is neither a leaf nor a split was not written by this
+     shell; it is dropped instead of being read as a split by default. */
+  if (node.type !== 'split') return null;
+
   const split = newSplit(node.dir === 'vertical' ? 'vertical' : 'horizontal');
-  split.layout = node.layout ?? 'split';
-  split.weight = node.weight ?? 1;
-  split.active = node.active ?? 0;
-  if (node.width !== undefined) split.width = node.width;
-  split.children = (node.children ?? []).map(reviveNode)
-    /* A split with no children is a tree nothing can walk: it has no leaf to
-       focus, so a hand-edited or truncated session file that contains one
-       crashed the scrolling layout's firstOf/gestureSettle. */
-    .filter((child) => child.type !== 'split' || child.children.length > 0);
+  split.layout = typeof node.layout === 'string' ? node.layout : 'split';
+  split.weight = weight;
+  const active = Number.isInteger(node.active) && node.active >= 0 ? node.active : 0;
+
+  split.children = [];
+  if (Array.isArray(node.children)) {
+    for (const child of node.children) {
+      if (budget.nodes >= MAX_SESSION_NODES) break;
+      const revived = reviveNode(child, depth + 1, budget);
+      if (!revived) continue;
+      /* A split with no children is a tree nothing can walk: it has no leaf to
+         focus, so a hand-edited or truncated session file that contains one
+         crashed the scrolling layout's firstOf/gestureSettle. */
+      if (revived.type === 'split' && revived.children.length === 0) continue;
+      split.children.push(revived);
+    }
+  }
+  /* `active` is an index into the children; a stale one is clamped rather
+     than left to make whichever child is picked undefined. */
+  split.active = Math.min(active, Math.max(0, split.children.length - 1));
   return split;
 }
 
@@ -165,7 +268,9 @@ function restoreSession(text) {
     ensureWorkspace(Number(entry?.id), entry?.name);
   }
 
+  const budget = { nodes: 0 };
   for (const [n, tree] of Object.entries(saved.workspaces ?? {})) {
+    if (budget.nodes >= MAX_SESSION_NODES) break;
     const workspace = ensureWorkspace(Number(n));
     if (workspace === null || !tree || typeof tree !== 'object') continue;
 
@@ -177,7 +282,7 @@ function restoreSession(text) {
        leaf. Restoring that put a leaf where a split was assumed, and the shell
        threw on the next window opened there — a crash on startup, which is
        when nothing is left to recover it. */
-    let revived = reviveNode(tree);
+    let revived = reviveNode(tree, 0, budget);
     if (revived && revived.type !== 'split') {
       const root = newSplit('horizontal');
       root.children = [revived];
@@ -190,8 +295,12 @@ function restoreSession(text) {
     }
     if (revived) workspaces.set(workspace, revived);
   }
-  floatSlots = (saved.floating ?? []).filter((slot) => slot && slot.app
-    && ensureWorkspace(Number(slot.workspace)) !== null);
+  floatSlots = (Array.isArray(saved.floating) ? saved.floating : [])
+    .slice(0, MAX_SESSION_NODES)
+    .filter((slot) => slot && typeof slot === 'object' && !Array.isArray(slot)
+      && typeof slot.app === 'string' && slot.app
+      && ensureWorkspace(Number(slot.workspace)) !== null)
+    .map(sanitizeFloatingSlot);
   for (const [n, name] of Object.entries(saved.workspace_homes ?? {})) {
     const workspace = Number(n);
     if (ensureWorkspace(workspace) !== null
@@ -209,9 +318,10 @@ function restoreSession(text) {
      they are replayed exactly as the floating rects above do. A file written
      before this existed has no `canvas` key and restores nothing, which is the
      same as never having run the layout. */
-  restoreCanvas(saved.canvas);
+  restoreCanvas(sanitizeCanvasState(saved.canvas));
 
   for (const [name, state] of Object.entries(saved.outputs ?? {})) {
+    if (!state || typeof state !== 'object') continue;
     const output = outputs.get(name);
     const workspace = ensureWorkspace(Number(state.workspace));
     if (output && workspace !== null) {
@@ -699,8 +809,40 @@ function claimFloatSlot(id, app, tag = null) {
   if (at < 0) return null;
 
   const [slot] = floatSlots.splice(at, 1);
-  slot.pseudotile = safePseudoDimensions(slot.pseudotile);
+  clampRestoredFloatingRect(slot);
   return slot;
+}
+
+/* A restored floating rect is clamped to the output it is about to be drawn
+ * on. setFloating clamps the size but not the corner, so a saved x of 1e300
+ * (or a value that JSON parsed to Infinity) would otherwise reach the DOM
+ * style; and the bounds here are the same ones a drag allows. Fields that were
+ * not valid are simply absent, and setFloating's own centring applies. */
+function clampRestoredFloatingRect(slot) {
+  // The output the workspace is on, or the same fallback setFloating will
+  // use for a workspace no output hosts yet.
+  const output = outputs.get(
+    hostOfWorkspace(slot.workspace) ?? activeOutputName());
+  const area = output?.windowsEl?.getBoundingClientRect?.();
+  if (!area) return;
+  const width = Number.isFinite(area.width) && area.width > 0 ? area.width : null;
+  const height = Number.isFinite(area.height) && area.height > 0 ? area.height : null;
+
+  if (width !== null && Number.isFinite(slot.width)) {
+    slot.width = Math.max(1, Math.min(slot.width, width));
+  }
+  if (height !== null && Number.isFinite(slot.height)) {
+    slot.height = Math.max(1, Math.min(slot.height, height));
+  }
+  if (width !== null && Number.isFinite(slot.x)) {
+    const frame = Number.isFinite(slot.width) ? slot.width : width;
+    const minX = Math.min(0, 40 - frame);
+    const maxX = Math.max(0, width - 40);
+    slot.x = Math.max(minX, Math.min(slot.x, maxX));
+  }
+  if (height !== null && Number.isFinite(slot.y)) {
+    slot.y = Math.max(0, Math.min(slot.y, height - 40));
+  }
 }
 
 /* Move one window to a workspace, without it having to be focused first. The

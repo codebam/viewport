@@ -35,6 +35,7 @@
 
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd as _, OwnedFd};
+use std::os::unix::fs::DirBuilderExt as _;
 use std::process::{Child, Command};
 use std::sync::mpsc;
 use std::time::Duration;
@@ -58,6 +59,37 @@ fn chromium_binary() -> String {
     std::env::var("VIEWPORT_CHROMIUM_BIN").unwrap_or_else(|_| "chromium".to_owned())
 }
 
+/// A fresh directory only this process can enter, under `/tmp`.
+///
+/// `DirBuilder::mode(0o700).create` is the whole point: it fails when the name
+/// exists, so a directory or symlink somebody else made at that path cannot be
+/// adopted. Retried because the suffix is random and a collision means
+/// something already holds the name, not that the filesystem is broken.
+fn private_profile_dir(prefix: &str) -> Result<std::path::PathBuf> {
+    for _ in 0..8 {
+        let path = std::env::temp_dir().join(format!("{prefix}-{}", random_suffix()?));
+        match std::fs::DirBuilder::new().mode(0o700).create(&path) {
+            Ok(()) => return Ok(path),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e).with_context(|| format!("creating {}", path.display())),
+        }
+    }
+    Err(anyhow!(
+        "could not create a private {prefix} directory under {}",
+        std::env::temp_dir().display()
+    ))
+}
+
+/// 64 random bits, as hex, from the kernel's own source.
+fn random_suffix() -> Result<String> {
+    let mut bytes = [0u8; 8];
+    std::fs::File::open("/dev/urandom")
+        .context("opening /dev/urandom")?
+        .read_exact(&mut bytes)
+        .context("reading /dev/urandom")?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -69,11 +101,24 @@ fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let options = Options::parse(&args)?;
 
+    // The compositor refuses a remote shell before starting this process; this
+    // is the same policy for a shell started by hand.
+    anyhow::ensure!(
+        viewport_ipc::js::shell_url_allowed(&options.url),
+        "refusing to load a non-loopback shell from {}; set {}=1 to allow a remote origin",
+        options.url,
+        viewport_ipc::js::ALLOW_REMOTE_SHELL_ENV
+    );
+
     // A profile directory of its own, thrown away with the process. Chromium
     // refuses to share one between instances, and a shell that inherited the
     // user's browsing profile would be a desktop with their cookies in it.
-    let profile = std::env::temp_dir().join(format!("viewport-shell-{}", std::process::id()));
-    std::fs::create_dir_all(&profile).with_context(|| format!("creating {}", profile.display()))?;
+    //
+    // Mode 0700 at a random name rather than a pid-only path with
+    // `create_dir_all`: a predictable directory in `/tmp` is something another
+    // local user can pre-create, symlink or read. `create` fails if anything
+    // already owns the name, and a collision is retried.
+    let profile = private_profile_dir("viewport-shell")?;
 
     let mut browser = Browser::start(&options, &profile)?;
     let result = run(&mut browser, &options);
@@ -95,6 +140,166 @@ enum Incoming {
     Gone,
 }
 
+/// What the page's main frame is, and which execution context belongs to it.
+///
+/// A page target has one agent and many frames. `Runtime.addBinding` installs
+/// the binding in every execution context in the target, and the injected shim
+/// only refuses to build `window.webkit` in a subframe — a page that knows the
+/// binding's name could still call `__viewport_send` directly from an iframe.
+/// So messages are accepted only from the tracked default context of the main
+/// frame, and only while the main frame's URL passes the origin policy.
+#[derive(Default)]
+struct FrameGuard {
+    main_frame: Option<String>,
+    main_url: Option<String>,
+    main_context: Option<i64>,
+    /// The newest default context seen for each frame, because
+    /// `Runtime.enable` can report contexts before `Page.getFrameTree` has
+    /// told us which frame is the main one.
+    contexts: Vec<(String, i64)>,
+}
+
+impl FrameGuard {
+    /// Fold one DevTools message in. True when it was frame bookkeeping.
+    fn note(&mut self, message: &Value) -> bool {
+        self.note_frame_tree(message)
+            || self.note_frame_navigated(message)
+            || self.note_context_created(message)
+            || self.note_contexts_cleared(message)
+    }
+
+    fn note_frame_tree(&mut self, message: &Value) -> bool {
+        let Some(frame) = message.pointer("/result/frameTree/frame") else {
+            return false;
+        };
+        self.set_main_frame(frame);
+        true
+    }
+
+    fn note_frame_navigated(&mut self, message: &Value) -> bool {
+        if message.get("method").and_then(Value::as_str) != Some("Page.frameNavigated") {
+            return false;
+        }
+        let Some(frame) = message.get("params").and_then(|params| params.get("frame")) else {
+            return true;
+        };
+        // A subframe navigation is not a navigation of the shell document.
+        let top = match frame.get("parentId") {
+            None | Some(Value::Null) => true,
+            Some(_) => false,
+        };
+        if top {
+            self.set_main_frame(frame);
+            // A cross-document navigation replaces the default context. Until
+            // its `executionContextCreated` arrives, fail closed rather than
+            // accept messages from the outgoing document.
+            if let Some(frame_id) = self.main_frame.clone() {
+                self.contexts.retain(|(id, _)| id != &frame_id);
+            }
+            self.main_context = None;
+        }
+        true
+    }
+
+    fn note_context_created(&mut self, message: &Value) -> bool {
+        if message.get("method").and_then(Value::as_str) != Some("Runtime.executionContextCreated")
+        {
+            return false;
+        }
+        let Some(context) = message
+            .get("params")
+            .and_then(|params| params.get("context"))
+        else {
+            return true;
+        };
+        let Some(aux) = context.get("auxData") else {
+            return true;
+        };
+        if aux.get("isDefault").and_then(Value::as_bool) != Some(true) {
+            return true;
+        }
+        let (Some(frame_id), Some(context_id)) = (
+            aux.get("frameId").and_then(Value::as_str),
+            context.get("id").and_then(Value::as_i64),
+        ) else {
+            return true;
+        };
+        self.contexts.retain(|(id, _)| id != frame_id);
+        self.contexts.push((frame_id.to_owned(), context_id));
+        if self.contexts.len() > 64 {
+            self.contexts.remove(0);
+        }
+        if self.main_frame.as_deref() == Some(frame_id) {
+            self.main_context = Some(context_id);
+        }
+        true
+    }
+
+    fn note_contexts_cleared(&mut self, message: &Value) -> bool {
+        if message.get("method").and_then(Value::as_str) != Some("Runtime.executionContextsCleared")
+        {
+            return false;
+        }
+        self.contexts.clear();
+        self.main_context = None;
+        true
+    }
+
+    fn set_main_frame(&mut self, frame: &Value) {
+        let Some(id) = frame.get("id").and_then(Value::as_str) else {
+            return;
+        };
+        let url = frame.get("url").and_then(Value::as_str).unwrap_or("");
+        self.main_frame = Some(id.to_owned());
+        self.main_url = Some(url.to_owned());
+        self.main_context = self
+            .contexts
+            .iter()
+            .rev()
+            .find(|(context_frame, _)| context_frame == id)
+            .map(|(_, context)| *context);
+    }
+
+    /// Whether a binding call came from the main frame's own default context.
+    fn context_allows(&self, context: Option<i64>) -> bool {
+        match (self.main_context, context) {
+            (Some(main), Some(called)) => main == called,
+            _ => false,
+        }
+    }
+
+    /// Whether the main frame is on an origin the bridge may speak from.
+    fn url_allows(&self) -> bool {
+        match self.main_url.as_deref() {
+            Some(url) => viewport_ipc::js::shell_url_allowed(url),
+            None => false,
+        }
+    }
+
+    /// Whether events may be evaluated into the current document.
+    ///
+    /// Before the frame tree arrives (`None`) the URL the browser was started
+    /// with already passed the policy, so waiting events are allowed. Once a
+    /// URL is known, navigation away from the allowed origin stops events at
+    /// the door instead of handing them to the remote document.
+    fn events_allowed(&self) -> bool {
+        match self.main_url.as_deref() {
+            Some(url) => viewport_ipc::js::shell_url_allowed(url),
+            None => true,
+        }
+    }
+
+    /// Whether a known main-frame URL passes the policy. Unlike
+    /// [`Self::events_allowed`], `None` is false: the initial queued events
+    /// wait for `Page.getFrameTree`/`frameNavigated` instead of being pushed
+    /// into a document whose origin has not been established yet.
+    fn url_known_allowed(&self) -> bool {
+        self.main_url
+            .as_deref()
+            .is_some_and(viewport_ipc::js::shell_url_allowed)
+    }
+}
+
 fn run(browser: &mut Browser, options: &Options) -> Result<()> {
     let (tx, rx) = mpsc::channel::<Incoming>();
 
@@ -110,6 +315,10 @@ fn run(browser: &mut Browser, options: &Options) -> Result<()> {
     // Until both are true, anything from the compositor waits: a script
     // evaluated against a page that does not exist is dropped on the floor,
     // and the compositor starts talking the moment it accepts the connection.
+    let mut guard = FrameGuard::default();
+    // One line per session when a message is refused, not one per message:
+    // a subframe that keeps trying must not become the log.
+    let mut warned_drop = false;
     let mut session: Option<String> = None;
     // Chromium announces more than one target and the reply to an attach does
     // not arrive before the next announcement does. Without this the shell
@@ -139,6 +348,17 @@ fn run(browser: &mut Browser, options: &Options) -> Result<()> {
                 return Ok(());
             }
             Incoming::Compositor(Line::Event(json)) => {
+                if !guard.events_allowed() {
+                    if !warned_drop {
+                        warned_drop = true;
+                        tracing::warn!(
+                            "dropping a compositor event: the shell left the allowed \
+                             origin; set {}=1 to allow a remote shell",
+                            viewport_ipc::js::ALLOW_REMOTE_SHELL_ENV
+                        );
+                    }
+                    continue;
+                }
                 if viewport_shell_bridge::is_reload(&json) {
                     tracing::info!("reloading the shell");
                     if let Some(session) = session.as_deref() {
@@ -172,11 +392,23 @@ fn run(browser: &mut Browser, options: &Options) -> Result<()> {
                     install_bridge(browser, &mut next_id, &id)?;
                     session = Some(id);
                     attaching = false;
-                    ready = true;
-                    for json in queued.drain(..) {
-                        let script = viewport_ipc::js::dispatch(&json);
-                        let session = session.as_deref().expect("just set");
-                        browser.evaluate(&mut next_id, session, &script)?;
+                    // Ready only once the frame tree has named a main URL that
+                    // passes the policy. Until then queued events wait rather
+                    // than being evaluated into a document whose origin is not
+                    // yet known; if the URL is known and disallowed, the queue
+                    // is dropped outright.
+                    ready = guard.url_known_allowed();
+                    if ready {
+                        for json in queued.drain(..) {
+                            let script = viewport_ipc::js::dispatch(&json);
+                            let session = session.as_deref().expect("just set");
+                            browser.evaluate(&mut next_id, session, &script)?;
+                        }
+                    } else if guard.main_url.is_some() {
+                        queued.clear();
+                        tracing::warn!(
+                            "dropping queued compositor events: the shell left the allowed origin"
+                        );
                     }
                     continue;
                 }
@@ -193,8 +425,34 @@ fn run(browser: &mut Browser, options: &Options) -> Result<()> {
                     continue;
                 }
 
-                if let Some(payload) = binding_called(&message) {
-                    out.send(payload);
+                if guard.note(&message) {
+                    // The frame tree or a navigation just arrived. If that is
+                    // what made the main URL known and allowed, the queued
+                    // startup events can go to the document now.
+                    if !ready && guard.url_known_allowed() {
+                        ready = true;
+                        if let Some(session) = session.as_deref() {
+                            for json in queued.drain(..) {
+                                let script = viewport_ipc::js::dispatch(&json);
+                                browser.evaluate(&mut next_id, session, &script)?;
+                            }
+                        }
+                    }
+                    continue;
+                }
+
+                if let Some((payload, context_id)) = binding_called(&message) {
+                    if guard.context_allows(Some(context_id)) && guard.url_allows() {
+                        out.send(payload);
+                    } else if !warned_drop {
+                        warned_drop = true;
+                        tracing::warn!(
+                            "dropping a page-to-compositor message: it did not come from \
+                             the top frame's execution context, or the main frame's URL \
+                             is not a file:/loopback origin; set {}=1 to allow a remote shell",
+                            viewport_ipc::js::ALLOW_REMOTE_SHELL_ENV
+                        );
+                    }
                     continue;
                 }
 
@@ -203,7 +461,7 @@ fn run(browser: &mut Browser, options: &Options) -> Result<()> {
                 // before any of the page's own scripts run, so this only has to
                 // let messages flow again.
                 if message.get("method").and_then(Value::as_str) == Some("Page.loadEventFired") {
-                    ready = session.is_some();
+                    ready = session.is_some() && guard.url_known_allowed();
                     // The new document is up, so the events that arrived while
                     // it was loading can go to it. The attach branch above
                     // drains only on first attach, which a reload does not
@@ -211,9 +469,16 @@ fn run(browser: &mut Browser, options: &Options) -> Result<()> {
                     // `output.layout` and `session.restore` replay sent across
                     // a reload sat in the queue for the life of the process.
                     if let Some(session) = session.as_deref() {
-                        for json in queued.drain(..) {
-                            let script = viewport_ipc::js::dispatch(&json);
-                            browser.evaluate(&mut next_id, session, &script)?;
+                        if guard.url_known_allowed() {
+                            for json in queued.drain(..) {
+                                let script = viewport_ipc::js::dispatch(&json);
+                                browser.evaluate(&mut next_id, session, &script)?;
+                            }
+                        } else {
+                            queued.clear();
+                            tracing::warn!(
+                                "dropping queued compositor events: the shell left the allowed origin"
+                            );
                         }
                     }
                     continue;
@@ -231,8 +496,11 @@ fn run(browser: &mut Browser, options: &Options) -> Result<()> {
 /// Put the page-to-compositor half of the bridge in place, for this document
 /// and every document after it.
 fn install_bridge(browser: &mut Browser, next_id: &mut i64, session: &str) -> Result<()> {
-    browser.call(next_id, session, "Runtime.enable", json!({}))?;
     browser.call(next_id, session, "Page.enable", json!({}))?;
+    // The reply names the main frame; keep it, because execution contexts
+    // carry a frame id and a subframe's context is not the shell's.
+    browser.call(next_id, session, "Page.getFrameTree", json!({}))?;
+    browser.call(next_id, session, "Runtime.enable", json!({}))?;
     // The outbound half: a real function in the page that calls back out here
     // with whatever string it is given.
     browser.call(
@@ -280,8 +548,13 @@ fn page_target(message: &Value) -> Option<String> {
     info.get("targetId")?.as_str().map(str::to_owned)
 }
 
-/// The payload of a `Runtime.bindingCalled` for our binding.
-fn binding_called(message: &Value) -> Option<String> {
+/// The payload of a `Runtime.bindingCalled` for our binding, and the
+/// execution context that called it.
+///
+/// The context is what lets the caller reject a subframe's call: the binding
+/// exists in every context, and this function alone cannot tell where a call
+/// came from.
+fn binding_called(message: &Value) -> Option<(String, i64)> {
     if message.get("method")?.as_str()? != "Runtime.bindingCalled" {
         return None;
     }
@@ -289,7 +562,9 @@ fn binding_called(message: &Value) -> Option<String> {
     if params.get("name")?.as_str()? != BINDING {
         return None;
     }
-    params.get("payload")?.as_str().map(str::to_owned)
+    let payload = params.get("payload")?.as_str()?.to_owned();
+    let context = params.get("executionContextId")?.as_i64()?;
+    Some((payload, context))
 }
 
 /// The browser process, and the pipe the protocol travels over.
@@ -530,10 +805,14 @@ mod tests {
     fn only_our_binding_is_treated_as_a_message() {
         let ours = json!({
             "method": "Runtime.bindingCalled",
-            "params": {"name": BINDING, "payload": r#"{"type":"view.query"}"#},
+            "params": {
+                "name": BINDING,
+                "payload": r#"{"type":"view.query"}"#,
+                "executionContextId": 7,
+            },
         });
         assert_eq!(
-            binding_called(&ours).as_deref(),
+            binding_called(&ours).map(|(payload, _)| payload).as_deref(),
             Some(r#"{"type":"view.query"}"#)
         );
 
@@ -542,7 +821,7 @@ mod tests {
         // naming.
         let theirs = json!({
             "method": "Runtime.bindingCalled",
-            "params": {"name": "somethingElse", "payload": "{}"},
+            "params": {"name": "somethingElse", "payload": "{}", "executionContextId": 7},
         });
         assert_eq!(binding_called(&theirs), None);
     }
@@ -552,5 +831,60 @@ mod tests {
         let reply = json!({"id": 2, "result": {"sessionId": "S1"}});
         assert_eq!(attached_session(&reply).as_deref(), Some("S1"));
         assert_eq!(attached_session(&json!({"id": 2, "result": {}})), None);
+    }
+
+    /// A subframe's default context is not the shell's, even though it has the
+    /// same `isDefault` flag.
+    #[test]
+    fn only_the_main_frames_context_can_speak() {
+        let mut guard = FrameGuard::default();
+        guard.note(&json!({
+            "method": "Page.frameNavigated",
+            "params": {"frame": {"id": "main", "url": "file:///shell/index.html"}},
+        }));
+        guard.note(&json!({
+            "method": "Runtime.executionContextCreated",
+            "params": {"context": {
+                "id": 1,
+                "auxData": {"isDefault": true, "frameId": "main"},
+            }},
+        }));
+        guard.note(&json!({
+            "method": "Runtime.executionContextCreated",
+            "params": {"context": {
+                "id": 2,
+                "auxData": {"isDefault": true, "frameId": "sub"},
+            }},
+        }));
+        assert!(guard.context_allows(Some(1)));
+        assert!(!guard.context_allows(Some(2)));
+        assert!(!guard.context_allows(None));
+    }
+
+    #[test]
+    fn navigating_the_main_frame_away_revokes_the_bridge() {
+        let mut guard = FrameGuard::default();
+        guard.note(&json!({
+            "method": "Page.frameNavigated",
+            "params": {"frame": {"id": "main", "url": "http://localhost:3000/"}},
+        }));
+        guard.note(&json!({
+            "method": "Runtime.executionContextCreated",
+            "params": {"context": {
+                "id": 1,
+                "auxData": {"isDefault": true, "frameId": "main"},
+            }},
+        }));
+        assert!(guard.url_allows());
+        assert!(guard.context_allows(Some(1)));
+
+        guard.note(&json!({
+            "method": "Page.frameNavigated",
+            "params": {"frame": {"id": "main", "url": "https://example.com/"}},
+        }));
+        // The new document's context has not been announced yet; until it is,
+        // the old context id is not accepted either.
+        assert!(!guard.url_allows());
+        assert!(!guard.context_allows(Some(1)));
     }
 }

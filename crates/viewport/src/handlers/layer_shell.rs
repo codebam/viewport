@@ -246,6 +246,14 @@ impl ViewportState {
     pub fn focus_layer_if_exclusive(&mut self, surface: &WlSurface) {
         use smithay::wayland::shell::wlr_layer::KeyboardInteractivity;
 
+        // A launcher's exclusive grab is not a way through a lock screen.
+        // While locked the lock surface is the one thing allowed to take the
+        // keyboard; a layer that commits behind it stays unfocused until the
+        // session unlocks.
+        if self.locked {
+            return;
+        }
+
         let wants = self.space.outputs().any(|output| {
             layer_map_for_output(output)
                 .layer_for_surface(surface, smithay::desktop::WindowSurfaceType::TOPLEVEL)
