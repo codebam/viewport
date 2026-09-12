@@ -755,10 +755,24 @@ pub struct ViewportState {
     pub needs_restack: bool,
     pub needs_colour_notify: bool,
 
-    /// Foreign-toplevel output lists are owed for the same reason: the shell
-    /// lays every window out per animation frame, and `sync_foreign_outputs`
-    /// walks all of them. See `settle`.
-    pub needs_foreign_outputs: bool,
+    /// Views whose own layout changed since the last `settle`, and whose
+    /// foreign-toplevel output lists are therefore owed a look.
+    ///
+    /// This used to be one bool, and `sync_foreign_outputs` walked every view
+    /// whenever it was set. The shell lays a window out per animation frame,
+    /// so a frame that moved one window paid `outputs_for_element` for all of
+    /// them — and that helper scans the whole space twice and collects a
+    /// fresh output list per call. Recording the ids makes the pass
+    /// proportional to the views that actually moved. Outputs changing under
+    /// the windows is a different event: `notify_output_layout` and
+    /// `remap_placed_views` still take the full pass.
+    ///
+    /// A `Vec` rather than a set: at most one entry per view is ever held, and
+    /// a batch is a handful of u32 compares, so the linear membership check is
+    /// cheaper than hashing. `layout.id` is not an index, so the ids are looked
+    /// up again when the work is done; one that no longer names a view is
+    /// skipped — a window can close between its last layout and the settle.
+    pub foreign_outputs_dirty: Vec<u32>,
 
     /// wp_color_management_v1. Smithay has no handler for it, so the
     /// implementation is in crate::color_management.
@@ -1870,7 +1884,7 @@ impl ViewportState {
             dirty_outputs: std::collections::HashSet::new(),
             needs_restack: false,
             needs_colour_notify: false,
-            needs_foreign_outputs: false,
+            foreign_outputs_dirty: Vec::new(),
 
             color_management,
             color_representation,
@@ -4032,12 +4046,14 @@ impl ViewportState {
 
     /// Do the work a run of `view.layout` messages left owing.
     ///
-    /// The shell sends one `view.layout` per window per animation frame, and
-    /// both of these are answers about the desktop as a whole rather than about
-    /// the one window the message was for: restacking eight times in a row
-    /// gives the same stack the first one did, and asking eight times whether a
-    /// video is on a different monitor now gets the same answer eight times.
-    /// Doing them here instead costs one of each per batch of messages.
+    /// The shell sends one `view.layout` per window per animation frame. The
+    /// stack and the colour-management clients are owed an answer about the
+    /// desktop as a whole, and eight messages in a row give the answer the
+    /// first one did; the foreign-toplevel lists are owed per view, and the run
+    /// recorded which views those were in `foreign_outputs_dirty`. Doing all of
+    /// it here costs one restack and one `notify_surface_colour` per batch, and
+    /// one `outputs_for_element` per view the batch actually touched, instead
+    /// of one for every view on the desk.
     ///
     /// Called where the answer is about to be *read* rather than on a timer, so
     /// nothing can see a stale stack. See the call sites for the argument that
@@ -4049,8 +4065,9 @@ impl ViewportState {
         if std::mem::take(&mut self.needs_colour_notify) {
             self.notify_surface_colour();
         }
-        if std::mem::take(&mut self.needs_foreign_outputs) {
-            self.sync_foreign_outputs();
+        let dirty = std::mem::take(&mut self.foreign_outputs_dirty);
+        if !dirty.is_empty() {
+            self.sync_foreign_outputs_for(&dirty);
         }
     }
 
@@ -4065,20 +4082,33 @@ impl ViewportState {
     /// a workspace switch unmapping the windows that lived on the one that
     /// went.
     ///
-    /// Cheap to run often: `set_outputs` diffs against what it last said, so
-    /// an unchanged pass sends nothing, and the shell resends every rectangle
-    /// on every frame of an animation without the desktop hearing about it
-    /// again.
+    /// The full pass, for when the screens themselves moved: every window's
+    /// answer can have changed without the shell having laid it out, so every
+    /// view has to be asked. A run of `view.layout` messages takes the narrow
+    /// path instead — see `settle` and `sync_foreign_outputs_for`.
+    /// `set_outputs` diffs against what it last said, so an unchanged pass
+    /// sends nothing.
     pub fn sync_foreign_outputs(&mut self) {
-        let updates: Vec<(u32, Vec<smithay::output::Output>)> = self
-            .views
-            .iter()
-            .map(|view| {
-                let outputs = self.space.outputs_for_element(&view.window);
-                (view.id, outputs)
-            })
-            .collect();
-        for (id, outputs) in updates {
+        let ids: Vec<u32> = self.views.iter().map(|view| view.id).collect();
+        self.sync_foreign_outputs_for(&ids);
+    }
+
+    /// The per-view half of `sync_foreign_outputs`.
+    ///
+    /// `outputs_for_element` scans `space.elements` twice and collects a fresh
+    /// output list per call, so the caller names the views that need asking
+    /// rather than passing all of them. An id that no longer names a view is
+    /// skipped: the list is filled while handling a run of `view.layout`
+    /// messages, and a window can close before the next `settle`. Removing its
+    /// foreign-toplevel state is the close path's job, not this one's.
+    fn sync_foreign_outputs_for(&mut self, ids: &[u32]) {
+        for &id in ids {
+            let Some(view) = self.views.get(id) else {
+                // It closed before this ran; its output list went with it.
+                continue;
+            };
+            let window = view.window.clone();
+            let outputs = self.space.outputs_for_element(&window);
             self.foreign_management_state.set_outputs(id, outputs);
         }
     }
