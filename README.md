@@ -242,6 +242,7 @@ The reference material lives in `docs/`:
 | --- | --- |
 | [`docs/configuration.md`](docs/configuration.md) | the two config tiers, the command-line flags, the default keybindings, dark mode and the portal, media keys, window rules, and the two layout models |
 | [`docs/layout-extension.md`](docs/layout-extension.md) | the contract a sixth layout implements — what it must plan, render and clear, what it may not transform, how session restore works |
+| [`docs/custom-widgets.md`](docs/custom-widgets.md) | the contract a custom bar widget implements — how a local script registers one, what the shell hands it, when each callback runs, and how the manifest places it on the bar |
 | [`docs/ipc.md`](docs/ipc.md) | both transports and every message in each direction, what a shell has to do to place a window, and how the layout is remembered across a restart — plus the overview, logging and the shell tests |
 | [`docs/protocols.md`](docs/protocols.md) | HDR, notifications, tablets, idle and locking, what clients may ask for and what they are told, and what is verified on real hardware |
 | [`docs/debugging.md`](docs/debugging.md) | screenshotting the session from inside it, pointer capture, XWayland, and what happens when the shell stops answering |

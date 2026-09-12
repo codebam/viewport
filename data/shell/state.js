@@ -363,6 +363,52 @@ function registerBuiltinLayout(name, descriptor) {
   }
   layoutRegistry.set(name, Object.freeze({ ...descriptor, name, builtin: true }));
 }
+
+/* The custom bar widgets a `widget_extensions` script may add, and the names
+ * those scripts may not take. A widget is named where a bar item is placed;
+ * the two lists are the widget kinds and the modules the bar already draws,
+ * and their union is what an extension is forbidden to claim. `disk` sits in
+ * both on purpose: the module that shows free space and the widget that shows
+ * it are the same policy, and neither is up for replacement by a local file. */
+const BUILTIN_WIDGET_NAMES = ['disk', 'weather', 'volume', 'mic', 'mpris', 'battery', 'ai'];
+const BUILTIN_MODULE_NAMES = ['mode', 'tray', 'net', 'disk', 'cpu', 'load', 'memory', 'clock'];
+const widgetRegistry = new Map();
+const widgetSources = new Map();
+
+function validWidgetDescriptor(name, descriptor) {
+  return typeof name === 'string' && /^[A-Za-z0-9_-]+$/.test(name)
+    && descriptor && typeof descriptor.mount === 'function';
+}
+
+/* Public extension API, the widget half of registerLayout. One name has one
+ * owner for the life of the page: the `widget_extensions` manifest asks for a
+ * fixed set of names, and a script that claims a name already taken is a
+ * mistake worth a throw rather than a silent takeover. `mount` is the only
+ * required member — a widget that draws once and never updates is legal, as is
+ * one that owns its own children and has no tooltip. `update` and `destroy`
+ * are optional and read by the bar's own lifecycle. */
+function registerWidget(name, descriptor) {
+  if (!validWidgetDescriptor(name, descriptor)) {
+    throw new TypeError('registerWidget requires a valid name and a mount function');
+  }
+  if (BUILTIN_WIDGET_NAMES.includes(name) || BUILTIN_MODULE_NAMES.includes(name)) {
+    throw new Error(`widget ${name} is built in and cannot be replaced`);
+  }
+  /* The load that fetched this script stamped it with the name it was asked to
+   * provide and the generation in flight. A script that registers a different
+   * name, or that finishes only after a newer config has bumped the
+   * generation, is not the one the current bar is waiting for — the same
+   * stale-dataset guard the layout half uses. */
+  const script = document.currentScript;
+  if (script?.dataset?.widgetName) {
+    if (script.dataset.widgetName !== name
+        || Number(script.dataset.widgetGeneration) !== widgetLoadGeneration) {
+      throw new Error(`stale or mismatched widget registration: ${name}`);
+    }
+  }
+  if (widgetRegistry.has(name)) throw new Error(`widget ${name} is already registered`);
+  widgetRegistry.set(name, Object.freeze({ ...descriptor, name }));
+}
 let layoutMode = 'tiling';
 /* How the tiling tree arranges itself: 'manual' is the splits you make, and
  * 'master-stack', 'spiral', 'bsp' and 'grid' derive the shape from which

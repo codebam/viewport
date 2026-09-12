@@ -640,6 +640,7 @@ function cancelLiveGesture() {
 
 let initialConfigReady = false;
 let layoutLoadGeneration = 0;
+let widgetLoadGeneration = 0;
 const pendingViewReplay = [];
 
 function loadLayoutScript(entry, generation) {
@@ -690,6 +691,60 @@ function loadLayoutExtensions(entries, generation) {
       } catch (error) {
         ok = false;
         console.error(`layout extension: ${error.message}`);
+      }
+    }
+    return ok;
+  })();
+}
+
+function loadWidgetScript(entry, generation) {
+  return new Promise((resolve, reject) => {
+    if (!entry || typeof entry.name !== 'string' || typeof entry.url !== 'string') {
+      reject(new Error('invalid widget extension manifest entry'));
+      return;
+    }
+    if (widgetSources.get(entry.name) === entry.url) {
+      resolve();
+      return;
+    }
+    if (widgetRegistry.has(entry.name)) {
+      reject(new Error(`widget ${entry.name} was already registered by another script`));
+      return;
+    }
+    const script = document.createElement('script');
+    script.src = entry.url;
+    script.async = false;
+    script.dataset.widgetName = entry.name;
+    script.dataset.widgetGeneration = String(generation);
+    script.onload = () => {
+      if (generation !== widgetLoadGeneration) {
+        reject(new Error(`stale load of ${entry.url}`));
+        return;
+      }
+      if (!widgetRegistry.has(entry.name)) {
+        reject(new Error(`${entry.url} did not register widget ${entry.name}`));
+        return;
+      }
+      widgetSources.set(entry.name, entry.url);
+      resolve();
+    };
+    script.onerror = () => reject(new Error(`could not load ${entry.url}`));
+    document.head.append(script);
+  });
+}
+
+function loadWidgetExtensions(entries, generation) {
+  const manifest = Array.isArray(entries) ? entries : [];
+  const pending = manifest.filter((entry) => widgetSources.get(entry?.name) !== entry?.url);
+  if (pending.length === 0) return null;
+  return (async () => {
+    let ok = true;
+    for (const entry of pending) {
+      try {
+        await loadWidgetScript(entry, generation);
+      } catch (error) {
+        ok = false;
+        console.error(`widget extension: ${error.message}`);
       }
     }
     return ok;
@@ -762,8 +817,29 @@ window.addEventListener('viewport', (event) => {
          is what a config file that says nothing has always got. */
       applyBarBlur(message.bar_blur);
       applyBarMode(message.bar);
-      applyBarWidgets(message.bar_widgets);
-      applyBarItems(message.bar_items);
+      /* Widget extensions load the way layout extensions do: the manifest
+         script for each name is fetched before the bar is drawn, so a custom
+         widget has registered by the time its element is built. The bump
+         happens first so any load already in flight is stale the moment this
+         config arrives; the generation guard stops that slower load from
+         re-applying over this one. With nothing to fetch — every config that
+         names no widget_extensions — the bar config is applied synchronously,
+         exactly as before. */
+      {
+        const generation = ++widgetLoadGeneration;
+        const loading = loadWidgetExtensions(message.widget_extensions, generation);
+        /* Built-ins render now; a custom slot the load has not filled yet
+           stays empty until the re-apply below. */
+        applyBarWidgets(message.bar_widgets);
+        applyBarItems(message.bar_items);
+        if (loading) {
+          loading.then(() => {
+            if (generation !== widgetLoadGeneration) return;
+            applyBarWidgets(message.bar_widgets);
+            applyBarItems(message.bar_items);
+          });
+        }
+      }
       /* How the clock is written, and with it the calendar under it: the
          locale, the twelve-or-twenty-four-hour choice and an optional format
          string. Absent is not en-US and not any other tag written down here —

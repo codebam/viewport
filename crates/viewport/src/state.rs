@@ -1628,6 +1628,7 @@ impl ViewportState {
             config: Config {
                 layout: "tiling".to_owned(),
                 layout_extensions: Vec::new(),
+                widget_extensions: Vec::new(),
                 // Both true, as in src/main.c:69 — "the empty desktop explains
                 // itself until told not to". These set no-logo and no-tutorial
                 // on the document when false, and on a desktop with no windows
@@ -4165,6 +4166,12 @@ fn bar_widget_ipc(widget: &crate::config::BarWidgetConfig) -> viewport_ipc::even
         crate::config::BarWidgetConfig::Ai { provider, .. } => viewport_ipc::event::BarWidget::Ai {
             provider: provider.name().to_owned(),
         },
+        crate::config::BarWidgetConfig::Custom { name, options } => {
+            viewport_ipc::event::BarWidget::Custom {
+                name: name.clone(),
+                options: options.clone(),
+            }
+        }
     }
 }
 
@@ -4218,6 +4225,7 @@ impl crate::config::BarWidgetConfig {
                 ..Sampling::default()
             },
             crate::config::BarWidgetConfig::Ai { .. } => Sampling::default(),
+            crate::config::BarWidgetConfig::Custom { .. } => Sampling::default(),
         }
     }
 }

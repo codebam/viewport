@@ -23,6 +23,9 @@ a TTY.
   "layout_extensions": {
     "monocle": "/home/me/.config/viewport/monocle.js"
   },
+  "widget_extensions": {
+    "world-clock": "/home/me/.config/viewport/world-clock.js"
+  },
   "workspaces": {
     "1": { "output": "eDP-1", "layout": "tiling",
            "tiling_mode": "master-stack" },
@@ -1376,6 +1379,32 @@ OpenAI's `wham/usage` endpoint are undocumented interfaces used by their own
 tools and may change. A changed endpoint leaves the last value standing and
 logs `ai usage: ... refresh failed` rather than taking down the bar.
 
+### Custom widgets
+
+The widgets above are the ones the shell draws for itself. A `custom` entry
+points at a script instead: the file names itself with `registerWidget`, and
+`widget_extensions` maps that name to a local path.
+
+```jsonc
+{
+  "widget_extensions": {
+    "world-clock": "widgets/world-clock.js"
+  },
+  "bar_widgets": [
+    { "type": "custom", "name": "world-clock",
+      "options": { "zone": "Asia/Tokyo" } }
+  ]
+}
+```
+
+A `custom` widget takes the same place in `bar_widgets` and `bar_items` as any
+other — the only difference is that `name` is looked up in the manifest rather
+than in the built-in set, and `options` is handed to the script unchanged. A
+script runs inside the shell page and can do what the shell can, so it is
+local, user-authored code at the same trust level as a layout extension.
+[docs/custom-widgets.md](custom-widgets.md) has the descriptor, the context a
+widget receives, the load and reload rules, and a worked example.
+
 ## Overriding the whole bar
 
 `bar_widgets` adds to the shipped set, but it cannot move a widget into the
@@ -1395,12 +1424,13 @@ entry is either a module the bar already draws or a widget:
 ```
 
 A bare string names a built-in module — `mode`, `tray`, `net`, `disk`, `cpu`,
-`load`, `memory` or `clock` — and an object names a widget, taking exactly the same
-options as a `bar_widgets` entry. The bar draws only what the list names, in
-the order given, so a widget can sit between the network and the clock, and a
-module you leave out does not appear. Present but empty draws no right side at
-all. Leave the key out entirely and the bar is the shipped default plus any
-`bar_widgets`.
+`load`, `memory` or `clock` — and an object names a widget, taking exactly the
+same options as a `bar_widgets` entry — `custom` widgets included, their `name`
+coming from `widget_extensions` either way. The bar draws only what the list
+names, in the order given, so a widget can sit between the network and the
+clock, and a module you leave out does not appear. Present but empty draws no
+right side at all. Leave the key out entirely and the bar is the shipped
+default plus any `bar_widgets`.
 
 `bar_items` supersedes `bar_widgets` when both are present: the override wins,
 and the widget list drives the same status sampling (mounts and volume) as the

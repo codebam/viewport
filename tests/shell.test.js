@@ -579,6 +579,15 @@ const EXPORTS = ';globalThis.__shell = { views, workspaces, outputs, scrollOffse
      worth checking are the ones no stubbed getBoundingClientRect can produce —
      a 32:9 and a monitor on its end. */
   + ' gridForTest: { rows: gridRows, counts: gridCounts, build: grid },'
+  /* Custom bar widgets registered by a user script, and the registry and
+     manifest that hold them. Guarded because the feature is being built in
+     parallel with these tests: before it lands the names do not exist in the
+     shell, and a bare reference here would throw while evaluating the whole
+     shell source, taking every other check in the file with it. Once the
+     shell has landed them these are the same bindings it uses. */
+  + ' registerWidget: typeof registerWidget !== "undefined" ? registerWidget : undefined,'
+  + ' widgetRegistry: typeof widgetRegistry !== "undefined" ? widgetRegistry : undefined,'
+  + ' widgetSources: typeof widgetSources !== "undefined" ? widgetSources : undefined,'
   + ' get activeOutput() { return activeOutput; } };';
 /* The shell is a set of ordered classic scripts sharing one global scope, so
  * concatenating them in load order and evaluating the result is exactly what
@@ -6471,6 +6480,132 @@ if (mode === 'scrolling') {
 
   emit({ type: 'view.removed', id: 90 });
   emit({ type: 'view.removed', id: 91 });
+}
+
+/* --- custom bar widgets ------------------------------------------------
+ *
+ * A user script named in `widget_extensions` registers a widget through
+ * `registerWidget`, and a `bar_widgets` or `bar_items` entry of
+ * `{ type: 'custom', name }` places it on the bar. What is checkable from
+ * here is the lifecycle the contract states — mount once on first placement,
+ * update straight after and again on every status sample, destroy before
+ * removal — and that registration refuses the several ways a user script can
+ * be wrong, so a bad script cannot take the bar down with it. The feature is
+ * being built in parallel; if the shell has not landed it yet every check
+ * below fails without throwing, so the rest of the suite still runs.
+ * --------------------------------------------------------------------- */
+
+{
+  const sh = globalThis.__shell;
+  const out = sh.outputs.get('DP-1');
+  const reg = sh.registerWidget;
+  const registry = sh.widgetRegistry;
+  const hasApi = typeof reg === 'function' && registry instanceof Map;
+
+  /* Kept in this block's closure, because they have to survive the emit()
+     calls below: the shell holds the descriptor across configs, so every
+     lifecycle call lands in the same counters. */
+  const seen = { mounts: 0, updates: 0, destroys: 0, ctx: null };
+  const descriptor = {
+    mount(el, ctx) { seen.mounts++; seen.ctx = ctx; },
+    update() { seen.updates++; },
+    destroy() { seen.destroys++; },
+  };
+  const throws = (fn) => { try { fn(); return false; } catch (_) { return true; } };
+
+  let registered = false;
+  if (hasApi) {
+    /* Guarded so a throwing registerWidget fails this check rather than the
+       whole run; the rest of the block then fails on its own terms. */
+    try { reg('probe', descriptor); } catch (_) { /* reported below */ }
+    /* Kept, and it is the descriptor that was handed over — mount is the
+       function reference the test will watch. */
+    registered = registry.has('probe')
+      && registry.get('probe')?.mount === descriptor.mount;
+  }
+  check('a valid widget descriptor registers and is kept', registered);
+
+  check('an invalid widget name is rejected',
+    hasApi && throws(() => reg('bad name', descriptor)));
+  check('a descriptor with no mount is rejected',
+    hasApi && throws(() => reg('nomount', { update() {} })));
+  check('a built-in widget name is rejected',
+    hasApi && throws(() => reg('disk', descriptor)));
+  check('a duplicate widget name is rejected',
+    hasApi && throws(() => reg('probe', descriptor)));
+
+  /* Placed from `bar_widgets`: the shell builds the element, mounts the
+     widget once, and updates it straight away. */
+  emit({ type: 'config', layout: mode, rules: HARNESS_RULES,
+    bar_widgets: [{ type: 'custom', name: 'probe', options: { tag: 'a' } }] });
+  const probeEl = (out.widgetsEls ?? [])[0];
+  check('a custom widget is built on the bar',
+    hasApi && out.widgetsEls?.length === 1 && probeEl !== undefined);
+  check('its element names the widget it stands for',
+    hasApi && probeEl?.dataset.widget === 'custom:probe');
+  check('it is mounted once', hasApi && seen.mounts === 1);
+  check('and updated straight after mounting', hasApi && seen.updates >= 1);
+  check('the context carries the widget name and its options',
+    hasApi && seen.ctx?.name === 'probe' && seen.ctx?.options?.tag === 'a');
+
+  /* Every status sample updates it again, without remounting. */
+  const updatesAfterPlace = seen.updates;
+  const mountsAfterPlace = seen.mounts;
+  emit({ type: 'status.update', cpu: -1, memory: -1, load: 0,
+    net_rx: 0, net_tx: 0, disk_free: 0, disk_total: 0,
+    mounts: [], volume: -1, mic_volume: -1, muted: false });
+  check('a status sample updates the custom widget, does not remount it',
+    hasApi && seen.updates > updatesAfterPlace
+      && seen.mounts === mountsAfterPlace);
+
+  /* The context's send and exec reach the compositor as ordinary messages. */
+  const beforeMessages = sent.length;
+  seen.ctx?.exec('echo hi');
+  seen.ctx?.send({ type: 'shell.exec', command: 'echo bye' });
+  const sentSince = sent.slice(beforeMessages);
+  check('ctx.exec sends a shell.exec message',
+    hasApi && sentSince.some((m) => m.type === 'shell.exec'
+      && m.command === 'echo hi'));
+  check('ctx.send sends the message it is handed',
+    hasApi && sentSince.some((m) => m.type === 'shell.exec'
+      && m.command === 'echo bye'));
+
+  /* A config that drops the widget removes it, and removal destroys it. */
+  const destroysBefore = seen.destroys;
+  emit({ type: 'config', layout: mode, rules: HARNESS_RULES, bar_widgets: [] });
+  check('removing the custom widget destroys it',
+    hasApi && seen.destroys > destroysBefore);
+  check('and leaves no widget element behind',
+    hasApi && (out.widgetsEls ?? []).length === 0);
+
+  /* The same widget, placed from a `bar_items` override beside a bare module. */
+  emit({ type: 'config', layout: mode, rules: HARNESS_RULES,
+    bar_items: ['clock', { type: 'custom', name: 'probe' }] });
+  const itemEls = out.barItemsEls ?? [];
+  check('a custom widget places through bar_items too',
+    hasApi && itemEls.length === 2
+      && itemEls[1]?.dataset.widget === 'custom:probe');
+  check('and is mounted there as well', hasApi && seen.mounts > mountsAfterPlace);
+  emit({ type: 'config', layout: mode, rules: HARNESS_RULES });
+
+  /* A `custom` entry with no registration behind it builds nothing, says so on
+     the error stream, and does not take the bar down with it. */
+  const realError = console.error;
+  let logged = false;
+  let threw = false;
+  console.error = () => { logged = true; };
+  try {
+    emit({ type: 'config', layout: mode, rules: HARNESS_RULES,
+      bar_widgets: [{ type: 'custom', name: 'nope' }] });
+  } catch (_) { threw = true; }
+  console.error = realError;
+  check('an unregistered custom widget does not throw', hasApi && !threw);
+  check('it renders nothing',
+    hasApi && ((out.widgetsEls ?? [])[0]?.textContent ?? '') === '');
+  check('and logs the failure', hasApi && logged);
+
+  /* Back to the default bar for everything after this. */
+  emit({ type: 'config', layout: mode, rules: HARNESS_RULES });
 }
 
 /* --- the settings panel ------------------------------------------------

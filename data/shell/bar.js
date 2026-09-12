@@ -609,7 +609,109 @@ function applyBarItems(items) {
   refreshWeather();
 }
 
-function widgetTitle(w) {
+/* A widget definition's options, never null: the contract hands the ctx an
+ * object even when the config omitted `options`, and a widget that reached for
+ * `ctx.options.foo` should get `undefined` rather than a throw. */
+function widgetOptions(options) {
+  return options && typeof options === 'object' ? options : {};
+}
+
+/* The frozen context a custom widget is handed. One is built per mount and
+ * kept on the element (`el._customCtx`) so `update` and `destroy` see the same
+ * object `mount` did — including the same `options` snapshot. `tick` is the
+ * widget asking for a redraw of the custom widgets now, which is what a widget
+ * fed by a fetch or its own timer needs rather than waiting for the next
+ * two-second status sample. `el` is the element the widget is drawn into; it
+ * is passed for symmetry with mount/update/destroy and is where a widget's own
+ * children live. */
+function widgetContext(name, options, el) {
+  return Object.freeze({
+    name,
+    options,
+    get status() { return lastStatus; },
+    send,
+    exec: (command) => send({ type: 'shell.exec', command }),
+    tick: () => renderBarsWidgets(),
+  });
+}
+
+/* One custom widget's (name, options) identity on an element. A change in
+ * either is a different widget as far as the descriptor is concerned, so it is
+ * torn down and mounted again; the serialised options make the key cheap to
+ * compare on every render without keeping a deep copy around. */
+function customWidgetKey(w) {
+  return `custom:${w.name}:${JSON.stringify(w.options ?? null)}`;
+}
+
+/* Run a mounted custom widget's teardown, if it has one. */
+function destroyCustomWidget(el, mounted) {
+  if (typeof mounted.descriptor.destroy === 'function') {
+    mounted.descriptor.destroy(el, mounted.ctx);
+  }
+}
+
+/* Take any custom widget off an element and forget it — when its position is
+ * reused for a built-in module, or the element is about to leave the bar.
+ * Destroy runs first, so a widget that owns timers or listeners can stop them
+ * against the same context it was mounted with. */
+function clearCustomWidget(el) {
+  const mounted = el._custom;
+  if (!mounted) return;
+  destroyCustomWidget(el, mounted);
+  el._custom = undefined;
+  el._customCtx = undefined;
+  el._customKey = undefined;
+  el._customWarned = undefined;
+  if (el.dataset.widget?.startsWith('custom:')) delete el.dataset.widget;
+}
+
+/* Mount, update, or leave alone the custom widget one element stands for. The
+ * descriptor is looked up fresh every sync so an extension script that only
+ * registered after the first render — the config was applied immediately, the
+ * script was still loading — mounts on the next one; that is why the
+ * descriptor identity is part of the remount condition and not just the key.
+ * `el._custom` remembers what is mounted so the same (name, options) is never
+ * mounted twice. */
+function syncCustomWidget(el, w) {
+  const descriptor = widgetRegistry.get(w.name) ?? null;
+  const key = customWidgetKey(w);
+  const mounted = el._custom;
+  if (!mounted || mounted.name !== w.name || mounted.descriptor !== descriptor
+      || el._customKey !== key) {
+    if (mounted) destroyCustomWidget(el, mounted);
+    el._custom = undefined;
+    el._customCtx = undefined;
+    el._customKey = key;
+    if (descriptor) {
+      const ctx = widgetContext(w.name, widgetOptions(w.options), el);
+      el._custom = { name: w.name, descriptor };
+      el._customCtx = ctx;
+      /* mount once, then update right after, so a widget that draws only in
+         `update` still shows something the first time. */
+      descriptor.mount(el, ctx);
+      if (typeof descriptor.update === 'function') descriptor.update(el, ctx);
+    }
+  }
+  /* A widget with no script yet leaves its element empty and says so once per
+   * (name, options) rather than on every relayout that re-syncs it. */
+  if (!descriptor) {
+    if (el._customWarned !== key) {
+      el._customWarned = key;
+      console.error(`custom widget "${w.name}" is not registered`);
+    }
+  } else if (el._customWarned) {
+    el._customWarned = undefined;
+  }
+  /* The shell owns what every widget element carries — the data attribute and
+     the tooltip — so a custom widget never writes them and a built-in landing
+     on the same element cannot inherit them. */
+  const widget = `custom:${w.name}`;
+  if (el.dataset.widget !== widget) el.dataset.widget = widget;
+  const title = descriptor ? widgetTitle(w, el._customCtx) : '';
+  if (el.title !== title) el.title = title;
+}
+
+function widgetTitle(w, ctx) {
   switch (w.type) {
     case 'disk': return `free on ${w.path || '/'}`;
     case 'weather': return `weather for ${(w.location || '').trim()}`.trim();
@@ -619,6 +721,19 @@ function widgetTitle(w) {
     case 'mpris': return '';
     case 'battery': return 'battery';
     case 'ai': return `${w.provider || 'AI'} usage`;
+    /* A custom widget's tooltip is its own: the descriptor carries a fixed
+       string or a function of its context. Anything else leaves the tooltip
+       empty rather than letting the string "undefined" reach the bar. */
+    case 'custom': {
+      const descriptor = widgetRegistry.get(w.name);
+      if (!descriptor) return '';
+      if (typeof descriptor.title === 'function') {
+        const fallback = widgetContext(w.name, widgetOptions(w.options), null);
+        const value = descriptor.title(ctx ?? fallback);
+        return typeof value === 'string' ? value : '';
+      }
+      return typeof descriptor.title === 'string' ? descriptor.title : '';
+    }
   }
   return '';
 }
@@ -757,14 +872,27 @@ function syncBarWidgets(output) {
     }
     const w = barWidgets[i];
     el._widget = w;
+    /* A custom widget is a different machine: it mounts, owns its own children
+       and is kept by (name, options) rather than by the string key below. An
+       element reused from a built-in kind has to have the custom widget taken
+       off first. */
+    if (w.type === 'custom') {
+      syncCustomWidget(el, w);
+      continue;
+    }
+    clearCustomWidget(el);
     const key = `${w.type}:${w.path || w.location || w.provider || ''}`;
     if (el.dataset.widget !== key) el.dataset.widget = key;
     const title = widgetTitle(w);
     if (el.title !== title) el.title = title;
   }
-  /* Whatever the last config wanted and this one does not. */
+  /* Whatever the last config wanted and this one does not. A custom widget
+     gets its destroy before its element leaves the bar. */
   for (let i = barWidgets.length; i < els.length; i++) {
-    if (els[i]) els[i].remove();
+    if (els[i]) {
+      clearCustomWidget(els[i]);
+      els[i].remove();
+    }
     els[i] = undefined;
   }
   output.widgetsEls = els.filter(Boolean);
@@ -798,7 +926,10 @@ function syncBarRight(output) {
      clean. */
   if (barItems === null) {
     if (output.barItemsEls) {
-      for (const el of output.barItemsEls) el.remove();
+      for (const el of output.barItemsEls) {
+        clearCustomWidget(el);
+        el.remove();
+      }
       output.barItemsEls = undefined;
       /* The widget elements the override built went out with it, so the
          default path builds its own rather than reusing detached ones — and
@@ -850,7 +981,10 @@ function syncBarRight(output) {
     if (output.barDefaultEls === undefined) {
       output.barDefaultEls = children.filter((el) => !widgets.has(el));
     }
-    for (const child of children) child.remove();
+    for (const child of children) {
+      clearCustomWidget(child);
+      child.remove();
+    }
     output.widgetsEls = undefined;
   }
 
@@ -872,24 +1006,36 @@ function syncBarRight(output) {
          click handler: the elements are kept by position and a config change
          can move a different module onto this one. */
       el._module = item;
+      /* An element reused from a custom widget drops it before becoming a
+         module. */
+      clearCustomWidget(el);
       const title = moduleTitle(item);
       if (el.title !== title) el.title = title;
     } else {
       el._widget = item;
       el._module = null;
-      const key = `${item.type}:${item.path || item.location || item.provider || ''}`;
-      if (el.dataset.widget !== key) el.dataset.widget = key;
-      const title = widgetTitle(item);
-      if (el.title !== title) el.title = title;
+      if (item.type === 'custom') {
+        syncCustomWidget(el, item);
+      } else {
+        clearCustomWidget(el);
+        const key = `${item.type}:${item.path || item.location || item.provider || ''}`;
+        if (el.dataset.widget !== key) el.dataset.widget = key;
+        const title = widgetTitle(item);
+        if (el.title !== title) el.title = title;
+      }
       /* Keep the widget's own definition, in order, so the render pass below
          and the weather fetch can reach it. */
       widgetDefs[widgetDefs.length] = item;
     }
   }
 
-  /* Whatever the previous override asked for and this one does not. */
+  /* Whatever the previous override asked for and this one does not. A custom
+     widget gets its destroy before its element leaves the bar. */
   for (let i = barItems.length; i < els.length; i++) {
-    if (els[i]) els[i].remove();
+    if (els[i]) {
+      clearCustomWidget(els[i]);
+      els[i].remove();
+    }
     els[i] = undefined;
   }
   output.barItemsEls = els.filter(Boolean);
@@ -928,6 +1074,16 @@ function renderBarWidgets(output) {
   (output.widgetsEls || []).forEach((el, i) => {
     const w = defs[i];
     if (!w) return;
+    /* A custom widget draws its own contents; its only job here is the
+       per-tick update, and the assignment below must not run or it would throw
+       children the widget built away. */
+    if (w.type === 'custom') {
+      const mounted = el._custom;
+      if (mounted && typeof mounted.descriptor.update === 'function') {
+        mounted.descriptor.update(el, el._customCtx);
+      }
+      return;
+    }
     let text = '';
     if (w.type === 'disk') {
       const path = w.path || '/';

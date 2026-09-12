@@ -81,6 +81,16 @@
   ],
   "layout_extensions": {},
 
+  "_widget_extensions": [
+    "Explicit local scripts keyed by the widget name they register with",
+    "registerWidget. Relative paths are resolved beside this config file.",
+    "Place one on the bar with a bar_widgets or bar_items entry of type",
+    "\"custom\":",
+    "  \"widget_extensions\": { \"world-clock\": \"widgets/world-clock.js\" }",
+    "See docs/custom-widgets.md."
+  ],
+  "widget_extensions": {},
+
   "_tiling_mode": [
     "How the tiling tree arranges itself. Only meaningful with",
     "\"layout\": \"tiling\" — the scrolling strip, the solar layout, the",
@@ -310,13 +320,17 @@
     "  { \"type\": \"ai\", \"provider\": \"claude\" }        Claude subscription usage",
     "  { \"type\": \"ai\", \"provider\": \"openai\" }        OpenAI subscription usage",
     "  { \"type\": \"ai\", \"provider\": \"openrouter\" }    OpenRouter credits left",
+    "  { \"type\": \"custom\", \"name\": \"world-clock\" }  a local script's widget; name it",
+    "                                           in _widget_extensions above",
     "",
     "Disk, volume and mic are sampled by the compositor with the rest of the",
     "status, so they show the machine as it is. Weather is fetched by the",
     "shell itself from open-meteo (no key); the location is a place it can",
     "geocode, like a city name. AI credentials come from provider environment",
     "variables; see docs/configuration.md. OpenAI can also sign in when its",
-    "widget is clicked. Several of each kind may be listed."
+    "widget is clicked. A custom widget is drawn by a local script named in",
+    "widget_extensions; see docs/custom-widgets.md. Several of each kind may",
+    "be listed."
   ],
   "bar_widgets": [],
 

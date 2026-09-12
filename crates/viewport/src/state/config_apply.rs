@@ -18,6 +18,14 @@ impl ViewportState {
             extensions.sort_by(|a, b| a.name.cmp(&b.name));
             self.config.layout_extensions = extensions;
         }
+        if let Some(extensions) = file.widget_extensions {
+            let mut extensions: Vec<_> = extensions
+                .into_iter()
+                .map(|(name, url)| viewport_ipc::event::WidgetExtension { name, url })
+                .collect();
+            extensions.sort_by(|a, b| a.name.cmp(&b.name));
+            self.config.widget_extensions = extensions;
+        }
         if let Some(layout) = file.layout {
             // Checked here for the same reason tiling_mode is, below: this is
             // where the name can be rejected while the file it came from is
@@ -371,6 +379,22 @@ impl ViewportState {
             } else {
                 file.bar_widgets.iter().collect()
             };
+
+        // A `custom` widget names a script the shell loads from
+        // `widget_extensions`; one that names nothing known draws nothing, and
+        // the config that asked for it should say so rather than leave a gap.
+        for widget in &drawn_widgets {
+            if let crate::config::BarWidgetConfig::Custom { name, .. } = widget {
+                if !self
+                    .config
+                    .widget_extensions
+                    .iter()
+                    .any(|e| &e.name == name)
+                {
+                    tracing::warn!("bar widget references unknown widget extension {name:?}");
+                }
+            }
+        }
 
         self.config.bar_widgets = if file.bar_items.is_some() {
             // Superseded: the whole right side comes from bar_items, so the

@@ -502,6 +502,15 @@ pub enum BarWidgetConfig {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         account_id_env: Option<String>,
     },
+    /// A widget drawn by a user script loaded from `widget_extensions`.
+    #[serde(rename = "custom")]
+    Custom {
+        /// The name registered by the script.
+        name: String,
+        /// Passed through to the script unchanged.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        options: Option<serde_json::Value>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
@@ -616,6 +625,9 @@ pub struct File {
     /// User layout scripts, keyed by the name they register with the shell.
     /// Relative paths are resolved beside this config file by [`load`].
     pub layout_extensions: Option<std::collections::HashMap<String, String>>,
+    /// User widget scripts, keyed by the name they register with the shell.
+    /// Relative paths are resolved beside this config file by [`load`].
+    pub widget_extensions: Option<std::collections::HashMap<String, String>>,
     pub logo: Option<bool>,
     pub tutorial: Option<bool>,
     pub bar: Option<String>,
@@ -878,6 +890,23 @@ pub fn load(path: &Path) -> anyhow::Result<Option<File>> {
             })?;
         }
     }
+    if let Some(extensions) = file.widget_extensions.as_mut() {
+        for (name, value) in extensions {
+            anyhow::ensure!(
+                valid_layout_name(name),
+                "{}: invalid widget extension name {name:?}",
+                path.display()
+            );
+            anyhow::ensure!(
+                !BUILTIN_WIDGET_NAMES.contains(&name.as_str()),
+                "{}: widget extension {name:?} cannot replace a built-in widget or module",
+                path.display()
+            );
+            *value = layout_extension_url(value, path).map_err(|e| {
+                anyhow::anyhow!("{}: widget extension {name:?}: {e}", path.display())
+            })?;
+        }
+    }
     if let Some(workspaces) = file.workspaces.as_ref() {
         for workspace in workspaces.keys() {
             anyhow::ensure!(
@@ -938,6 +967,13 @@ pub fn load(path: &Path) -> anyhow::Result<Option<File>> {
 
 /// Layout names implemented by the shipped shell.
 pub const BUILTIN_LAYOUTS: [&str; 5] = ["tiling", "scrolling", "solar", "matrix", "canvas"];
+
+/// The bar's own module and widget names. A user widget script may not take
+/// one of these: the shipped shell draws them itself.
+pub const BUILTIN_WIDGET_NAMES: [&str; 14] = [
+    "mode", "tray", "net", "disk", "clock", "cpu", "load", "memory", "weather", "volume", "mic",
+    "mpris", "battery", "ai",
+];
 
 fn valid_layout_name(name: &str) -> bool {
     !name.is_empty()
@@ -2669,5 +2705,101 @@ mod tests {
             .expect("present");
         assert!(file.layout_extensions.expect("manifest")["gone"].ends_with("/gone.js"));
         let _ = std::fs::remove_dir_all(dir);
+    }
+    #[test]
+    fn widget_extension_paths_resolve_beside_the_config() {
+        let dir =
+            std::env::temp_dir().join(format!("viewport-widget-extension-{}", std::process::id()));
+        let scripts = dir.join("my widgets");
+        std::fs::create_dir_all(&scripts).expect("mkdir");
+        std::fs::write(
+            scripts.join("battery.js"),
+            "registerWidget('battery_graph', {})",
+        )
+        .expect("script");
+        let path = dir.join("config.json");
+        std::fs::write(
+            &path,
+            r#"{"widget_extensions":{"battery_graph":"my widgets/battery.js"}}"#,
+        )
+        .expect("config");
+
+        let file = load(&path).expect("valid config").expect("present");
+        let url = &file.widget_extensions.expect("manifest")["battery_graph"];
+        assert!(url.starts_with("file:///"), "{url}");
+        assert!(url.ends_with("/my%20widgets/battery.js"), "{url}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn widget_extensions_reject_remote_urls() {
+        let dir =
+            std::env::temp_dir().join(format!("viewport-widget-remote-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let path = dir.join("config.json");
+        std::fs::write(
+            &path,
+            r#"{"widget_extensions":{"battery_graph":"https://example.com/battery.js"}}"#,
+        )
+        .expect("config");
+        let error = load(&path).expect_err("remote url").to_string();
+        assert!(error.contains("only local script paths"), "{error}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn widget_extensions_cannot_replace_builtins() {
+        let dir = std::env::temp_dir().join(format!(
+            "viewport-widget-replacement-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        std::fs::write(dir.join("bad.js"), "").expect("script");
+        let path = dir.join("config.json");
+        std::fs::write(&path, r#"{"widget_extensions":{"clock":"bad.js"}}"#).expect("config");
+        let error = load(&path).expect_err("built-in replacement").to_string();
+        assert!(error.contains("cannot replace"), "{error}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn widget_extensions_reject_invalid_names() {
+        let dir = std::env::temp_dir().join(format!("viewport-widget-name-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        std::fs::write(dir.join("bad.js"), "").expect("script");
+        let path = dir.join("config.json");
+        std::fs::write(&path, r#"{"widget_extensions":{"bad name":"bad.js"}}"#).expect("config");
+        let error = load(&path).expect_err("invalid name").to_string();
+        assert!(error.contains("invalid widget extension name"), "{error}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_custom_bar_widget_config_parses_with_and_without_options() {
+        let with: File = serde_json::from_str(
+            r#"{"bar_widgets":[{"type":"custom","name":"battery_graph","options":{"color":"red"}}]}"#,
+        )
+        .expect("parses");
+        let widget = with.bar_widgets[0].clone();
+        assert_eq!(
+            widget,
+            BarWidgetConfig::Custom {
+                name: "battery_graph".into(),
+                options: Some(serde_json::json!({ "color": "red" })),
+            }
+        );
+
+        let without: File = serde_json::from_str(
+            r#"{"bar_items":["clock",{"type":"custom","name":"battery_graph"}]}"#,
+        )
+        .expect("parses");
+        let item = without.bar_items.expect("items")[1].clone();
+        assert_eq!(
+            item,
+            BarItemConfig::Widget(BarWidgetConfig::Custom {
+                name: "battery_graph".into(),
+                options: None,
+            })
+        );
     }
 }

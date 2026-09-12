@@ -661,6 +661,10 @@ pub struct Config {
     /// resolved to URLs the shell can load directly.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub layout_extensions: Vec<LayoutExtension>,
+    /// Explicit user widget scripts accepted by the compositor, with local
+    /// paths resolved to URLs the shell can load directly.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub widget_extensions: Vec<WidgetExtension>,
     pub logo: bool,
     pub tutorial: bool,
 
@@ -886,6 +890,14 @@ pub struct LayoutExtension {
     pub url: String,
 }
 
+/// A user widget script accepted by the compositor, with its local path
+/// resolved to a URL the shell can load directly.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WidgetExtension {
+    pub name: String,
+    pub url: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceRule {
     pub workspace: u32,
@@ -1051,6 +1063,15 @@ pub enum BarWidget {
     /// to match this element with an `ai.usage` entry.
     #[serde(rename = "ai")]
     Ai { provider: String },
+    /// A widget a user script draws, registered under this name; the
+    /// compositor carries it through without knowing what it is. `options`
+    /// reaches the script untouched.
+    #[serde(rename = "custom")]
+    Custom {
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        options: Option<serde_json::Value>,
+    },
 }
 
 /// Normalized result from one AI provider's usage endpoint.
@@ -1713,6 +1734,7 @@ mod tests {
         let value = json(&Event::Config(Box::new(Config {
             layout: "tiling".into(),
             layout_extensions: Vec::new(),
+            widget_extensions: Vec::new(),
             logo: true,
             tutorial: false,
             binds: Vec::new(),
@@ -1784,6 +1806,73 @@ mod tests {
     }
 
     #[test]
+    fn resolved_widget_extensions_are_carried_to_the_shell() {
+        let mut config: Config = serde_json::from_value(serde_json::json!({
+            "layout": "tiling",
+            "logo": true,
+            "tutorial": true
+        }))
+        .expect("minimal config");
+        config.widget_extensions.push(WidgetExtension {
+            name: "battery_graph".into(),
+            url: "file:///home/me/battery.js".into(),
+        });
+        let value = json(&Event::Config(Box::new(config)));
+        assert_eq!(value["widget_extensions"][0]["name"], "battery_graph");
+        assert_eq!(
+            value["widget_extensions"][0]["url"],
+            "file:///home/me/battery.js"
+        );
+    }
+
+    #[test]
+    fn a_custom_bar_widget_round_trips_with_options() {
+        let widget = BarWidget::Custom {
+            name: "battery_graph".into(),
+            options: Some(serde_json::json!({ "color": "red", "max": 100 })),
+        };
+        let value = serde_json::to_value(&widget).expect("should serialise");
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "type": "custom",
+                "name": "battery_graph",
+                "options": { "color": "red", "max": 100 }
+            })
+        );
+        let back: BarWidget = serde_json::from_value(value).expect("should deserialise");
+        assert_eq!(back, widget);
+    }
+
+    #[test]
+    fn a_custom_bar_widget_without_options_omits_the_key() {
+        let widget = BarWidget::Custom {
+            name: "battery_graph".into(),
+            options: None,
+        };
+        let value = serde_json::to_value(&widget).expect("should serialise");
+        assert_eq!(
+            value,
+            serde_json::json!({ "type": "custom", "name": "battery_graph" })
+        );
+        assert!(value.get("options").is_none());
+        let back: BarWidget = serde_json::from_value(value).expect("should deserialise");
+        assert_eq!(back, widget);
+    }
+
+    #[test]
+    fn an_empty_widget_extension_list_is_omitted_not_null() {
+        let config: Config = serde_json::from_value(serde_json::json!({
+            "layout": "tiling",
+            "logo": true,
+            "tutorial": true
+        }))
+        .expect("minimal config");
+        let value = json(&Event::Config(Box::new(config)));
+        assert!(value.get("widget_extensions").is_none());
+    }
+
+    #[test]
     fn workspace_policy_is_carried_to_the_shell() {
         let mut config: Config = serde_json::from_value(serde_json::json!({
             "layout": "tiling",
@@ -1823,6 +1912,7 @@ mod tests {
         let value = json(&Event::Config(Box::new(Config {
             layout: "tiling".into(),
             layout_extensions: Vec::new(),
+            widget_extensions: Vec::new(),
             logo: true,
             tutorial: true,
             binds: Vec::new(),
@@ -1880,6 +1970,7 @@ mod tests {
         let value = json(&Event::Config(Box::new(Config {
             layout: "tiling".into(),
             layout_extensions: Vec::new(),
+            widget_extensions: Vec::new(),
             logo: true,
             tutorial: true,
             binds: Vec::new(),
@@ -1935,6 +2026,7 @@ mod tests {
         let value = json(&Event::Config(Box::new(Config {
             layout: "scrolling".into(),
             layout_extensions: Vec::new(),
+            widget_extensions: Vec::new(),
             logo: true,
             tutorial: true,
             binds: Vec::new(),
@@ -1967,6 +2059,7 @@ mod tests {
         let value = json(&Event::Config(Box::new(Config {
             layout: "scrolling".into(),
             layout_extensions: Vec::new(),
+            widget_extensions: Vec::new(),
             logo: false,
             tutorial: false,
             binds: Vec::new(),
@@ -2125,6 +2218,7 @@ mod tests {
             json(&Event::Config(Box::new(Config {
                 layout: "tiling".into(),
                 layout_extensions: Vec::new(),
+                widget_extensions: Vec::new(),
                 logo: false,
                 tutorial: false,
                 binds: Vec::new(),
