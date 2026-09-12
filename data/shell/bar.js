@@ -41,6 +41,12 @@ function formatBytes(n) {
 function renderBar(name) {
   renderBarChrome(name);
   renderBarModules(name);
+  /* A layout render is where a bar can appear, disappear or change what it
+     carries, and neither periodic job has anything to do while its bar is off
+     screen. Re-evaluate both here; a visible bar whose boundary has not moved
+     leaves the already-armed timer exactly where it is. */
+  armClockTick();
+  armWeatherRefresh();
 }
 
 /* Feedback for hardware keys. It belongs to the active output rather than the
@@ -226,7 +232,11 @@ function renderBarModules(name) {
 
   const s = lastStatus;
   const m = output.modules;
-  setModule(m.clock, clockText());
+  /* The clock is cached by the boundary it was formatted for, so a status
+     sample between ticks does not format it again — and the cache lookup is
+     behind `if (m.clock)`, because a `bar_items` override can leave no clock
+     standing on this output at all. */
+  if (m.clock) setModule(m.clock, clockTextCached());
   setModule(m.cpu, s.cpu >= 0 ? ` ${Math.round(s.cpu)}%` : '');
   setModule(m.memory, s.memory >= 0 ? `󰍛 ${Math.round(s.memory)}%` : '');
   setModule(m.load, s.load !== undefined ? `󰓅 ${s.load.toFixed(2)}` : '');
@@ -1312,32 +1322,77 @@ function weatherText(location) {
   return hit ? hit.text : '';
 }
 
-/* Every widget definition standing on a bar right now: the shared
- * `bar_widgets` plus whatever each output's `bar_items` override placed. The
- * fetch below owes nothing to any one output, but a weather widget only named
- * by an override is still a widget somebody has to fetch for. */
-function widgetDefsOnAnyBar() {
-  const defs = [...barWidgets];
+/* The weather widgets standing on a bar that is actually on screen. A default
+ * bar draws the shared `bar_widgets`; a per-output `bar_items` override
+ * replaces them with its own list. A hidden bar draws neither, so neither
+ * needs a fetch or a timer while it is down — the reveal asks again through
+ * onBarReveal() below. */
+function weatherDefsOnScreen() {
+  const defs = [];
   for (const output of outputs.values()) {
-    for (const w of output.barItemsWidgets || []) defs.push(w);
+    if (!barOnScreen(output)) continue;
+    for (const w of (output.barItemsWidgets ?? barWidgets)) {
+      if (w && w.type === 'weather' && (w.location || '').trim() !== '') {
+        defs.push(w);
+      }
+    }
   }
   return defs;
 }
 
-/* Start a fetch for every weather widget whose slot is ready. Called on
- * config and on the refresh interval. */
+/* Start a fetch for every weather widget on screen whose slot is ready.
+ * Called on config, on a bar reveal, and by the weather timer below. */
 function refreshWeather() {
   const now = Date.now();
-  for (const w of widgetDefsOnAnyBar()) {
-    if (w.type !== 'weather') continue;
+  for (const w of weatherDefsOnScreen()) {
     const location = (w.location || '').trim();
-    if (!location) continue;
     const key = location.toLowerCase();
     const hit = weatherCache.get(key);
     if (hit && now < hit.retryAt) continue;
     weatherCache.set(key, { text: '', retryAt: now + WEATHER_REFRESH });
     fetchWeather(location);
   }
+  /* No widget on screen clears the timer; that is what skipping a hidden bar
+     means for a job with nothing to draw into. */
+  armWeatherRefresh();
+}
+
+/* The one weather timer. It is armed only while a weather widget is on screen
+ * and aimed at the earliest slot's own retryAt rather than at a fixed fifteen
+ * minutes: a failed fetch backs off five minutes, a successful one fifteen,
+ * and the cache that owns those deadlines is what the timer is read from. */
+let weatherTimer = null;
+
+function armWeatherRefresh() {
+  if (weatherTimer !== null) {
+    clearTimeout(weatherTimer);
+    weatherTimer = null;
+  }
+  const defs = weatherDefsOnScreen();
+  if (defs.length === 0) return;
+  const now = Date.now();
+  let at = Infinity;
+  for (const w of defs) {
+    const key = (w.location || '').trim().toLowerCase();
+    const hit = weatherCache.get(key);
+    /* Never fetched: refresh on the next turn rather than waiting out a
+       timer for an answer that was never asked for. */
+    if (!hit) { at = now; break; }
+    if (hit.retryAt < at) at = hit.retryAt;
+  }
+  weatherTimer = setTimeout(() => {
+    weatherTimer = null;
+    refreshWeather();
+  }, Math.max(0, at - now));
+}
+
+/* Called from geometry.js when a bar has just come back on screen. A hidden
+ * bar's timers were cleared — there was nothing on screen to update — so the
+ * reveal is where both jobs are asked for again: a fetch that fell due while
+ * the bar was down starts now, and the clock's boundary is put back. */
+function onBarReveal() {
+  refreshWeather();
+  armClockTick();
 }
 
 function fetchWeather(location) {
@@ -1352,11 +1407,14 @@ function fetchWeather(location) {
       const text = c ? weatherLine(c.weather_code, c.temperature_2m) : '';
       weatherCache.set(key, { text, retryAt: Date.now() + WEATHER_REFRESH });
       renderBarsWidgets();
+      /* The answer moved the slot's deadline; aim the one timer at it. */
+      armWeatherRefresh();
     })
     .catch(() => {
       /* Leave the slot failed so we retry in a few minutes rather than on
          every sample tick. */
       weatherCache.set(key, { text: '', retryAt: Date.now() + WEATHER_FAILURE_RETRY });
+      armWeatherRefresh();
     });
 }
 
@@ -1395,8 +1453,6 @@ function condition(code) {
   return '';
 }
 
-setInterval(refreshWeather, WEATHER_REFRESH);
-
 function renderBars() {
   for (const name of outputs.keys()) renderBar(name);
 }
@@ -1409,7 +1465,11 @@ function renderBarsModules() {
  * the module and the grid have to agree about the locale, so they are decided
  * in one place rather than in two that could drift.
  *
- * The tick redraws the clock and nothing else.
+ * The tick redraws the clock, the lock screen and the calendar's "today", and
+ * nothing else. It is no longer a one-second interval: armClockTick below aims
+ * it at the next boundary the displayed format can actually change at, so a
+ * minute clock costs one wake a minute while a format that shows seconds still
+ * ticks every second.
  *
  * It used to call renderBars(), which is not cheap: the chrome half rebuilds
  * the workspace buttons and the taskbar with replaceChildren(), allocating
@@ -1419,37 +1479,115 @@ function renderBarsModules() {
  * painting the desktop 86,400 times a day to redraw a string that changes
  * hourly.
  *
- * A hidden bar is skipped outright, and the text is only assigned when it
- * differs, so the common tick touches no DOM at all. The clock is sampled at a
- * second's granularity rather than a minute's so it does not lag visibly after
- * a resume; nothing else here needs the tick, because everything else is
- * redrawn by whatever changed it. */
+ * A hidden bar, or a bar whose `bar_items` override left no clock standing, is
+ * skipped before the text is formatted at all. The text itself is cached by
+ * the boundary it was formatted for, so this pass and the status samples
+ * between ticks reuse one string. */
 function renderClocks() {
-  const text = clockText();
+  let text = null;
   for (const output of outputs.values()) {
-    if (output.el.classList.contains('bar-hidden')) continue;
-    /* A `bar_items` override draws exactly the modules it names, so there may
-       be no clock standing there at all. Unguarded this threw once a second,
-       forever, and took every output after the first with it. */
     const el = output.modules.clock;
-    if (el && el.textContent !== text) el.textContent = text;
+    if (!el || !barOnScreen(output)) continue;
+    if (text === null) text = clockTextCached(new Date());
+    if (el.textContent !== text) el.textContent = text;
   }
   /* And the calendar under it, if one is open, which almost always does
-     nothing — see refreshCalendarDay in calendar.js for the one second a day
-     it does something. The tick is the only thing in the shell that runs while
-     nothing is happening, so it is where midnight has to be noticed. */
+     nothing — see refreshCalendarDay in calendar.js for the one moment a day
+     it does something. The tick is where midnight has to be noticed, and
+     toggleCalendar arms the timer for it while a calendar is up. */
   refreshCalendarDay();
 }
 
-/* The lock screen's clock rides the same tick. One timer for the session
-   rather than two: see the note above `renderClocks` for why an idle machine
-   painting once a second is a cost worth counting, and shell.md's rule that
-   nothing here repeats for ever. It writes text into elements that already
-   exist and does nothing at all while the session is unlocked. */
-setInterval(() => {
+/* Whether an output's bar is actually on screen: neither toggled off nor
+ * auto-hidden, and not covered by a fullscreen window. These are the two
+ * classes geometry.js toggles when it lays the bar out. */
+function barOnScreen(output) {
+  const el = output.el;
+  if (!el) return false;
+  return !el.classList.contains('bar-hidden')
+    && !el.classList.contains('has-fullscreen');
+}
+
+/* Whether any bar on screen carries a clock module. A `bar_items` override
+ * draws exactly the modules it names, so a bar can be up with no clock. */
+function anyBarClockOnScreen() {
+  for (const output of outputs.values()) {
+    if (output.modules && output.modules.clock && barOnScreen(output)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/* The wall-clock time the displayed text next changes at, for a format whose
+ * finest field resolves to `unit` milliseconds. Floored from the wall clock
+ * and added to, rather than counted down from the last tick: a late timer — a
+ * suspend, a throttled background page — schedules from where the clock
+ * actually is, not from where it was when the timer was asked for. */
+function nextClockBoundary(now, unit) {
+  return (Math.floor(now / unit) + 1) * unit;
+}
+
+/* Local midnight, when the open calendar's "today" can stop being true. Local
+ * for the same reason calendarDayKey is. */
+function nextCalendarMidnight(now) {
+  const date = new Date(now);
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate() + 1)
+    .getTime();
+}
+
+function earliestBoundary(a, b) {
+  return a === null || b < a ? b : a;
+}
+
+/* The next moment the shell's one periodic tick has anything to do, or null
+ * when it does not: a visible bar clock (a second boundary when the format
+ * shows seconds, a minute otherwise), a minute while the lock screen is up —
+ * its clock is minute-precision — and local midnight while the calendar is
+ * open, so refreshCalendarDay can notice the day change. */
+function nextClockTickAt(now = Date.now()) {
+  let at = null;
+  if (anyBarClockOnScreen()) {
+    at = nextClockBoundary(now, clockShowsSeconds() ? 1000 : 60000);
+  }
+  if (lockIsUp()) at = earliestBoundary(at, nextClockBoundary(now, 60000));
+  if (calendarOpen) at = earliestBoundary(at, nextCalendarMidnight(now));
+  return at;
+}
+
+let clockTickTimer = null;
+let clockTickAt = 0;
+
+/* Arm the one clock/lock/calendar tick at the earliest boundary actually
+ * needed, and clear it when nothing needs it. Called from every bar layout
+ * render (a reveal or a hide is an edge the timer has to follow), from config
+ * changes, from the lock screen and from the calendar opening or closing.
+ *
+ * Keeping a timer already aimed at the same boundary is what makes it safe to
+ * call from a render pass: a status sample must not reset the pending timer. */
+function armClockTick() {
+  const at = nextClockTickAt();
+  if (at !== null && clockTickTimer !== null && clockTickAt === at) return;
+  if (clockTickTimer !== null) {
+    clearTimeout(clockTickTimer);
+    clockTickTimer = null;
+  }
+  clockTickAt = at ?? 0;
+  if (at === null) return;
+  clockTickTimer = setTimeout(clockTick, Math.max(0, at - Date.now()));
+}
+
+/* One pass of the shell's periodic work. A late timer formats against the new
+ * wall clock and then arms the next boundary from that same clock; nothing
+ * counts down the delay it originally asked for, so there is no drift to catch
+ * up and a suspend cannot leave the displayed minute behind. */
+function clockTick() {
+  clockTickTimer = null;
+  clockTickAt = 0;
   renderClocks();
   renderLockClocks();
-}, 1000);
+  armClockTick();
+}
 
 
 /* ------------------------------------------------------------------------
