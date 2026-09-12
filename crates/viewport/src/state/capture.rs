@@ -735,14 +735,24 @@ impl ViewportState {
     /// is behind it for the rest of the session. This is the same sweep the
     /// housekeeping tick gives everything else that outlives its owner.
     pub fn reap_pending_copies(&mut self) {
+        if self.pending_copies.is_empty() {
+            return;
+        }
+        // An output that is still in the space can still be powered down:
+        // udev skips a blanked screen before the service pass, so "in the
+        // space" is not the same as "will be drawn".
+        let live_outputs: Vec<Output> = self
+            .space
+            .outputs()
+            .filter(|output| self.output_powered(output))
+            .cloned()
+            .collect();
         let before = self.pending_copies.len();
         self.pending_copies.retain(|copy| {
             if !copy.frame.is_alive() {
                 return false;
             }
-            // Not in the space any more: unplugged, or switched off through
-            // output management. No frame will come from either.
-            if !self.space.outputs().any(|other| other == &copy.output) {
+            if !live_outputs.iter().any(|other| other == &copy.output) {
                 // The frame is still alive, so say why it will not be served:
                 // dropping it in silence leaves the client waiting on `ready`
                 // for ever, which is exactly the state this reaps.
@@ -759,27 +769,69 @@ impl ViewportState {
         }
     }
 
+    /// Whether a render pass can still serve a queued image-copy frame.
+    ///
+    /// [`Self::service_image_capture`] runs once per output being drawn and
+    /// serves a frame only on a pass for a screen its target is on. A window
+    /// that is minimized, has closed, or has no space geometry waits on no
+    /// such pass; a powered-off output is skipped by the backend before its
+    /// pass. Either way the frame has nowhere left to run.
+    fn capture_target_servable(&self, target: &CaptureTarget) -> bool {
+        match target {
+            CaptureTarget::Window(id) => self.views.get(*id).is_some_and(|view| {
+                !view.minimized
+                    && self.space.element_geometry(&view.window).is_some()
+                    && self.space.outputs().any(|output| {
+                        self.output_powered(output) && self.window_is_on(*id, output)
+                    })
+            }),
+            CaptureTarget::Output(output) => {
+                self.space.outputs().any(|other| other == output)
+                    && self.output_powered(output)
+            }
+        }
+    }
+
     /// Drop image-capture frames that can no longer be served.
     ///
     /// [`Self::service_image_capture`] runs once per output and serves a frame
     /// only on a pass for a screen its target is on. A window that has since
-    /// closed, or an output that has been unplugged, matches no pass at all —
-    /// so the frame sat here holding the client's buffer for the rest of the
-    /// session, the client waited for a `ready` that could never come, and
-    /// `release_capture_scratch` refused to free the capture pool because the
-    /// queue was non-empty. Dropping the `Frame` fails it, which is what the
-    /// protocol asks for when a source goes away mid-capture.
+    /// closed, a window that has been minimized, or an output that has been
+    /// unplugged or powered off waits on no such pass — so the frame sat here
+    /// holding the client's buffer for the rest of the session, the client
+    /// waited for a `ready` that could never come, and `release_capture_scratch`
+    /// refused to free the capture pool because the queue was non-empty.
+    /// Failing the `Frame` is what the protocol asks for when a source goes
+    /// away mid-capture.
     pub fn reap_pending_capture_frames(&mut self) {
+        // The housekeeping tick calls this every second, and the target check
+        // below walks the output list; the queue being empty is the ordinary
+        // case, so leave before any of that.
+        if self.pending_capture_frames.is_empty() {
+            return;
+        }
         let before = self.pending_capture_frames.len();
-        let views = &self.views;
-        let live_outputs: Vec<Output> = self.space.outputs().cloned().collect();
-        self.pending_capture_frames.retain(|(target, _frame)| match target {
-            CaptureTarget::Window(id) => views.get(*id).is_some(),
-            CaptureTarget::Output(output) => live_outputs.iter().any(|other| other == output),
-        });
+        let mut live = Vec::with_capacity(before);
+        for (target, frame) in std::mem::take(&mut self.pending_capture_frames) {
+            // A frame held here pins the client's `wl_buffer` and keeps
+            // `release_capture_scratch` from letting the capture pool go, so
+            // neither can be held for a pass that will never come.
+            if frame.has_failed() || !self.capture_target_servable(&target) {
+                // Said rather than dropped in silence: `Frame`'s own `Drop`
+                // would send `Unknown`, but a source going away is the
+                // protocol's `Stopped`, and a client waiting on `ready`
+                // deserves the right answer before it gives up.
+                frame.fail(
+                    smithay::reexports::wayland_protocols::ext::image_copy_capture::v1::server::ext_image_copy_capture_frame_v1::FailureReason::Stopped,
+                );
+            } else {
+                live.push((target, frame));
+            }
+        }
+        self.pending_capture_frames = live;
         if self.pending_capture_frames.len() != before {
             tracing::debug!(
-                "reaped {} image-capture frame(s) whose window or output is gone",
+                "reaped {} image-capture frame(s) whose source is gone",
                 before - self.pending_capture_frames.len()
             );
         }
@@ -806,6 +858,125 @@ impl ViewportState {
             tracing::debug!(
                 "dropped {} screencopy request(s) for {}, which is off",
                 before - self.pending_copies.len(),
+                output.name()
+            );
+        }
+    }
+
+    /// Drop every pending image-copy frame a powered-off output was the only
+    /// place to serve.
+    ///
+    /// The image-copy half of [`Self::drop_pending_copies_for`]. A window
+    /// straddling this output may still be picked up by another screen's pass,
+    /// so only frames no remaining output can serve are failed; the client is
+    /// told `Stopped` rather than left waiting on a `ready` that no render
+    /// pass will send.
+    fn drop_pending_capture_frames_for(&mut self, output: &Output) {
+        if self.pending_capture_frames.is_empty() {
+            return;
+        }
+        let before = self.pending_capture_frames.len();
+        let mut live = Vec::with_capacity(before);
+        for (target, frame) in std::mem::take(&mut self.pending_capture_frames) {
+            let waited_on_output = match &target {
+                CaptureTarget::Output(frame_output) => frame_output == output,
+                CaptureTarget::Window(id) => self.window_is_on(*id, output),
+            };
+            if waited_on_output && !self.capture_target_servable(&target) {
+                frame.fail(
+                    smithay::reexports::wayland_protocols::ext::image_copy_capture::v1::server::ext_image_copy_capture_frame_v1::FailureReason::Stopped,
+                );
+            } else {
+                live.push((target, frame));
+            }
+        }
+        self.pending_capture_frames = live;
+        if self.pending_capture_frames.len() != before {
+            tracing::debug!(
+                "dropped {} image-capture frame(s) for {}, which is off",
+                before - self.pending_capture_frames.len(),
+                output.name()
+            );
+        }
+    }
+
+    /// Whether [`Self::service_portal_screenshots`] can still serve a request.
+    ///
+    /// The portal path here only names outputs — `service_portal_screenshots`
+    /// has no window arm — so a window id would wait for a server this
+    /// compositor does not have. A request that named no output is served by
+    /// the first output in the space and by no other, which is the same first
+    /// one that has to still exist and be powered for it to be answerable.
+    fn screenshot_request_servable(
+        &self,
+        request: &crate::screenshot::PendingScreenshot,
+    ) -> bool {
+        if request.window_id.is_some() {
+            return false;
+        }
+        match &request.output {
+            Some(output) => {
+                self.space.outputs().any(|other| other == output)
+                    && self.output_powered(output)
+            }
+            None => self
+                .space
+                .outputs()
+                .next()
+                .is_some_and(|output| self.output_powered(output)),
+        }
+    }
+
+    /// Drop portal screenshot requests that can no longer be served.
+    ///
+    /// `service_portal_screenshots` runs only while the output a request is
+    /// waiting on is being drawn, so one whose output has been unplugged or
+    /// powered off since it was queued is never reached by that pass and the
+    /// application waits on the portal for the rest of the session. Dropping
+    /// the request closes its reply channel, which the portal maps to a
+    /// failed reply.
+    pub fn reap_pending_screenshots(&mut self) {
+        if self.pending_screenshots.is_empty() {
+            return;
+        }
+        let before = self.pending_screenshots.len();
+        let mut live = Vec::with_capacity(before);
+        for request in std::mem::take(&mut self.pending_screenshots) {
+            if self.screenshot_request_servable(&request) {
+                live.push(request);
+            }
+            // The rest are dropped, closing their reply channels.
+        }
+        self.pending_screenshots = live;
+        if self.pending_screenshots.len() != before {
+            tracing::debug!(
+                "reaped {} portal screenshot request(s) whose output is gone or off",
+                before - self.pending_screenshots.len()
+            );
+        }
+    }
+
+    /// Drop portal screenshot requests waiting on one output.
+    ///
+    /// A request that named no output is served by the first output in the
+    /// space, so it waits on this one when this is that first output. Dropping
+    /// the request closes its reply channel, which the portal maps to a failed
+    /// reply — the same answer the client would get from a render that could
+    /// not read the screen.
+    fn drop_pending_screenshots_for(&mut self, output: &Output) {
+        if self.pending_screenshots.is_empty() {
+            return;
+        }
+        let before = self.pending_screenshots.len();
+        self.pending_screenshots.retain(|request| {
+            let waits_on_output = request.output.as_ref() == Some(output)
+                || (request.output.is_none() && self.space.outputs().next() == Some(output));
+            !waits_on_output
+        });
+        if self.pending_screenshots.len() != before {
+            tracing::debug!(
+                "dropped {} portal screenshot request(s) for {}, which is off",
+                before - self.pending_screenshots.len(),
                 output.name()
             );
         }

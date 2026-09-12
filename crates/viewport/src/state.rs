@@ -2243,11 +2243,22 @@ impl ViewportState {
             // damage history does not know it.
             surface.drm_output.reset_buffers();
             self.needs_render = true;
-        } else if let Err(e) = surface
-            .drm_output
-            .with_compositor(|compositor| compositor.clear())
-        {
-            tracing::warn!("could not turn {} off: {e}", output.name());
+        } else {
+            if let Err(e) = surface
+                .drm_output
+                .with_compositor(|compositor| compositor.clear())
+            {
+                tracing::warn!("could not turn {} off: {e}", output.name());
+            }
+            // The backend returns before drawing a blanked output, so the
+            // service passes that answer queued captures never run for this
+            // one. Fail what is waiting now rather than leaving clients
+            // holding their buffers — and the capture pool pinned — until the
+            // monitor wakes, which for one nobody turns back on is for the
+            // session.
+            self.drop_pending_copies_for(output);
+            self.drop_pending_capture_frames_for(output);
+            self.drop_pending_screenshots_for(output);
         }
         tracing::info!("{}: {}", output.name(), if on { "on" } else { "off" });
 
@@ -2358,7 +2369,14 @@ impl ViewportState {
         if self.capture_scratch.is_empty() {
             return;
         }
-        if self.casts.is_empty()
+        // A cast whose consumer went away stays in `casts` until the
+        // front-end closes the session rather than being dropped here, so
+        // `casts.is_empty()` was not the question: nothing streaming is. Such
+        // a cast asks `wants_frame` for nothing, and holding a screen's worth
+        // of VRAM for a picture nobody is watching is what this release
+        // exists to stop. A share that resumes allocates on its next frame.
+        let nothing_streaming = !self.casts.iter().any(|cast| cast.stream.is_streaming());
+        if nothing_streaming
             && self.pending_copies.is_empty()
             && self.pending_capture_frames.is_empty()
         {
