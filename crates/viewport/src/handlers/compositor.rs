@@ -76,29 +76,48 @@ impl CompositorHandler for ViewportState {
                 return;
             };
 
-            // Keep an unsignalled client fence out of the renderer's shared
-            // queue. Capture waits for its render to finish on this thread;
-            // queueing a client fence first would make that wait freeze input
-            // and every output until the client catches up.
+            // An explicit acquire point is only blocked on while capture may
+            // CPU-wait on the renderer. Otherwise it is carried: the renderer
+            // waits on it GPU-side when it imports the buffer, and the DRM
+            // commit hands it to KMS as IN_FENCE_FD, so the GPU waits and this
+            // thread does not. Carried points are recorded on the state so a
+            // capture request that arrives after the fence was already queued
+            // can hold capture back: letting a capture readback wait behind
+            // that fence would freeze input and every output until the client
+            // caught up, which is the whole reason the blocker exists.
             if let Some(acquire) = acquire {
-                if let Ok((blocker, source)) = acquire.generate_blocker() {
-                    let client = client.clone();
-                    let inserted = state.loop_handle.insert_source(source, move |_, _, state| {
-                        let Some(compositor_state) = state.try_client_compositor_state(&client)
-                        else {
-                            tracing::debug!(
-                                "an explicit acquire fence fired for a client that has gone"
-                            );
-                            return Ok(());
-                        };
-                        let dh = state.display_handle.clone();
-                        compositor_state.blocker_cleared(state, &dh);
-                        Ok(())
-                    });
-                    if inserted.is_ok() {
-                        add_blocker(surface, blocker);
-                        return;
+                if state.capture_wants_fences_blocked() {
+                    // Something is waiting on pixels: keep the client fence
+                    // out of the renderer's shared queue exactly as before.
+                    if let Ok((blocker, source)) = acquire.generate_blocker() {
+                        let client = client.clone();
+                        let inserted =
+                            state.loop_handle.insert_source(source, move |_, _, state| {
+                                let Some(compositor_state) =
+                                    state.try_client_compositor_state(&client)
+                                else {
+                                    tracing::debug!(
+                                        "an explicit acquire fence fired for a client that has gone"
+                                    );
+                                    return Ok(());
+                                };
+                                let dh = state.display_handle.clone();
+                                compositor_state.blocker_cleared(state, &dh);
+                                Ok(())
+                            });
+                        if inserted.is_ok() {
+                            add_blocker(surface, blocker);
+                            return;
+                        }
                     }
+                    // No blocker could be armed; fall through to the buffer's
+                    // own fence rather than committing unsynchronised.
+                } else {
+                    // Keyed by surface, and replaced each commit: a fast client
+                    // cannot grow this map, and the newest point on a timeline
+                    // subsumes the older ones.
+                    state.carried_acquire_points.insert(surface.id(), acquire);
+                    return;
                 }
             }
 

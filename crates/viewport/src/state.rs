@@ -12,7 +12,9 @@ use smithay::input::{Seat, SeatState};
 use smithay::output::Output;
 use smithay::reexports::calloop::generic::Generic;
 use smithay::reexports::calloop::{EventLoop, Interest, LoopHandle, LoopSignal, Mode, PostAction};
-use smithay::reexports::wayland_server::backend::{ClientData, ClientId, DisconnectReason};
+use smithay::reexports::wayland_server::backend::{
+    ClientData, ClientId, DisconnectReason, ObjectId,
+};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{Display, DisplayHandle, Resource as _};
 use smithay::utils::{Logical, Physical, Point, Rectangle};
@@ -941,6 +943,22 @@ pub struct ViewportState {
     /// Capture frames waiting for the renderer, exactly as screencopy's are:
     /// the copy happens where the renderer is, which is inside a backend.
     pub pending_capture_frames: Vec<(CaptureTarget, smithay::wayland::image_copy_capture::Frame)>,
+    /// Acquire points this compositor has handed to the renderer/KMS and not
+    /// yet seen signal.
+    ///
+    /// A raw client fence must not be queued ahead of a capture readback: the
+    /// renderer waits on it, but the capture's own `sync.wait()` blocks this
+    /// thread behind that GPU work. While capture is active a point here means
+    /// there is already GPU work ahead of any capture service, so capture is
+    /// held back until the point signals. Keyed by the committing surface so a
+    /// fast client replaces instead of accumulating; entries are not removed
+    /// on surface destroy, because a fence already in the renderer's queue
+    /// must stay tracked until it has signalled.
+    pub carried_acquire_points:
+        std::collections::HashMap<ObjectId, smithay::wayland::drm_syncobj::DrmSyncPoint>,
+    /// A capture retry tick is armed. Only one may be outstanding, so a gate
+    /// that refuses capture cannot arm one per render pass.
+    pub capture_retry_armed: bool,
     /// linux-drm-syncobj-v1: a client saying when its buffer is ready rather
     /// than the kernel guessing. Absent on a GPU that cannot do it, and on
     /// the nested backend, which has no DRM device of its own.
@@ -1880,6 +1898,8 @@ impl ViewportState {
             capture_sources: Vec::new(),
             capture_gpu: None,
             pending_capture_frames: Vec::new(),
+            carried_acquire_points: std::collections::HashMap::new(),
+            capture_retry_armed: false,
             syncobj_state: None,
             gamma_ramps: std::collections::HashMap::new(),
             gamma_vcgt: std::collections::HashMap::new(),

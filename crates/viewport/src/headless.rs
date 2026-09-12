@@ -236,19 +236,27 @@ fn service_captures(state: &mut ViewportState, outputs: &[Output]) {
         return;
     };
 
-    for output in outputs {
-        state.service_screencopy::<_, smithay::backend::renderer::gles::GlesRenderbuffer>(
-            output,
-            &mut renderer,
-        );
-        state.service_image_capture::<_, smithay::backend::renderer::gles::GlesRenderbuffer>(
-            output,
-            &mut renderer,
-        );
-        state.feed_casts::<_, smithay::backend::renderer::gles::GlesRenderbuffer>(
-            output,
-            &mut renderer,
-        );
+    // A capture readback waits on the renderer's shared queue from this
+    // thread, so hold it back while a carried client fence may be ahead of it:
+    // that wait would freeze this thread and every output until the client
+    // caught up. `capture_service_ready` arms a one-shot retry, and this
+    // function's own frame timer keeps ticking, so skipping a pass cannot
+    // strand a capture.
+    if state.capture_service_ready() {
+        for output in outputs {
+            state.service_screencopy::<_, smithay::backend::renderer::gles::GlesRenderbuffer>(
+                output,
+                &mut renderer,
+            );
+            state.service_image_capture::<_, smithay::backend::renderer::gles::GlesRenderbuffer>(
+                output,
+                &mut renderer,
+            );
+            state.feed_casts::<_, smithay::backend::renderer::gles::GlesRenderbuffer>(
+                output,
+                &mut renderer,
+            );
+        }
     }
 
     if let Some(headless) = state.headless.as_mut() {
