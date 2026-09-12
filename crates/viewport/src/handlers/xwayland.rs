@@ -28,6 +28,7 @@
 use smithay::backend::input::InputTime;
 use smithay::desktop::Window;
 use smithay::input::pointer::Focus;
+use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Rectangle, SERIAL_COUNTER};
 use smithay::wayland::seat::WaylandFocus as _;
 use smithay::wayland::selection::SelectionTarget;
@@ -39,13 +40,27 @@ use viewport_ipc::Event;
 use crate::state::ViewportState;
 
 /// The xwayland-shell protocol, which is how Xwayland tells the compositor
-/// that a wl_surface belongs to a given X window. Nothing to decide here; the
-/// state is the whole of it.
+/// that a wl_surface belongs to a given X window. Nothing to decide here but
+/// the one callback below; the state is the rest of it.
 impl smithay::wayland::xwayland_shell::XWaylandShellHandler for ViewportState {
     fn xwayland_shell_state(
         &mut self,
     ) -> &mut smithay::wayland::xwayland_shell::XWaylandShellState {
         &mut self.xwayland_shell_state
+    }
+
+    /// An X window and the surface it paints into have been paired.
+    ///
+    /// A moment a window can be announced at, and for one that painted before
+    /// the pairing the only one there will ever be: the pairing is Xwayland's
+    /// word on the Wayland connection while the window itself is its word on
+    /// the X11 connection, so the two are not ordered against each other, and
+    /// a client that maps and paints in one go — SDL does, and Steam's
+    /// self-updater is an SDL window — can have its only buffer committed
+    /// before the window is known. See `announce_if_newly_mapped` for what the
+    /// commit then misses and why nothing is lost by asking again here.
+    fn surface_associated(&mut self, _xwm: XwmId, wl_surface: WlSurface, _window: X11Surface) {
+        self.announce_if_newly_mapped(&wl_surface);
     }
 }
 

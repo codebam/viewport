@@ -35,6 +35,17 @@ to summarise rather than to duplicate.
   second against 43 to 48); see `docs/benchmarks.md`.
 
 ### Fixed
+- An X11 window that paints before Xwayland has paired it with a surface is
+  announced anyway. The window arrives over the X11 connection and the surface
+  it paints into over the Wayland one, and nothing orders the two against each
+  other, so a client that maps and paints in one go — SDL does, and Steam's
+  self-updater is an SDL window — could have its first commit dispatched while
+  the pairing was still in flight. That commit found no window to attribute it
+  to, and a client with nothing left to draw never commits again: the window
+  was never announced, so it was never placed, so it was never sent the expose
+  that would have made it paint again. The pairing now runs the check that
+  commit would have. Reproduced on a loaded machine, where it was one window in
+  five.
 - A screen share no longer redraws every monitor on the desk. `feed_casts`
   asked every output's render pass for a frame — its gate was "does any share
   want a frame", with nothing about which screen the share was of — and the

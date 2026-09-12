@@ -274,11 +274,6 @@ impl ViewportState {
 }
 
 impl ViewportState {
-    /// Tell the shell about a window the moment its client first paints.
-    ///
-    /// Announcing at `new_toplevel` would be too early: the window has no
-    /// title, no app_id and no size yet, and the shell would place an empty
-    /// rectangle and then have to be told all three again.
     /// Say when what a client painted is not the size it was asked for.
     ///
     /// A window drawn at a size other than its rectangle is either scaled or
@@ -319,7 +314,24 @@ impl ViewportState {
         );
     }
 
-    fn announce_if_newly_mapped(&mut self, surface: &WlSurface) {
+    /// Tell the shell about a window the moment its client first paints.
+    ///
+    /// Announcing at `new_toplevel` would be too early: the window has no
+    /// title, no app_id and no size yet, and the shell would place an empty
+    /// rectangle and then have to be told all three again.
+    ///
+    /// Reached from every commit a surface makes, and from `surface_associated`
+    /// for an X11 window whose surface has just been paired with it. The second
+    /// exists because a commit can arrive before the pairing does: Xwayland's
+    /// news of a window comes over the X11 connection and the surface it paints
+    /// into over the Wayland one, so a client that maps and paints in one go —
+    /// SDL does, and Steam's self-updater is an SDL window — can have its first
+    /// buffer committed while the pairing is still in flight, leaving that
+    /// commit with no window to attribute it to. Nothing is lost by it, since
+    /// the buffer is on the surface, but a client with nothing left to draw
+    /// never commits again — so the check that commit would have run is run
+    /// once more when the pairing lands.
+    pub(crate) fn announce_if_newly_mapped(&mut self, surface: &WlSurface) {
         let Some(view) = self.views.find_by_surface(surface) else {
             return;
         };
