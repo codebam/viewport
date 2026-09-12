@@ -33,4 +33,4 @@ serde_json = "1"
 # version -1. 151.8.1 is the newest 151 and carries the explicit-API-version
 # wrapper fix; its CEF 151.3.24 is satisfied by nixpkgs' 151.3.16, and both
 # declare the same API version 15101.
-cef = { version = "151.8", default-features = false }
+cef = { version = "152.0", default-features = false }
