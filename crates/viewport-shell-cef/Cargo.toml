@@ -23,4 +23,14 @@ serde_json = "1"
 # the crate's build-util and sandbox features: the first pulls in clap and
 # cargo_metadata for a bundler this does not use, and the second wants a
 # setuid helper that a nix store path cannot be.
-cef = { version = "152", default-features = false }
+#
+# Pinned to the 151 line, because that is what nixpkgs' `cef-binary` is. The
+# crate's pre-generated bindings carry `CEF_API_VERSION_LAST`, and it is that
+# number, not the crate's, that `api_hash` declares to libcef at run time. A
+# crate whose CEF is newer than the library's newest supported API version
+# (`152` against a 151 library) has that version refused — "Request for
+# unsupported CEF API version 15200" — after which every CEF call dies on
+# version -1. 151.8.1 is the newest 151 and carries the explicit-API-version
+# wrapper fix; its CEF 151.3.24 is satisfied by nixpkgs' 151.3.16, and both
+# declare the same API version 15101.
+cef = { version = "151.8", default-features = false }

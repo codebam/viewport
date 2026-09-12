@@ -250,8 +250,16 @@
         # `archive.json` is what stops the build script downloading a CEF of
         # its own, which a sandbox forbids. Three fields, and the only one that
         # is read is `name`: the version is parsed out of it and accepted if it
-        # is not *newer* than the version the crate wants, so 149.0.5 satisfies
-        # a crate built against 149.0.6.
+        # is not *newer* than the version the crate wants, so 151.3.16 satisfies
+        # a crate built against 151.3.24.
+        #
+        # That tolerance is patch skew only, and the crate has to stay on the
+        # same CEF line as the engine. The pre-generated bindings bake in
+        # `CEF_API_VERSION_LAST`, and the first `api_hash` call declares that
+        # number to libcef: a crate a minor version ahead of the engine (152's
+        # 15200 against a 151 library) has it refused — "Request for
+        # unsupported CEF API version" — and every CEF call after it dies on
+        # version -1. The manifest's `cef` must track `pkgs.cef-binary`.
         #
         # Symlinks rather than copies: this is 1.3 GB of engine, and nothing in
         # the build writes to it.
@@ -268,7 +276,7 @@
           cat > $out/archive.json <<'JSON'
           {
             "type": "minimal",
-            "name": "cef_binary_${pkgs.cef-binary.version}+g0000000+chromium-149.0.0.0_linux64_minimal",
+            "name": "cef_binary_${pkgs.cef-binary.version}+g0000000+chromium-151.0.7922.109_linux64_minimal",
             "sha1": "0000000000000000000000000000000000000000"
           }
           JSON

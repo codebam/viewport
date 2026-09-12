@@ -321,11 +321,15 @@ Five things had to be right, none of which says so when it is wrong:
   `target/`.
 - **The download.** The build script fetches a CEF of its own unless
   `CEF_PATH` holds an `archive.json` — `{type, name, sha1}`, and only `name`
-  is read. The check is `archive <= expected`, so nixpkgs' 149.0.5 satisfies a
-  crate built against 149.0.6. There is no version skew to resolve.
+  is read. The check is `archive <= expected`, so nixpkgs' 151.3.16 satisfies
+  a crate built against 151.3.24. That tolerance is patch skew only: the crate
+  and the engine have to stay on the same CEF line, for the next reason.
 - **The API version.** Every CEF structure carries one, set by the first call
-  to `api_hash`. Without it the process dies with `CefApp_0_CToCpp called with
-  invalid version -1`.
+  to `api_hash`, which passes the crate's baked-in `CEF_API_VERSION_LAST`.
+  Without it the process dies with `CefApp_0_CToCpp called with invalid
+  version -1`; with a version the engine does not support — a 152 crate
+  against a 151 library — it dies with `Request for unsupported CEF API
+  version 15200` before that.
 - **When a window may be made.** From `on_context_initialized`, not when
   `initialize` returns. Early, it traps thirteen seconds later with no message.
 - **`can_resize`.** Every delegate method that is not implemented answers
