@@ -22,10 +22,11 @@
 }:
 {
   programs.viewport.enable = true;
-  # Named rather than left to the module's default, which is `servoshell`:
-  # this image runs under VirtualBox's software GL, and the backend to hand a
+  # This image runs under VirtualBox's software GL, and the backend to hand a
   # machine with no GPU is the one measured fastest per painted frame rather
-  # than the one measured lightest.
+  # than the one measured lightest. That is `cef`, which is also the module's
+  # default now; named here rather than left to follow it, so the image keeps
+  # the fast painter if the default moves again.
   programs.viewport.shellBackend = "cef";
   programs.viewport.terminal = "${pkgs.foot}/bin/foot";
 

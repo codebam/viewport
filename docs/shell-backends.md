@@ -4,27 +4,28 @@ The shell is a web page. Which engine renders it is a choice, and this is what
 the choices are.
 
 ```
---shell-backend=servoshell  Servo, driven as a child process       implemented, default
---shell-backend=cef         Chromium embedded through CEF          implemented
+--shell-backend=servoshell  Servo, driven as a child process       implemented
+--shell-backend=cef         Chromium embedded through CEF          implemented, default
 --shell-backend=webkitgtk   WebKitGTK, in a process of its own     implemented
 --shell-backend=chromium    Chromium, driven as a child process    implemented
 --shell-backend=wpe         WPE WebKit, inside the compositor      implemented
 --shell-backend=servo       Servo, embedded in the shell process   implemented, built by hand
 ```
 
-`servoshell` is what the NixOS module installs and what `nix run` on this flake
-gives: it builds no engine, and it is the lightest desktop of the five that
-have been measured — 8.5% of a core under load against 9.9 to 11.5, 357 MB
-against 449 to 639, four processes against nine to twelve.
+`cef` is what the NixOS module installs and what `nix run` on this flake gives:
+it builds no engine, and of the three that do not it is the cheapest per frame
+the shell paints — 0.230% of a core against `webkitgtk`'s 0.240 and
+`chromium`'s 0.261 — at the same rate.
 
-It is also the slowest to paint, and by enough to be the first thing to know
-about the default: 14 frames a second under that load against 43 to 48, which
-is 0.607% of a core per frame the shell actually painted against 0.230 to
-0.261. The cheapest desktop and the most expensive engine are the same fact
-seen twice. `cef` is the one to name for a desktop that should feel quick, and
-`webkitgtk` for a machine short of memory rather than CPU — see
-[`benchmarks.md`](benchmarks.md). The embedded `servo` backend has not been
-measured at all.
+`servoshell` builds no engine either, and is the lightest desktop of the five
+that have been measured: 8.5% of a core under load against 9.9 to 11.5, 357 MB
+against 449 to 639, four processes against nine to twelve. It is also the
+slowest to paint by some way — 14 frames a second under that load against 43 to
+48, or 0.607% of a core per frame the shell actually painted against 0.230 to
+0.261 — so it is a name to ask for rather than the landing place. `webkitgtk`
+is the one for a machine short of memory rather than CPU: `cef` is about 145 MB
+heavier. See [`benchmarks.md`](benchmarks.md). The embedded `servo` backend has
+not been measured at all.
 
 Two of these are the same engine twice, and that is the pattern rather than an
 accident: `cef` links Blink where `chromium` drives it, and `servo` links Servo
@@ -431,19 +432,21 @@ keyed on the winit window — behind a build that already costs hours. The drive
 its own loopback bridge and `--devtools`, and there is no upstream flag to pass
 through `VIEWPORT_SERVOSHELL_ARGS`.
 
-**Which means the default backend is the least accessible of the six**, and
-that is the sentence to act on rather than the six paragraphs above it. A desk
-that needs a screen reader wants:
+**Which means the default is one that can be read, with one flag.** `cef` is
+Blink, which publishes its accessibility tree once it notices a screen reader;
+where it does not, `--force-renderer-accessibility` through `VIEWPORT_CEF_ARGS`
+is the lever, and it is not passed by default. The backend that has no lever at
+all is `servoshell`, and it is no longer the default. A desk that would rather
+have the toolkit's own tree — and every desk that needs one without a flag —
+wants:
 
 ```nix
 programs.viewport.shellBackend = "webkitgtk";
 ```
 
-or `--shell-backend=webkitgtk`. This is not a defect in `servoshell` — it is
-the default for good reasons measured in
-[`benchmarks.md`](benchmarks.md) — but a default chosen on CPU and memory is
-not a default chosen on whether the desktop can be read aloud, and until Servo
-grows an AT-SPI adapter those two answers are different.
+or `--shell-backend=webkitgtk`. `servoshell` is still the lightest desktop
+measured and the slowest to paint, and the paragraphs above are reasons to name
+`webkitgtk` for a screen reader rather than reasons to avoid Servo.
 
 ## Building and installing
 
@@ -452,7 +455,7 @@ thing that differs between them:
 
 ```
 # Servo, in nixpkgs' servoshell; builds no engine at all
-nix build .#servoshell      # and this is `.#default`
+nix build .#servoshell
 
 # the engine in-process; builds WebKit
 nix build .#wpe
@@ -464,7 +467,7 @@ nix build .#webkitgtk
 nix build .#chromium
 
 # the same engine, embedded; builds a C++ wrapper and no engine
-nix build .#cef
+nix build .#cef             # and this is `.#default`
 ```
 
 There is no `.#servo`. The embedded Servo shell is a cargo dependency on the
@@ -482,8 +485,8 @@ On NixOS:
 ```nix
 programs.viewport = {
   enable = true;
-  shellBackend = "servoshell";   # the default; also "cef", "webkitgtk",
-                                 # "chromium" or "wpe"
+  shellBackend = "cef";   # the default; also "webkitgtk", "chromium",
+                          # "wpe" or "servoshell"
 };
 ```
 

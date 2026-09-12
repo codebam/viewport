@@ -36,9 +36,9 @@
   # Whatever the flake recommends, so this tries the thing people install
   # rather than a backend chosen here to make the VM look good. Not named at
   # all, so it follows `programs.viewport.shellBackend`'s own default — which
-  # is `servoshell` — and moves when that moves. Any other is one line:
+  # is `cef` — and moves when that moves. Any other is one line:
   #
-  #     programs.viewport.shellBackend = "cef";
+  #     programs.viewport.shellBackend = "webkitgtk";
 
   virtualisation = {
     memorySize = 6144; # An engine, a compositor, and a root filesystem in RAM.

@@ -24,6 +24,16 @@ to summarise rather than to duplicate.
   with any picture format. A config event about something else does not
   restart the film, and switching back to a picture unloads it.
 
+### Changed
+- **`cef` is the default backend** — `nix build`, `nix run`,
+  `.#viewport-smithay` and `programs.viewport.shellBackend` all land on the
+  embedded Chromium again, where they landed on `servoshell`. Of the three
+  backends that build no engine, `cef` is the cheapest per painted frame
+  (0.230% of a core against `webkitgtk`'s 0.240 and `chromium`'s 0.261) at the
+  same rate, for about 145 MB more resident than `webkitgtk`. `servoshell`
+  remains the lightest desktop measured and the slowest to paint (14 frames a
+  second against 43 to 48); see `docs/benchmarks.md`.
+
 ## [0.3.0] - 2026-09-09
 
 ### Fixed
