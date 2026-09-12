@@ -170,15 +170,20 @@ impl ViewportState {
 
     /// Size a layer surface and send its configure, once it has committed.
     ///
+    /// Returns whether the committing surface was the root layer surface, i.e.
+    /// the owning surface of a layer. Only that surface can be found by a
+    /// TOPLEVEL layer lookup, so the commit handler can skip the
+    /// keyboard-interactivity scan for popups and subsurfaces.
+    ///
     /// Called from the commit handler: a layer surface has no size until it
     /// has been arranged, and it will not paint until it has been configured.
-    pub fn layer_commit(&mut self, surface: &WlSurface) {
+    pub fn layer_commit(&mut self, surface: &WlSurface) -> bool {
         let mut owner_surface = surface.clone();
         while let Some(parent) = get_parent(&owner_surface) {
             owner_surface = parent;
         }
         let Some((output, layer)) = crate::layer::owner(&owner_surface) else {
-            return;
+            return false;
         };
         let is_root = layer.wl_surface() == surface;
 
@@ -235,6 +240,7 @@ impl ViewportState {
         if changed || pointer_stack_changed {
             self.refresh_pointer_focus();
         }
+        is_root
     }
 
     /// Give a layer surface the keyboard if it asked for it.

@@ -232,10 +232,14 @@ impl ViewportState {
         // request, so this is where a window that starts playing a video is
         // noticed. Only the change is sent on.
         self.notify_content_change(surface);
-        // A layer surface has no size until it is arranged, and will not paint
-        // until it has been configured.
-        self.layer_commit(surface);
-        self.focus_layer_if_exclusive(surface);
+        // A layer surface has no size until it is arranged, and will not
+        // paint until it has been configured. `layer_commit` answers whether
+        // the surface is the layer root: a layer map's TOPLEVEL lookup can
+        // only ever match that surface, so a popup or subsurface commit does
+        // not need the scan behind `focus_layer_if_exclusive`.
+        if self.layer_commit(surface) {
+            self.focus_layer_if_exclusive(surface);
+        }
         self.focus_lock_surface(surface);
 
         self.announce_if_newly_mapped(surface);

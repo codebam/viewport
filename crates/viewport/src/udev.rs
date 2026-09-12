@@ -2797,16 +2797,15 @@ impl ViewportState {
         self.send_dmabuf_feedback(udev, output);
 
         let mut feedback = smithay::desktop::utils::OutputPresentationFeedback::new(output);
-        for window in self.space.elements() {
-            if self.space.outputs_for_element(window).contains(output) {
-                window.take_presentation_feedback(
-                    &mut feedback,
-                    surface_primary_scanout_output,
-                    |surface, _| {
-                        surface_presentation_feedback_flags_from_states(surface, None, states)
-                    },
-                );
-            }
+        // One pass over the elements already tracked for this output, rather
+        // than one `Vec<Output>` per element per presented frame just to test
+        // membership.
+        for window in self.space.elements_for_output(output) {
+            window.take_presentation_feedback(
+                &mut feedback,
+                surface_primary_scanout_output,
+                |surface, _| surface_presentation_feedback_flags_from_states(surface, None, states),
+            );
         }
         for layer in smithay::desktop::layer_map_for_output(output).layers() {
             layer.take_presentation_feedback(
@@ -2907,11 +2906,10 @@ impl ViewportState {
             return;
         };
 
-        for window in self.space.elements() {
-            if self.space.outputs_for_element(window).contains(output) {
-                window
-                    .send_dmabuf_feedback(output, surface_primary_scanout_output, |_, _| feedback);
-            }
+        // As in `presentation_feedback`: the elements on this output, in one
+        // pass, with no per-window `Vec<Output>`.
+        for window in self.space.elements_for_output(output) {
+            window.send_dmabuf_feedback(output, surface_primary_scanout_output, |_, _| feedback);
         }
         for layer in smithay::desktop::layer_map_for_output(output).layers() {
             layer.send_dmabuf_feedback(output, surface_primary_scanout_output, |_, _| feedback);
@@ -3250,15 +3248,6 @@ impl ViewportState {
     pub fn render(&mut self, id: OutputId) {
         let start = self.start_time.elapsed();
 
-        let Some(output) = self
-            .udev
-            .as_ref()
-            .and_then(|udev| udev.surface(id))
-            .map(|surface| surface.output.clone())
-        else {
-            return;
-        };
-
         // Nothing can come of this frame, so do not build it.
         //
         // These three are checked again in `render_pass`, which is where they
@@ -3281,6 +3270,11 @@ impl ViewportState {
         // has legitimately stopped, a connector rescan — turns them all back on
         // a moment later. `render_if_needed` checked it and those four did not,
         // which is `Mod4+Shift+b` appearing to do nothing.
+        //
+        // Deliberately before the `output` clone below: the pending path is
+        // the common one under a client committing in IMMEDIATE or MAILBOX,
+        // and it would otherwise clone an `Output` and look the surface up a
+        // second time only to throw both away.
         let skip = self.udev.as_ref().and_then(|udev| {
             let blanked = udev.blanked;
             udev.surface(id).map(|surface| {
@@ -3302,6 +3296,15 @@ impl ViewportState {
                 return;
             }
         }
+
+        let Some(output) = self
+            .udev
+            .as_ref()
+            .and_then(|udev| udev.surface(id))
+            .map(|surface| surface.output.clone())
+        else {
+            return;
+        };
 
         // Everything the frame needs, worked out before the renderer is
         // borrowed — and shared with the nested backend, which is what keeps
