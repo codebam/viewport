@@ -59,6 +59,12 @@ impl ViewportState {
             return;
         }
 
+        // A lock is a session state change, and the idle tick now refreshes
+        // the inhibitor answer conditionally; settle it here so a hold taken
+        // or dropped around the lock is not carried into a policy that has
+        // just been switched on by the reload which may have caused it.
+        self.refresh_idle_inhibit();
+
         match self.lock_mode.clone() {
             crate::lock::Mode::Command(command) => {
                 let display = self.child_display_env();

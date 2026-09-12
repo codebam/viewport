@@ -4,7 +4,8 @@
  *
  * Split in two on purpose. The chrome — workspace buttons and the taskbar —
  * is rebuilt only when the window list changes; the modules are strings
- * reassigned only when they differ. A status sample arrives every two seconds
+ * reassigned only when they differ. A status sample now arrives only when a
+ * displayed value moves, plus a heartbeat for a shell that has just started,
  * and every shell repaint is a composited frame, so redrawing a CPU percentage
  * must not cost the whole desktop a frame.
  *
@@ -32,12 +33,14 @@ function formatBytes(n) {
  * relayout.
  *
  * The modules are a mode label and six status strings, redrawn whenever the
- * compositor publishes a sample — every two seconds, awake or idle. Redrawing
- * the chrome to keep them current was the same waste 95f625c took off the
- * clock tick: every shell repaint is a composited frame, so an idle machine
- * was painting the whole desktop every two seconds to move a CPU percentage.
- * status.update calls renderBarModules() alone, and it assigns only what
- * actually differs, so the common tick touches no DOM at all. */
+ * compositor publishes a sample — now only when something drawn actually
+ * changed, plus a heartbeat, so an idle machine no longer gets a sample every
+ * two seconds at all. Redrawing the chrome to keep them current was the same
+ * waste 95f625c took off the clock tick: every shell repaint is a composited
+ * frame, and an idle machine was painting the whole desktop every two seconds
+ * to move a CPU percentage. status.update calls renderBarModules() alone, and
+ * it assigns only what actually differs, so the common tick touches no DOM at
+ * all. */
 function renderBar(name) {
   renderBarChrome(name);
   renderBarModules(name);
@@ -223,9 +226,9 @@ function renderBarModules(name) {
     if (output.modeEl.hidden !== (labels.length === 0)) {
       output.modeEl.hidden = labels.length === 0;
       /* Only on the way in, and only on the edge. This function runs on every
-         status sample — every two seconds, awake or idle — and a badge that
-         re-popped each time would be a piece of the desktop animating on its own
-         for as long as resize mode was held. */
+         status sample, and a badge that re-popped each time would be a piece of
+         the desktop animating on its own for as long as resize mode was
+         held. */
       if (!output.modeEl.hidden) animateModeIn(output.modeEl);
     }
   }
@@ -300,8 +303,8 @@ function trayElement(output) {
 }
 
 /* Kept and updated by position, like the workspace buttons and for the same
- * reason: a status sample arrives every two seconds and rebuilding the tray on
- * each one would be an allocation and a rebound listener per icon, on a bar
+ * reason: a status sample arrives and rebuilding the tray on each one would
+ * be an allocation and a rebound listener per icon, on a bar
  * that mostly has nothing new to say. The listeners are bound once and read
  * the item back off the element, so they survive an icon changing places. */
 function syncTray(output) {
@@ -631,7 +634,7 @@ function widgetOptions(options) {
  * object `mount` did — including the same `options` snapshot. `tick` is the
  * widget asking for a redraw of the custom widgets now, which is what a widget
  * fed by a fetch or its own timer needs rather than waiting for the next
- * two-second status sample. `el` is the element the widget is drawn into; it
+ * periodic status sample. `el` is the element the widget is drawn into; it
  * is passed for symmetry with mount/update/destroy and is where a widget's own
  * children live. */
 function widgetContext(name, options, el) {
@@ -775,7 +778,7 @@ function wireWidget(el) {
      the reason is ordering rather than tidiness: a spawned `wpctl` and a
      `status.refresh` in the next message are a race the refresh usually wins,
      so the bar redraws the volume that was already there and the new one waits
-     for the next two-second tick. `status.volume` changes and samples in that
+     for the next periodic tick. `status.volume` changes and samples in that
      order, so it cannot. */
   const audio = (widget, body) => send({
     type: 'status.volume',
@@ -865,8 +868,8 @@ function wireWidget(el) {
 
 /* The default shape: the shipped modules (from index.html) stay put and the
  * `bar_widgets` additions are appended after them. Widget elements keep and
- * update by position, like the chrome buttons, so a status sample every two
- * seconds never rebuilds them. */
+ * update by position, like the chrome buttons, so a status sample never
+ * rebuilds them. */
 function syncBarWidgets(output) {
   const container = output.barEl.querySelector('.bar-right');
   const els = output.widgetsEls ?? (output.widgetsEls = []);
@@ -1310,7 +1313,7 @@ function renderBarsWidgets() {
  * directly. A geocode lookup resolves the location, then the forecast call
  * reads the current conditions. Cached per location so several monitors make
  * one of each per refresh, and a slot is marked in-flight/failed so the
- * two-second modules pass never starts another request. */
+ * periodic modules pass never starts another request. */
 
 const WEATHER_URL = 'https://api.open-meteo.com/v1/forecast';
 const WEATHER_REFRESH = 15 * 60 * 1000;

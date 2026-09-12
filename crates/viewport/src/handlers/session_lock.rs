@@ -63,6 +63,10 @@ impl SessionLockHandler for ViewportState {
         self.locked_at = Some(std::time::Instant::now());
         self.lock_warned = false;
         self.lock_surfaces.clear();
+        // A lock is a state change the idle tick now refreshes conditionally;
+        // settle the inhibitor answer with it so the notifier state cannot
+        // lag a hold that was taken or dropped around the lock.
+        self.refresh_idle_inhibit();
         // Whatever the shell was drawing, it is not the lock screen any more.
         //
         // Reached where the built-in screen is up and not drawing — a shell
