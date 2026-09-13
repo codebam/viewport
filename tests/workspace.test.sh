@@ -36,6 +36,14 @@ trap cleanup EXIT
 unset WAYLAND_DISPLAY
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp}"
 
+# The control socket treats a same-UID process as untrusted unless it is the
+# shell this compositor started or the compositor binary itself. This test
+# drives the socket from python3, so name that executable as trusted, exactly
+# as the cargo test harness names its own. The compositor honours the
+# variable in debug builds only, which is what scripts/integration.sh and
+# CONTRIBUTING build here.
+export VIEWPORT_IPC_TRUST_EXE="$(command -v python3)"
+
 "$VIEWPORT" --headless --timeout 1 >"$LOG" 2>&1 &
 COMPOSITOR_PID=$!
 

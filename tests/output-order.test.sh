@@ -45,6 +45,14 @@ export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp}"
 export WLR_BACKENDS=headless
 export WLR_RENDERER=${VP_RENDERER:-vulkan}
 
+# The control socket treats a same-UID process as untrusted unless it is the
+# shell this compositor started or the compositor binary itself. This test
+# drives the socket from python3, so name that executable as trusted, exactly
+# as the cargo test harness names its own. The compositor honours the
+# variable in debug builds only, which is what scripts/integration.sh and
+# CONTRIBUTING build here.
+export VIEWPORT_IPC_TRUST_EXE="$(command -v python3)"
+
 printf '{ "layout": "tiling" }\n' >"$WORK/config.json"
 
 "$VIEWPORT" --headless -c "$WORK/config.json" >"$LOG" 2>&1 &
