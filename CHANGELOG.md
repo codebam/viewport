@@ -35,6 +35,28 @@ to summarise rather than to duplicate.
   second against 43 to 48); see `docs/benchmarks.md`.
 
 ### Fixed
+- A new window no longer opens in the top-left corner. A window joins the
+  shell's `views` before its element leaves the template's detached fragment,
+  and `flipFrom` — which animates a relayout by inverting it — reads the
+  rectangle it measured there to decide where the window came from. A detached
+  element measures `0,0,0,0`, and zero is a *truthy* rectangle, so the guard
+  that exists to skip new windows (`if (!from) continue`, commented "was hidden
+  or is new") let every one of them through and parked it at the page origin to
+  slide it back in from there. The compositor follows the frame by resampling
+  the window's rectangle, transforms included, so the client surface really was
+  told it was in the corner — and a client that ignores the configure it is
+  handed, which is every fixed-size dialog, sat there until the next relayout
+  happened to ask again. Switching windows is such a relayout, which is why the
+  window looked like it corrected itself once you looked at something else;
+  `pinentry` shows it more than anything, because it is spawned by gpg-agent
+  with a parent and `min == max`, so it is floated and takes this path every
+  time, while the application that summoned it is still working. A rectangle
+  with no extent now carries no position to animate from, so a new window
+  appears where it belongs and the FLIP is left to the windows that moved.
+  `pumpGeometry` also resets its frame ceiling on every re-arm rather than only
+  when it starts a loop: a window opening while a pump was winding down
+  inherited the frames that loop had left, which was routinely fewer than its
+  own 130ms slide needed, and sampling stopped with it still in flight.
 - `viewport msg -t view.capture --capture true` is no longer reverted. The
   compositor re-derived a conservative `capture: false` answer on every title,
   app-id, tag, icon or content change (`notify_props`) and on config reload, so

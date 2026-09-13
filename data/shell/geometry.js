@@ -276,6 +276,9 @@ const PUMP_IDLE_FRAMES = 3;
  * every tick is a worse bug than a window settling a frame late. */
 const PUMP_MAX_FRAMES = 60;
 let pumpRemaining = 0;
+/* Module scope rather than a local of pumpGeometry, so re-arming a pump that
+   is already running starts the ceiling over — see pumpGeometry. */
+let pumpBudget = PUMP_MAX_FRAMES;
 let pumping = false;
 
 /* Animate the move from an old layout to a new one, by inverting it.
@@ -314,7 +317,12 @@ function flipFrom(before) {
   for (const [id, view] of views) {
     if (view.el.hidden) continue;
     const from = before.get(id);
-    if (!from) continue; // was hidden or is new: nothing to animate from
+    /* Was hidden, or is new: nothing to animate from. A window joins `views`
+       before its element leaves the template's fragment, and a detached
+       element measures all zeros — a truthy rectangle, so testing for absence
+       alone flipped every new window in from the page origin, and the pump
+       below duly told the compositor it was in the corner. */
+    if (!from || (from.width === 0 && from.height === 0)) continue;
 
     const to = view.el.getBoundingClientRect();
     const dx = from.left - to.left;
@@ -387,16 +395,21 @@ function reportAllGeometry() {
 
 function pumpGeometry() {
   pumpRemaining = PUMP_IDLE_FRAMES;
+  /* Both counters are reset, not just the idle one: a relayout landing while a
+     pump winds down joins the running loop, and a window opening mid-pump used
+     to inherit whatever frames were left — often fewer than its own slide
+     needed, leaving the compositor holding a rectangle from mid-flight until
+     the next relayout. So the ceiling bounds one bout of sampling, and a bout
+     still ends, because re-arming takes a relayout. */
+  pumpBudget = PUMP_MAX_FRAMES;
   if (pumping) return;
   pumping = true;
-
-  let budget = PUMP_MAX_FRAMES;
 
   const step = () => {
     const changed = reportAllGeometry();
 
     pumpRemaining = changed ? PUMP_IDLE_FRAMES : pumpRemaining - 1;
-    if (pumpRemaining > 0 && --budget > 0) {
+    if (pumpRemaining > 0 && --pumpBudget > 0) {
       requestAnimationFrame(step);
     } else {
       pumping = false;
