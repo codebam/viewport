@@ -210,12 +210,14 @@ jobs:
   # locks and their own dependencies, so nothing else in this workflow sees
   # them either; this job does.
   #
-  # The first step is a ratchet. The one hard advisory either lock currently
-  # trips is RUSTSEC-2026-0258, in the h2 0.4.15 pinned by the Servo lock, so
-  # that id is ignored explicitly in the Servo check — and only that id, in
-  # only that manifest: a new advisory fails the job even while the known one
-  # is being worked around. The second step runs the whole root policy so
-  # source and license drift there is visible too.
+  # The first step is a ratchet. The CEF lock is clean under the root policy
+  # and gets no ignore. The Servo lock carries known findings, every one
+  # ignored explicitly in the Servo check and only there: a finding outside
+  # the list fails the job even while the known ones are being worked around.
+  # RUSTSEC-2026-0258 is the h2 0.4.15 the lock pins; the rest are crates in
+  # the pinned Servo 0.6.0 tree that RustSec has marked unmaintained with no
+  # safe upgrade. The second step runs the whole root policy so source and
+  # license drift there is visible too.
   excluded-crates:
     name: Excluded crate dependencies
     runs-on: ubuntu-latest
@@ -225,10 +227,12 @@ jobs:
       - uses: DeterminateSystems/nix-installer-action@65d7c888b2778e8cf30a07a88422ccb23499bfb8 # v4
       - uses: DeterminateSystems/magic-nix-cache-action@8a218f9e264e9c3803c9a1ee1c30d8e4ab55be63 # v2
 
-      # TODO: drop the ignore once crates/viewport-shell-servo/Cargo.lock moves
-      # to h2 >= 0.4.16. Until then RUSTSEC-2026-0258 stays visible here as an
-      # ignored advisory with its reason, rather than as a job that can never
-      # go green and would hide a second finding beside it.
+      # The Servo lock's known findings are ignored explicitly, each with the
+      # reason it is not fixable from this repository. RUSTSEC-2026-0258 is
+      # temporary: drop it once crates/viewport-shell-servo/Cargo.lock moves
+      # to h2 >= 0.4.16. The rest are unmaintained crates the pinned Servo
+      # 0.6.0 tree carries with no safe upgrade, so they stay until the engine
+      # pin does. CEF gets no ignore at all: a finding there fails this step.
       - name: Advisory ratchet for excluded manifests
         run: |
           nix develop .#rust --command bash -euo pipefail -c '
@@ -238,14 +242,21 @@ jobs:
               "[advisories]" \
               "ignore = [" \
               "  { id = \"RUSTSEC-2026-0258\", reason = \"h2 0.4.15 in crates/viewport-shell-servo/Cargo.lock; needs h2 >= 0.4.16\" }," \
+              "  { id = \"RUSTSEC-2025-0075\", reason = \"unic-char-range 0.9.0 is unmaintained; pulled in by Servo 0.6.0 via urlpattern; no safe upgrade\" }," \
+              "  { id = \"RUSTSEC-2025-0080\", reason = \"unic-common 0.9.0 is unmaintained; pulled in by Servo 0.6.0 via urlpattern; no safe upgrade\" }," \
+              "  { id = \"RUSTSEC-2025-0081\", reason = \"unic-char-property 0.9.0 is unmaintained; pulled in by Servo 0.6.0 via urlpattern; no safe upgrade\" }," \
+              "  { id = \"RUSTSEC-2025-0098\", reason = \"unic-ucd-version 0.9.0 is unmaintained; pulled in by Servo 0.6.0 via urlpattern; no safe upgrade\" }," \
+              "  { id = \"RUSTSEC-2025-0100\", reason = \"unic-ucd-ident 0.9.0 is unmaintained; pulled in by Servo 0.6.0 via urlpattern; no safe upgrade\" }," \
+              "  { id = \"RUSTSEC-2025-0141\", reason = \"bincode 1.3.3 is unmaintained; pinned by Servo 0.6.0; no safe upgrade\" }," \
+              "  { id = \"RUSTSEC-2026-0192\", reason = \"ttf-parser 0.25.1 is unmaintained; pulled in by winit 0.30.13 via sctk-adwaita; no safe upgrade\" }," \
               "]" > "$cfg"
             # CEF is already clean under the root policy, so no ignore is
             # applied to it: if it gains h2 later, that fails here.
             cargo deny --locked \
               --manifest-path crates/viewport-shell-cef/Cargo.toml \
               check advisories
-            # The temporary config (and its single ignore) applies to Servo
-            # only.
+            # The temporary config (and its whole ignore list) applies to
+            # Servo only.
             cargo deny --config "$cfg" --locked \
               --manifest-path crates/viewport-shell-servo/Cargo.toml \
               check advisories
