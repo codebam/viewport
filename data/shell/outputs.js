@@ -209,6 +209,14 @@ function syncOutputs(list) {
         && typeof applyWallpaperMediaTo === 'function') {
       applyWallpaperMediaTo(output.wallpaperEl, null);
     }
+    /* A calendar hanging off this output's clock has to come down with it.
+       closeCalendarOff is otherwise only reached from the per-output relayout
+       in geometry.js, and that never visits an output this loop has dropped:
+       the calendar, its overlay rectangle and its detached anchor would
+       outlive the screen and go on being painted over the windows. Before
+       `outputs.delete` so the active-output fallback inside it still sees this
+       name. */
+    closeCalendarOff(output);
     output.el.remove();
     outputs.delete(name);
     if (statusOsdOutput === name) {
