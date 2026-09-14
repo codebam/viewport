@@ -179,6 +179,29 @@ impl Injection {
             }
         }
     }
+
+    /// Whether every coordinate this event carries is a real number.
+    ///
+    /// The bus is free to carry NaN and infinities, and the seat is not: an
+    /// absolute position is stored as the pointer's location, and every later
+    /// motion is computed from it, so one NaN would stick and leave the
+    /// pointer dead for the rest of the session — including after the remote
+    /// grant is revoked. Non-finite events are dropped at this boundary.
+    pub fn is_finite(&self) -> bool {
+        match self {
+            Self::PointerMotion { dx, dy } | Self::PointerAxis { dx, dy, .. } => {
+                dx.is_finite() && dy.is_finite()
+            }
+            Self::PointerMotionAbsolute { x, y, .. }
+            | Self::TouchDown { x, y, .. }
+            | Self::TouchMotion { x, y, .. } => x.is_finite() && y.is_finite(),
+            Self::PointerButton { .. }
+            | Self::PointerAxisDiscrete { .. }
+            | Self::KeyboardKeycode { .. }
+            | Self::KeyboardKeysym { .. }
+            | Self::TouchUp { .. } => true,
+        }
+    }
 }
 
 /// What a remote-desktop session was given.
@@ -280,6 +303,12 @@ impl RemoteDesktop {
             // — the grant itself — is at info, in the compositor.
             tracing::debug!(
                 "remote desktop: dropping {injection:?} for {path}, which was granted {granted}"
+            );
+            return;
+        }
+        if !injection.is_finite() {
+            tracing::debug!(
+                "remote desktop: dropping {injection:?} for {path}, which is not a number"
             );
             return;
         }
@@ -1416,5 +1445,82 @@ mod tests {
         // And an absurd count saturates rather than wrapping into a scroll in
         // the other direction. The number comes off the bus.
         assert_eq!(discrete_v120(i32::MAX), i32::MAX);
+    }
+    /// Every event carrying a coordinate refuses NaN and infinities, and every
+    /// event without one passes. A NaN that reached the seat would become the
+    /// pointer's location and stick, so this is the only line of defence.
+    #[test]
+    fn non_finite_coordinates_are_not_input() {
+        let nan = f64::NAN;
+        let inf = f64::INFINITY;
+        for injection in [
+            Injection::PointerMotion { dx: nan, dy: 0.0 },
+            Injection::PointerMotion { dx: 0.0, dy: inf },
+            Injection::PointerMotionAbsolute {
+                stream: 1,
+                x: f64::NEG_INFINITY,
+                y: 0.0,
+            },
+            Injection::PointerAxis {
+                dx: nan,
+                dy: 0.0,
+                finish: false,
+            },
+            Injection::TouchDown {
+                stream: 1,
+                slot: 0,
+                x: 0.0,
+                y: nan,
+            },
+            Injection::TouchMotion {
+                stream: 1,
+                slot: 0,
+                x: inf,
+                y: 0.0,
+            },
+        ] {
+            assert!(!injection.is_finite(), "{injection:?}");
+        }
+        for injection in [
+            Injection::PointerMotion { dx: -3.5, dy: 2.25 },
+            Injection::PointerMotionAbsolute {
+                stream: 1,
+                x: 640.0,
+                y: 480.0,
+            },
+            Injection::PointerButton {
+                button: 0x110,
+                pressed: true,
+            },
+            Injection::PointerAxis {
+                dx: 0.0,
+                dy: 15.0,
+                finish: true,
+            },
+            Injection::PointerAxisDiscrete { axis: 0, steps: -2 },
+            Injection::KeyboardKeycode {
+                keycode: 30,
+                pressed: true,
+            },
+            Injection::KeyboardKeysym {
+                keysym: 0x61,
+                pressed: false,
+            },
+            Injection::TouchDown {
+                stream: 1,
+                slot: 0,
+                x: 1.0,
+                y: 2.0,
+            },
+            Injection::TouchMotion {
+                stream: 1,
+                slot: 0,
+                x: 3.0,
+                y: 4.0,
+            },
+            Injection::TouchUp { slot: 0 },
+        ] {
+            assert!(injection.is_finite(), "{injection:?}");
+        }
     }
 }

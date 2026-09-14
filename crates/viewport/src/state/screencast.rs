@@ -605,6 +605,13 @@ impl ViewportState {
     /// with focus nowhere. Dropping the event is the right answer to both:
     /// guessing at a position would click on whatever happened to be under it.
     pub fn remote_point(&self, node: u32, x: f64, y: f64) -> Option<Point<f64, Logical>> {
+        // A remote application is free to send any double. One that is not a
+        // number would reach the seat as the pointer's location and stay
+        // there — every later motion is computed from it — so it is dropped
+        // here as well as at the bus boundary.
+        if !x.is_finite() || !y.is_finite() {
+            return None;
+        }
         let cast = self
             .casts
             .iter()
