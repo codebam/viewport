@@ -144,6 +144,29 @@ struct ManagerData {
     stopped: bool,
 }
 
+/// The most live managers one client may hold.
+///
+/// The protocol gives a client one; a second bind is either a toolkit quirk or
+/// a loop. Without this cap each bind added a manager entry, and with it a head
+/// and a mode object for every output, to a `Vec` that was pruned only when an
+/// output changed — something a client is not required to cause.
+const MAX_MANAGERS_PER_CLIENT: usize = 8;
+
+/// Whether a manager entry still deserves the head and mode objects recorded
+/// against it.
+///
+/// Split out of the `retain` so the predicate can be tested without a Wayland
+/// connection: a client that disconnects leaves its resource dead, and one
+/// that says `stop` has said it will send no more configurations.
+fn manager_entry_is_live(alive: bool, stopped: bool) -> bool {
+    alive && !stopped
+}
+
+/// Whether a client already holds the cap and this bind has to evict.
+fn manager_cap_reached(live_for_client: usize) -> bool {
+    live_for_client >= MAX_MANAGERS_PER_CLIENT
+}
+
 /// The global, and everything advertised through it.
 #[derive(Debug, Default)]
 pub struct OutputManagementState {
@@ -160,6 +183,19 @@ impl OutputManagementState {
     {
         display.create_global::<D, ZwlrOutputManagerV1, _>(VERSION, ());
         Self::default()
+    }
+
+    /// Forget managers whose client has gone or which have said `stop`.
+    ///
+    /// A manager whose client has disconnected leaves its resource dead, and
+    /// one that said `stop` is not written to again; either way the entry and
+    /// everything recorded against it are stale. `advertise` used to be the
+    /// only place this ran, and an output change is not something a client has
+    /// to bring about, so the entry stayed until a monitor was replugged.
+    fn prune_managers(&mut self) {
+        self.managers.retain(|(manager, data)| {
+            manager_entry_is_live(manager.is_alive(), data.lock().unwrap().stopped)
+        });
     }
 
     /// Tell every client what the outputs are now.
@@ -184,8 +220,7 @@ impl OutputManagementState {
 
         // A manager whose client has gone, or which said stop, is not written
         // to again.
-        self.managers
-            .retain(|(manager, data)| manager.is_alive() && !data.lock().unwrap().stopped);
+        self.prune_managers();
 
         let serial = self.serial;
         for (manager, data) in &self.managers {
@@ -265,6 +300,26 @@ fn send_heads<D>(
     }
 
     manager.done(serial);
+}
+
+/// Forget one manager entry, telling its client its objects are gone first.
+///
+/// `finished` on the manager, its heads and its modes is the protocol's "this
+/// is the last thing you hear through these", and is what `advertise` already
+/// sends before re-sending a fresh set. Here it is what lets the cap retire a
+/// manager without leaving the client holding resources that look alive while
+/// the compositor keeps no bookkeeping for them.
+fn retire_manager(manager: &ZwlrOutputManagerV1, data: &Arc<Mutex<ManagerData>>) {
+    {
+        let mut data = data.lock().unwrap();
+        for mode in data.modes.drain(..) {
+            mode.finished();
+        }
+        for head in data.heads.drain(..) {
+            head.finished();
+        }
+    }
+    manager.finished();
 }
 
 /// Send one head's state, and the mode objects it needs.
@@ -411,17 +466,46 @@ where
     fn bind(
         state: &mut D,
         dh: &DisplayHandle,
-        _client: &Client,
+        client: &Client,
         resource: New<ZwlrOutputManagerV1>,
         _global_data: &(),
         data_init: &mut DataInit<'_, D>,
     ) {
         let manager = data_init.init(resource, ());
         let data = Arc::new(Mutex::new(ManagerData::default()));
-        state
-            .output_management_state()
-            .managers
-            .push((manager.clone(), data.clone()));
+        {
+            let managed = state.output_management_state();
+            // The cleanup `advertise` does, run here too: a client can bind
+            // many managers without any output ever changing, and each entry
+            // holds a head and a mode object for every output.
+            managed.prune_managers();
+
+            // One manager per client is the protocol's shape; the cap is for
+            // the client that binds in a loop. Pruning above means this counts
+            // live resources only, and the oldest entry this client owns is the
+            // one retired, so the list cannot grow further.
+            let client_id = client.id();
+            let same_client = |other: &ZwlrOutputManagerV1| {
+                other.client().is_some_and(|owner| owner.id() == client_id)
+            };
+            let live_for_client = managed
+                .managers
+                .iter()
+                .filter(|(other, _)| same_client(other))
+                .count();
+            if manager_cap_reached(live_for_client) {
+                if let Some(index) = managed
+                    .managers
+                    .iter()
+                    .position(|(other, _)| same_client(other))
+                {
+                    let (retired, retired_data) = managed.managers.remove(index);
+                    retire_manager(&retired, &retired_data);
+                }
+            }
+
+            managed.managers.push((manager.clone(), data.clone()));
+        }
 
         // A client that has just bound knows nothing, so it is told everything
         // — at the serial already current, and to itself alone: a client
@@ -471,6 +555,22 @@ where
             }
             _ => {}
         }
+    }
+
+    fn destroyed(
+        state: &mut D,
+        _client: smithay::reexports::wayland_server::backend::ClientId,
+        manager: &ZwlrOutputManagerV1,
+        _data: &(),
+    ) {
+        // The manager object is gone — its client disconnected, or destroyed
+        // it — and the entry that named it has no reason to stay. Head and
+        // mode objects the client still held die with it, and the bookkeeping
+        // for this manager goes here rather than waiting for `advertise`.
+        state
+            .output_management_state()
+            .managers
+            .retain(|(other, _)| other != manager);
     }
 }
 
@@ -870,6 +970,22 @@ mod tests {
             MAX_MODE_DIM,
             MAX_MODE_DIM
         ));
+    }
+
+    #[test]
+    fn dead_stopped_and_over_cap_managers_are_dropped() {
+        // What the retain in `prune_managers` keeps: alive and still in use.
+        assert!(manager_entry_is_live(true, false));
+        assert!(!manager_entry_is_live(false, false));
+        assert!(!manager_entry_is_live(true, true));
+        assert!(!manager_entry_is_live(false, true));
+
+        // One under the cap leaves room for the binding being made; at the cap
+        // the oldest entry is retired first, so a client's count stays at
+        // MAX_MANAGERS_PER_CLIENT rather than growing with every bind.
+        assert!(!manager_cap_reached(MAX_MANAGERS_PER_CLIENT - 1));
+        assert!(manager_cap_reached(MAX_MANAGERS_PER_CLIENT));
+        assert!(manager_cap_reached(MAX_MANAGERS_PER_CLIENT + 1));
     }
 
     #[test]
