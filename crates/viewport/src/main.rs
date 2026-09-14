@@ -767,6 +767,10 @@ fn run() -> Result<()> {
         let (sender, source) = smithay::reexports::calloop::channel::sync_channel(
             crate::notification::MAX_PENDING_NOTIFICATIONS,
         );
+        // The history drops an evicted entry's owner, so it has to prune the
+        // same map the bus side writes; wire it before the first `Add`.
+        let owners = state.notifications.owners();
+        state.notification_history.share_owners(owners);
         event_loop
             .handle()
             .insert_source(source, |event, _, state| {

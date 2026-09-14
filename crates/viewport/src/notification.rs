@@ -170,6 +170,11 @@ impl Notifications {
         Ok(())
     }
 
+    /// The owner map, for the history to prune evictions from.
+    pub fn owners(&self) -> Arc<Mutex<HashMap<u32, String>>> {
+        self.owners.clone()
+    }
+
     /// What to play for a notification that names no sound of its own.
     ///
     /// Called on every configuration load, including reloads, so this is also
@@ -363,11 +368,11 @@ impl Server {
                 // close, and that is what it always was.
                 if let Some(sender) = sender {
                     owners.insert(id, sender);
-                    // Bounded. Nothing else prunes an id the shell never
-                    // dismisses — history eviction does not call back here,
-                    // and a sender that disconnects says nothing — so a client
-                    // that only ever sends would grow this map, and the
-                    // strings in it, for the life of the session. Ids are
+                    // A safety net, not the working rule. The history drops
+                    // an evicted entry's owner (`History::forget_owners`), and
+                    // every close path drops its own; this only catches that
+                    // when the history has no owner map wired or an id that
+                    // never entered it at all (a zero history limit). Ids are
                     // monotonic, so the smallest are the oldest.
                     if owners.len() > MAX_OWNERS * 2 {
                         let mut ids: Vec<u32> = owners.keys().copied().collect();
@@ -572,6 +577,14 @@ fn notification_bytes(notification: &Notification) -> usize {
 pub struct History {
     entries: Vec<Notification>,
     limit: usize,
+    /// The service's owner map, once the event loop has wired it.
+    ///
+    /// An id leaves the centre when it is evicted, not only when the user
+    /// dismisses it — a shell that never draws, a persistent notification, a
+    /// flood that pushes an old id out. The owner has no other signal for that
+    /// case, so eviction is where the row goes with the entry; without it a
+    /// sender that only ever sends grows the map for the session.
+    owners: Option<Arc<Mutex<HashMap<u32, String>>>>,
 }
 
 impl Default for History {
@@ -579,6 +592,7 @@ impl Default for History {
         Self {
             entries: Vec::new(),
             limit: DEFAULT_HISTORY,
+            owners: None,
         }
     }
 }
@@ -596,6 +610,27 @@ impl History {
 
     pub fn entries(&self) -> &[Notification] {
         &self.entries
+    }
+
+    /// Give the history the owner map it prunes from on eviction.
+    ///
+    /// Called once by the event loop that owns both halves. Until it is set,
+    /// eviction drops entries only; the count safety in `Server::notify` still
+    /// bounds the map.
+    pub fn share_owners(&mut self, owners: Arc<Mutex<HashMap<u32, String>>>) {
+        self.owners = Some(owners);
+    }
+
+    /// Drop the owners of entries that just left the history.
+    fn forget_owners(&self, ids: &[u32]) {
+        let Some(owners) = self.owners.as_ref() else {
+            return;
+        };
+        if let Ok(mut owners) = owners.lock() {
+            for id in ids {
+                owners.remove(id);
+            }
+        }
     }
 
     /// Record one, and say whether anything changed.
@@ -629,9 +664,11 @@ impl History {
     }
 
     fn trim(&mut self) {
+        let mut evicted: Vec<u32> = Vec::new();
         // Newest first, so truncating the end drops the oldest.
         let limit = self.limit.min(MAX_HISTORY_ENTRIES);
         if self.entries.len() > limit {
+            evicted.extend(self.entries[limit..].iter().map(|kept| kept.id));
             self.entries.truncate(limit);
         }
         let mut bytes: usize = self.entries.iter().map(notification_bytes).sum();
@@ -640,7 +677,9 @@ impl History {
                 break;
             };
             bytes -= notification_bytes(&oldest);
+            evicted.push(oldest.id);
         }
+        self.forget_owners(&evicted);
     }
 }
 
@@ -776,6 +815,27 @@ mod tests {
         let ids: Vec<u32> = history.entries().iter().map(|n| n.id).collect();
         assert_eq!(ids, vec![1, 2]);
         assert_eq!(history.entries()[0].summary, "downloaded");
+    }
+
+    /// An evicted entry is no longer tracked, so its owner row has to go
+    /// with it; leaving it is how the map grows for a session that keeps
+    /// sending and how a later broadcast goes to the whole bus.
+    #[test]
+    fn an_evicted_entry_takes_its_owner_with_it() {
+        let owners: Arc<Mutex<HashMap<u32, String>>> = Arc::new(Mutex::new(HashMap::new()));
+        for id in 1..=3 {
+            owners.lock().unwrap().insert(id, format!(":1.{id}"));
+        }
+        let mut history = History::default();
+        history.set_limit(2);
+        history.share_owners(owners.clone());
+        history.record(&kept(1, "one"));
+        history.record(&kept(2, "two"));
+        history.record(&kept(3, "three"));
+
+        let owners = owners.lock().unwrap();
+        assert!(!owners.contains_key(&1), "the evicted id's owner must go");
+        assert!(owners.contains_key(&2) && owners.contains_key(&3));
     }
 
     #[test]
