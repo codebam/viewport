@@ -1942,7 +1942,10 @@ fn reject(state: &mut ViewportState, context: &str, message: &str) {
 /// how registering `Mod4+WheelUp` used to delete `Mod4+WheelDown` and
 /// `Mod4+Mouse4` with it. And the mode is part of what a chord *is*: a plain
 /// `h` shares its keysym with the resize mode's `h`, and replacing one is
-/// not replacing the other.
+/// not replacing the other. `release` is part of it for the same reason:
+/// `release+Mod4+q` is the other half of the key, not another name for the
+/// press, and matching on everything but that made registering one replace
+/// the other.
 ///
 /// (`binding::shadows` looks close and is not: it asks whether an earlier
 /// key binding swallows a later one, which is a question about
@@ -1954,6 +1957,7 @@ fn same_chord(a: &crate::binding::Binding, b: &crate::binding::Binding) -> bool 
         && a.button == b.button
         && a.wheel == b.wheel
         && a.locked == b.locked
+        && a.release == b.release
 }
 
 /// Register a runtime binding from a `bind.add` message.
@@ -2128,5 +2132,42 @@ mod tests {
         assert!(!head_is_unconfirmed(Some(&reverting), "HDMI-A-1"));
         // No countdown, nothing withheld.
         assert!(!head_is_unconfirmed(None, "DP-1"));
+    }
+
+    /// `release+` is Hyprland's `bindr` and the binding half of the same
+    /// feature lives in `binding.rs`; this is the runtime-bind half. A chord
+    /// matched on every field but `release` made `Mod4+q` and
+    /// `release+Mod4+q` the same binding, so adding the release half silently
+    /// deleted the press half (and vice versa).
+    #[test]
+    fn a_release_binding_does_not_replace_its_press_half() {
+        let press = crate::binding::parse("Mod4+q=close").unwrap();
+        let release = crate::binding::parse("release+Mod4+q=close").unwrap();
+        assert!(
+            !same_chord(&press, &release),
+            "the two halves of a key must not compare as the same chord"
+        );
+        assert!(same_chord(&release, &release.clone()));
+
+        let mut bindings = Vec::new();
+        assert!(install_binding(&mut bindings, "Mod4+q", "close"));
+        assert!(install_binding(
+            &mut bindings,
+            "release+Mod4+q",
+            "shell layout.focus left"
+        ));
+        assert_eq!(
+            bindings.len(),
+            2,
+            "registering the release half replaced the press half"
+        );
+
+        // Re-registering one half replaces that half alone.
+        assert!(install_binding(
+            &mut bindings,
+            "release+Mod4+q",
+            "shell layout.focus right"
+        ));
+        assert_eq!(bindings.len(), 2);
     }
 }
