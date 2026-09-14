@@ -1146,6 +1146,16 @@ pub fn frame_on_output(
     }
 }
 
+/// Narrow a computed coordinate back to `i32`, holding at the edges of the
+/// range rather than wrapping.
+///
+/// A rectangle from the shell is four `i32`s, but the sums and differences the
+/// renderer builds from them are not, and a debug build must not abort on the
+/// ones at the edge.
+fn clamp_i32(value: i64) -> i32 {
+    value.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
+}
+
 /// The four sides of a border, given the frame the shell drew and the hole
 /// inside it.
 ///
@@ -1177,25 +1187,51 @@ pub fn border_sides(
 
     let hole = drawn_hole(hole, scale);
 
-    let bottom_of_hole = hole.y + hole.height;
-    let right_of_hole = hole.x + hole.width;
+    // Every edge here is a sum or a difference of two `i32` fields, and both
+    // rectangles are shell input: a `view.layout` can put the frame's far
+    // corner at `i32::MAX` with a width to match, and `hole.y + hole.height`
+    // is then one past the last representable coordinate. Do the arithmetic in
+    // i64 and hold the result at the edge on the way back — the same treatment
+    // `overlay_side` gives the output translation.
+    let hole_x = i64::from(hole.x);
+    let hole_y = i64::from(hole.y);
+    let hole_w = i64::from(hole.width);
+    let hole_h = i64::from(hole.height);
+    let frame_x = i64::from(frame.x);
+    let frame_y = i64::from(frame.y);
+    let frame_w = i64::from(frame.width);
+    let frame_h = i64::from(frame.height);
+
+    let bottom_of_hole = hole_y + hole_h;
+    let right_of_hole = hole_x + hole_w;
+
     [
         // Top.
-        Box::new(frame.x, frame.y, frame.width, (hole.y - frame.y).max(0)),
+        Box::new(
+            frame.x,
+            frame.y,
+            frame.width,
+            clamp_i32((hole_y - frame_y).max(0)),
+        ),
         // Bottom.
         Box::new(
             frame.x,
-            bottom_of_hole,
+            clamp_i32(bottom_of_hole),
             frame.width,
-            (frame.y + frame.height - bottom_of_hole).max(0),
+            clamp_i32((frame_y + frame_h - bottom_of_hole).max(0)),
         ),
         // Left, between the two, so the corners are not drawn twice.
-        Box::new(frame.x, hole.y, (hole.x - frame.x).max(0), hole.height),
+        Box::new(
+            frame.x,
+            hole.y,
+            clamp_i32((hole_x - frame_x).max(0)),
+            hole.height,
+        ),
         // Right.
         Box::new(
-            right_of_hole,
+            clamp_i32(right_of_hole),
             hole.y,
-            (frame.x + frame.width - right_of_hole).max(0),
+            clamp_i32((frame_x + frame_w - right_of_hole).max(0)),
             hole.height,
         ),
     ]
@@ -1549,5 +1585,21 @@ mod tests {
             cursor_offset(Point::from((10, -20))),
             Point::from((-10, 20))
         );
+    }
+
+    /// `view.layout` is shell input, and a frame whose far corner is a width
+    /// away from the edge of `i32` still has to produce four sides: `hole.y +
+    /// hole.height` was an abort in a debug build before any border was
+    /// compared against the hole.
+    #[test]
+    fn a_frame_at_the_edge_of_the_range_does_not_overflow_its_sides() {
+        let frame = Box::new(5, 5, i32::MAX, i32::MAX);
+        let hole = Box::new(10, 10, i32::MAX, i32::MAX);
+        let [top, bottom, left, right] = border_sides(frame, hole, 1.0);
+
+        assert_eq!(top, Box::new(5, 5, i32::MAX, 5));
+        assert_eq!(bottom, Box::new(5, i32::MAX, i32::MAX, 0));
+        assert_eq!(left, Box::new(5, 10, 5, i32::MAX));
+        assert_eq!(right, Box::new(i32::MAX, 10, 0, i32::MAX));
     }
 }
