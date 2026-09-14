@@ -25,7 +25,7 @@ use std::collections::VecDeque;
 use std::ffi::{c_char, CString};
 use std::io::Read as _;
 use std::os::unix::fs::DirBuilderExt as _;
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use anyhow::{anyhow, Context as _, Result};
@@ -53,6 +53,18 @@ static OUT: OnceLock<viewport_shell_bridge::Sender> = OnceLock::new();
 /// when the page never arrives at all.
 static QUEUE: Mutex<VecDeque<String>> = Mutex::new(VecDeque::new());
 static READY: AtomicBool = AtomicBool::new(false);
+
+/// `Deliver` tasks posted to CEF's UI thread but not yet run.
+///
+/// CEF's own task queue has no ceiling, so the `QUEUE` cap below only bounds
+/// what has already reached the UI thread; a socket reader faster than a UI
+/// thread busy with a long evaluate could grow CEF's queue and its copies of
+/// every event without limit. Counted before `post_task` so the ceiling
+/// applies to messages in flight too.
+static IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
+
+/// Whether a dropped `Deliver` task has been logged already.
+static TASK_DROP_WARNED: AtomicBool = AtomicBool::new(false);
 
 /// Whether a refused page-to-compositor message has already been logged.
 static DROP_WARNED: AtomicBool = AtomicBool::new(false);
@@ -371,8 +383,7 @@ fn main() -> Result<()> {
         Line::Event(json) => {
             // Onto CEF's UI thread. This closure runs on the socket reader,
             // and a `Browser` may not leave the thread that made it.
-            let mut task = Deliver::new(json);
-            post_task(ThreadId::UI, Some(&mut task));
+            post_deliver(json);
         }
         Line::Closed => {
             tracing::info!("the compositor closed the socket; stopping");
@@ -684,6 +695,27 @@ fn next_id() -> i64 {
     NEXT_ID.fetch_add(1, Ordering::Relaxed)
 }
 
+/// Post one event to CEF's UI thread, bounded like the queue it feeds.
+///
+/// `enqueue` only runs once a `Deliver` task is on the UI thread; CEF's task
+/// queue is unbounded, so the ceiling has to be here, before `post_task`.
+fn post_deliver(json: String) {
+    if IN_FLIGHT.fetch_add(1, Ordering::AcqRel) >= QUEUE_LIMIT {
+        IN_FLIGHT.fetch_sub(1, Ordering::AcqRel);
+        if !TASK_DROP_WARNED.swap(true, Ordering::Relaxed) {
+            tracing::warn!("the shell's incoming task queue is full; dropping a message");
+        }
+        return;
+    }
+    let mut task = Deliver::new(json);
+    if post_task(ThreadId::UI, Some(&mut task)) == 0 {
+        IN_FLIGHT.fetch_sub(1, Ordering::AcqRel);
+        if !TASK_DROP_WARNED.swap(true, Ordering::Relaxed) {
+            tracing::warn!("CEF refused the shell's incoming task queue; dropping a message");
+        }
+    }
+}
+
 /// Park an event until the page can take it, bounded like the gtk shell's
 /// queue: past the limit, the oldest goes.
 fn enqueue(json: String) {
@@ -857,6 +889,7 @@ wrap_task! {
     impl Task {
         /// On the UI thread, where the browser may be touched.
         fn execute(&self) {
+            IN_FLIGHT.fetch_sub(1, Ordering::AcqRel);
             BROWSER.with(|slot| {
                 let slot = slot.borrow();
                 let Some(browser) = slot.as_ref() else {

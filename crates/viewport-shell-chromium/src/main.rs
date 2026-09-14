@@ -37,6 +37,7 @@ use std::io::{Read, Write};
 use std::os::fd::{AsRawFd as _, OwnedFd};
 use std::os::unix::fs::DirBuilderExt as _;
 use std::process::{Child, Command};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -138,6 +139,55 @@ enum Incoming {
     Compositor(Line),
     /// The browser exited.
     Gone,
+}
+
+/// Hand one compositor line to the main loop, without letting a flood grow
+/// the channel.
+///
+/// The socket reader cannot block: the compositor drops a shell that stops
+/// reading its socket. A full queue therefore drops an event, which is the
+/// same choice the pre-attach queue below makes. `Line::Closed` is not one of
+/// a run of events — it is the session ending — so it waits for a slot
+/// instead of being the message a full queue swallows.
+fn forward_compositor(tx: &mpsc::SyncSender<Incoming>, line: Line) -> bool {
+    match line {
+        Line::Closed => tx.send(Incoming::Compositor(Line::Closed)).is_ok(),
+        event => tx.try_send(Incoming::Compositor(event)).is_ok(),
+    }
+}
+
+/// Whether a DevTools frame message had to be dropped under load.
+///
+/// Dropped frame bookkeeping could leave the origin guard believing an old,
+/// allowed URL while the document has moved elsewhere, so the loop fails
+/// closed and asks for the frame tree again when this is set.
+static GUARD_STALE: AtomicBool = AtomicBool::new(false);
+
+/// Whether a dropped disposable DevTools message has been logged, for the
+/// same reason the pre-attach drop warning is once-per-session.
+static DEVTOOLS_DROP_WARNED: AtomicBool = AtomicBool::new(false);
+
+/// Whether a DevTools message is one the frame guard cannot lose.
+///
+/// The main frame's navigation and the frame-tree reply are what move the
+/// document the origin policy is about; losing one of those is not like
+/// losing a binding call from a subframe. They are rare, and the overflow
+/// path marks them stale rather than dropping them silently. Everything else
+/// a page can flood — binding calls, console output — is checked against the
+/// guard when it is delivered, so dropping it cannot grant anything.
+fn guard_critical(message: &Value) -> bool {
+    if message.pointer("/result/frameTree/frame").is_some() {
+        return true;
+    }
+    match message.get("method").and_then(Value::as_str) {
+        // Only the top frame's navigation moves the URL the policy is about.
+        Some("Page.frameNavigated") => message
+            .pointer("/params/frame/parentId")
+            .is_none_or(Value::is_null),
+        // Clearing the execution contexts is what clears the main context.
+        Some("Runtime.executionContextsCleared") => true,
+        _ => false,
+    }
 }
 
 /// What the page's main frame is, and which execution context belongs to it.
@@ -245,6 +295,14 @@ impl FrameGuard {
         true
     }
 
+    /// Forget the URL the origin policy was checking.
+    ///
+    /// The frame id and contexts stay: a `Page.getFrameTree` reply fills the
+    /// URL back in, and until then the guard refuses what it cannot place.
+    fn forget_url(&mut self) {
+        self.main_url = None;
+    }
+
     fn set_main_frame(&mut self, frame: &Value) {
         let Some(id) = frame.get("id").and_then(Value::as_str) else {
             return;
@@ -301,13 +359,20 @@ impl FrameGuard {
 }
 
 fn run(browser: &mut Browser, options: &Options) -> Result<()> {
-    let (tx, rx) = mpsc::channel::<Incoming>();
+    // Bounded like the GTK and servo backends' inbound queues. The two
+    // readers — the compositor socket and the DevTools pipe — are both
+    // producers, and the main loop can block writing a command to a browser
+    // that is not reading, so an unbounded channel here grew with a flood
+    // until the shell was killed for it.
+    let (tx, rx) = mpsc::sync_channel::<Incoming>(QUEUE_LIMIT);
 
     browser.read_into(tx.clone())?;
     let out = {
         let tx = tx.clone();
         viewport_shell_bridge::connect(&options.socket, move |line| {
-            let _ = tx.send(Incoming::Compositor(line));
+            if !forward_compositor(&tx, line) {
+                tracing::warn!("the shell's incoming queue is full; dropping a message");
+            }
         })?
     };
 
@@ -327,6 +392,9 @@ fn run(browser: &mut Browser, options: &Options) -> Result<()> {
     let mut attaching = false;
     let mut ready = false;
     let mut queued: Vec<String> = Vec::new();
+    // Set when a DevTools frame message was dropped: events wait until a
+    // fresh frame tree names the document again.
+    let mut waiting_for_url = false;
     let mut next_id = 1_i64;
 
     // Ask to be told about the page. Chromium has already created it — this is
@@ -338,6 +406,19 @@ fn run(browser: &mut Browser, options: &Options) -> Result<()> {
     }))?;
 
     while let Ok(event) = rx.recv() {
+        // A frame message was dropped because the queue was full. What the
+        // guard believes about the document may no longer be true, so fail
+        // closed: forget the URL, hold events, and ask the browser to name
+        // its frame tree again.
+        if GUARD_STALE.swap(false, Ordering::AcqRel) {
+            guard.forget_url();
+            ready = false;
+            waiting_for_url = true;
+            tracing::warn!("the shell's frame state is stale; waiting for a fresh frame tree");
+            if let Some(session) = session.as_deref() {
+                browser.call(&mut next_id, session, "Page.getFrameTree", json!({}))?;
+            }
+        }
         match event {
             Incoming::Gone => {
                 tracing::info!("the browser exited; stopping");
@@ -372,6 +453,15 @@ fn run(browser: &mut Browser, options: &Options) -> Result<()> {
                     }
                     continue;
                 }
+                if waiting_for_url {
+                    // A frame message was dropped; keep the event, bounded,
+                    // until a fresh frame tree says which document it is for.
+                    if queued.len() >= QUEUE_LIMIT {
+                        queued.remove(0);
+                    }
+                    queued.push(json);
+                    continue;
+                }
                 match (ready, session.as_deref()) {
                     (true, Some(session)) => browser.evaluate(
                         &mut next_id,
@@ -392,19 +482,19 @@ fn run(browser: &mut Browser, options: &Options) -> Result<()> {
                     install_bridge(browser, &mut next_id, &id)?;
                     session = Some(id);
                     attaching = false;
-                    // Ready only once the frame tree has named a main URL that
-                    // passes the policy. Until then queued events wait rather
-                    // than being evaluated into a document whose origin is not
-                    // yet known; if the URL is known and disallowed, the queue
-                    // is dropped outright.
-                    ready = guard.url_known_allowed();
+                    // Ready only once the frame tree has named a main URL
+                    // that passes the policy. Until then queued events wait
+                    // rather than being evaluated into a document whose origin
+                    // is not yet known; if the URL is known and disallowed, the
+                    // queue is dropped outright.
+                    ready = guard.url_known_allowed() && !waiting_for_url;
                     if ready {
                         for json in queued.drain(..) {
                             let script = viewport_ipc::js::dispatch(&json);
                             let session = session.as_deref().expect("just set");
                             browser.evaluate(&mut next_id, session, &script)?;
                         }
-                    } else if guard.main_url.is_some() {
+                    } else if guard.main_url.is_some() && !waiting_for_url {
                         queued.clear();
                         tracing::warn!(
                             "dropping queued compositor events: the shell left the allowed origin"
@@ -429,7 +519,10 @@ fn run(browser: &mut Browser, options: &Options) -> Result<()> {
                     // The frame tree or a navigation just arrived. If that is
                     // what made the main URL known and allowed, the queued
                     // startup events can go to the document now.
-                    if !ready && guard.url_known_allowed() {
+                    if waiting_for_url && guard.main_url.is_some() {
+                        waiting_for_url = false;
+                    }
+                    if !waiting_for_url && !ready && guard.url_known_allowed() {
                         ready = true;
                         if let Some(session) = session.as_deref() {
                             for json in queued.drain(..) {
@@ -461,7 +554,10 @@ fn run(browser: &mut Browser, options: &Options) -> Result<()> {
                 // before any of the page's own scripts run, so this only has to
                 // let messages flow again.
                 if message.get("method").and_then(Value::as_str) == Some("Page.loadEventFired") {
-                    ready = session.is_some() && guard.url_known_allowed();
+                    if waiting_for_url && guard.main_url.is_some() {
+                        waiting_for_url = false;
+                    }
+                    ready = session.is_some() && guard.url_known_allowed() && !waiting_for_url;
                     // The new document is up, so the events that arrived while
                     // it was loading can go to it. The attach branch above
                     // drains only on first attach, which a reload does not
@@ -469,12 +565,12 @@ fn run(browser: &mut Browser, options: &Options) -> Result<()> {
                     // `output.layout` and `session.restore` replay sent across
                     // a reload sat in the queue for the life of the process.
                     if let Some(session) = session.as_deref() {
-                        if guard.url_known_allowed() {
+                        if guard.url_known_allowed() && !waiting_for_url {
                             for json in queued.drain(..) {
                                 let script = viewport_ipc::js::dispatch(&json);
                                 browser.evaluate(&mut next_id, session, &script)?;
                             }
-                        } else {
+                        } else if guard.main_url.is_some() && !waiting_for_url {
                             queued.clear();
                             tracing::warn!(
                                 "dropping queued compositor events: the shell left the allowed origin"
@@ -672,7 +768,7 @@ impl Browser {
     }
 
     /// Read the browser's half of the protocol on a thread of its own.
-    fn read_into(&mut self, tx: mpsc::Sender<Incoming>) -> Result<()> {
+    fn read_into(&mut self, tx: mpsc::SyncSender<Incoming>) -> Result<()> {
         let read = self
             .read
             .take()
@@ -700,15 +796,45 @@ impl Browser {
                         let message: Vec<u8> = pending.drain(..=end).collect();
                         let message = &message[..message.len() - 1];
                         match serde_json::from_slice::<Value>(message) {
-                            Ok(value) => {
-                                if tx.send(Incoming::Cdp(value)).is_err() {
-                                    return;
+                            Ok(value) => match tx.try_send(Incoming::Cdp(value)) {
+                                Ok(()) => {}
+                                // The main loop is behind. Dropping here is
+                                // what keeps this thread draining the
+                                // browser's pipe, which is what lets a
+                                // browser that is blocked writing finish and
+                                // read commands again. Frame bookkeeping is
+                                // the part that must not vanish unnoticed.
+                                Err(mpsc::TrySendError::Full(message)) => {
+                                    let Incoming::Cdp(value) = message else {
+                                        // Only `Cdp` is sent here; another
+                                        // variant in a full queue cannot
+                                        // happen and has no policy to run.
+                                        return;
+                                    };
+                                    if guard_critical(&value) {
+                                        if !GUARD_STALE.swap(true, Ordering::AcqRel) {
+                                            tracing::warn!(
+                                                "the shell's incoming queue is full; a frame \
+                                                 update was dropped, waiting for a frame tree"
+                                            );
+                                        }
+                                    } else if !DEVTOOLS_DROP_WARNED.swap(true, Ordering::Relaxed) {
+                                        tracing::warn!(
+                                            "the shell's incoming queue is full; dropping a \
+                                             devtools message"
+                                        );
+                                    }
                                 }
-                            }
+                                // The main loop has stopped; nothing is left
+                                // to deliver to.
+                                Err(mpsc::TrySendError::Disconnected(_)) => return,
+                            },
                             Err(e) => tracing::warn!("undecodable devtools message: {e}"),
                         }
                     }
                 }
+                // The browser is gone. The main loop must hear it even if the
+                // queue is full, so this one waits for a slot.
                 let _ = tx.send(Incoming::Gone);
             })
             .context("starting the devtools reader")?;
@@ -886,5 +1012,53 @@ mod tests {
         // the old context id is not accepted either.
         assert!(!guard.url_allows());
         assert!(!guard.context_allows(Some(1)));
+    }
+
+    /// A producer faster than the consumer must not grow the channel, but the
+    /// session ending is not one of the messages that may be dropped.
+    #[test]
+    fn a_full_inbound_queue_drops_events_but_not_the_close() {
+        let (tx, rx) = mpsc::sync_channel::<Incoming>(1);
+        assert!(forward_compositor(&tx, Line::Event("one".into())));
+        assert!(!forward_compositor(&tx, Line::Event("two".into())));
+
+        let closed = std::thread::spawn(move || {
+            // The event already in the queue, then the close behind it.
+            let _ = rx.recv();
+            matches!(rx.recv(), Ok(Incoming::Compositor(Line::Closed)))
+        });
+        assert!(forward_compositor(&tx, Line::Closed));
+        assert!(closed.join().expect("the queue reader"));
+    }
+
+    /// Only the messages that move the document the origin policy checks are
+    /// worth failing closed over; a page's own chatter may be dropped.
+    #[test]
+    fn frame_moving_devtools_messages_are_the_critical_ones() {
+        assert!(guard_critical(
+            &json!({"result": {"frameTree": {"frame": {}}}})
+        ));
+        assert!(guard_critical(&json!({
+            "method": "Page.frameNavigated",
+            "params": {"frame": {"id": "main"}},
+        })));
+        assert!(guard_critical(&json!({
+            "method": "Page.frameNavigated",
+            "params": {"frame": {"id": "main", "parentId": null}},
+        })));
+        assert!(!guard_critical(&json!({
+            "method": "Page.frameNavigated",
+            "params": {"frame": {"id": "sub", "parentId": "main"}},
+        })));
+        assert!(guard_critical(
+            &json!({"method": "Runtime.executionContextsCleared"})
+        ));
+        assert!(!guard_critical(&json!({
+            "method": "Runtime.bindingCalled",
+            "params": {"name": BINDING, "payload": "{}"},
+        })));
+        assert!(!guard_critical(
+            &json!({"method": "Runtime.consoleAPICalled"})
+        ));
     }
 }
