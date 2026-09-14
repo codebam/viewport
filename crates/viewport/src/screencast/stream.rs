@@ -24,6 +24,7 @@ use pipewire as pw;
 use pw::spa;
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::allocator::Buffer as _;
+use smithay::reexports::calloop::ping::Ping;
 use smithay::utils::{Physical, Size};
 
 /// How many buffers a stream cycles through.
@@ -637,6 +638,17 @@ pub struct Pipewire {
     pub core: pw::core::CoreRc,
     /// Held because dropping it tears the connection down.
     _context: pw::context::ContextRc,
+    /// Brings the compositor round when PipeWire says a consumer started
+    /// reading.
+    ///
+    /// The news arrives on PipeWire's own thread. A desktop with nothing else
+    /// happening on it has no damage to carry a frame in on, so without this
+    /// a share whose consumer reconnects stays paused: the tick that would
+    /// have noticed already noticed the old state and stopped. The ping's
+    /// source is registered in the compositor's loop by `start_cast`, which
+    /// owns the loop handle; this end keeps the sender alive and hands clones
+    /// to the streams whose state changes can fire it.
+    pub(crate) wake: Option<Ping>,
 }
 
 impl Pipewire {
@@ -671,7 +683,20 @@ impl Pipewire {
             thread_loop,
             core,
             _context: context,
+            wake: None,
         })
+    }
+
+    /// The sender that wakes the compositor for a state change, if one was
+    /// registered when this connection was made.
+    pub(crate) fn wake_ping(&self) -> Option<Ping> {
+        self.wake.clone()
+    }
+
+    /// Whether a stream on this connection can wake the compositor when its
+    /// consumer starts reading.
+    pub fn wakes_compositor(&self) -> bool {
+        self.wake.is_some()
     }
 
     /// Publish a stream of `size`, in the format a screen share is expected to
@@ -690,6 +715,7 @@ impl Pipewire {
         name: &str,
         size: Size<i32, Physical>,
         targets: Vec<Dmabuf>,
+        wake: Option<Ping>,
     ) -> anyhow::Result<Stream> {
         // Everything below runs with the loop held. It has to: the stream is
         // registered, connected and given its round trip here, all against
@@ -736,10 +762,18 @@ impl Pipewire {
             .add_local_listener_with_user_data(())
             .state_changed(move |stream, (), old, new| {
                 tracing::debug!("screencast stream: {old:?} -> {new:?}");
-                flag.store(
-                    matches!(new, pw::stream::StreamState::Streaming),
-                    std::sync::atomic::Ordering::Relaxed,
-                );
+                let reading = matches!(new, pw::stream::StreamState::Streaming);
+                flag.store(reading, std::sync::atomic::Ordering::Relaxed);
+                // Bring the compositor round so it can hand over a frame now
+                // that somebody is reading. Stored first, poked second: the
+                // wake reads this flag, and a wake that saw the old state
+                // would stop the clock again on the still desktop it is
+                // there to wake.
+                if reading {
+                    if let Some(wake) = wake.as_ref() {
+                        wake.ping();
+                    }
+                }
                 // Where the node actually comes from. PipeWire sets the id
                 // when the server binds the stream's node and leaves
                 // `Connecting` for `Paused` in the same breath, so any state

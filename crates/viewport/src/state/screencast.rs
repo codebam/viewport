@@ -18,7 +18,29 @@ impl ViewportState {
     /// share if it never does; see `begin_cast` and `finish_share`.
     fn start_cast(&mut self, source: crate::screencast::Source) -> anyhow::Result<BegunCast> {
         if self.pipewire.is_none() {
-            self.pipewire = Some(crate::screencast::stream::Pipewire::new()?);
+            let mut pipewire = crate::screencast::stream::Pipewire::new()?;
+            // Wake the compositor when PipeWire says a consumer started
+            // reading. Without it, a share that lost its consumer on a still
+            // desktop stops its clock — `pace_casts` sees nobody reading and
+            // nobody about to — and the reconnect produces no damage to ride
+            // in on.
+            match smithay::reexports::calloop::ping::make_ping() {
+                Ok((ping, source)) => {
+                    let inserted = self.loop_handle.insert_source(
+                        source,
+                        |(), _, state: &mut ViewportState| state.wake_casts(),
+                    );
+                    if inserted.is_ok() {
+                        pipewire.wake = Some(ping);
+                    } else {
+                        // No wake, so `pace_casts` keeps the slow start poll
+                        // alive for a share whose consumer has gone away.
+                        tracing::warn!("screencast: could not register the consumer wake");
+                    }
+                }
+                Err(e) => tracing::warn!("screencast: no consumer wake: {e}"),
+            }
+            self.pipewire = Some(pipewire);
         }
 
         // Resolved once here for the name and the first size, and again on
@@ -37,7 +59,8 @@ impl ViewportState {
         // whole screen off the GPU and back for every frame.
         let targets = self.cast_targets(size);
         let pipewire = self.pipewire.as_ref().expect("just connected");
-        let stream = pipewire.create_stream(&name, size, targets)?;
+        let wake = pipewire.wake_ping();
+        let stream = pipewire.create_stream(&name, size, targets, wake)?;
         let arrival = stream.arrival();
         let stream_id = stream.id;
         let was_active = !self.casts.is_empty();
@@ -189,12 +212,22 @@ impl ViewportState {
     pub(crate) fn pace_casts(&mut self) {
         let reading = self.casts.iter().any(|cast| cast.stream.is_streaming());
         let starting = self.casts.iter().any(|cast| !cast.stream.has_drawn());
-        if !reading && !starting {
-            // Nobody is watching and nobody is about to. A share whose consumer
-            // has gone away — a closed tab whose session the frontend has not
-            // got round to closing — is the case the `streaming` flag was added
-            // to stop paying for, and waking a settled desktop thirty times a
-            // second to be refused a frame is paying for it again.
+        // A share that has already drawn a frame and whose consumer has gone
+        // away is waiting for a reconnect that produces no damage. When the
+        // stream can wake the compositor itself, the reconnect is what brings
+        // the question back and this clock can stay stopped — that is the case
+        // the `streaming` flag was added to stop paying for. A connection
+        // without a wake has only the poll, which is what keeps the slow
+        // start poll alive so a returning consumer is noticed within
+        // `CAST_START_POLL`.
+        let can_wake = self.casts_can_wake();
+        let drawn_and_paused = self.casts.iter().any(|cast| {
+            !can_wake && cast.stream.has_drawn() && !cast.stream.is_streaming()
+        });
+        if !Self::should_pace(reading, starting, drawn_and_paused) {
+            // Nobody is watching, nobody is about to, and nothing here can
+            // tell us when that changes. Waking a settled desktop thirty
+            // times a second to be refused a frame is paying for it again.
             self.cast_due = None;
             return;
         }
@@ -214,6 +247,42 @@ impl ViewportState {
         let due = now + rate;
         self.cast_due = Some(due);
         self.arm_cast_tick(due.saturating_duration_since(now));
+    }
+
+    /// Whether a share here can wake the compositor when its consumer starts
+    /// reading.
+    ///
+    /// True while the PipeWire connection has the ping `start_cast` registers;
+    /// false means `pace_casts` has to keep polling for the reconnect itself.
+    fn casts_can_wake(&self) -> bool {
+        self.pipewire
+            .as_ref()
+            .is_some_and(crate::screencast::stream::Pipewire::wakes_compositor)
+    }
+
+    /// Whether the cast clock has anything to wait for.
+    ///
+    /// Three reasons to keep it running: somebody is reading, somebody might
+    /// be about to, or a share has drawn before and its consumer has gone
+    /// away with no way to say when it comes back. The last is only passed
+    /// true when nothing can wake the compositor, so a stream that can is not
+    /// polled for on a settled desktop.
+    pub(crate) fn should_pace(reading: bool, starting: bool, drawn_and_paused: bool) -> bool {
+        reading || starting || drawn_and_paused
+    }
+
+    /// A consumer started reading; bring the frame round now.
+    ///
+    /// Called from the ping `start_cast` registered in the event loop when
+    /// PipeWire changes a stream's state on its own thread. Taking the cast
+    /// tick rather than waiting for the next one is what resumes a reconnect
+    /// on an idle desktop immediately, and it is also what lets the render
+    /// path renegotiate a source that resized while it was paused.
+    fn wake_casts(&mut self) {
+        if self.casts.is_empty() {
+            return;
+        }
+        self.cast_tick();
     }
 
     /// Arm the screen-share tick, which is what brings the next frame round on
@@ -2311,5 +2380,24 @@ impl ViewportState {
             })
             .collect();
         crate::screencast::matching_window(app_id, title, &open)
+    }
+}
+
+#[cfg(test)]
+mod screencast_pace_tests {
+    use super::ViewportState;
+
+    /// The cast clock has three reasons to keep running, and the third is a
+    /// drawn share whose consumer has gone away where nothing can wake the
+    /// compositor. Dropping that reason would be the reconnect bug back
+    /// again; keeping it when a wake exists is a settled desktop paying a
+    /// composite for a picture nobody is watching.
+    #[test]
+    fn the_cast_clock_stops_only_when_nothing_can_need_it() {
+        assert!(!ViewportState::should_pace(false, false, false));
+        assert!(ViewportState::should_pace(true, false, false));
+        assert!(ViewportState::should_pace(false, true, false));
+        assert!(ViewportState::should_pace(false, false, true));
+        assert!(ViewportState::should_pace(true, true, true));
     }
 }
