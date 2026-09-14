@@ -626,6 +626,15 @@ pub struct ViewportState {
     /// event from here — which is what makes a rate out of it comparable
     /// across engines.
     pub shell_frames: u64,
+    /// How many frames the page running the desktop has committed.
+    ///
+    /// `shell_frames` counts every page, which is what the rate above wants.
+    /// This counts only the page that draws the built-in lock screen, because
+    /// `lock_screen_is_drawing` must ask whether *that* page painted after it
+    /// said it had drawn one. A `--url` page painting on another monitor is
+    /// not evidence about the desktop, and counting it was a stalled desktop's
+    /// stale pre-lock buffer shown as a lock screen.
+    pub shell_desktop_frames: u64,
     /// The last count and when it was taken, for turning the total into a
     /// rate. `None` until the first tick, which is the sample that has nothing
     /// to compare against.
@@ -1159,8 +1168,8 @@ pub struct ViewportState {
     /// would stand in for the new one having drawn, and the compositor would
     /// put a page that is showing the desktop on screen over a locked session.
     pub lock_generation: u64,
-    /// The lock the shell has said it has painted, and the shell frame count
-    /// when it said so.
+    /// The lock the shell has said it has painted, and the desktop page's
+    /// committed-frame count when it said so.
     ///
     /// Both halves are the fail-closed rule; see `lock_screen_is_drawing`.
     pub lock_shell_drawn: Option<(u64, u64)>,
@@ -1869,6 +1878,7 @@ impl ViewportState {
             #[cfg(feature = "wpe")]
             shell_copy_refused: false,
             shell_frames: 0,
+            shell_desktop_frames: 0,
             shell_rate_mark: None,
             shell_rate_verbose: std::env::var_os("VIEWPORT_SHELL_RATE").is_some(),
             shell_overlay_ids: Vec::new(),

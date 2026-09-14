@@ -555,6 +555,11 @@ impl ViewportState {
                 shell.frame_release(pending.token);
             }
             self.shell_frames += 1;
+            if self.shells[page].desktop {
+                // The lock screen guard counts this page's frames and no
+                // other's; see `shell_desktop_frames`.
+                self.shell_desktop_frames += 1;
+            }
             tracing::debug!("shell frame {} released", self.shell_frames);
         }
 
@@ -583,6 +588,17 @@ impl ViewportState {
 
         if self.shells.get(page).is_none() {
             return;
+        }
+        if self.shells[page].desktop {
+            // The page that was drawing the built-in lock screen is gone. Its
+            // `drawn` message described a process that no longer exists, and
+            // the count that would have required a newer frame from it starts
+            // over with whatever replaces it. Clearing the message too is what
+            // stops the new page's first desktop frames from passing a guard
+            // an old page set; the replacement is asked for a lock screen
+            // again when it asks for the session.
+            self.forget_lock_screen();
+            self.shell_desktop_frames = 0;
         }
         // The engine is gone whether or not it comes back, so the `view.capture`
         // answers it gave have to go with it: nothing else re-resolves a window
@@ -731,6 +747,18 @@ impl ViewportState {
             );
             return;
         }
+        // Which page runs the desktop can change without a process dying:
+        // one monitor becoming two, or two becoming one. The lock screen
+        // guard has to start counting the new page, not the old one.
+        let desktop_before = self
+            .shells
+            .iter()
+            .find(|page| page.desktop)
+            .map(|page| page.url.clone());
+        let desktop_after = planned
+            .iter()
+            .find(|page| page.desktop)
+            .map(|page| page.url.clone());
         for (page, plan) in self.shells.iter_mut().zip(planned) {
             if page.url != plan.url {
                 // The plan is positional and both entries are running, so this
@@ -741,6 +769,24 @@ impl ViewportState {
             }
             page.region = plan.region;
             page.desktop = plan.desktop;
+        }
+        if desktop_before != desktop_after {
+            // Drop what the old page claimed and, if this compositor owns a
+            // lock, ask whoever draws now to draw one of its own. Without the
+            // ask the new page would be black until something else moved;
+            // without the drop its predecessor's `drawn` message and frames
+            // would let a desktop buffer pass as a lock screen.
+            self.forget_lock_screen();
+            self.shell_desktop_frames = 0;
+            if self.locked && self.lock_owned_by_shell {
+                let generation = self.lock_generation;
+                let can_authenticate = self.authenticator.online();
+                self.notify(&viewport_ipc::Event::SessionLock {
+                    generation,
+                    can_authenticate,
+                });
+                self.focus_lock_shell();
+            }
         }
     }
 }

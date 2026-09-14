@@ -199,9 +199,9 @@ impl ViewportState {
 
     /// The shell says it has painted the lock screen.
     ///
-    /// Recorded with the frame count at the moment it was said, which is the
-    /// half of the rule that a message cannot fake: see
-    /// `lock_screen_is_drawing`.
+    /// Recorded with the desktop page's own committed-frame count at the
+    /// moment it was said, which is the half of the rule that a message cannot
+    /// fake: see `lock_screen_is_drawing`.
     pub fn lock_screen_drawn(&mut self, generation: u64) {
         if !shell_owns_lock(self.locked, self.lock_owned_by_shell) {
             return;
@@ -217,7 +217,10 @@ impl ViewportState {
             return;
         }
         tracing::info!("lock: the shell has drawn lock {generation}");
-        self.lock_shell_drawn = Some((generation, self.shell_frames));
+        // The desktop page's own count, not every page's: another monitor's
+        // page painting must not stand in for a frame the desktop has not
+        // painted.
+        self.lock_shell_drawn = Some((generation, self.shell_desktop_frames));
         self.needs_render = true;
     }
 
@@ -357,6 +360,14 @@ fn shell_lock_message_applies(
     shell_owns_lock(locked, lock_owned_by_shell) && generation == current_generation
 }
 
+/// Whether the desktop page has painted since it said it drew the lock screen.
+///
+/// The count compared here is `shell_desktop_frames`, which only the page
+/// running the desktop increments; a `--url` page painting does not move it.
+pub(crate) fn lock_frame_has_landed(recorded: u64, current: u64) -> bool {
+    current > recorded
+}
+
 #[cfg(test)]
 mod lock_power_tests {
     use super::*;
@@ -388,5 +399,12 @@ mod lock_power_tests {
     fn a_message_for_an_older_lock_is_over() {
         assert!(!shell_lock_message_applies(true, true, 6, 7));
         assert!(!shell_lock_message_applies(true, false, 6, 6));
+    }
+
+    #[test]
+    fn the_lock_screen_needs_a_desktop_frame_after_the_message() {
+        assert!(!lock_frame_has_landed(10, 10), "the message is not a frame");
+        assert!(lock_frame_has_landed(10, 11), "the next frame is");
+        assert!(lock_frame_has_landed(0, 1));
     }
 }

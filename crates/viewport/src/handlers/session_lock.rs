@@ -221,7 +221,8 @@ impl ViewportState {
     ///   so something the page has to say is the only way to know it got as
     ///   far as building the thing.
     ///
-    /// * *And* a frame has landed since it said so. The page sends `drawn`
+    /// * *And* a frame from the page running the desktop — the page that
+    ///   draws this screen — has landed since it said so. The page sends `drawn`
     ///   from a double `requestAnimationFrame`, which runs strictly after the
     ///   frame the lock screen was rendered into was submitted — so any buffer
     ///   arriving after that message is that frame or a later one, and every
@@ -249,7 +250,8 @@ impl ViewportState {
         }
         self.lock_owned_by_shell
             && self.lock_shell_drawn.is_some_and(|(lock, frames)| {
-                lock == self.lock_generation && self.shell_frames > frames
+                lock == self.lock_generation
+                    && crate::state::lock_frame_has_landed(frames, self.shell_desktop_frames)
             })
     }
 

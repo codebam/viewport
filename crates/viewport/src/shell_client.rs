@@ -720,6 +720,21 @@ impl ViewportState {
             return;
         }
 
+        // Which page is the desktop can change on this path without either
+        // process dying: one monitor becoming two, or two becoming one. The
+        // page that was drawing the lock screen then is not the page on screen
+        // any more, so its committed frames must not stand in for the new
+        // one's.
+        let desktop_before = self
+            .shell_clients
+            .iter()
+            .find(|shell| shell.desktop)
+            .map(|shell| shell.url.clone());
+        let desktop_after = planned
+            .iter()
+            .find(|planned| planned.desktop)
+            .map(|planned| planned.url.clone());
+
         tracing::info!(
             "shell: the screens changed, so the desktop is now {} page(s) rather than {}",
             planned.len(),
@@ -777,6 +792,25 @@ impl ViewportState {
         }
         self.shell_clients = kept.into_iter().flatten().collect();
         self.needs_render = true;
+
+        if desktop_before != desktop_after {
+            // Drop what the old page claimed and, if this compositor owns a
+            // lock, ask whoever draws now to draw one of its own. Without the
+            // ask the new page would be black until something else moved;
+            // without the drop its predecessor's `drawn` message and frames
+            // would let a desktop buffer pass as a lock screen.
+            self.forget_lock_screen();
+            self.shell_desktop_frames = 0;
+            if self.locked && self.lock_owned_by_shell {
+                let generation = self.lock_generation;
+                let can_authenticate = self.authenticator.online();
+                self.notify(&viewport_ipc::Event::SessionLock {
+                    generation,
+                    can_authenticate,
+                });
+                self.focus_lock_shell();
+            }
+        }
     }
 
     /// A commit on the shell's surface: take the buffer it painted.
@@ -880,6 +914,12 @@ impl ViewportState {
             }
         }
         self.shell_frames += 1;
+        if shell.desktop {
+            // The lock screen guard counts this page's frames and no other's;
+            // a `--url` page painting is not the desktop showing a lock screen.
+            // See `shell_desktop_frames`.
+            self.shell_desktop_frames += 1;
+        }
 
         // The whole buffer. Surface damage is in surface coordinates and the
         // shell element is drawn in buffer coordinates; the two agree for a
@@ -1006,6 +1046,7 @@ impl ViewportState {
         let now = std::time::Instant::now();
         let mut restarts = shell.restarts;
         let mut window = shell.restart_window;
+        let desktop = shell.desktop;
 
         // Whatever it painted belonged to the process that has gone. Leaving
         // it up would be a desktop that is a photograph: it still shows
@@ -1024,6 +1065,11 @@ impl ViewportState {
         // crash. See `forget_capture_answers`.
         self.forget_capture_answers();
         self.shell_frames = 0;
+        if desktop {
+            // The desktop page is gone, and the count the lock screen guard
+            // compares starts over with whatever replaces it.
+            self.shell_desktop_frames = 0;
+        }
         self.needs_render = true;
 
         // A shell that has given up gets neither a restart nor the arithmetic
@@ -1315,6 +1361,9 @@ impl ViewportState {
         shell.owned = None;
         self.needs_render = true;
         if desktop {
+            // The page that could have drawn the built-in lock screen is not
+            // on screen any more, so its committed frames stop counting.
+            self.shell_desktop_frames = 0;
             // Its rectangles went with it. They are the shell's to report and
             // the compositor's to keep, so a page that goes — a crash and a
             // restart, a reload — leaves its last set behind, and the next
