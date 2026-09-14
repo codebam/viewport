@@ -47,21 +47,27 @@ pub struct Candidate {
 
 impl Candidate {
     /// Start and end along the axis of travel.
-    fn span_along(&self, direction: Direction) -> (i32, i32) {
-        if direction.horizontal() {
-            (self.rect.loc.x, self.rect.loc.x + self.rect.size.w)
+    ///
+    /// i64 because the endpoints are shell-controlled: a `view.layout` may
+    /// place a window at `i32::MAX`, and the far edge has to be comparable
+    /// without overflowing before the result is thrown away.
+    fn span_along(&self, direction: Direction) -> (i64, i64) {
+        let (loc, size) = if direction.horizontal() {
+            (self.rect.loc.x, self.rect.size.w)
         } else {
-            (self.rect.loc.y, self.rect.loc.y + self.rect.size.h)
-        }
+            (self.rect.loc.y, self.rect.size.h)
+        };
+        (i64::from(loc), i64::from(loc) + i64::from(size))
     }
 
     /// Start and end across it.
-    fn span_across(&self, direction: Direction) -> (i32, i32) {
-        if direction.horizontal() {
-            (self.rect.loc.y, self.rect.loc.y + self.rect.size.h)
+    fn span_across(&self, direction: Direction) -> (i64, i64) {
+        let (loc, size) = if direction.horizontal() {
+            (self.rect.loc.y, self.rect.size.h)
         } else {
-            (self.rect.loc.x, self.rect.loc.x + self.rect.size.w)
-        }
+            (self.rect.loc.x, self.rect.size.w)
+        };
+        (i64::from(loc), i64::from(loc) + i64::from(size))
     }
 
     fn centre(&self) -> (f64, f64) {
@@ -109,7 +115,7 @@ pub fn nearest(
     let (from_near, from_far) = from.span_across(direction);
     let forward = matches!(direction, Direction::Right | Direction::Down);
 
-    let mut beside: Option<(u32, i32)> = None;
+    let mut beside: Option<(u32, i64)> = None;
     let mut anywhere: Option<(u32, f64)> = None;
 
     for candidate in candidates {
@@ -196,6 +202,29 @@ mod tests {
         assert_eq!(
             nearest(&windows, Some(windows[1]), Direction::Left),
             Some(1)
+        );
+    }
+
+    /// A window the shell placed at the coordinate limit must not make the
+    /// span arithmetic overflow before it is known to be in the way.
+    #[test]
+    fn candidates_at_the_coordinate_limits_do_not_overflow() {
+        let focused = win(1, i32::MAX, 0, 1, 10);
+        // Behind or overlapping the focus, so it is skipped: no gap is
+        // computed to the far edge of an i32-span.
+        let behind = win(2, i32::MAX - 5, 0, 10, 10);
+        assert_eq!(
+            nearest(&[focused, behind], Some(focused), Direction::Left),
+            None
+        );
+
+        // The same on the other side, where the far edge of the candidate is
+        // what would overflow.
+        let low = win(3, i32::MIN, 0, 10, 10);
+        let also_low = win(4, i32::MIN, 0, 1, 10);
+        assert_eq!(
+            nearest(&[low, also_low], Some(also_low), Direction::Left),
+            None
         );
     }
 
