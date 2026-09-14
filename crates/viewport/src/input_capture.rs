@@ -1382,13 +1382,6 @@ impl crate::state::ViewportState {
             .as_ref()
             .map(|active| active.session.clone());
         let Some(active) = active else { return false };
-        let modifiers = match event {
-            InputEvent::Keyboard { event } => self.update_input_capture_key::<I>(event),
-            _ => None,
-        };
-        let Some(live) = self.input_capture_connections.live.get(&active) else {
-            return false;
-        };
         let capability = match event {
             InputEvent::Keyboard { .. } => DeviceCapability::Keyboard,
             InputEvent::PointerMotion { .. } | InputEvent::PointerMotionAbsolute { .. } => {
@@ -1398,13 +1391,33 @@ impl crate::state::ViewportState {
             InputEvent::PointerAxis { .. } => DeviceCapability::Scroll,
             _ => return false,
         };
-        if !live
-            .ready
-            .iter()
-            .any(|device| device.has_capability(capability))
-        {
+        // Ask whether any ready device has the capability *before* the key is
+        // fed into the seat. `update_input_capture_key` registers it under the
+        // seat's MAIN source; `process_input_event` then sees a key that
+        // source already holds, skips the filter and forwards nothing — so a
+        // session granted only the pointer used to swallow every local
+        // keystroke that reached it, reaching neither the remote nor the
+        // local client. Without the capability there is nothing to consume, so
+        // the local path is left the event untouched.
+        let ready_has_capability = self
+            .input_capture_connections
+            .live
+            .get(&active)
+            .is_some_and(|live| {
+                live.ready
+                    .iter()
+                    .any(|device| device.has_capability(capability))
+            });
+        if !ready_has_capability {
             return false;
         }
+        let modifiers = match event {
+            InputEvent::Keyboard { event } => self.update_input_capture_key::<I>(event),
+            _ => None,
+        };
+        let Some(live) = self.input_capture_connections.live.get(&active) else {
+            return false;
+        };
         let time = event_time_us(event);
         match event {
             InputEvent::Keyboard { event } => {
