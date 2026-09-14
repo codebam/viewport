@@ -473,6 +473,28 @@ fn drag_effect(held: Option<u32>, button: u32, pressed: bool) -> DragEffect {
     }
 }
 
+/// Close the per-button records a release that never reaches the ordinary
+/// release path would otherwise outlive.
+///
+/// A running drag swallows every button that is not its own, release included.
+/// The shell grab, the `click+`/`drag+` decision and the suppressed-press
+/// record are all opened by the press and closed by the release, so a release
+/// that returns before them leaves a stale entry each — and then some later,
+/// ordinary press of that button has its release taken by a decision nobody is
+/// waiting for any more.
+fn discard_button_records(
+    pending_click: &mut std::collections::HashMap<
+        u32,
+        (crate::binding::Action, Point<f64, Logical>, bool),
+    >,
+    shell_grabbed_buttons: &mut Vec<u32>,
+    button: u32,
+) {
+    pending_click.remove(&button);
+    shell_grabbed_buttons.retain(|held| *held != button);
+    release_suppressed(button);
+}
+
 // Buttons whose press a binding took, so the matching release can be taken
 // too — `suppressed_keys` for the mouse.
 //
@@ -1927,7 +1949,21 @@ impl ViewportState {
                         // button is ever reported up.
                         return;
                     }
-                    DragEffect::Swallow => return,
+                    DragEffect::Swallow => {
+                        // The drag's own release is `End`, so any release
+                        // swallowed here belongs to another button — one whose
+                        // press may already have opened the records below.
+                        // The event itself still goes nowhere, but the records
+                        // cannot wait for a release that is not coming.
+                        if state == ButtonState::Released {
+                            discard_button_records(
+                                &mut self.pending_click,
+                                &mut self.shell_grabbed_buttons,
+                                event.button_code(),
+                            );
+                        }
+                        return;
+                    }
                     DragEffect::Free => {}
                 }
 
@@ -4166,6 +4202,48 @@ mod tests {
         assert_eq!(
             drag_effect(Some(BTN_RIGHT), BTN_RIGHT, false),
             DragEffect::End
+        );
+    }
+
+    /// A release a running drag swallows still closes the records its press
+    /// opened. The release goes nowhere — the drag owns the button — but the
+    /// next ordinary press of that button must not have its own release taken
+    /// by a decision nobody is waiting for any more.
+    #[test]
+    fn a_swallowed_release_closes_the_buttons_records() {
+        let button = 0x9f01;
+        let other = BTN_LEFT;
+        let mut pending_click = std::collections::HashMap::new();
+        pending_click.insert(
+            button,
+            (
+                crate::binding::Action::Close,
+                Point::from((10.0, 20.0)),
+                true,
+            ),
+        );
+        pending_click.insert(
+            other,
+            (crate::binding::Action::Exit, Point::from((0.0, 0.0)), false),
+        );
+        let mut shell_grabbed_buttons = vec![other, button];
+        suppress_button(button);
+        suppress_button(other);
+
+        discard_button_records(&mut pending_click, &mut shell_grabbed_buttons, button);
+
+        assert!(!pending_click.contains_key(&button));
+        assert!(!shell_grabbed_buttons.contains(&button));
+        assert!(
+            !release_suppressed(button),
+            "the press suppression is consumed, exactly once"
+        );
+        // Another button's records are somebody else's to close.
+        assert!(pending_click.contains_key(&other));
+        assert!(shell_grabbed_buttons.contains(&other));
+        assert!(
+            release_suppressed(other),
+            "and its suppression is left alone"
         );
     }
 
