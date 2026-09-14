@@ -464,6 +464,14 @@ impl RemoteDesktop {
         let (devices, types, clipboard) = {
             let shared = self.sessions.lock().unwrap();
             match shared.sessions.get(&path) {
+                // One Start per session, as on the screen-share side: a
+                // second would create another stream and overwrite the node
+                // the first is stopped by, so the grant would outlive the
+                // Close that revokes it.
+                Some(session) if !session.may_start() => {
+                    tracing::warn!("remote desktop: refusing to start {path} a second time");
+                    return (RESPONSE_FAILED, HashMap::new());
+                }
                 Some(session) => (
                     session.wanted_devices,
                     session.sources_selected.then_some(session.types),
@@ -509,24 +517,31 @@ impl RemoteDesktop {
         // Written down before the answer goes out, because the answer is what
         // lets the application start sending events and the check those events
         // are made against is this row.
-        {
+        let recorded = {
             let mut shared = self.sessions.lock().unwrap();
-            let Some(session) = shared.sessions.get_mut(&path) else {
-                // The frontend went away while the chooser was up, and the
-                // watcher has already taken the row out. Nothing to grant to —
-                // and, unlike the screen-share side, something to stop: the
-                // chooser may have been granted a stream along with the
-                // devices, started after the watcher looked, and nobody else
-                // knows it exists. Left alone it is a compositor compositing
-                // into a stream whose session is gone, forever.
-                tracing::warn!("remote desktop: {path} was closed while it was being chosen");
-                if let Some(cast) = started.cast {
-                    let _ = self.sender.send(Message::Close { node: cast.node });
-                }
-                return (RESPONSE_CANCELLED, HashMap::new());
-            };
-            session.granted_devices = started.devices;
-            session.node = started.cast.as_ref().map(|cast| cast.node);
+            match shared.sessions.get_mut(&path) {
+                Some(session) => session.record_remote_start(
+                    started.devices,
+                    started.cast.as_ref().map(|cast| cast.node),
+                ),
+                None => false,
+            }
+        };
+        if !recorded {
+            // The frontend went away while the chooser was up, and the watcher
+            // has already taken the row out — or a raced second Start got
+            // here first. Nothing to grant to, and, unlike the screen-share
+            // side, something to stop: the chooser may have been granted a
+            // stream along with the devices, started after the watcher looked,
+            // and nobody else knows it exists. Left alone it is a compositor
+            // compositing into a stream whose session is gone, forever.
+            tracing::warn!(
+                "remote desktop: {path} was closed or already started while it was being chosen"
+            );
+            if let Some(cast) = started.cast {
+                let _ = self.sender.send(Message::Close { node: cast.node });
+            }
+            return (RESPONSE_CANCELLED, HashMap::new());
         }
         tracing::info!(
             "remote desktop: {path} may drive the {}",

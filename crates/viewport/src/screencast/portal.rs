@@ -267,6 +267,14 @@ pub struct Session {
     persist: u32,
     /// The stream handed out, so closing the session stops it.
     pub(super) node: Option<u32>,
+    /// Whether Start has already been answered for this session.
+    ///
+    /// Start may be called only once. A second call used to replace `node`
+    /// and leave the first stream running, so closing the session stopped
+    /// only the newest stream and the application kept the picture it was
+    /// supposed to have lost. Both interfaces check this before they ask and
+    /// set it in the same locked step that records the node or the grant.
+    pub(super) started: bool,
     /// Who asked — the portal frontend's connection, not the application's.
     ///
     /// Kept so a frontend that dies takes its sessions with it. Nothing else
@@ -301,6 +309,42 @@ impl Session {
             input_capture_generation: generation,
             ..Self::default()
         }
+    }
+
+    /// Whether Start may still be answered for this session.
+    ///
+    /// False once either interface has started it: the session describes one
+    /// conversation, and the one stream or grant it hands out is what closing
+    /// it stops.
+    pub(super) fn may_start(&self) -> bool {
+        !self.started
+    }
+
+    /// Record a screen share's node as this session's one Start.
+    ///
+    /// False without touching anything when the session has already started,
+    /// which is what keeps a second Start from overwriting the node the
+    /// existing stream was recorded under.
+    pub(super) fn record_start(&mut self, node: u32) -> bool {
+        if self.started {
+            return false;
+        }
+        self.started = true;
+        self.node = Some(node);
+        true
+    }
+
+    /// Record a remote-desktop grant as this session's one Start.
+    ///
+    /// Same one-shot rule as [`Self::record_start`], and the same reason.
+    pub(super) fn record_remote_start(&mut self, devices: u32, cast: Option<u32>) -> bool {
+        if self.started {
+            return false;
+        }
+        self.started = true;
+        self.granted_devices = devices;
+        self.node = cast;
+        true
     }
 }
 
@@ -704,6 +748,13 @@ impl ScreenCast {
                     );
                     return (RESPONSE_FAILED, HashMap::new());
                 }
+                // One Start per session. Answering a second would create a
+                // second stream and overwrite the node, so the first would
+                // survive the Close that is supposed to stop the share.
+                Some(session) if !session.may_start() => {
+                    tracing::warn!("screencast: refusing to start {path} a second time");
+                    return (RESPONSE_FAILED, HashMap::new());
+                }
                 Some(session) => (
                     session.app_id.clone(),
                     session.types,
@@ -750,15 +801,14 @@ impl ScreenCast {
         let recorded = {
             let mut shared = self.sessions.lock().unwrap();
             match shared.sessions.get_mut(&path) {
-                Some(session) => {
-                    session.node = Some(started.node);
-                    true
-                }
+                Some(session) => session.record_start(started.node),
                 None => false,
             }
         };
         if !recorded {
-            tracing::warn!("screencast: {path} was closed while its source was being chosen");
+            tracing::warn!(
+                "screencast: {path} was closed or already started while its source was being chosen"
+            );
             let _ = self.sender.send(Message::Close { node: started.node });
             return (RESPONSE_CANCELLED, HashMap::new());
         }
@@ -1238,5 +1288,39 @@ mod tests {
         ] {
             assert_eq!(decode(&value), None);
         }
+    }
+    /// Start is one conversation's one answer. A second one must not replace
+    /// the node that the Close stopping the share is looked up by.
+    #[test]
+    fn a_session_starts_once() {
+        let mut session = Session::new("app", None, false);
+        assert!(session.may_start());
+        assert!(session.record_start(41));
+        assert_eq!(session.node, Some(41));
+        assert!(!session.record_start(42));
+        assert!(!session.may_start());
+        assert_eq!(
+            session.node,
+            Some(41),
+            "a second Start must not take over the first stream"
+        );
+    }
+
+    /// The same one-shot rule on the interface that grants devices, whether
+    /// or not a stream came with them.
+    #[test]
+    fn a_remote_session_starts_once() {
+        let mut session = Session::new("app", None, true);
+        assert!(session.record_remote_start(2, Some(7)));
+        assert_eq!(session.granted_devices, 2);
+        assert_eq!(session.node, Some(7));
+        assert!(!session.record_remote_start(1, Some(99)));
+        assert_eq!(session.granted_devices, 2);
+        assert_eq!(session.node, Some(7));
+
+        let mut driving = Session::new("app2", None, true);
+        assert!(driving.record_remote_start(1, None));
+        assert!(!driving.may_start());
+        assert!(driving.node.is_none());
     }
 }
