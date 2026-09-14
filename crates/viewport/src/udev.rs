@@ -2403,17 +2403,26 @@ impl ViewportState {
             // [`crate::multigpu::unique_output_name`] for what the collision
             // costs and why the suffix is the card index.
             //
-            // Read from the space, which is every screen currently mapped —
-            // including the ones this pass has already brought up, because the
-            // `Ok` arm below maps each output before the next connector is
-            // looked at.
+            // Read from every physical head, mapped or not — including the
+            // ones this pass has already brought up, because the `Ok` arm
+            // below maps each output before the next connector is looked at.
+            //
+            // Not from the space alone: a disabled output and a mirror sink
+            // are unmapped from the space by design, but both keep their
+            // Surface, their `wl_output` global and their name. A new output
+            // that took one of those names would leave two screens answering
+            // to it, and every name-keyed lookup downstream — HDR, gamma,
+            // output power, output management, the shell's own map — would
+            // resolve to whichever Surface it found first.
             let base = format!(
                 "{}-{}",
                 connector.interface().as_str(),
                 connector.interface_id()
             );
-            let taken_names: std::collections::HashSet<String> =
-                self.space.outputs().map(|o| o.name()).collect();
+            let taken_names = names_in_use(
+                self.space.outputs(),
+                udev.surfaces().map(|surface| &surface.output),
+            );
             let name = crate::multigpu::unique_output_name(&base, index, &taken_names);
             if name != base {
                 tracing::info!(
@@ -4022,6 +4031,24 @@ fn free_crtc(
     None
 }
 
+/// Every name a new output must not take.
+///
+/// The space plus every physical head the backend holds. The second set is
+/// the one that matters after a monitor has been disabled or made a mirror
+/// sink: those are unmapped on purpose, and only their `Surface` — and so
+/// their `wl_output` global and their name — is left saying the screen is
+/// still there.
+fn names_in_use<'a>(
+    mapped: impl IntoIterator<Item = &'a Output>,
+    physical: impl IntoIterator<Item = &'a Output>,
+) -> std::collections::HashSet<String> {
+    mapped
+        .into_iter()
+        .chain(physical)
+        .map(|output| output.name())
+        .collect()
+}
+
 /// Whether a connector is something the compositor should not drive.
 ///
 /// The `non-desktop` property is how a head-mounted display says it is not a
@@ -4173,5 +4200,30 @@ mod tests {
         // session always has — this keeps the answer a real slot.
         assert_eq!(primary_index(&[false, false]), 0);
         assert_eq!(primary_index(&[]), 0);
+    }
+
+    #[test]
+    fn an_unmapped_head_still_reserves_its_name() {
+        use smithay::output::{PhysicalProperties, Subpixel};
+
+        let properties = || PhysicalProperties {
+            size: (0, 0).into(),
+            subpixel: Subpixel::Unknown,
+            make: "Viewport".into(),
+            model: "Test".into(),
+            serial_number: "Unknown".into(),
+        };
+        let mapped = Output::new("DP-1".to_owned(), properties());
+        // The disabled head and the mirror sink: present to the backend,
+        // absent from the space, and still advertised under their name.
+        let disabled = Output::new("DP-2".to_owned(), properties());
+
+        let names = names_in_use(std::iter::once(&mapped), std::iter::once(&disabled));
+        assert!(names.contains("DP-1"));
+        assert!(
+            names.contains("DP-2"),
+            "an unmapped head's name is still taken"
+        );
+        assert_eq!(names.len(), 2);
     }
 }
