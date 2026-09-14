@@ -44,6 +44,7 @@
 // its own user interface is broken, which is not a trade to make silently.
 
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use zvariant::{ObjectPath, OwnedObjectPath, OwnedValue, Value};
 
@@ -929,6 +930,132 @@ const CLIPBOARD_IDLE: std::time::Duration = std::time::Duration::from_secs(5);
 /// The longest one transfer may hold a reader, activity or not.
 const CLIPBOARD_TOTAL: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// How long an unanswered `SelectionTransfer` may wait for `SelectionWrite`.
+///
+/// The reader has its own idle and total caps once a write starts; this one
+/// bounds the time before that, so a serial cannot be answered long after the
+/// `SetSelection` it belonged to was replaced. The same ceiling keeps the two
+/// halves of one transfer from disagreeing about when it is too old.
+const CLIPBOARD_TRANSFER: std::time::Duration = CLIPBOARD_TOTAL;
+
+/// What a `SelectionWrite` serial names when it arrives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TransferAnswer {
+    /// The transfer is still outstanding and belongs to the asking session.
+    Ready,
+    /// It belonged to the asking session, but has waited too long to answer.
+    Expired,
+    /// No transfer was sent under this serial, or it belongs to another
+    /// session.
+    Unknown,
+}
+
+/// One `SelectionTransfer` this end has asked the frontend for.
+#[derive(Debug)]
+struct Transfer {
+    /// The session the request was sent to, so a serial minted for one
+    /// session cannot be answered on another.
+    session: OwnedObjectPath,
+    /// When the signal went out, so an old offer cannot be answered forever.
+    sent: std::time::Instant,
+}
+
+/// The `SelectionTransfer`s this end has sent, and which of them still owns a
+/// session's selection.
+///
+/// The serial is the frontend's token for one transfer: `SelectionWrite` may
+/// only answer the transfer that serial names, from the session that was
+/// asked, and only while the session still owns the selection. Without this
+/// the serial was decorative and any granted session could write into the
+/// local selection at any time, including after a later local copy. The
+/// `owners` map is what turns a completed write into "the local side has the
+/// selection now"; a newer `SetSelection` replaces it, so the old reader's
+/// late answer cannot record over the new selection.
+#[derive(Debug, Default)]
+struct Transfers {
+    /// Sent and not yet answered, by serial.
+    outstanding: HashMap<u32, Transfer>,
+    /// Answered with a pipe, by serial, until the reader thread finishes.
+    writing: HashMap<u32, OwnedObjectPath>,
+    /// The serial whose completion would make this session's selection local,
+    /// one per session.
+    owners: HashMap<OwnedObjectPath, u32>,
+}
+
+impl Transfers {
+    /// Record a transfer just sent for `session`.
+    fn requested(&mut self, session: &OwnedObjectPath, serial: u32, now: std::time::Instant) {
+        if let Some(previous) = self.owners.insert(session.clone(), serial) {
+            // A new `SetSelection` supersedes the old one. Its reader may
+            // still be draining a pipe; `completed` sees the owner map moved
+            // on and refuses to record what it read.
+            self.outstanding.remove(&previous);
+        }
+        self.outstanding.insert(
+            serial,
+            Transfer {
+                session: session.clone(),
+                sent: now,
+            },
+        );
+    }
+
+    /// Answer a `SelectionWrite` for `serial`, if this session may write it.
+    fn answered(
+        &mut self,
+        session: &OwnedObjectPath,
+        serial: u32,
+        now: std::time::Instant,
+        ttl: std::time::Duration,
+    ) -> TransferAnswer {
+        let Some(transfer) = self.outstanding.remove(&serial) else {
+            return TransferAnswer::Unknown;
+        };
+        if transfer.session != *session {
+            self.outstanding.insert(serial, transfer);
+            return TransferAnswer::Unknown;
+        }
+        if now.saturating_duration_since(transfer.sent) > ttl {
+            if self.owners.get(session) == Some(&serial) {
+                self.owners.remove(session);
+            }
+            return TransferAnswer::Expired;
+        }
+        self.writing.insert(serial, session.clone());
+        TransferAnswer::Ready
+    }
+
+    /// Whether `SelectionWriteDone` names a write this session is in the
+    /// middle of.
+    fn written_by(&self, session: &OwnedObjectPath, serial: u32) -> bool {
+        self.writing.get(&serial) == Some(session)
+    }
+
+    /// The reader thread has finished or given up. True when this transfer is
+    /// still the one whose completion hands the selection to the local side;
+    /// false when a newer `SetSelection`, or a release, has replaced it, in
+    /// which case what was read must not overwrite the newer selection.
+    fn completed(&mut self, session: &OwnedObjectPath, serial: u32) -> bool {
+        self.writing.remove(&serial);
+        if self.owners.get(session) == Some(&serial) {
+            self.owners.remove(session);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// The session gave the selection up (`SetSelection` with no mime types).
+    /// True when it was still an owner, so a `SelectionOwnerChanged` false is
+    /// owed.
+    fn released(&mut self, session: &OwnedObjectPath) -> bool {
+        self.outstanding
+            .retain(|_, transfer| transfer.session != *session);
+        self.writing.retain(|_, writer| writer != session);
+        self.owners.remove(session).is_some()
+    }
+}
+
 /// How many remote clipboard readers are alive.
 static LIVE_CLIPBOARD_READERS: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
@@ -954,6 +1081,20 @@ impl Drop for ClipboardReader {
     }
 }
 
+/// What a reader thread has to know besides the pipe it is draining.
+///
+/// The data is what the write is for; this is the rest: which session and
+/// serial it answers, the table saying whether it is still the write that owns
+/// the selection, and the bus object needed to tell the frontend when
+/// ownership has come back to the local side.
+struct ClipboardReaderContext {
+    sessions: Sessions,
+    transfers: Arc<Mutex<Transfers>>,
+    path: OwnedObjectPath,
+    serial: u32,
+    server: zbus::ObjectServer,
+}
+
 /// Read what the application writes into a `SelectionWrite` pipe, and record
 /// it as the local selection.
 ///
@@ -961,21 +1102,32 @@ impl Drop for ClipboardReader {
 /// the thread gives up on a peer that goes quiet or never finishes, so a pipe
 /// whose other end is held open and empty does not park a thread for the life
 /// of the session; [`ClipboardReader`] bounds how many can be parked at once.
+/// Whichever way it ends — EOF, timeout, or a read that fails — the transfer is
+/// finished, because an ownership flag that outlives its write is one the
+/// session could use to overwrite a later local copy.
 fn read_clipboard_pipe(
     read: std::os::fd::OwnedFd,
     sender: smithay::reexports::calloop::channel::Sender<Message>,
+    context: ClipboardReaderContext,
 ) {
+    let text = read_clipboard(read);
+    finish_clipboard_transfer(&context, text, &sender);
+}
+
+/// Drain the selection pipe, or answer `None` when it cannot be read at all.
+fn read_clipboard(read: std::os::fd::OwnedFd) -> Option<String> {
     use smithay::reexports::rustix::fs::{fcntl_setfl, OFlags};
     use std::io::Read as _;
 
     if fcntl_setfl(&read, OFlags::NONBLOCK).is_err() {
-        return;
+        return None;
     }
     let mut file = std::fs::File::from(read);
     let mut buffer = Vec::new();
     let mut chunk = [0u8; 8192];
     let started = std::time::Instant::now();
     let mut last = started;
+    let mut readable = true;
     loop {
         match file.read(&mut chunk) {
             Ok(0) => break,
@@ -994,11 +1146,60 @@ fn read_clipboard_pipe(
                 }
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
-            Err(_) => return,
+            Err(_) => {
+                readable = false;
+                break;
+            }
         }
     }
-    let text = String::from_utf8_lossy(&buffer).into_owned();
-    let _ = sender.send(Message::ClipboardSet { text });
+    readable.then(|| String::from_utf8_lossy(&buffer).into_owned())
+}
+
+/// Finish one transfer on the reader thread.
+///
+/// Ownership goes back to the local side the moment the write ends, whether
+/// bytes arrived or the reader gave up, and the frontend is told. A transfer
+/// that a newer `SetSelection` has already replaced records nothing: the new
+/// selection is what owns the clipboard now, and the old pipe is a stale
+/// answer to a question nobody is asking any more.
+fn finish_clipboard_transfer(
+    context: &ClipboardReaderContext,
+    text: Option<String>,
+    sender: &smithay::reexports::calloop::channel::Sender<Message>,
+) {
+    let owner_returned = {
+        // Session table first, then transfers, in that order everywhere both
+        // are held. That is what makes "still the owner" one answer rather
+        // than a race between the two maps.
+        let mut shared = context.sessions.lock().unwrap();
+        let current = context
+            .transfers
+            .lock()
+            .unwrap()
+            .completed(&context.path, context.serial);
+        match shared.sessions.get_mut(&context.path) {
+            Some(session) if current && session.clipboard_owner => {
+                session.clipboard_owner = false;
+                true
+            }
+            _ => false,
+        }
+    };
+    if !owner_returned {
+        return;
+    }
+    if let Some(text) = text {
+        let _ = sender.send(Message::ClipboardSet { text });
+    }
+    // The local side owns the selection now, so the frontend is told. This is
+    // also what lets a local paste reach the other end rather than serving the
+    // remote copy the session put here.
+    zbus::block_on(emit_owner_changed(
+        &context.server,
+        &context.path,
+        &crate::clipboard::offered_mimes(),
+        false,
+    ));
 }
 
 /// The `org.freedesktop.impl.portal.Clipboard` object.
@@ -1016,6 +1217,10 @@ fn read_clipboard_pipe(
 pub struct Clipboard {
     sender: smithay::reexports::calloop::channel::Sender<Message>,
     sessions: Sessions,
+    /// The transfers this end has asked for, by serial. Shared with the
+    /// reader threads, which use it to tell whether what they read is still
+    /// the selection that owns the clipboard.
+    transfers: Arc<Mutex<Transfers>>,
 }
 
 impl Clipboard {
@@ -1023,7 +1228,11 @@ impl Clipboard {
         sender: smithay::reexports::calloop::channel::Sender<Message>,
         sessions: Sessions,
     ) -> Self {
-        Self { sender, sessions }
+        Self {
+            sender,
+            sessions,
+            transfers: Arc::new(Mutex::new(Transfers::default())),
+        }
     }
 
     fn called_by_frontend(&self, header: &zbus::message::Header<'_>) -> bool {
@@ -1096,7 +1305,13 @@ impl Clipboard {
         }
         let path = OwnedObjectPath::from(session_handle);
         let mimes = mime_types(&options);
-        let stored = {
+        let wanted = transfer_mime(&mimes);
+
+        // The session table and the transfer table are taken together, in
+        // that order, so what the session says it owns and what the transfer
+        // table thinks it owns cannot be read half-way through each other.
+        // Both are dropped before anything is awaited.
+        let (stored, transfer, released) = {
             let mut shared = self.sessions.lock().unwrap();
             let Some(session) = shared.sessions.get_mut(&path) else {
                 return;
@@ -1104,18 +1319,53 @@ impl Clipboard {
             if !session.clipboard_granted {
                 return;
             }
-            session.clipboard_mimes = mimes.clone();
-            session.clipboard_owner = true;
-            session.clipboard_mimes.clone()
+            let mut transfers = self.transfers.lock().unwrap();
+            if mimes.is_empty() {
+                // A session advertising no types is giving the selection up,
+                // not claiming one with nothing to offer. The local side has
+                // the selection again and is told so before anything can ask
+                // for a transfer that no longer exists.
+                let was_owner = session.clipboard_owner;
+                session.clipboard_owner = false;
+                session.clipboard_mimes.clear();
+                let had_transfer = transfers.released(&path);
+                (None, None, was_owner || had_transfer)
+            } else {
+                session.clipboard_mimes = mimes.clone();
+                session.clipboard_owner = true;
+                match wanted {
+                    Some(mime) => {
+                        // One transfer at a time per session: the serial is
+                        // what `SelectionWrite` has to name, and a newer
+                        // advertisement makes the previous one stale.
+                        let serial = next_transfer_serial();
+                        transfers.requested(&path, serial, std::time::Instant::now());
+                        (Some(mimes), Some((mime, serial)), false)
+                    }
+                    // Nothing this end can read — an image, a file list.
+                    // The session owns the selection, but there is no
+                    // transfer to ask for and no serial to answer with.
+                    None => (Some(mimes), None, false),
+                }
+            }
         };
-        tracing::debug!("clipboard: {path} now owns {mimes:?}");
+
+        if released {
+            tracing::debug!("clipboard: {path} released the selection");
+            emit_owner_changed(server, &path, &[], false).await;
+            return;
+        }
+        let Some(stored) = stored else {
+            return;
+        };
+        tracing::debug!("clipboard: {path} now owns {stored:?}");
         emit_owner_changed(server, &path, &stored, true).await;
 
         // And ask for the bytes. A session offering a type this side cannot
         // read is told nothing further; one offering text is asked for it, and
         // answers with `SelectionWrite`.
-        if let Some(mime) = transfer_mime(&stored) {
-            emit_selection_transfer(server, &path, &mime, next_transfer_serial()).await;
+        if let Some((mime, serial)) = transfer {
+            emit_selection_transfer(server, &path, &mime, serial).await;
         }
     }
 
@@ -1163,11 +1413,17 @@ impl Clipboard {
 
     /// The application is answering a `SelectionTransfer`; hand it a pipe to
     /// write the data into.
+    ///
+    /// The serial is not decoration: it has to name the outstanding transfer
+    /// for this same session, because an answer to a question this end never
+    /// asked — or asked and has since replaced — is how a granted session
+    /// could write over a newer local selection at any time.
     async fn selection_write(
         &self,
         session_handle: ObjectPath<'_>,
-        _serial: u32,
+        serial: u32,
         #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(object_server)] server: &zbus::ObjectServer,
     ) -> zbus::fdo::Result<zvariant::OwnedFd> {
         if !self.called_by_frontend(&header) {
             return Err(zbus::fdo::Error::AccessDenied(
@@ -1181,6 +1437,8 @@ impl Clipboard {
             ));
         }
 
+        // Taken before the transfer is spent, so a full reader pool refuses
+        // the write with the serial still outstanding and answerable later.
         let Some(reader) = ClipboardReader::acquire() else {
             tracing::warn!("clipboard: too many remote reads in flight; refusing a transfer");
             return Err(zbus::fdo::Error::Failed(
@@ -1189,12 +1447,67 @@ impl Clipboard {
         };
         let (read, write) = smithay::reexports::rustix::pipe::pipe()
             .map_err(|e| zbus::fdo::Error::Failed(format!("no pipe for the clipboard: {e}")))?;
+
+        let answer = {
+            let mut shared = self.sessions.lock().unwrap();
+            let Some(session) = shared.sessions.get_mut(&path) else {
+                return Err(zbus::fdo::Error::AccessDenied(
+                    "this session was not granted the clipboard".to_owned(),
+                ));
+            };
+            if !session.clipboard_granted {
+                return Err(zbus::fdo::Error::AccessDenied(
+                    "this session was not granted the clipboard".to_owned(),
+                ));
+            }
+            if !session.clipboard_owner {
+                return Err(zbus::fdo::Error::Failed(
+                    "this session does not own the clipboard".to_owned(),
+                ));
+            }
+            let answer = self.transfers.lock().unwrap().answered(
+                &path,
+                serial,
+                std::time::Instant::now(),
+                CLIPBOARD_TRANSFER,
+            );
+            if answer == TransferAnswer::Expired {
+                // The offer aged out while it sat unanswered, so the local
+                // side has the selection again. Say so before refusing, and
+                // the stale serial cannot be used to overwrite it.
+                session.clipboard_owner = false;
+            }
+            answer
+        };
+
+        match answer {
+            TransferAnswer::Ready => {}
+            TransferAnswer::Expired => {
+                emit_owner_changed(server, &path, &[], false).await;
+                return Err(zbus::fdo::Error::Failed(
+                    "that clipboard transfer has expired".to_owned(),
+                ));
+            }
+            TransferAnswer::Unknown => {
+                return Err(zbus::fdo::Error::Failed(
+                    "no clipboard transfer with that serial".to_owned(),
+                ));
+            }
+        }
+
+        let context = ClipboardReaderContext {
+            sessions: self.sessions.clone(),
+            transfers: self.transfers.clone(),
+            path,
+            serial,
+            server: server.clone(),
+        };
         let sender = self.sender.clone();
         if let Err(e) = std::thread::Builder::new()
             .name("clipboard-write".to_owned())
             .spawn(move || {
                 let _reader = reader;
-                read_clipboard_pipe(read, sender);
+                read_clipboard_pipe(read, sender, context);
             })
         {
             tracing::warn!("clipboard: could not start a reader: {e}");
@@ -1212,12 +1525,32 @@ impl Clipboard {
     /// means the bytes are whatever arrived before it gave up.
     async fn selection_write_done(
         &self,
-        _session_handle: ObjectPath<'_>,
-        _serial: u32,
-        _success: bool,
+        session_handle: ObjectPath<'_>,
+        serial: u32,
+        success: bool,
         #[zbus(header)] header: zbus::message::Header<'_>,
     ) {
-        let _ = header;
+        if !self.called_by_frontend(&header) {
+            return;
+        }
+        let path = OwnedObjectPath::from(session_handle);
+        if !self.granted(&path) {
+            return;
+        }
+        // The reader thread is what records the bytes and hands the selection
+        // back to the local side, on EOF or on its own deadline. What is
+        // checked here is only that the serial names a write this end actually
+        // handed out, so a completion cannot be aimed at a transfer that never
+        // existed.
+        if self.transfers.lock().unwrap().written_by(&path, serial) {
+            tracing::debug!(
+                "clipboard: {path} finished writing transfer {serial} (success={success})"
+            );
+        } else {
+            tracing::debug!(
+                "clipboard: {path} reported transfer {serial} that is not being written"
+            );
+        }
     }
 
     /// The local selection changed, and the session may now offer it.
@@ -1614,6 +1947,107 @@ mod tests {
         assert!(
             ClipboardReader::acquire().is_some(),
             "a finished reader frees its slot"
+        );
+    }
+
+    /// A transfer belongs to the serial it was sent under, only the session it
+    /// was sent to can answer it, and it can be answered once. Without this
+    /// the serial was decorative and any granted session could write into the
+    /// local selection at any time.
+    #[test]
+    fn a_selection_transfer_is_answered_once_by_its_own_session() {
+        let mut transfers = Transfers::default();
+        let one = OwnedObjectPath::try_from("/org/freedesktop/portal/desktop/one")
+            .expect("a valid object path");
+        let two = OwnedObjectPath::try_from("/org/freedesktop/portal/desktop/two")
+            .expect("a valid object path");
+        let start = std::time::Instant::now();
+        transfers.requested(&one, 7, start);
+
+        assert_eq!(
+            transfers.answered(&two, 7, start, CLIPBOARD_TRANSFER),
+            TransferAnswer::Unknown,
+            "another session's serial is not this session's to answer"
+        );
+        assert_eq!(
+            transfers.answered(&one, 7, start, CLIPBOARD_TRANSFER),
+            TransferAnswer::Ready
+        );
+        assert!(transfers.written_by(&one, 7));
+        assert_eq!(
+            transfers.answered(&one, 7, start, CLIPBOARD_TRANSFER),
+            TransferAnswer::Unknown,
+            "a serial answers one write and no more"
+        );
+        assert!(
+            transfers.completed(&one, 7),
+            "the write owned the selection"
+        );
+        assert!(!transfers.completed(&one, 7), "completion happens once");
+    }
+
+    /// A later advertisement replaces the earlier one, so the old pipe cannot
+    /// record over the new selection — and cannot say the local side took a
+    /// selection the session had already replaced.
+    #[test]
+    fn a_late_answer_cannot_overwrite_a_newer_selection() {
+        let mut transfers = Transfers::default();
+        let session = OwnedObjectPath::try_from("/org/freedesktop/portal/desktop/session")
+            .expect("a valid object path");
+        let start = std::time::Instant::now();
+        transfers.requested(&session, 1, start);
+        assert_eq!(
+            transfers.answered(&session, 1, start, CLIPBOARD_TRANSFER),
+            TransferAnswer::Ready
+        );
+        transfers.requested(&session, 2, start);
+
+        assert!(
+            !transfers.completed(&session, 1),
+            "the superseded write is not the owner"
+        );
+        assert_eq!(
+            transfers.answered(&session, 1, start, CLIPBOARD_TRANSFER),
+            TransferAnswer::Unknown,
+            "the superseded serial is gone"
+        );
+        assert_eq!(
+            transfers.answered(&session, 2, start, CLIPBOARD_TRANSFER),
+            TransferAnswer::Ready
+        );
+        assert!(
+            transfers.completed(&session, 2),
+            "the new write is the owner"
+        );
+    }
+
+    /// An offer that waited too long is refused and gives the selection back;
+    /// a release is once, not once per repeated empty advertisement.
+    #[test]
+    fn an_expired_or_released_transfer_gives_the_selection_back() {
+        let mut transfers = Transfers::default();
+        let session = OwnedObjectPath::try_from("/org/freedesktop/portal/desktop/session")
+            .expect("a valid object path");
+        let start = std::time::Instant::now();
+        transfers.requested(&session, 3, start);
+        let late = start + CLIPBOARD_TRANSFER + std::time::Duration::from_millis(1);
+        assert_eq!(
+            transfers.answered(&session, 3, late, CLIPBOARD_TRANSFER),
+            TransferAnswer::Expired
+        );
+        assert_eq!(
+            transfers.answered(&session, 3, start, CLIPBOARD_TRANSFER),
+            TransferAnswer::Unknown,
+            "an expired serial is gone"
+        );
+
+        transfers.requested(&session, 4, start);
+        assert!(transfers.released(&session), "the session was the owner");
+        assert!(!transfers.released(&session), "a release happens once");
+        assert_eq!(
+            transfers.answered(&session, 4, start, CLIPBOARD_TRANSFER),
+            TransferAnswer::Unknown,
+            "a released serial cannot answer"
         );
     }
 }
