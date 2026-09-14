@@ -21,6 +21,32 @@ use smithay::wayland::session_lock::{
 
 use crate::state::ViewportState;
 
+/// Whether one locked output is actually drawing something.
+///
+/// A `LockSurface` exists from the moment the locker calls
+/// `get_lock_surface`, which is before it has a buffer. An alive but empty
+/// surface is the hung-locker case: the screen is black, and the protocol
+/// says another locker may take over exactly then. Counting the resource
+/// instead of the pixels made a hung locker look like a drawn one and left
+/// the session with no way in — so the test is a committed buffer.
+fn lock_surface_is_drawing(lock: &LockSurface) -> bool {
+    use smithay::utils::IsAlive as _;
+
+    lock_surface_drawing(
+        lock.wl_surface().alive(),
+        smithay::backend::renderer::utils::with_renderer_surface_state(
+            lock.wl_surface(),
+            |state| state.buffer().is_some(),
+        )
+        .unwrap_or(false),
+    )
+}
+
+/// The decision above, split from the Wayland handles so it can be tested.
+fn lock_surface_drawing(alive: bool, has_buffer: bool) -> bool {
+    alive && has_buffer
+}
+
 impl SessionLockHandler for ViewportState {
     fn lock_state(&mut self) -> &mut SessionLockManagerState {
         &mut self.session_lock_state
@@ -190,12 +216,7 @@ impl ViewportState {
     /// was ever taken. What this guards against is the shell being *broken*,
     /// which is the failure that actually happens.
     pub fn lock_screen_is_drawing(&self) -> bool {
-        use smithay::utils::IsAlive as _;
-        if self
-            .lock_surfaces
-            .values()
-            .any(|surface| surface.wl_surface().alive())
-        {
+        if self.lock_surfaces.values().any(lock_surface_is_drawing) {
             return true;
         }
         self.lock_mode.is_built_in()
@@ -286,7 +307,11 @@ impl ViewportState {
             .space
             .outputs()
             .map(|output| output.name())
-            .filter(|name| !self.lock_surfaces.contains_key(name))
+            .filter(|name| {
+                self.lock_surfaces
+                    .get(name)
+                    .is_none_or(|lock| !lock_surface_is_drawing(lock))
+            })
             .collect();
         if missing.is_empty() {
             return;
@@ -357,5 +382,21 @@ impl ViewportState {
             keyboard.set_focus(self, Some(surface.clone().into()), serial);
         }
         self.needs_render = true;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::lock_surface_drawing;
+
+    /// An alive locker that never committed a buffer is not drawing: that is
+    /// what lets a takeover rescue a hung locker, and what makes
+    /// `check_lock_screen` say so.
+    #[test]
+    fn an_empty_lock_surface_is_not_drawing() {
+        assert!(lock_surface_drawing(true, true));
+        assert!(!lock_surface_drawing(true, false));
+        assert!(!lock_surface_drawing(false, true));
+        assert!(!lock_surface_drawing(false, false));
     }
 }
