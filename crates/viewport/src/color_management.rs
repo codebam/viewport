@@ -58,6 +58,13 @@ pub struct ColorManagementState {
     /// running — and to every client started afterwards, since nothing else
     /// consulted the output's state either.
     outputs: Vec<OutputObject>,
+    /// The live per-surface objects clients hold.
+    ///
+    /// The protocol allows at most one for a given `wl_surface`, and the
+    /// second request is the `surface_exists` error; the list is also what
+    /// stops an object whose surface has gone from claiming the surface
+    /// again.
+    surfaces: Vec<(WpColorManagementSurfaceV1, WlSurface)>,
     /// The per-surface feedback objects, for the same reason.
     feedback: Vec<Feedback>,
 }
@@ -104,6 +111,7 @@ impl ColorManagementState {
         Self {
             _global: display.create_global::<D, WpColorManagerV1, _>(VERSION, ()),
             outputs: Vec::new(),
+            surfaces: Vec::new(),
             feedback: Vec::new(),
         }
     }
@@ -111,6 +119,8 @@ impl ColorManagementState {
     /// Drop the objects whose client has gone.
     fn reap(&mut self) {
         self.outputs.retain(|entry| entry.object.is_alive());
+        self.surfaces
+            .retain(|(object, surface)| object.is_alive() && surface.is_alive());
         self.feedback
             .retain(|entry| feedback_usable(entry.object.is_alive(), entry.surface.is_alive()));
     }
@@ -345,7 +355,28 @@ impl Dispatch<WpColorManagerV1, ()> for ViewportState {
             }
 
             wp_color_manager_v1::Request::GetSurface { id, surface } => {
-                data_init.init(id, surface.clone());
+                state.color_management.reap();
+                if state
+                    .color_management
+                    .surfaces
+                    .iter()
+                    .any(|(_, held)| held == &surface)
+                {
+                    // One object per surface is the protocol's rule, and the
+                    // client that breaks it gets the error rather than a
+                    // second object sharing the same pending state.
+                    manager.post_error(
+                        wp_color_manager_v1::Error::SurfaceExists,
+                        "a colour management surface already exists for this surface",
+                    );
+                    let _ = id;
+                    return;
+                }
+                let object = data_init.init(id, surface.clone());
+                state
+                    .color_management
+                    .surfaces
+                    .push((object, surface.clone()));
                 // Colour state is double-buffered: the set/unset requests
                 // below park into `PendingSurfaceColor`, and this hook —
                 // once per surface, on its first colour-management object —
@@ -672,6 +703,20 @@ impl Dispatch<WpColorManagementSurfaceV1, WlSurface> for ViewportState {
                 }
             }
         }
+    }
+
+    fn destroyed(
+        state: &mut Self,
+        _client: smithay::reexports::wayland_server::backend::ClientId,
+        object: &WpColorManagementSurfaceV1,
+        _surface: &WlSurface,
+    ) {
+        // A destructor ends the surface's claim whether or not the request
+        // was served, so a client may create the object again afterwards.
+        state
+            .color_management
+            .surfaces
+            .retain(|(held, _)| held != object);
     }
 }
 
