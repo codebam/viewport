@@ -237,11 +237,50 @@ no other way in. They enter the compositor where libinput's own events do, so
 what they exercise is what a hand exercises — the hit test, the focus, the
 keybinding filter and the shell's overlays, in that order.
 
-This is not a privilege escalation. The socket is 0600 and owned by the user
-running the session, and anything that can open it can already run
-`shell.command`, which the shell turns into `exec`. Anything that can reach the
-socket can already run programs as that user; being able to move the pointer as
-well changes nothing about who is trusted.
+This is not a privilege escalation for an ordinary same-user process. The
+socket is 0600 and owned by the user running the session, but 0600 is an owner
+check rather than an identity one. A client the compositor did not start, and
+whose `/proc/<pid>/exe` is not the compositor binary, is untrusted: it may ask
+the read-only queries (`view.query`, `clipboard.query`, `notification.list`)
+and see public events, but `apply` refuses every privileged request —
+`shell.exec`, synthetic input, `config.save`, `quit` and the session messages.
+`shell.command` is a shell verb (focus, workspaces, layout model), not
+arbitrary execution.
+
+The compositor does trust a reconnection of its own binary: that is how
+`viewport msg` works without a token. The check is the executable path, so any
+same-user process that can run the compositor binary has the same trust. It is
+an authorization for the compositor's own tooling, not an identity, and the
+gap is deferred rather than papered over — closing it needs a capability the
+peer cannot obtain by running a path. See [Control-socket trust](#control-socket-trust).
+
+### Control-socket trust
+
+Two classifications currently reach the private-event and privileged-request
+gates:
+
+* **A supervised shell**, recognised by the pid `SO_PEERCRED` reports and the
+  compositor's own child list. A peer cannot choose its pid, so this cannot be
+  claimed by saying so.
+* **The compositor binary itself**, recognised by canonicalising
+  `/proc/<pid>/exe` and comparing it with `current_exe()`. This is how
+  `viewport msg` works without a token. A debug build additionally trusts
+  `VIEWPORT_IPC_TRUST_EXE` for the integration harness; release builds refuse
+  that variable.
+
+The second classification is forgeable **by design**: any same-user process
+that executes the compositor binary can present the same path, receive the
+private events (`clipboard.history`, `notification.*`, `session.restore`,
+`ai.*`) and pass the privileged-request gate. The socket permission says which
+user may connect, not which process is the desktop.
+
+A real fix is a capability rather than a filesystem object: a random token
+written to an inherited fd or passed with `SCM_RIGHTS` when the compositor
+starts the shell, and required on the connection (or in its first message) for
+private events and privileged requests. It is deferred because it changes the
+shell launch protocol, `viewport msg`, and every `--subscribe` script — the
+current same-executable trust is what keeps those working without a token.
+Until it lands, treat 0600 as "same user may connect", not "trusted".
 
 The socket is a stream, not a datagram, and the compositor answers on it — so a
 one-shot redirect will not do. `scripts/bench-vkcube.sh` opens it from Python

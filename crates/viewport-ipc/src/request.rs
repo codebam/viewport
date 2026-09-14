@@ -50,8 +50,54 @@ impl Secret {
     }
 }
 
+/// One request as the log may see it.
+///
+/// `Request` is printed whole when `apply` refuses one against a locked
+/// session, and at debug for every message the compositor receives. Two of its
+/// fields are secrets: `session.unlock`'s password already travels in
+/// [`Secret`], and `network.connect`'s passphrase is a plain `Option<String>`
+/// because that is the wire shape and the handler wants a `String`. The
+/// derived `Debug` printed that passphrase. This implementation serialises the
+/// request and replaces every value under a known secret key, at any depth,
+/// with a fixed placeholder, so a future secret named `password` or
+/// `passphrase` is covered without anybody having to remember a logging rule.
+impl std::fmt::Debug for Request {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match serde_json::to_value(self) {
+            Ok(mut value) => {
+                redact_secrets(&mut value);
+                write!(f, "{value}")
+            }
+            // A float JSON cannot carry (a NaN layout scale) is the one way
+            // this can fail. Nothing sensitive is printed either way.
+            Err(_) => f.write_str("<request>"),
+        }
+    }
+}
+
+/// Replace the value under every known secret key with `<secret>`.
+fn redact_secrets(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(fields) => {
+            for (name, field) in fields.iter_mut() {
+                if name == "password" || name == "passphrase" {
+                    *field = serde_json::Value::String("<secret>".to_owned());
+                } else {
+                    redact_secrets(field);
+                }
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                redact_secrets(item);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// A message from the shell to the compositor.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum Request {
     /// Place a window. The shell measured a hole in its own DOM and is telling
@@ -2012,5 +2058,21 @@ mod tests {
             panic!("not a view.layout message");
         };
         assert!(!layout.square);
+    }
+
+    /// A network passphrase must not be printable by accident either. The
+    /// lock password is wrapped in `Secret`; this one is a plain `Option` the
+    /// `Debug` for `Request` has to redact, because both `apply`'s locked
+    /// refusals and the IPC debug transcript print a whole request.
+    #[test]
+    fn a_network_passphrase_does_not_print_itself() {
+        let request = Request::NetworkConnect {
+            ssid: "kitchen".to_owned(),
+            passphrase: Some("hunter2".to_owned()),
+        };
+        let printed = format!("{request:?}");
+        assert!(!printed.contains("hunter2"), "{printed}");
+        assert!(printed.contains("<secret>"), "{printed}");
+        assert!(printed.contains("kitchen"), "{printed}");
     }
 }

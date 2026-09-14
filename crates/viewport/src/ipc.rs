@@ -93,7 +93,10 @@ struct Client {
     ///
     /// Decided once, at accept, from the pid the kernel reported: a shell
     /// this compositor supervises, or the compositor binary itself. Both are
-    /// checks on the process, not on anything the client says.
+    /// checks on the process, not on anything the client says — but the
+    /// binary half is forgeable by any same-user process that can execute
+    /// that path, which is the deliberate convenience that keeps `viewport
+    /// msg` working without a token. See docs/ipc.md § Control-socket trust.
     trusted: bool,
     framer: Framer,
     /// What a short write left behind. Nothing else will send it, so the
@@ -155,7 +158,10 @@ pub struct Ipc {
     ///
     /// What a peer's `/proc/<pid>/exe` is compared against to recognise the
     /// compositor's own command-line tooling, which has no token and is
-    /// otherwise an ordinary same-user process.
+    /// otherwise an ordinary same-user process. The comparison is an
+    /// authorization, not an identity: any same-user process that runs this
+    /// executable presents the same path. See docs/ipc.md § Control-socket
+    /// trust.
     self_exe: Option<PathBuf>,
     /// A debug-build-only extra executable trusted on the control socket.
     ///
@@ -478,7 +484,10 @@ impl Ipc {
     ///
     /// The compositor's own binary, plus — in debug builds only — the
     /// executable named by `VIEWPORT_IPC_TRUST_EXE` for the integration
-    /// harness.
+    /// harness. Trusting by path is forgeable by any same-user process that
+    /// can execute that path, which is deliberate for `viewport msg` and
+    /// documented as a deferred boundary in docs/ipc.md § Control-socket
+    /// trust.
     fn executable_is_trusted(&self, exe: Option<&std::path::Path>) -> bool {
         let Some(exe) = exe else {
             return false;
@@ -491,7 +500,9 @@ impl Ipc {
     ///
     /// Half of [`ViewportState::client_is_trusted`]; the other half, a shell
     /// this compositor supervises, needs the pid list that lives on
-    /// `ViewportState` and so is resolved there.
+    /// `ViewportState` and so is resolved there. The executable path is an
+    /// authorization for the compositor's own tooling, not an identity — any
+    /// same-user process that runs the same binary passes it.
     pub fn client_is_same_executable(&self, client_id: u64) -> bool {
         let Some(client) = self.clients.get(&client_id) else {
             return false;
@@ -849,8 +860,11 @@ impl ViewportState {
         });
         // The same-binary case is what keeps the documented `viewport msg`
         // tooling working without a token: the compositor's own CLI is a
-        // second process of the same executable and nothing an arbitrary
-        // same-user client can arrange by any other means.
+        // second process of the same executable. It is a path check, so any
+        // same-user process able to run that executable passes it too; the
+        // supervised-pid half cannot be claimed that way. See docs/ipc.md
+        // § Control-socket trust for why this is deferred rather than
+        // replaced here.
         let trusted = supervised || self.ipc.executable_is_trusted(exe.as_deref());
 
         self.ipc.clients.insert(
@@ -962,7 +976,6 @@ impl ViewportState {
             };
 
             for message in messages {
-                tracing::debug!("from shell {page}: {message}");
                 // Client id 0: the shell is not one of the socket clients, and
                 // an error it caused goes to the broadcast channel it already
                 // listens to rather than to a connection that does not exist.
@@ -1040,14 +1053,6 @@ impl ViewportState {
         origin: smithay::utils::Point<i32, smithay::utils::Logical>,
         bytes: &[u8],
     ) {
-        // Everything that arrives, at debug. The out-of-process shell talks
-        // over this socket like any other client, so without this there is no
-        // way to see what the desktop asked for — which is the first question
-        // whenever a click appears to do nothing.
-        if tracing::enabled!(tracing::Level::DEBUG) {
-            tracing::debug!("from {client_id}: {}", String::from_utf8_lossy(bytes));
-        }
-
         // The first message the shell sends, once.
         //
         // "The shell did not lay anything out" has two very different causes:
@@ -1085,7 +1090,15 @@ impl ViewportState {
         self.dispatch_client = client_id;
 
         match viewport_ipc::parse(bytes) {
-            Ok(request) => self.handle_request(request),
+            Ok(request) => {
+                // Parsed first, and printed through `Request`'s own `Debug`:
+                // the raw bytes used to go to the log here, before parsing,
+                // which wrote a `session.unlock` password or a
+                // `network.connect` passphrase out in plaintext. The redacting
+                // Debug cannot be bypassed by knowing the wire shape.
+                tracing::debug!("from {client_id}: {request:?}");
+                self.handle_request(request);
+            }
             Err(error) => {
                 tracing::debug!("rejected IPC message: {error}");
                 self.ipc_reject(client_id, &error);
