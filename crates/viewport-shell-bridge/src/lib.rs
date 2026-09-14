@@ -12,7 +12,7 @@
 // lines down.
 
 use std::collections::VecDeque;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read as _, Write};
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -205,6 +205,59 @@ fn take_batch(outbound: &Outbound) -> Option<Vec<u8>> {
     Some(buf)
 }
 
+/// The most one compositor line may occupy before the peer is treated as
+/// something other than the compositor.
+///
+/// The compositor drops a client whose unsent backlog passes 64 MiB
+/// (`crates/viewport/src/ipc.rs`), so a line larger than that cannot be
+/// delivered whole by a healthy one. Bounding the reader's own accumulator
+/// here is what keeps a single line — from a compositor that is not healthy,
+/// or from whatever else holds the socket — from growing this process without
+/// limit. The outbound queue has had a bound since FIXES 50; this is the
+/// inbound half.
+const MAX_LINE: usize = 64 << 20;
+
+/// What one bounded line read produced.
+#[derive(Debug)]
+enum ReadLine {
+    /// One line, with its terminator removed the way `BufRead::lines` does.
+    Line(String),
+    /// The peer closed before another line.
+    Eof,
+    /// The line ran past the cap, or was not UTF-8: stop reading.
+    Overrun,
+}
+
+/// Read one newline-delimited line without letting it outgrow `max`.
+///
+/// `max + 1` bytes are read at most, because a newline on the last allowed
+/// byte is still a line of `max` bytes; a line longer than that is not one
+/// this process is willing to hold. A final partial line at EOF is a line, as
+/// it is for `BufRead::lines`.
+fn read_compositor_line(reader: &mut impl BufRead, max: usize) -> std::io::Result<ReadLine> {
+    let mut bytes = Vec::new();
+    let read = reader
+        .by_ref()
+        .take(max as u64 + 1)
+        .read_until(b'\n', &mut bytes)?;
+    if read == 0 {
+        return Ok(ReadLine::Eof);
+    }
+    if bytes.last() == Some(&b'\n') {
+        bytes.pop();
+        if bytes.last() == Some(&b'\r') {
+            bytes.pop();
+        }
+    } else if read > max {
+        return Ok(ReadLine::Overrun);
+    }
+    match String::from_utf8(bytes) {
+        Ok(line) => Ok(ReadLine::Line(line)),
+        // `BufRead::lines` refuses a line that is not UTF-8 the same way.
+        Err(_) => Ok(ReadLine::Overrun),
+    }
+}
+
 /// Connect to the compositor and start both directions.
 ///
 /// `on_line` runs on the reader thread. It is expected to hand the line to
@@ -242,18 +295,28 @@ where
     std::thread::Builder::new()
         .name("ipc-read".into())
         .spawn(move || {
-            for line in BufReader::new(reader).lines() {
-                let line = match line {
-                    Ok(line) => line,
+            let mut reader = BufReader::new(reader);
+            loop {
+                match read_compositor_line(&mut reader, MAX_LINE) {
+                    Ok(ReadLine::Line(line)) => {
+                        if line.trim().is_empty() {
+                            continue;
+                        }
+                        on_line(Line::Event(line));
+                    }
+                    Ok(ReadLine::Eof) => break,
+                    Ok(ReadLine::Overrun) => {
+                        tracing::error!(
+                            "a compositor line exceeded {MAX_LINE} bytes; \
+                             closing the control connection"
+                        );
+                        break;
+                    }
                     Err(e) => {
                         tracing::error!("reading from the compositor: {e}");
                         break;
                     }
-                };
-                if line.trim().is_empty() {
-                    continue;
                 }
-                on_line(Line::Event(line));
             }
             on_line(Line::Closed);
         })
@@ -377,6 +440,52 @@ mod tests {
             .expect("the queue")
             .messages
             .is_empty());
+    }
+
+    #[test]
+    fn a_line_at_the_cap_is_read_and_one_past_it_is_refused() {
+        let mut at_cap = vec![b'x'; 8];
+        at_cap.push(b'\n');
+        match read_compositor_line(&mut std::io::Cursor::new(at_cap), 8) {
+            Ok(ReadLine::Line(line)) => assert_eq!(line.len(), 8),
+            other => panic!("a line of exactly the cap was refused: {other:?}"),
+        }
+
+        // The old `lines()` reader grew until a newline arrived; this one
+        // must stop at the cap and refuse the line instead.
+        let mut runaway = std::io::Cursor::new(vec![b'x'; 64 * 1024]);
+        match read_compositor_line(&mut runaway, 8) {
+            Ok(ReadLine::Overrun) => {}
+            other => panic!("a line past the cap was accepted: {other:?}"),
+        }
+        assert_eq!(
+            runaway.position(),
+            9,
+            "the reader buffered more than cap + 1 bytes"
+        );
+    }
+
+    #[test]
+    fn empty_and_partial_lines_match_what_lines_used_to_yield() {
+        let mut reader = std::io::Cursor::new(b"\nhello\r\nlast".to_vec());
+        match read_compositor_line(&mut reader, 64) {
+            Ok(ReadLine::Line(line)) => assert!(line.is_empty()),
+            other => panic!("expected an empty first line: {other:?}"),
+        }
+        match read_compositor_line(&mut reader, 64) {
+            Ok(ReadLine::Line(line)) => assert_eq!(line, "hello"),
+            other => panic!("expected the CRLF line: {other:?}"),
+        }
+        // A final unterminated line is still a line, as `BufRead::lines`
+        // yields it.
+        match read_compositor_line(&mut reader, 64) {
+            Ok(ReadLine::Line(line)) => assert_eq!(line, "last"),
+            other => panic!("expected the final partial line: {other:?}"),
+        }
+        assert!(matches!(
+            read_compositor_line(&mut reader, 64),
+            Ok(ReadLine::Eof)
+        ));
     }
 
     #[test]
