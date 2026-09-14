@@ -953,6 +953,19 @@ where
     elements
 }
 
+/// Where a cursor surface is drawn, given the hotspot folded into the pointer
+/// position by `cursor_for`.
+///
+/// The hotspot is the point in the cursor image the pointer aims with, so the
+/// surface is drawn at its negation. Saturating rather than negating: the
+/// hotspot is a client's `wl_pointer.set_cursor` argument and Smithay stores
+/// whatever `i32` arrived, so `i32::MIN` is representable on the wire and
+/// `-i32::MIN` is not. A cursor drawn one pixel off at that one value beats a
+/// compositor that aborts on it.
+fn cursor_offset(hotspot: Point<i32, Physical>) -> Point<i32, Physical> {
+    Point::from((hotspot.x.saturating_neg(), hotspot.y.saturating_neg()))
+}
+
 /// The pointer, front of everything.
 ///
 /// Its own function because there are two paths that draw it — the ordinary
@@ -973,7 +986,7 @@ fn push_cursor<R>(
         Cursor::Surface(surface, hotspot) => {
             // Drawn with the hotspot subtracted, so the point the user aims
             // with is where the pointer is.
-            let at = Point::from((-hotspot.x, -hotspot.y));
+            let at = cursor_offset(*hotspot);
             elements.extend(
                 render_surface_tree(renderer, surface, at, scale, 1.0, Kind::Cursor, effects)
                     .into_iter()
@@ -1517,5 +1530,24 @@ mod tests {
         for side in border_sides(box_, box_, 1.0) {
             assert!(side.width == 0 || side.height == 0, "{side:?} is not empty");
         }
+    }
+
+    /// A client is free to send a hotspot of `i32::MIN`, and the cursor is
+    /// drawn at its negation. That value has no positive counterpart in
+    /// `i32`, so the arithmetic saturates instead of aborting the render loop.
+    #[test]
+    fn a_cursor_hotspot_at_the_edge_of_the_range_does_not_abort() {
+        assert_eq!(
+            cursor_offset(Point::from((i32::MIN, i32::MIN))),
+            Point::from((i32::MAX, i32::MAX))
+        );
+        assert_eq!(
+            cursor_offset(Point::from((i32::MAX, 5))),
+            Point::from((-i32::MAX, -5))
+        );
+        assert_eq!(
+            cursor_offset(Point::from((10, -20))),
+            Point::from((-10, 20))
+        );
     }
 }
