@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+use std::collections::HashMap;
+use std::hash::Hash;
+
 use smithay::backend::renderer::utils::{on_commit_buffer_handler, with_renderer_surface_state};
 use smithay::reexports::wayland_server::protocol::{wl_buffer, wl_surface::WlSurface};
 use smithay::reexports::wayland_server::{Client, Resource as _};
@@ -115,7 +118,22 @@ impl CompositorHandler for ViewportState {
                 } else {
                     // Keyed by surface, and replaced each commit: a fast client
                     // cannot grow this map, and the newest point on a timeline
-                    // subsumes the older ones.
+                    // subsumes the older ones. It is still bounded, because a
+                    // client can commit many surfaces at once. Make room
+                    // before the newest point goes in, so the entry that
+                    // describes the work just queued is the one that survives.
+                    if state.carried_acquire_points.len() >= MAX_CARRIED_ACQUIRE_POINTS {
+                        trim_carried_acquire_points(
+                            &mut state.carried_acquire_points,
+                            MAX_CARRIED_ACQUIRE_POINTS - 1,
+                            |point| {
+                                !matches!(
+                                    point.timeline().query_signalled_point(),
+                                    Ok(latest) if latest >= point.point()
+                                )
+                            },
+                        );
+                    }
                     state.carried_acquire_points.insert(surface.id(), acquire);
                     return;
                 }
@@ -170,6 +188,12 @@ impl CompositorHandler for ViewportState {
     }
 
     fn destroyed(&mut self, surface: &WlSurface) {
+        // A destroyed surface can never commit again, so its carried acquire
+        // point can no longer describe work a future capture will wait behind
+        // in this compositor. Leaving it was a permanent wedge: the timeline
+        // may never signal, and no later commit can replace the entry.
+        self.carried_acquire_points.remove(&surface.id());
+
         let was_pointer_focus = self
             .seat
             .get_pointer()
@@ -522,5 +546,72 @@ impl BufferHandler for ViewportState {
 impl ShmHandler for ViewportState {
     fn shm_state(&self) -> &ShmState {
         &self.shm_state
+    }
+}
+
+/// How many carried acquire points may be remembered at once.
+///
+/// One per live surface and replaced on that surface's next commit, so a
+/// normal desktop holds a handful. The cap is for the client that commits
+/// thousands of surfaces, each carrying a fence it never signals: the map is
+/// a guard, and an unbounded guard is its own denial of service.
+const MAX_CARRIED_ACQUIRE_POINTS: usize = 64;
+
+/// Keep `points` at `limit`, dropping an unsignalled entry first.
+///
+/// The newest entry is the one just inserted and is the one most likely to
+/// describe work still ahead of a capture, so an old pending point is the
+/// right thing to give up. The predicate is passed in so this stays testable
+/// without a DRM device.
+fn trim_carried_acquire_points<K, V>(
+    points: &mut HashMap<K, V>,
+    limit: usize,
+    is_pending: impl Fn(&V) -> bool,
+) where
+    K: Eq + Hash + Clone,
+{
+    while points.len() > limit {
+        let victim = points
+            .iter()
+            .find(|(_, point)| is_pending(point))
+            .map(|(id, _)| id.clone())
+            .or_else(|| points.keys().next().cloned());
+        let Some(victim) = victim else {
+            break;
+        };
+        points.remove(&victim);
+    }
+}
+
+#[cfg(test)]
+mod carried_acquire_tests {
+    use super::trim_carried_acquire_points;
+    use std::collections::HashMap;
+
+    #[test]
+    fn the_cap_drops_a_pending_point_before_a_signalled_one() {
+        let mut points = HashMap::new();
+        points.insert(1u32, false); // signalled: not a capture hazard
+        points.insert(2u32, true); // pending: the wedge this bound is for
+
+        // Make room the way the commit path does, before inserting the newest
+        // point, so the point just committed is never the one dropped.
+        trim_carried_acquire_points(&mut points, 1, |pending| *pending);
+        points.insert(3u32, true);
+
+        assert_eq!(points.len(), 2);
+        assert!(!points.contains_key(&2), "the pending entry goes first");
+        assert!(points.contains_key(&1));
+        assert!(points.contains_key(&3));
+    }
+
+    #[test]
+    fn the_cap_still_fits_the_newest_point_when_everything_is_pending() {
+        let mut points = HashMap::new();
+        for id in 1..=3u32 {
+            points.insert(id, true);
+        }
+        trim_carried_acquire_points(&mut points, 2, |pending| *pending);
+        assert_eq!(points.len(), 2);
     }
 }
