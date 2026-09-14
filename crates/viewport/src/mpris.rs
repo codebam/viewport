@@ -185,6 +185,17 @@ enum Command {
 static MPRIS_REFRESH_PENDING: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
+/// Note that something changed, coalescing a burst into one queued refresh.
+///
+/// The bit is the only queue here: a player that reports its position every
+/// second would otherwise put a `Refresh` behind every message, and the worker
+/// would spend its life re-reading a player that has not changed.
+fn note_refresh(commands: &mpsc::Sender<Command>) {
+    if !MPRIS_REFRESH_PENDING.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        let _ = commands.send(Command::Refresh);
+    }
+}
+
 fn start(events: smithay::reexports::calloop::channel::Sender<Message>) -> mpsc::Sender<Command> {
     let (commands, inbox) = mpsc::channel();
 
@@ -218,11 +229,7 @@ fn start(events: smithay::reexports::calloop::channel::Sender<Message>) -> mpsc:
                 worker_commands.clone(),
                 "mpris-signals",
                 format!("type='signal',interface='org.freedesktop.DBus.Properties',path='{PATH}'"),
-                |_, commands| {
-                    if !MPRIS_REFRESH_PENDING.swap(true, std::sync::atomic::Ordering::AcqRel) {
-                        let _ = commands.send(Command::Refresh);
-                    }
-                },
+                |_, commands| note_refresh(commands),
             ) {
                 tracing::warn!("media controls: could not follow players: {e:#}");
             }
@@ -305,6 +312,12 @@ impl Worker {
                 Command::Enable(enabled) => {
                     self.enabled = enabled;
                     if enabled {
+                        // A signal that arrived while the widget was off queued
+                        // one Refresh and left the coalescing bit set; that
+                        // command was then swallowed by the disabled arm below.
+                        // Clearing it here is what stops the bit from silencing
+                        // every signal for the rest of the session.
+                        MPRIS_REFRESH_PENDING.store(false, std::sync::atomic::Ordering::Release);
                         self.refresh();
                     } else {
                         // Nothing on the bar, rather than the last thing that
@@ -664,6 +677,35 @@ mod tests {
             "the cover did not survive: {url}"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A signal that arrived while the widget was off queued a Refresh the
+    /// disabled worker swallowed, but left the coalescing bit set. Enabling the
+    /// widget clears it, so the next signal is heard; without that the widget
+    /// never updates again for the life of the session.
+    #[test]
+    fn a_refresh_swallowed_while_disabled_does_not_silence_the_next_signal() {
+        use std::sync::atomic::Ordering;
+        let (commands, inbox) = mpsc::channel();
+        MPRIS_REFRESH_PENDING.store(false, Ordering::Release);
+        note_refresh(&commands);
+        assert!(
+            inbox.try_recv().is_ok(),
+            "the first signal queues a refresh"
+        );
+        assert!(
+            MPRIS_REFRESH_PENDING.load(Ordering::Acquire),
+            "the burst is coalesced"
+        );
+        note_refresh(&commands);
+        assert!(inbox.try_recv().is_err(), "a second signal is coalesced");
+        // What `Command::Enable(true)` does before its own refresh.
+        MPRIS_REFRESH_PENDING.store(false, Ordering::Release);
+        note_refresh(&commands);
+        assert!(
+            inbox.try_recv().is_ok(),
+            "a signal after the widget came back was silenced by a stale pending bit"
+        );
     }
 
     #[test]
