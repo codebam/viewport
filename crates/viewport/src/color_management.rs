@@ -88,8 +88,22 @@ impl ColorManagementState {
     /// Drop the objects whose client has gone.
     fn reap(&mut self) {
         self.outputs.retain(|(object, _)| object.is_alive());
-        self.feedback.retain(|entry| entry.object.is_alive());
+        self.feedback.retain(|entry| {
+            feedback_usable(entry.object.is_alive(), entry.surface.is_alive())
+        });
     }
+}
+
+/// Whether a feedback object can still be used.
+///
+/// The protocol makes the object inert — not destroyed — when its `wl_surface`
+/// goes away, and Smithay removes that surface's private data at the same
+/// time. Reaching back into it through `with_states`/`get_parent` then unwraps
+/// `None`, so both the notification walk and the requests have to ignore an
+/// entry whose surface is gone. Split out so the rule is testable without a
+/// compositor.
+fn feedback_usable(object_alive: bool, surface_alive: bool) -> bool {
+    object_alive && surface_alive
 }
 
 /// Map the protocol's named transfer function onto ours.
@@ -901,22 +915,31 @@ impl Dispatch<WpColorManagementSurfaceFeedbackV1, WlSurface> for ViewportState {
     fn request(
         state: &mut Self,
         _client: &Client,
-        _object: &WpColorManagementSurfaceFeedbackV1,
+        object: &WpColorManagementSurfaceFeedbackV1,
         request: wp_color_management_surface_feedback_v1::Request,
         surface: &WlSurface,
         _display: &DisplayHandle,
         data_init: &mut DataInit<'_, Self>,
     ) {
-        use wp_color_management_surface_feedback_v1::Request;
+        use wp_color_management_surface_feedback_v1::{Error, Request};
         match request {
             // What the compositor would prefer this surface were in, which is
             // what it renders the output the surface is on into.
             Request::GetPreferred { image_description }
             | Request::GetPreferredParametric { image_description } => {
+                // The surface going away makes this object inert, not dead; the
+                // protocol error is the answer. Looking the surface up would
+                // reach into private data Smithay has already removed.
+                if !surface.is_alive() {
+                    object.post_error(Error::Inert, "the surface of this object is destroyed");
+                    return;
+                }
                 let output = state.output_of_surface(surface);
                 let description = output_description(state, output.as_ref());
                 send_description(image_description, description, data_init);
             }
+            // A destructor is legal on an inert object; there is nothing to
+            // unset here (feedback only reads).
             Request::Destroy => {}
             _ => {}
         }
@@ -950,6 +973,12 @@ impl ViewportState {
     /// one, and the answer flips depending on the order outputs happen to sit
     /// in — which is not something a client can be expected to work around.
     fn output_of_surface(&self, surface: &WlSurface) -> Option<Output> {
+        // A feedback object outlives the surface the protocol tied it to.
+        // Anything that does get here with a dead surface must not reach
+        // `get_parent`, which unwraps the surface's now-removed private data.
+        if !surface.is_alive() {
+            return None;
+        }
         let mut root = surface.clone();
         while let Some(parent) = smithay::wayland::compositor::get_parent(&root) {
             root = parent;
@@ -1289,5 +1318,16 @@ mod tests {
         // Not a guess: the protocol requires it.
         assert_eq!(Description::default().transfer, TransferFunction::Srgb);
         assert_eq!(Description::default().primaries, Primaries::SRGB);
+    }
+
+    #[test]
+    fn a_feedback_entry_for_a_dead_surface_is_not_usable() {
+        // The object is only inert, and every walk over `feedback` (the
+        // `notify_surface_colour` sweep included) has to leave a dead surface
+        // out: `get_parent` would unwrap its removed private data.
+        assert!(feedback_usable(true, true));
+        assert!(!feedback_usable(true, false));
+        assert!(!feedback_usable(false, true));
+        assert!(!feedback_usable(false, false));
     }
 }
