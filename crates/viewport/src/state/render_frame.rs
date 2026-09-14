@@ -52,7 +52,7 @@ fn cursor_surface_offset(
     at: Point<i32, Physical>,
 ) -> Point<i32, Physical> {
     let hotspot: Point<f64, Logical> = hotspot.to_f64();
-    let hotspot = hotspot.to_physical(scale).to_i32_round();
+    let hotspot: Point<i32, Physical> = hotspot.to_physical(scale).to_i32_round();
     (
         hotspot.x.saturating_sub(at.x),
         hotspot.y.saturating_sub(at.y),
