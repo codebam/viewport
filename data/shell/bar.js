@@ -773,6 +773,13 @@ function moduleTitle(name) {
  * listener survives a positional rebuild, when the config changes which
  * widget sits where. */
 function wireWidget(el) {
+  /* shQuote is declared in commands.js, which loads after this file. A widget
+     only builds a command from its click handler, and every script has loaded
+     by the time one can run, so the helper is there when it is called. What it
+     quotes is config-supplied text — a path, a location — and must be quoted
+     for /bin/sh rather than for JSON: `JSON.stringify` leaves `$`, backticks
+     and backslashes alone, and `/bin/sh -c` expands them inside double
+     quotes. */
   const cmd = (line) => send({ type: 'shell.exec', command: line });
   /* Audio goes through the compositor rather than through `shell.exec`, and
      the reason is ordering rather than tidiness: a spawned `wpctl` and a
@@ -824,7 +831,7 @@ function wireWidget(el) {
     } else if (w.type === 'ai' && w.provider === 'openai') {
       const auth = aiAuth.get('openai');
       if (auth?.state === 'pending' && auth.url) {
-        cmd(`xdg-open ${JSON.stringify(auth.url)}`);
+        cmd(`xdg-open ${shQuote(auth.url)}`);
       } else if (!aiUsage.has('openai')) {
         send({ type: 'ai.login', provider: 'openai' });
       }
@@ -832,12 +839,12 @@ function wireWidget(el) {
       /* Open the mount in the default file manager — for this user that is
          a terminal at the directory. `xdg-open` respects the system default,
          whichever it is. */
-      cmd(`xdg-open ${JSON.stringify(w.path || '/')}`);
+      cmd(`xdg-open ${shQuote(w.path || '/')}`);
     } else if (w.type === 'weather') {
       const loc = (w.location || '').trim();
       if (!loc) return;
       /* Open the place in a browser, pointed at where it is. */
-      cmd(`xdg-open ${JSON.stringify(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(loc)}`)}`);
+      cmd(`xdg-open ${shQuote(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(loc)}`)}`);
     }
   });
   el.addEventListener('wheel', (e) => {
