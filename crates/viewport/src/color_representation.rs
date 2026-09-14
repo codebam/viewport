@@ -343,91 +343,99 @@ impl Dispatch<WpColorRepresentationSurfaceV1, WlSurface> for ViewportState {
     ) {
         use wp_color_representation_surface_v1::{Error, Request};
 
-        // The surface is gone: the object is inert, and every request on an
-        // inert object is the protocol error rather than silence.
-        if !surface.is_alive() {
-            object.post_error(Error::Inert, "the surface of this object is destroyed");
-            return;
-        }
-
         match request {
-            Request::SetAlphaMode { alpha_mode } => {
-                let Ok(mode) = alpha_mode.into_result() else {
-                    object.post_error(Error::AlphaMode, "unknown alpha mode");
-                    return;
-                };
-                if !supported_alpha_modes().contains(&mode) {
-                    // The request is only legal for advertised modes; say so
-                    // rather than accepting a promise this compositor cannot
-                    // keep — straight alpha changes the blending equation,
-                    // and every path here already premultiplies.
-                    object.post_error(Error::AlphaMode, "this alpha mode is not supported");
-                }
-                // `premultiplied_electrical` is what already happens to
-                // every surface; double-buffered or not, the declaration
-                // asks for the status quo and parking it changes nothing.
-            }
-
-            Request::SetCoefficientsAndRange {
-                coefficients,
-                range,
-            } => {
-                let Ok(coefficients) = coefficients.into_result() else {
-                    object.post_error(Error::Coefficients, "unknown matrix coefficients");
-                    return;
-                };
-                let Ok(range) = range.into_result() else {
-                    object.post_error(Error::Coefficients, "unknown range");
-                    return;
-                };
-                if !supported_coefficients_and_ranges().contains(&(coefficients, range)) {
-                    object.post_error(
-                        Error::Coefficients,
-                        "this coefficients-and-range combination is not supported",
-                    );
-                    return;
-                }
-                // The conversions above cannot fail for an advertised
-                // combination — the test that they do not is what keeps that
-                // true rather than merely likely. A declaration already in
-                // flight keeps its chroma siting; these two fields arrive
-                // together and replace each other together.
-                let mut value = current_declaration(surface).unwrap_or_default();
-                value.coefficients = coefficients_from_wire(coefficients);
-                value.range = range_from_wire(range);
-                park(surface, Some(value));
-            }
-
-            Request::SetChromaLocation { chroma_location } => {
-                let Ok(location) = chroma_location.into_result() else {
-                    object.post_error(Error::ChromaLocation, "unknown chroma location");
-                    return;
-                };
-                let Some(siting) = siting_from_wire(location) else {
-                    object.post_error(
-                        Error::ChromaLocation,
-                        "this chroma location has no Vulkan equivalent",
-                    );
-                    return;
-                };
-                // Siting is its own double-buffered field, so setting it
-                // before any coefficients parks a declaration whose matrix
-                // half is still the renderer's guess — and setting it after
-                // updates that declaration without disturbing the matrix.
-                let mut value = current_declaration(surface).unwrap_or_default();
-                value.chroma = Some(siting);
-                park(surface, Some(value));
-            }
-
+            // "Destroying this object unsets all the colour representation
+            // metadata from the surface" — and unsetting is double-buffered,
+            // so it is parked rather than applied on the spot. A destructor
+            // stays legal on an inert object: there is nothing left to reach
+            // on a surface that is already gone.
             Request::Destroy => {
-                // "Destroying this object unsets all the colour
-                // representation metadata from the surface" — and unsetting
-                // is double-buffered, so it is parked rather than applied on
-                // the spot. The object goes with the request; the renderer
-                // reverts to inference when the next commit lands.
-                park(surface, None);
+                if surface.is_alive() {
+                    park(surface, None);
+                }
             }
-            _ => {}
+
+            request => {
+                // The surface is gone: the object is inert, and every other
+                // request on an inert object is the protocol error rather
+                // than silence.
+                if !surface.is_alive() {
+                    object.post_error(Error::Inert, "the surface of this object is destroyed");
+                    return;
+                }
+
+                match request {
+                    Request::SetAlphaMode { alpha_mode } => {
+                        let Ok(mode) = alpha_mode.into_result() else {
+                            object.post_error(Error::AlphaMode, "unknown alpha mode");
+                            return;
+                        };
+                        if !supported_alpha_modes().contains(&mode) {
+                            // The request is only legal for advertised modes; say so
+                            // rather than accepting a promise this compositor cannot
+                            // keep — straight alpha changes the blending equation,
+                            // and every path here already premultiplies.
+                            object.post_error(Error::AlphaMode, "this alpha mode is not supported");
+                        }
+                        // `premultiplied_electrical` is what already happens to
+                        // every surface; double-buffered or not, the declaration
+                        // asks for the status quo and parking it changes nothing.
+                    }
+
+                    Request::SetCoefficientsAndRange {
+                        coefficients,
+                        range,
+                    } => {
+                        let Ok(coefficients) = coefficients.into_result() else {
+                            object.post_error(Error::Coefficients, "unknown matrix coefficients");
+                            return;
+                        };
+                        let Ok(range) = range.into_result() else {
+                            object.post_error(Error::Coefficients, "unknown range");
+                            return;
+                        };
+                        if !supported_coefficients_and_ranges().contains(&(coefficients, range)) {
+                            object.post_error(
+                                Error::Coefficients,
+                                "this coefficients-and-range combination is not supported",
+                            );
+                            return;
+                        }
+                        // The conversions above cannot fail for an advertised
+                        // combination — the test that they do not is what keeps that
+                        // true rather than merely likely. A declaration already in
+                        // flight keeps its chroma siting; these two fields arrive
+                        // together and replace each other together.
+                        let mut value = current_declaration(surface).unwrap_or_default();
+                        value.coefficients = coefficients_from_wire(coefficients);
+                        value.range = range_from_wire(range);
+                        park(surface, Some(value));
+                    }
+
+                    Request::SetChromaLocation { chroma_location } => {
+                        let Ok(location) = chroma_location.into_result() else {
+                            object.post_error(Error::ChromaLocation, "unknown chroma location");
+                            return;
+                        };
+                        let Some(siting) = siting_from_wire(location) else {
+                            object.post_error(
+                                Error::ChromaLocation,
+                                "this chroma location has no Vulkan equivalent",
+                            );
+                            return;
+                        };
+                        // Siting is its own double-buffered field, so setting it
+                        // before any coefficients parks a declaration whose matrix
+                        // half is still the renderer's guess — and setting it after
+                        // updates that declaration without disturbing the matrix.
+                        let mut value = current_declaration(surface).unwrap_or_default();
+                        value.chroma = Some(siting);
+                        park(surface, Some(value));
+                    }
+
+                    _ => {}
+                }
+            }
         }
     }
 

@@ -88,9 +88,8 @@ impl ColorManagementState {
     /// Drop the objects whose client has gone.
     fn reap(&mut self) {
         self.outputs.retain(|(object, _)| object.is_alive());
-        self.feedback.retain(|entry| {
-            feedback_usable(entry.object.is_alive(), entry.surface.is_alive())
-        });
+        self.feedback
+            .retain(|entry| feedback_usable(entry.object.is_alive(), entry.surface.is_alive()));
     }
 }
 
@@ -191,6 +190,21 @@ pub struct CreatorParams {
 /// in the protocol, and what this did not do before.
 #[derive(Debug, Default)]
 pub struct PendingSurfaceColor(pub std::sync::Mutex<Option<Description>>);
+
+/// Park "no image description" for the next commit.
+///
+/// The effect of both `unset_image_description` and `destroy`. Unsetting is
+/// double-buffered like any other surface state, so the renderer keeps the
+/// description it has until the client commits the state that drops it.
+fn park_unset_colour(surface: &WlSurface) {
+    with_states(surface, |states| {
+        if let Some(pending) = states.data_map.get::<PendingSurfaceColor>() {
+            if let Ok(mut slot) = pending.0.lock() {
+                *slot = None;
+            }
+        }
+    });
+}
 
 /// Move a surface's pending colour into its live colour, if any is parked.
 ///
@@ -560,64 +574,72 @@ impl Dispatch<WpColorManagementSurfaceV1, WlSurface> for ViewportState {
     ) {
         use wp_color_management_surface_v1::Error;
 
-        // The surface is gone: the object is inert, and every request on an
-        // inert object is the protocol error rather than silence. The render
-        // path guards with `alive()`; this did not.
-        if !smithay::utils::IsAlive::alive(&surface) {
-            object.post_error(Error::Inert, "the surface of this object is destroyed");
-            return;
-        }
-
         match request {
-            wp_color_management_surface_v1::Request::SetImageDescription {
-                image_description,
-                render_intent,
-            } => {
-                if !matches!(render_intent.into_result(), Ok(RenderIntent::Perceptual)) {
-                    object.post_error(
-                        wp_color_management_surface_v1::Error::RenderIntent,
-                        "only the perceptual render intent is supported",
-                    );
+            // Destroying the object does what `unset_image_description` does
+            // (the protocol's own words), and a destructor stays legal on an
+            // inert object: there is nothing left to unset on a surface that
+            // is already gone.
+            wp_color_management_surface_v1::Request::Destroy => {
+                if surface.is_alive() {
+                    park_unset_colour(surface);
+                }
+            }
+
+            request => {
+                // The surface is gone: the object is inert, and every other
+                // request on an inert object is the protocol error rather
+                // than silence. The render path guards with `alive()`; this
+                // did not.
+                if !smithay::utils::IsAlive::alive(&surface) {
+                    object.post_error(Error::Inert, "the surface of this object is destroyed");
                     return;
                 }
 
-                let Some(data) = image_description.data::<ImageDescription>() else {
-                    return;
-                };
-                let held = data.description.lock().ok().and_then(|held| *held);
-
-                // Parked, not applied: the description takes effect when the
-                // client commits, via the post-commit hook registered in
-                // `get_surface`. Applying at request time recoloured the
-                // surface one frame before the buffer carrying it arrived —
-                // a video switching its own colour space flashed with the
-                // previous frame's colours.
-                with_states(surface, |states| {
-                    states
-                        .data_map
-                        .insert_if_missing_threadsafe(PendingSurfaceColor::default);
-                    if let Some(pending) = states.data_map.get::<PendingSurfaceColor>() {
-                        if let Ok(mut slot) = pending.0.lock() {
-                            *slot = held;
+                match request {
+                    wp_color_management_surface_v1::Request::SetImageDescription {
+                        image_description,
+                        render_intent,
+                    } => {
+                        if !matches!(render_intent.into_result(), Ok(RenderIntent::Perceptual)) {
+                            object.post_error(
+                                wp_color_management_surface_v1::Error::RenderIntent,
+                                "only the perceptual render intent is supported",
+                            );
+                            return;
                         }
-                    }
-                });
-            }
 
-            wp_color_management_surface_v1::Request::UnsetImageDescription => {
-                // Parked for the same reason as the set above; "said nothing"
-                // still means the sRGB default once the commit lands.
-                with_states(surface, |states| {
-                    if let Some(pending) = states.data_map.get::<PendingSurfaceColor>() {
-                        if let Ok(mut slot) = pending.0.lock() {
-                            *slot = None;
-                        }
-                    }
-                });
-            }
+                        let Some(data) = image_description.data::<ImageDescription>() else {
+                            return;
+                        };
+                        let held = data.description.lock().ok().and_then(|held| *held);
 
-            wp_color_management_surface_v1::Request::Destroy => {}
-            _ => {}
+                        // Parked, not applied: the description takes effect when the
+                        // client commits, via the post-commit hook registered in
+                        // `get_surface`. Applying at request time recoloured the
+                        // surface one frame before the buffer carrying it arrived —
+                        // a video switching its own colour space flashed with the
+                        // previous frame's colours.
+                        with_states(surface, |states| {
+                            states
+                                .data_map
+                                .insert_if_missing_threadsafe(PendingSurfaceColor::default);
+                            if let Some(pending) = states.data_map.get::<PendingSurfaceColor>() {
+                                if let Ok(mut slot) = pending.0.lock() {
+                                    *slot = held;
+                                }
+                            }
+                        });
+                    }
+
+                    wp_color_management_surface_v1::Request::UnsetImageDescription => {
+                        // Parked for the same reason as the set above; "said nothing"
+                        // still means the sRGB default once the commit lands.
+                        park_unset_colour(surface);
+                    }
+
+                    _ => {}
+                }
+            }
         }
     }
 }
