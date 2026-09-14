@@ -523,6 +523,7 @@ impl RemoteDesktop {
                 Some(session) => session.record_remote_start(
                     started.devices,
                     started.cast.as_ref().map(|cast| cast.node),
+                    clipboard,
                 ),
                 None => false,
             }
@@ -914,14 +915,18 @@ impl Clipboard {
         super::portal::called_by_frontend(&self.sessions, "clipboard", header)
     }
 
-    /// Whether the session asked for the clipboard and was granted it.
+    /// Whether Start granted this session the clipboard.
+    ///
+    /// The request flag is not the answer: the application was told what
+    /// `clipboard_enabled` said at Start, and only that may gate the
+    /// selection. See `Session::clipboard_granted`.
     fn granted(&self, path: &OwnedObjectPath) -> bool {
         self.sessions
             .lock()
             .unwrap()
             .sessions
             .get(path)
-            .is_some_and(|session| session.clipboard)
+            .is_some_and(|session| session.clipboard_granted)
     }
 }
 
@@ -948,8 +953,14 @@ impl Clipboard {
         }
         let path = OwnedObjectPath::from(session_handle);
         if let Some(session) = self.sessions.lock().unwrap().sessions.get_mut(&path) {
-            session.clipboard = true;
-            tracing::debug!("clipboard: {path} asked for access");
+            if session.ask_for_clipboard() {
+                tracing::debug!("clipboard: {path} asked for access");
+            } else {
+                // Late, or a session that has no clipboard to ask for. Either
+                // way the application was already answered; changing the flag
+                // now would contradict that answer.
+                tracing::debug!("clipboard: ignoring a clipboard request from {path}");
+            }
         }
     }
 
@@ -975,7 +986,7 @@ impl Clipboard {
             let Some(session) = shared.sessions.get_mut(&path) else {
                 return;
             };
-            if !session.clipboard {
+            if !session.clipboard_granted {
                 return;
             }
             session.clipboard_mimes = mimes.clone();

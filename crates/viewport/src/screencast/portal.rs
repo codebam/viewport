@@ -235,12 +235,18 @@ pub struct Session {
     /// typing is injecting nothing.
     pub(super) wanted_devices: u32,
     pub(super) granted_devices: u32,
-    /// Whether this session asked for clipboard access, and was granted it.
+    /// Whether this session asked for clipboard access before Start.
     ///
-    /// `RequestClipboard` sets it before Start, and Start answers
-    /// `clipboard_enabled` from it. Every other Clipboard method checks it, so
-    /// a session that never asked cannot read or write the selection.
+    /// `RequestClipboard` sets it, and Start answers `clipboard_enabled` from
+    /// it. Allowed to change only until Start has been answered: what the
+    /// application was told then is the grant.
     pub(super) clipboard: bool,
+    /// What Start answered for the clipboard, frozen for the session's life.
+    ///
+    /// Every Clipboard method after Start checks this rather than the request
+    /// flag, so a `RequestClipboard` arriving after Start cannot turn the
+    /// `clipboard_enabled: false` the application was given into access.
+    pub(super) clipboard_granted: bool,
     /// The mime types this session's `SetSelection` advertised, so
     /// `SelectionOwnerChanged` can name them back.
     pub(super) clipboard_mimes: Vec<String>,
@@ -337,13 +343,35 @@ impl Session {
     /// Record a remote-desktop grant as this session's one Start.
     ///
     /// Same one-shot rule as [`Self::record_start`], and the same reason.
-    pub(super) fn record_remote_start(&mut self, devices: u32, cast: Option<u32>) -> bool {
+    /// `clipboard` is the request flag as Start read it, frozen here so a
+    /// later request cannot widen what the application was told.
+    pub(super) fn record_remote_start(
+        &mut self,
+        devices: u32,
+        cast: Option<u32>,
+        clipboard: bool,
+    ) -> bool {
         if self.started {
             return false;
         }
         self.started = true;
         self.granted_devices = devices;
         self.node = cast;
+        self.clipboard_granted = clipboard;
+        true
+    }
+
+    /// Ask for clipboard access before Start.
+    ///
+    /// False without changing anything once Start has been answered, or for a
+    /// session that cannot have a clipboard. What the application was told at
+    /// Start is the grant; a request arriving afterwards must not turn that
+    /// no into a yes.
+    pub(super) fn ask_for_clipboard(&mut self) -> bool {
+        if self.started || !self.remote {
+            return false;
+        }
+        self.clipboard = true;
         true
     }
 }
@@ -1311,16 +1339,43 @@ mod tests {
     #[test]
     fn a_remote_session_starts_once() {
         let mut session = Session::new("app", None, true);
-        assert!(session.record_remote_start(2, Some(7)));
+        assert!(session.record_remote_start(2, Some(7), false));
         assert_eq!(session.granted_devices, 2);
         assert_eq!(session.node, Some(7));
-        assert!(!session.record_remote_start(1, Some(99)));
+        assert!(!session.record_remote_start(1, Some(99), true));
         assert_eq!(session.granted_devices, 2);
         assert_eq!(session.node, Some(7));
 
         let mut driving = Session::new("app2", None, true);
-        assert!(driving.record_remote_start(1, None));
+        assert!(driving.record_remote_start(1, None, false));
         assert!(!driving.may_start());
         assert!(driving.node.is_none());
+    }
+
+    /// Clipboard access is what Start was asked for and answers with. A
+    /// request arriving after Start cannot turn a no into a yes.
+    #[test]
+    fn clipboard_is_fixed_at_start() {
+        let mut session = Session::new("app", None, true);
+        assert!(session.ask_for_clipboard());
+        assert!(session.record_remote_start(1, None, true));
+        assert!(session.clipboard_granted);
+        assert!(!session.ask_for_clipboard());
+        assert!(
+            session.clipboard_granted,
+            "a late request must not widen the grant"
+        );
+
+        let mut refused = Session::new("app", None, true);
+        assert!(refused.ask_for_clipboard());
+        assert!(refused.record_remote_start(1, None, false));
+        assert!(!refused.clipboard_granted);
+        assert!(!refused.ask_for_clipboard());
+        assert!(refused.clipboard, "the request is still on the record");
+
+        // A screen share has no clipboard interface of its own.
+        let mut share = Session::new("app", None, false);
+        assert!(!share.ask_for_clipboard());
+        assert!(!share.clipboard);
     }
 }
