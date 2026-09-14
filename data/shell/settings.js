@@ -271,9 +271,18 @@ function settingsHeader() {
   const save = document.createElement('button');
   save.className = 'settings-save';
   save.textContent = 'Save';
-  save.title = 'Write these settings down so they survive a restart';
+  /* A display change is still provisional, so Save must not write it down.
+     The compositor puts the monitors back on its own deadline unless Keep
+     says they are visible, and an overlay that kept the mode nobody confirmed
+     would bring the display back into it at the next start. Keep or Revert
+     answers the question first — see settingsPending(). */
+  save.disabled = settingsConfirming;
+  save.title = settingsConfirming
+    ? 'Answer the display question before saving'
+    : 'Write these settings down so they survive a restart';
   save.addEventListener('click', (e) => {
     e.stopPropagation?.();
+    if (settingsConfirming) return;
     /* Cleared here rather than left showing the last save's path: pressing
        Save twice should look like two saves, and a message that never changes
        is one nobody can tell arrived. */
