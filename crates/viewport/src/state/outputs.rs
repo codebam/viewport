@@ -331,7 +331,9 @@ impl ViewportState {
         changes: &[crate::output_management::HeadChange],
         test_only: bool,
     ) -> bool {
-        use crate::output_management::{custom_mode_size_ok, layout_coord_ok, layout_rect_ok};
+        use crate::output_management::{
+            custom_mode_size_ok, layout_coord_ok, layout_rect_ok, output_scale_ok,
+        };
         use std::collections::HashSet;
 
         let current_heads = self.heads();
@@ -357,7 +359,7 @@ impl ViewportState {
             let scale = change
                 .and_then(|change| change.scale)
                 .unwrap_or_else(|| output.current_scale().fractional_scale());
-            if !scale.is_finite() || scale <= 0.0 {
+            if !output_scale_ok(scale) {
                 return None;
             }
             let size = transform
@@ -451,7 +453,7 @@ impl ViewportState {
                     return false;
                 }
             }
-            if change.scale.is_some_and(|scale| !scale.is_finite() || scale <= 0.0) {
+            if change.scale.is_some_and(|scale| !output_scale_ok(scale)) {
                 return false;
             }
 

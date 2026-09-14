@@ -1579,9 +1579,16 @@ fn output_configure(state: &mut ViewportState, config: OutputConfigure) {
     if let Some(scale) = config.scale {
         // `NaN <= 0.0` is false, so an infinite or NaN scale used to pass
         // this and reach the renderer. Every use of it assumes a real,
-        // positive number.
-        if !scale.is_finite() || scale <= 0.0 {
-            reject(state, "output.configure", &format!("scale {scale}"));
+        // positive number. And a finite one is not enough on its own: `1e300`
+        // collapses the geometry to a pixel and later overflows the cursor
+        // load, so the same bounded predicate as the output-management path
+        // is the one that decides.
+        if !crate::output_management::output_scale_ok(scale) {
+            reject(
+                state,
+                "output.configure",
+                &format!("scale {scale} is outside the accepted range"),
+            );
             return;
         }
     }

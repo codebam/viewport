@@ -65,6 +65,28 @@ pub const MAX_MODE_DIM: i32 = 16384;
 /// hold.
 pub const MAX_MODE_PIXELS: i64 = 1 << 26;
 
+/// The largest scale an output may carry, from either configuration path.
+///
+/// A scale divides the logical layout and multiplies every cursor, icon and
+/// scaled buffer. `f64` itself is the only bound a finite positive value
+/// leaves, and `1e300` is finite: it collapses the output's geometry to one
+/// pixel and overflows the cursor load — `cursor.rs` sizes its buffers from
+/// the scale — long after the client that asked has been told the
+/// configuration applied.
+///
+/// 8.0 is the same ceiling `config::MAX_XWAYLAND_SCALE` puts on XWayland's
+/// integer scale, and far past the 1.0–4.0 fractional scales real panels use.
+pub const MAX_OUTPUT_SCALE: f64 = 8.0;
+
+/// Whether `scale` is a scale an output can actually carry.
+///
+/// Finite as well as bounded: `NaN <= MAX_OUTPUT_SCALE` is false, but a
+/// NaN scale poisons every `fractional_scale` computation for the output, so
+/// the order of the checks here is deliberate rather than incidental.
+pub(crate) fn output_scale_ok(scale: f64) -> bool {
+    scale.is_finite() && scale > 0.0 && scale <= MAX_OUTPUT_SCALE
+}
+
 /// What an output looks like to a client, gathered before any resource is
 /// touched so the advertising code has no reason to reach into the compositor.
 #[derive(Debug, Clone)]
@@ -680,13 +702,14 @@ where
             }
             zwlr_output_configuration_head_v1::Request::SetScale { scale } => {
                 once!(change.scale, AlreadySet);
-                // Finite as well as positive: `NaN <= 0.0` is false, and a
-                // NaN scale poisons every `fractional_scale` computation for
-                // the output.
-                if !scale.is_finite() || scale <= 0.0 {
+                // Bounded as well as finite and positive: a huge scale is
+                // finite, but collapses the logical geometry and overflows
+                // every buffer sized from it. The same ceiling is enforced on
+                // the shell's `output.configure` path.
+                if !output_scale_ok(scale) {
                     head.post_error(
                         zwlr_output_configuration_head_v1::Error::InvalidScale,
-                        "a scale must be positive",
+                        "a scale must be greater than 0 and at most 8",
                     );
                     return;
                 }
@@ -860,5 +883,27 @@ mod tests {
 
         // Both dimensions fit, but the product is past MAX_MODE_PIXELS.
         assert!(!custom_mode_size_ok(MAX_MODE_DIM, MAX_MODE_DIM));
+    }
+
+    #[test]
+    fn output_scales_are_bounded() {
+        // What real outputs ask for.
+        for good in [1.0, 1.5, 2.0, 3.0, MAX_OUTPUT_SCALE] {
+            assert!(output_scale_ok(good), "{good} must be accepted");
+        }
+        // Zero and negatives never were allowed; NaN and an infinity are not
+        // finite; and 1e300 is the one this test exists for — finite, positive
+        // and large enough to collapse geometry and overflow the cursor.
+        for bad in [
+            0.0,
+            -1.0,
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            1e300,
+            MAX_OUTPUT_SCALE + 0.5,
+        ] {
+            assert!(!output_scale_ok(bad), "{bad} must be refused");
+        }
     }
 }
