@@ -2343,7 +2343,9 @@ impl ViewportState {
             .and_then(|udev| {
                 udev.surfaces()
                     .find(|surface| surface.output == *output)
-                    .map(|surface| crate::output_power::effective_output_power(surface.powered, udev.blanked))
+                    .map(|surface| {
+                        crate::output_power::effective_output_power(surface.powered, udev.blanked)
+                    })
             })
             // Nested and headless have nothing to turn off, and saying a
             // monitor is on is the truthful answer for a window.
