@@ -469,6 +469,7 @@ global.gsap = {
 const EXPORTS = ';globalThis.__shell = { views, workspaces, outputs, scrollOffsets, overviewThumbs, workspaceCatalog,'
   + ' workspaceOfForTest: workspaceOf,'
   + ' overviewStateForTest: (id) => views.get(id)?.overview ?? {},'
+  + ' get overviewActiveForTest() { return overviewActive; },'
   + ' floatingForTest: (id) => views.get(id)?.floating ?? null,'
   /* The motion config: whether the reduced-motion switch is thrown, and the
      easing a tween would run on. The CSS properties applyMotion writes are
@@ -8694,6 +8695,33 @@ if (mode === 'scrolling') {
       || (focus.type === 'view.focus' && focus.id > 0)));
   check('idsOf does not count an unclaimed slot as a window',
     !globalThis.__shell.idsOfForTest(ws).includes(-2));
+}
+
+/* J1: the overview must survive the last output going away. */
+{
+  const sh = globalThis.__shell;
+  if (!sh.overviewActiveForTest) {
+    emit({ type: 'shell.command', command: 'layout.overview', args: [] });
+  }
+  check('the overview is up before the last output goes',
+    sh.overviewActiveForTest === true);
+  let threw = null;
+  try {
+    emit({ type: 'output.layout', outputs: [] });
+  } catch (error) {
+    threw = error;
+  }
+  check('losing the last output in the overview does not throw', !threw);
+  check('and the overview is cleared with it',
+    sh.overviewActiveForTest === false);
+
+  /* Put the monitor back so the teardown below has a desktop to remove
+   * windows from. */
+  emit({ type: 'output.layout', outputs: [{
+    name: 'DP-1', x: 0, y: 0, width: 1920, height: 1080,
+    usable_x: 0, usable_y: 30, usable_width: 1920, usable_height: 1050,
+    scale: 1, transform: 'normal', modes: [], enabled: true,
+  }] });
 }
 
 emit({ type: 'view.removed', id: 1 });

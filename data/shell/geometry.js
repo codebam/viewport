@@ -675,6 +675,15 @@ registerBuiltinLayout('canvas', {
 });
 
 function relayoutAll() {
+  /* The overview is a grid of the outputs. With none left there is nothing to
+     draw it on and the assignment below would divide by zero; clear it and
+     tell the compositor, or input stays routed to a shell page that is gone. */
+  if (outputs.size === 0 && overviewActive) {
+    overviewActive = false;
+    clearOverviewState();
+    send({ type: 'shell.overview', active: false });
+  }
+
   syncGestureCapture();
   /* A dynamic tiling mode derives the shape from which windows are open, so
      the tree may be out of date before anything is measured. Cheap when

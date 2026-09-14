@@ -278,6 +278,8 @@ function overviewAssignment() {
      like nothing happened. */
   const names = [...outputs.keys()];
   const assignment = new Map(names.map((name) => [name, []]));
+  /* No outputs, no grid: there is no name to deal a workspace to. */
+  if (names.length === 0) return assignment;
 
   const remaining = sortedWorkspaceIds();
   for (const name of names) {
