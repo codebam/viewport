@@ -99,7 +99,10 @@ function smartRadius() {
    there the count alone settles it. */
 function singleWindowOn(workspace) {
   if (workspace == null) return false;
-  if (leavesOf(workspace).filter((leaf) => !isMinimized(leaf.id)).length !== 1) return false;
+  if (leavesOf(workspace)
+    .filter((leaf) => views.has(leaf.id) && !isMinimized(leaf.id)).length !== 1) {
+    return false;
+  }
   if (layoutModeOf(workspace) !== 'scrolling') return true;
 
   /* Same filter renderStrip uses: a child with no view of its own is a slot

@@ -161,7 +161,7 @@ function workspaceOf(id) {
  * than "where does it sit in the tree". */
 function idsOf(n) {
   const ids = leavesOf(n).map((leaf) => leaf.id)
-    .filter((id) => !views.get(id)?.special);
+    .filter((id) => views.has(id) && !views.get(id)?.special);
   for (const [id, floating] of floatingEntries()) {
     if (floating.workspace === n) ids.push(id);
   }
@@ -387,7 +387,7 @@ function tabLabel(node) {
     const view = views.get(node.id);
     return view ? (view.title || view.app_id || `view ${node.id}`) : '';
   }
-  const count = [...walk(node)].length;
+  const count = [...walk(node)].filter(([leaf]) => views.has(leaf.id)).length;
   return `${count} window${count === 1 ? '' : 's'}`;
 }
 

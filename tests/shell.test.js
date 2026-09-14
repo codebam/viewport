@@ -477,6 +477,7 @@ const EXPORTS = ';globalThis.__shell = { views, workspaces, outputs, scrollOffse
   + ' fullscreenOnForTest: fullscreenOn,'
   + ' maximizedOnForTest: maximizedOn,'
   + ' dynamicOrderForTest: dynamicOrder,'
+  + ' idsOfForTest: idsOf,'
   + ' TILING_MODES, LAYOUT_MODES, layoutRegistry, registerLayout,'
   + ' get tilingMode() { return tilingModeOf(); },'
   + ' get layoutMode() { return layoutModeOf(); },'
@@ -8670,6 +8671,30 @@ if (mode === 'scrolling') {
       child.type === 'leaf' || (child.children?.length ?? 0) > 0));
 
   }
+
+if (mode === 'scrolling') {
+  const sh = globalThis.__shell;
+  const ws = sh.workspaceOfForTest(1);
+
+/* J4: an unclaimed session slot is not a window to focus. */
+  sh.workspaces.set(ws, {
+    type: 'split', dir: 'horizontal', layout: 'split', active: 0, weight: 1,
+    children: [
+      { type: 'leaf', id: 1, weight: 1 },
+      { type: 'leaf', id: -2, weight: 1 },
+    ],
+  });
+  emit({ type: 'view.focused', id: 1 });
+  const before = sent.length;
+  emit({ type: 'view.removed', id: 1 });
+  const focus = sent.slice(before).find((m) =>
+    m.type === 'view.focus' || m.type === 'shell.focus');
+  check('closing onto an unclaimed slot drops focus to a live target',
+    focus && (focus.type === 'shell.focus'
+      || (focus.type === 'view.focus' && focus.id > 0)));
+  check('idsOf does not count an unclaimed slot as a window',
+    !globalThis.__shell.idsOfForTest(ws).includes(-2));
+}
 
 emit({ type: 'view.removed', id: 1 });
 emit({ type: 'view.removed', id: 2 });
