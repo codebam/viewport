@@ -31,8 +31,12 @@ function shiftWeightBetween(a, b, fraction) {
   if (!a || !b) return false;
 
   const total = (a.weight ?? 1) + (b.weight ?? 1);
+  /* With a tiny total the ordinary MIN_WEIGHT clamp has an inverted range and
+     would hand back a negative weight. Half the total is the floor that keeps
+     both sides non-negative whatever the session restored. */
+  const floor = Math.min(MIN_WEIGHT, total / 2);
   const next = Math.min(Math.max((a.weight ?? 1) + fraction * total,
-    MIN_WEIGHT), total - MIN_WEIGHT);
+    floor), total - floor);
 
   if (next === a.weight) return false;
   a.weight = next;

@@ -121,7 +121,10 @@ const MAX_SESSION_WEIGHT = 1000000;
  * string no layout can recover from. */
 function safeSessionWeight(value) {
   if (!Number.isFinite(value) || value <= 0) return 1;
-  return Math.min(value, MAX_SESSION_WEIGHT);
+  /* The floor a divider drag already applies. A restored 0.01 would otherwise
+     let shiftWeightBetween clamp against total - MIN_WEIGHT and write a
+     negative flex-grow on the first drag. */
+  return Math.max(MIN_WEIGHT, Math.min(value, MAX_SESSION_WEIGHT));
 }
 
 /* Column widths in the scrolling strip are shares of the output, clamped the

@@ -514,6 +514,7 @@ const EXPORTS = ';globalThis.__shell = { views, workspaces, outputs, scrollOffse
      a real timer, so nothing synchronous can observe the message — and what
      is worth checking is what goes *into* the file rather than when. */
   + ' sessionForTest: { serialise: serialiseSession, restore: restoreSession },'
+  + ' resizeForTest: { safeWeight: safeSessionWeight, shift: shiftWeightBetween, min: MIN_WEIGHT },'
   + ' workspacePolicyForTest: { layout: layoutModeOf, tiling: tilingModeOf,'
   + '   edge: edgeGapPx, homes: workspaceHomes, runtime: workspaceRuntime },'
   /* The tray menu's element, and the document's own listeners, so a test can
@@ -8577,6 +8578,20 @@ if (mode !== 'scrolling') {
     check('and the pass ending goes back to measuring live',
       measureOf(el).left === 400 && queries === 4);
   }
+}
+
+/* J5: a session weight below the layout floor must not make a divider drag
+ * write a negative flex-grow. */
+{
+  const { safeWeight, shift, min } = globalThis.__shell.resizeForTest;
+  check('a restored weight below the floor comes back at the floor',
+    safeWeight(0.01) >= min);
+  const a = { weight: 0.01 };
+  const b = { weight: 0.01 };
+  shift(a, b, 0.5);
+  check('a divider drag between tiny weights keeps both non-negative',
+    a.weight > 0 && b.weight > 0
+    && a.weight + b.weight > 0);
 }
 
 emit({ type: 'view.removed', id: 1 });
