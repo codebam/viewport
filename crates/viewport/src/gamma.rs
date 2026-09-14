@@ -207,6 +207,30 @@ pub struct ControlData {
     failed: Arc<AtomicBool>,
 }
 
+/// The data for a control object that is created only to be failed: a request
+/// from a sandboxed client, or an output that went between the client looking
+/// it up and asking.
+///
+/// The object still has to be initialised — wayland-backend treats an unbound
+/// `New` id as a fatal bug — so it gets a stand-in output and the `failed`
+/// flag before anyone can touch its ramp. The `failed` event carries no
+/// payload, so the stand-in is never shown to the client.
+fn unavailable_control() -> ControlData {
+    ControlData {
+        output: Output::new(
+            "gone".to_owned(),
+            smithay::output::PhysicalProperties {
+                size: (0, 0).into(),
+                subpixel: smithay::output::Subpixel::Unknown,
+                make: String::new(),
+                model: String::new(),
+                serial_number: String::new(),
+            },
+        ),
+        failed: Arc::new(AtomicBool::new(true)),
+    }
+}
+
 impl<D> GlobalDispatch<ZwlrGammaControlManagerV1, (), D> for GammaControlState
 where
     D: GlobalDispatch<ZwlrGammaControlManagerV1, ()>
@@ -249,34 +273,28 @@ where
         _dh: &DisplayHandle,
         data_init: &mut DataInit<'_, D>,
     ) {
-        if !trusted_native(client) {
-            tracing::debug!("gamma: ignoring a request from a sandboxed client");
-            return;
-        }
         let zwlr_gamma_control_manager_v1::Request::GetGammaControl { id, output } = request else {
             return;
         };
+
+        // Every `New` id has to be initialised before this returns, refused
+        // paths included: wayland-backend treats an id the handler left
+        // unbound as a fatal bug. `can_view` already refuses the global to a
+        // sandboxed client, but it does not run per request, so the trust
+        // decision is repeated here — and its refusal binds the object and
+        // fails it instead of returning early. No ramp is touched either way.
+        if !trusted_native(client) {
+            tracing::debug!("gamma: ignoring a request from a sandboxed client");
+            let control = data_init.init(id, unavailable_control());
+            control.failed();
+            return;
+        }
 
         let Some(output) = Output::from_resource(&output) else {
             // The output went between the client looking it up and asking.
             // Initialising and failing is the only way to say so: there is no
             // error on the manager for it.
-            let control = data_init.init(
-                id,
-                ControlData {
-                    output: Output::new(
-                        "gone".to_owned(),
-                        smithay::output::PhysicalProperties {
-                            size: (0, 0).into(),
-                            subpixel: smithay::output::Subpixel::Unknown,
-                            make: String::new(),
-                            model: String::new(),
-                            serial_number: String::new(),
-                        },
-                    ),
-                    failed: Arc::new(AtomicBool::new(true)),
-                },
-            );
+            let control = data_init.init(id, unavailable_control());
             control.failed();
             return;
         };

@@ -79,6 +79,26 @@ impl OutputPowerState {
     }
 }
 
+/// An `Output` with no screen behind it, for a control object that exists only
+/// to be failed.
+///
+/// A `ZwlrOutputPowerV1` that is created has to be initialised before its
+/// request handler returns — wayland-backend treats an unbound `New` id as a
+/// fatal bug — and the protocol's `failed` event carries no payload, so the
+/// name here is never seen by anyone.
+fn unbacked_output() -> Output {
+    Output::new(
+        "gone".to_owned(),
+        smithay::output::PhysicalProperties {
+            size: (0, 0).into(),
+            subpixel: smithay::output::Subpixel::Unknown,
+            make: String::new(),
+            model: String::new(),
+            serial_number: String::new(),
+        },
+    )
+}
+
 /// What a control object knows.
 #[derive(Debug)]
 pub struct ControlData {
@@ -127,13 +147,28 @@ where
         _dh: &DisplayHandle,
         data_init: &mut DataInit<'_, D>,
     ) {
-        if !trusted_native(client) {
-            tracing::debug!("output-power: ignoring a request from a sandboxed client");
-            return;
-        }
         let zwlr_output_power_manager_v1::Request::GetOutputPower { id, output } = request else {
             return;
         };
+
+        // Every `New` id has to be initialised before this returns, refused
+        // paths included: wayland-backend treats an id the handler left
+        // unbound as a fatal bug. `can_view` keeps a sandboxed client from
+        // binding the manager in the first place, but it does not run per
+        // request, so the trust decision is repeated here — and its refusal
+        // binds the object and fails it instead of returning early. No control
+        // is registered either way.
+        if !trusted_native(client) {
+            tracing::debug!("output-power: ignoring a request from a sandboxed client");
+            let control = data_init.init(
+                id,
+                ControlData {
+                    output: unbacked_output(),
+                },
+            );
+            control.failed();
+            return;
+        }
 
         let Some(output) = Output::from_resource(&output) else {
             // The monitor went between the client looking it up and asking.
@@ -142,16 +177,7 @@ where
             let control = data_init.init(
                 id,
                 ControlData {
-                    output: Output::new(
-                        "gone".to_owned(),
-                        smithay::output::PhysicalProperties {
-                            size: (0, 0).into(),
-                            subpixel: smithay::output::Subpixel::Unknown,
-                            make: String::new(),
-                            model: String::new(),
-                            serial_number: String::new(),
-                        },
-                    ),
+                    output: unbacked_output(),
                 },
             );
             control.failed();
