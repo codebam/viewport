@@ -5,6 +5,61 @@
 
 struct X11CaptureRedactionId(smithay::backend::renderer::element::Id);
 
+/// The cursor image that is actually drawable.
+///
+/// A client may destroy the surface it set as its cursor without setting a new
+/// one: Smithay only puts the default image back when the pointer focus
+/// changes, so `cursor_status` (and `tablet_cursor_status`) can keep naming a
+/// `WlSurface` that no longer exists. The hotspot lookup and the renderer both
+/// walk that surface, and Smithay's `with_states`/`with_surfaces_surface_tree`
+/// reach into its state and panic in `lock_user_data`'s unwrap. Fail closed to
+/// the ordinary pointer image instead of walking a dead object.
+fn live_cursor_image(
+    status: smithay::input::pointer::CursorImageStatus,
+) -> smithay::input::pointer::CursorImageStatus {
+    live_cursor_image_when(status, |surface| {
+        smithay::utils::IsAlive::alive(surface)
+    })
+}
+
+/// The same decision, with the liveness answer passed in.
+///
+/// The seam exists for the test below: a `WlSurface` that has been destroyed
+/// cannot be built without a Wayland connection, and `IsAlive::alive` itself
+/// unwraps the surface's user data, so the test hands in the answer.
+fn live_cursor_image_when(
+    status: smithay::input::pointer::CursorImageStatus,
+    alive: impl Fn(&WlSurface) -> bool,
+) -> smithay::input::pointer::CursorImageStatus {
+    match status {
+        smithay::input::pointer::CursorImageStatus::Surface(surface) if !alive(&surface) => {
+            smithay::input::pointer::CursorImageStatus::default_named()
+        }
+        status => status,
+    }
+}
+
+/// Where a surface cursor is drawn relative to the pointer, in physical
+/// pixels.
+///
+/// The hotspot comes straight from the client and may be `i32::MIN`, and the
+/// pointer may be anywhere; folding the two together must clamp rather than
+/// overflow. `push_cursor` negates the result and saturates too, so the worst
+/// case is a cursor as close to the pointer as `i32` can name.
+fn cursor_surface_offset(
+    hotspot: Point<i32, Logical>,
+    scale: f64,
+    at: Point<i32, Physical>,
+) -> Point<i32, Physical> {
+    let hotspot: Point<f64, Logical> = hotspot.to_f64();
+    let hotspot = hotspot.to_physical(scale).to_i32_round();
+    (
+        hotspot.x.saturating_sub(at.x),
+        hotspot.y.saturating_sub(at.y),
+    )
+        .into()
+}
+
 fn effective_opacity(
     base: f32,
     rule: f32,
@@ -643,8 +698,10 @@ impl ViewportState {
         }
         let local = (at - output_geometry.loc.to_f64()).to_physical(scale);
 
-        let status =
-            crate::cursor::active_image(self.tablet_cursor_status.as_ref(), &self.cursor_status);
+        let status = live_cursor_image(crate::cursor::active_image(
+            self.tablet_cursor_status.as_ref(),
+            &self.cursor_status,
+        ));
 
         match status {
             CursorImageStatus::Hidden => crate::render::Cursor::Hidden,
@@ -664,10 +721,7 @@ impl ViewportState {
                 // `build` subtracts the hotspot — so this carries the pointer
                 // position folded in.
                 let at = local.to_i32_round();
-                crate::render::Cursor::Surface(
-                    surface,
-                    hotspot.to_f64().to_physical(scale).to_i32_round() - at,
-                )
+                crate::render::Cursor::Surface(surface, cursor_surface_offset(hotspot, scale, at))
             }
             CursorImageStatus::Named(shape) => {
                 let millis = self.start_time.elapsed().as_millis() as u32;
@@ -715,6 +769,49 @@ mod frame_tests {
         close(effective_opacity(0.8, 0.5, true, true, Some(&policy)), 0.32);
         assert_eq!(effective_opacity(0.8, 2.0, true, false, Some(&policy)), 1.0);
         close(effective_opacity(0.8, 0.5, false, false, None), 0.4);
+    }
+
+    #[test]
+    fn a_dead_cursor_surface_falls_back_to_the_default_cursor() {
+        use smithay::input::pointer::CursorImageStatus;
+        use smithay::reexports::wayland_server::backend::ObjectId;
+        use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+        use smithay::reexports::wayland_server::{Display, Resource as _};
+
+        // A handle that names no object at all. Its user data is absent, so
+        // `IsAlive::alive` itself cannot be asked — which is why the decision
+        // takes the answer as an argument; the production caller passes
+        // Smithay's.
+        let display = Display::<()>::new().expect("a Wayland display");
+        let surface = WlSurface::from_id(&display.handle(), ObjectId::null())
+            .expect("a null wl_surface handle");
+
+        let status = live_cursor_image_when(CursorImageStatus::Surface(surface.clone()), |_| false);
+        assert!(matches!(status, CursorImageStatus::Named(_)));
+
+        // A live surface is left exactly as it was.
+        let status = live_cursor_image_when(CursorImageStatus::Surface(surface), |_| true);
+        assert!(matches!(status, CursorImageStatus::Surface(_)));
+    }
+
+    #[test]
+    fn an_extreme_cursor_hotspot_saturates_instead_of_overflowing() {
+        let offset = cursor_surface_offset(
+            Point::<i32, Logical>::from((i32::MIN, i32::MAX)),
+            1.0,
+            Point::<i32, Physical>::from((0, 0)),
+        );
+        assert_eq!(
+            offset,
+            Point::<i32, Physical>::from((i32::MIN, i32::MAX))
+        );
+
+        let offset = cursor_surface_offset(
+            Point::<i32, Logical>::from((0, 0)),
+            1.0,
+            Point::<i32, Physical>::from((i32::MAX, i32::MIN)),
+        );
+        assert_eq!(offset, Point::<i32, Physical>::from((-i32::MAX, i32::MAX)));
     }
 
     #[test]

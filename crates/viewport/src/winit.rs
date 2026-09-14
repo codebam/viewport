@@ -421,7 +421,7 @@ pub fn init(
                             },
                         );
                     }
-                    for lock in state.lock_surfaces.values() {
+                    for lock in state.live_lock_surfaces() {
                         take_presentation_feedback_surface_tree(
                             lock.wl_surface(),
                             &mut feedback,
@@ -499,7 +499,7 @@ pub fn init(
                     });
                 // The lock screen, which is neither of the above and would
                 // otherwise draw once and stop.
-                for lock in state.lock_surfaces.values() {
+                for lock in state.live_lock_surfaces() {
                     smithay::desktop::utils::send_frames_surface_tree(
                         lock.wl_surface(),
                         &output,

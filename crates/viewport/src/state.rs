@@ -3558,10 +3558,8 @@ impl ViewportState {
 
     /// The output a new window should be told it is on.
     pub fn output_for_new_view(&self) -> String {
-        self.active_output
-            .clone()
-            .or_else(|| self.space.outputs().next().map(|o| o.name()))
-            .unwrap_or_default()
+        let mapped: Vec<String> = self.space.outputs().map(|output| output.name()).collect();
+        new_view_output(self.active_output.as_deref(), &mapped)
     }
 
     pub fn output_by_name(&self, name: &str) -> Option<Output> {
@@ -3678,6 +3676,22 @@ impl ViewportState {
         let event = Event::Config(Box::new(config));
         self.notify(&event);
     }
+}
+
+/// The output a new window belongs on: the one the shell called active, while
+/// it is still mapped, and the first mapped output otherwise.
+///
+/// `active_output` is what the shell last said was active. Disabling that head
+/// — or a shell update naming a monitor that is gone — leaves the field naming
+/// an output that is no longer in the space, and `output_infos` would even
+/// report it active; new windows must not be aimed there. `output_removed`
+/// repairs the field when a head goes away, and this is the floor for the
+/// paths where it is only switched off.
+fn new_view_output(active: Option<&str>, mapped: &[String]) -> String {
+    active
+        .filter(|name| mapped.iter().any(|output| output == name))
+        .map(str::to_owned)
+        .unwrap_or_else(|| mapped.first().cloned().unwrap_or_default())
 }
 
 include!("state/config_apply.rs");
@@ -4643,6 +4657,23 @@ mod tests {
 
     fn at(x: f64, y: f64) -> Point<f64, Logical> {
         (x, y).into()
+    }
+
+    #[test]
+    fn a_disabled_active_output_does_not_keep_the_new_window() {
+        let mapped = vec!["HDMI-A-1".to_owned(), "DP-1".to_owned()];
+        assert_eq!(
+            new_view_output(Some("DP-1"), &mapped),
+            "DP-1",
+            "a mapped active output keeps new windows"
+        );
+        assert_eq!(
+            new_view_output(Some("DP-2"), &mapped),
+            "HDMI-A-1",
+            "an active output that is no longer mapped falls back to the first one"
+        );
+        assert_eq!(new_view_output(None, &mapped), "HDMI-A-1");
+        assert_eq!(new_view_output(Some("DP-2"), &[]), "");
     }
 
     #[test]

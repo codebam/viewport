@@ -4,6 +4,24 @@
 // Included by `state.rs` to share the state module's imports and privacy.
 
 impl ViewportState {
+    /// The lock surfaces that still exist, for the per-frame and per-vblank
+    /// walks.
+    ///
+    /// A locker that exits without unlocking leaves its `LockSurface`s in
+    /// `lock_surfaces` until the housekeeping sweep, and their `WlSurface`s are
+    /// already destroyed. Every walk over them has to keep only the live ones:
+    /// `with_surfaces_surface_tree` and `send_frames_surface_tree` walk a
+    /// destroyed object's state and panic in Smithay's `lock_user_data`
+    /// unwrap. The renderer and the barrier walks filter on `alive`; the two
+    /// backend walks go through here so there is one answer.
+    pub fn live_lock_surfaces(
+        &self,
+    ) -> impl Iterator<Item = &smithay::wayland::session_lock::LockSurface> + '_ {
+        self.lock_surfaces
+            .values()
+            .filter(|lock| smithay::utils::IsAlive::alive(lock.wl_surface()))
+    }
+
     /// Let go of everything a client is waiting on for this frame.
     ///
     /// Two protocols block a commit until the compositor says so: wp-fifo,
@@ -302,6 +320,23 @@ impl ViewportState {
                 };
             for window in self.space.elements() {
                 window.with_surfaces(&mut look);
+            }
+            // And the surfaces that are not in the space. A layer surface, the
+            // shell's own client surfaces and a live lock screen can set a fifo
+            // barrier or a commit-timing deadline too, and `released_barriers`
+            // is what releases them — but only if the tick the detector arms
+            // ever runs. A blocked commit makes no damage, so if this walk
+            // misses the surface there is no frame and no vblank to lift it.
+            for output in self.space.outputs() {
+                for layer in smithay::desktop::layer_map_for_output(output).layers() {
+                    layer.with_surfaces(&mut look);
+                }
+            }
+            for surface in self.shell_client_surfaces() {
+                smithay::desktop::utils::with_surfaces_surface_tree(&surface, &mut look);
+            }
+            for lock in self.live_lock_surfaces() {
+                smithay::desktop::utils::with_surfaces_surface_tree(lock.wl_surface(), &mut look);
             }
             // And the wallpaper terminal, which is not in the space.
             //
@@ -723,5 +758,95 @@ mod overlay_id_tests {
         assert_eq!(overlay[0], first);
         assert_eq!(blur[0], first_blur);
         assert!(!overlay.contains(&first_blur));
+    }
+}
+
+#[cfg(test)]
+mod live_lock_walk_tests {
+    /// Every per-frame walk over `lock_surfaces` must keep only the live ones,
+    /// or go through [`super::ViewportState::live_lock_surfaces`].
+    ///
+    /// A locker that exits without unlocking leaves its surfaces in the map
+    /// until the housekeeping sweep, and a destroyed `WlSurface` must not be
+    /// walked: `with_surfaces_surface_tree` and `send_frames_surface_tree`
+    /// reach into its state and panic in Smithay's `lock_user_data` unwrap.
+    /// `LockSurface` cannot be built in a unit test — its constructor is
+    /// `pub(crate)` in Smithay — so the invariant is checked against the
+    /// source the walks are written in.
+    #[test]
+    fn every_lock_surface_walk_keeps_the_live_ones() {
+        for (name, whole) in [
+            ("state/frame_barriers.rs", include_str!("frame_barriers.rs")),
+            ("state/frame_clock.rs", include_str!("frame_clock.rs")),
+            ("state/render_frame.rs", include_str!("render_frame.rs")),
+            ("state.rs", include_str!("../state.rs")),
+        ] {
+            let source = whole.split("#[cfg(test)]").next().unwrap_or(whole);
+            let lines: Vec<&str> = source.lines().collect();
+            for (at, line) in lines.iter().enumerate() {
+                if !line.contains(".values()") {
+                    continue;
+                }
+                let lo = at.saturating_sub(2);
+                let hi = (at + 3).min(lines.len());
+                let window = lines[lo..hi].join("\n");
+                if !window.contains("lock_surfaces") {
+                    continue;
+                }
+                assert!(
+                    window.contains("filter(")
+                        || window.contains("live_lock_surfaces"),
+                    "{name}:{} walks lock_surfaces without keeping only the live ones",
+                    at + 1
+                );
+            }
+        }
+
+        // The two winit walks (presentation feedback and frame callbacks) do
+        // not touch the map at all any more: they go through the helper, which
+        // is the one place the filter lives.
+        let winit = include_str!("../winit.rs");
+        assert!(
+            !winit.contains(".lock_surfaces"),
+            "winit.rs must enumerate lock screens through live_lock_surfaces()"
+        );
+        assert!(
+            winit.matches("live_lock_surfaces()").count() >= 2,
+            "winit's two lock-screen walks must both use live_lock_surfaces()"
+        );
+    }
+}
+
+#[cfg(test)]
+mod barrier_walk_tests {
+    /// `released_barriers` lets go of barriers on windows, layer surfaces, the
+    /// shell's client surfaces, live lock screens and the wallpaper terminal.
+    /// The detector that decides whether to arm the fallback tick has to
+    /// examine every one of those collections, or the first fifo or
+    /// commit-timing client of an omitted kind blocks with no damage, no frame
+    /// and so no vblank to release it — and on headless there is no release
+    /// path at all.
+    #[test]
+    fn the_barrier_detector_walks_every_collection_the_releaser_does() {
+        let source = include_str!("frame_barriers.rs");
+        let start = source
+            .find("pub fn barriers_outstanding")
+            .expect("barriers_outstanding in the source");
+        let rest = &source[start..];
+        let end = rest.find("\n    pub fn ").unwrap_or(rest.len());
+        let body = &rest[..end];
+
+        for needle in [
+            "self.space.elements()",
+            "layer_map_for_output",
+            "self.shell_client_surfaces()",
+            "self.live_lock_surfaces()",
+            "self.background_surfaces()",
+        ] {
+            assert!(
+                body.contains(needle),
+                "barriers_outstanding does not look at {needle}"
+            );
+        }
     }
 }
