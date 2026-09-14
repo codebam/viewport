@@ -759,7 +759,14 @@ fn run() -> Result<()> {
     // and this loop is GLib with calloop inside it, and making three schedulers
     // agree is worse than one channel.
     {
-        let (sender, source) = smithay::reexports::calloop::channel::channel();
+        // Bounded: a session peer can call `Notify` faster than the desktop
+        // can draw popups, and the channel is the only thing between the bus
+        // thread and this loop. Past the cap the sender is told the
+        // notification was refused instead of the compositor holding boxes it
+        // will not draw for minutes.
+        let (sender, source) = smithay::reexports::calloop::channel::sync_channel(
+            crate::notification::MAX_PENDING_NOTIFICATIONS,
+        );
         event_loop
             .handle()
             .insert_source(source, |event, _, state| {

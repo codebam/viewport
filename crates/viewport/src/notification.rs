@@ -85,6 +85,14 @@ const MAX_ACTION_LABEL: usize = 256;
 const MAX_ACTIONS: usize = 64;
 /// The most an icon or art URL may contribute.
 const MAX_ART_URL: usize = 2048;
+/// How many notifications may be waiting for the compositor at once.
+///
+/// The D-Bus side runs on its own connection and answers `Notify` faster than
+/// the desktop can draw popups, so the channel is the pressure valve between
+/// them. It is the *senders* that are bounded here: past the cap a client is
+/// told its notification was refused rather than allowed to fill the
+/// compositor's heap with boxes it will not draw for minutes.
+pub const MAX_PENDING_NOTIFICATIONS: usize = 256;
 
 /// The half of the service the compositor keeps.
 pub struct Notifications {
@@ -131,7 +139,7 @@ impl Notifications {
     /// notifications, which is what it had a moment ago anyway.
     pub fn start(
         &mut self,
-        sender: smithay::reexports::calloop::channel::Sender<Message>,
+        sender: smithay::reexports::calloop::channel::SyncSender<Message>,
     ) -> anyhow::Result<()> {
         let next = self.next.clone();
         let owners = self.owners.clone();
@@ -236,7 +244,7 @@ impl Notifications {
 
 /// The object on the bus.
 struct Server {
-    sender: smithay::reexports::calloop::channel::Sender<Message>,
+    sender: smithay::reexports::calloop::channel::SyncSender<Message>,
     next: Arc<AtomicU32>,
     /// Which connection owns which id; see `Notifications::owners`.
     owners: Arc<Mutex<HashMap<u32, String>>>,
@@ -401,16 +409,32 @@ impl Server {
             actions: parse_actions(&actions),
             at: now(),
         };
-        if let Err(e) = self.sender.send(Message::Add(Box::new(notification))) {
+        match self.sender.try_send(Message::Add(Box::new(notification))) {
+            Ok(()) => Ok(id),
+            // The desktop is behind. Telling the sender is the specification's
+            // own answer for a notification that was not taken, and it is the
+            // only one that does not grow this process on a client's request.
+            Err(std::sync::mpsc::TrySendError::Full(_)) => {
+                tracing::warn!(
+                    "notification {id} refused: {MAX_PENDING_NOTIFICATIONS} are already \
+                     waiting for the desktop"
+                );
+                Err(zbus::fdo::Error::Failed(
+                    "too many notifications are waiting for the desktop".to_owned(),
+                ))
+            }
             // The compositor side dropped the channel: the shell is gone or
             // going. The sender is told, and the log says why a notification
             // that was accepted never appeared.
-            tracing::error!("notification {id} could not be delivered: {e}");
-            return Err(zbus::fdo::Error::Failed(format!(
-                "the notification could not be delivered to the compositor: {e}"
-            )));
+            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                tracing::error!(
+                    "notification {id} could not be delivered: the compositor side is gone"
+                );
+                Err(zbus::fdo::Error::Failed(
+                    "the notification could not be delivered to the compositor".to_owned(),
+                ))
+            }
         }
-        Ok(id)
     }
 
     fn close_notification(
@@ -845,7 +869,18 @@ mod tests {
         Server,
         smithay::reexports::calloop::channel::Channel<Message>,
     ) {
-        let (sender, channel) = smithay::reexports::calloop::channel::channel();
+        // Roomy on purpose: these tests never drain the channel, and what
+        // they cover is id allocation rather than the delivery ceiling.
+        server_with_capacity(64)
+    }
+
+    fn server_with_capacity(
+        capacity: usize,
+    ) -> (
+        Server,
+        smithay::reexports::calloop::channel::Channel<Message>,
+    ) {
+        let (sender, channel) = smithay::reexports::calloop::channel::sync_channel(capacity);
         let server = Server {
             sender,
             next: Arc::new(AtomicU32::new(1)),
@@ -894,6 +929,29 @@ mod tests {
 
     fn notify(server: &Server, replaces_id: u32) -> u32 {
         notify_as(server, replaces_id, None)
+    }
+
+    /// A client that outruns the desktop must be told, not queued for; the
+    /// channel is the only thing between it and the compositor's heap.
+    #[test]
+    fn a_full_delivery_queue_is_refused_rather_than_stored() {
+        let (server, _channel) = server_with_capacity(1);
+        assert_eq!(notify(&server, 0), 1, "the first one fits");
+        let refused = server.notify(
+            "test".to_owned(),
+            0,
+            String::new(),
+            "summary".to_owned(),
+            String::new(),
+            Vec::new(),
+            HashMap::new(),
+            -1,
+            header(None),
+        );
+        assert!(
+            matches!(refused, Err(zbus::fdo::Error::Failed(_))),
+            "the second add has to be refused: {refused:?}"
+        );
     }
 
     #[test]
