@@ -995,9 +995,10 @@ pub struct ViewportState {
     /// thread behind that GPU work. While capture is active a point here means
     /// there is already GPU work ahead of any capture service, so capture is
     /// held back until the point signals. Keyed by the committing surface so a
-    /// fast client replaces instead of accumulating; entries are not removed
-    /// on surface destroy, because a fence already in the renderer's queue
-    /// must stay tracked until it has signalled.
+    /// fast client replaces instead of accumulating; a destroyed surface's
+    /// entry is forgotten (it can never commit again) and the map is bounded
+    /// on insert by evicting the oldest point that has not signalled, so a
+    /// client that only ever creates surfaces cannot pin capture forever.
     pub carried_acquire_points:
         std::collections::HashMap<ObjectId, smithay::wayland::drm_syncobj::DrmSyncPoint>,
     /// A capture retry tick is armed. Only one may be outstanding, so a gate
