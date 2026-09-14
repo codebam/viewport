@@ -8641,6 +8641,36 @@ if (mode === 'tiling') {
     && group?.children?.length === 2);
 }
 
+if (mode === 'scrolling') {
+  const sh = globalThis.__shell;
+  const ws = sh.workspaceOfForTest(1);
+
+  /* J3: expelling the last window of a one-window stack must remove the
+   * column rather than leave an empty one behind. */
+  sh.workspaces.set(ws, {
+    type: 'split', dir: 'horizontal', layout: 'split', active: 0, weight: 1,
+    children: [
+      {
+        type: 'split', dir: 'vertical', width: 0.5, layout: 'split',
+        active: 0, weight: 1,
+        children: [
+          { type: 'leaf', id: 1, weight: 1 },
+          { type: 'leaf', id: 2, weight: 1 },
+        ],
+      },
+      { type: 'leaf', id: 3, weight: 1 },
+    ],
+  });
+  emit({ type: 'view.focused', id: 1 });
+  emit({ type: 'view.removed', id: 2 });
+  emit({ type: 'shell.command', command: 'layout.expel', args: [] });
+  const children = sh.workspaces.get(ws)?.children ?? [];
+  check('an expel leaves no empty column behind',
+    children.length > 0 && children.every((child) =>
+      child.type === 'leaf' || (child.children?.length ?? 0) > 0));
+
+  }
+
 emit({ type: 'view.removed', id: 1 });
 emit({ type: 'view.removed', id: 2 });
 emit({ type: 'view.removed', id: 3 });

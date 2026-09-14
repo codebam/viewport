@@ -1128,7 +1128,13 @@ function scrollFocus(direction) {
   const index = columnIndexOf(workspace, focusedId);
 
   if (direction === 'left' || direction === 'right') {
-    const next = index + (direction === 'right' ? 1 : -1);
+    const step = direction === 'right' ? 1 : -1;
+    let next = index + step;
+    /* A column with no live window left in it draws nothing; step over it
+       rather than sending focus to null. */
+    while (next >= 0 && next < columns.length && firstOf(columns[next]) == null) {
+      next += step;
+    }
     /* Off the end of the strip is not a dead end: carry on to the next
        monitor, which is what the same keys do when tiling. Without this the
        leftmost and rightmost columns trapped focus on one screen. */
@@ -1352,13 +1358,20 @@ function expelWindow() {
 
   const [moved] = column.children.splice(at, 1);
   moved.width = column.width ?? COLUMN_WIDTHS[1];
-  root.children.splice(index + 1, 0, moved);
 
-  if (column.children.length === 1 && column.children[0].type === 'leaf') {
-    /* One window left: collapse the stack back to a plain column. */
-    const only = column.children[0];
-    only.width = column.width;
-    root.children[index] = only;
+  if (column.children.length === 0) {
+    /* The last window in the column left it: the column is gone, and the
+       moved window takes its place rather than leaving an empty split in the
+       strip for focus to step onto. */
+    root.children.splice(index, 1, moved);
+  } else {
+    root.children.splice(index + 1, 0, moved);
+    if (column.children.length === 1 && column.children[0].type === 'leaf') {
+      /* One window left: collapse the stack back to a plain column. */
+      const only = column.children[0];
+      only.width = column.width;
+      root.children[index] = only;
+    }
   }
 
   treeGeneration++;
