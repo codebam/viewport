@@ -187,25 +187,64 @@ impl ViewportState {
                 surface.drm_output.reset_buffers();
             }
             self.needs_render = true;
-            return;
+        } else {
+            for surface in udev.surfaces_mut() {
+                // DPMS off and every plane disabled, rather than a black frame: a
+                // black frame still lights the panel, and the point is that the
+                // monitor sleeps.
+                if let Err(e) = surface
+                    .drm_output
+                    .with_compositor(|compositor| compositor.clear())
+                {
+                    tracing::warn!("could not blank an output: {e}");
+                }
+                // No frame is in flight now, and none will be until the screens
+                // come back. The clock on it goes too: the watchdog measures a
+                // stall from `queued_at`, and a flip abandoned here is not a GPU
+                // that stopped answering.
+                surface.pending = false;
+                surface.queued_at = None;
+            }
         }
 
-        for surface in udev.surfaces_mut() {
-            // DPMS off and every plane disabled, rather than a black frame: a
-            // black frame still lights the panel, and the point is that the
-            // monitor sleeps.
-            if let Err(e) = surface
-                .drm_output
-                .with_compositor(|compositor| compositor.clear())
-            {
-                tracing::warn!("could not blank an output: {e}");
-            }
-            // No frame is in flight now, and none will be until the screens
-            // come back. The clock on it goes too: the watchdog measures a
-            // stall from `queued_at`, and a flip abandoned here is not a GPU
-            // that stopped answering.
-            surface.pending = false;
-            surface.queued_at = None;
+        // A session blank is a power change and the protocol has to hear about
+        // it. Only `set_output_power` used to call `changed`, so an idle or
+        // lock blank left every watcher reading On while the panel slept. The
+        // effective state is the same pair of gates the backend itself skips
+        // on (`blanked || !powered`), so a display a client switched off stays
+        // off when the session-wide blank lifts.
+        let blanked = udev.blanked;
+        for surface in udev.surfaces() {
+            let on = crate::output_power::effective_output_power(surface.powered, blanked);
+            self.output_power_state.changed(&surface.output, on);
         }
+    }
+}
+
+#[cfg(test)]
+mod output_control_tests {
+    /// The blank path is the one that changes power without any client asking,
+    /// and it is exactly the path that used to leave output-power watchers
+    /// reading On. The helper's truth table cannot catch a missing `changed`
+    /// call, so the shape of the one function that has to make it is checked
+    /// against the source, as the frame-barrier guards do.
+    #[test]
+    fn the_blank_path_notifies_output_power_watchers() {
+        let source = include_str!("output_controls.rs");
+        let source = source.split("#[cfg(test)]").next().unwrap_or(source);
+        let start = source
+            .find("pub fn set_outputs_enabled")
+            .expect("set_outputs_enabled in the source");
+        let rest = &source[start..];
+        let end = rest.find("\n    pub fn ").unwrap_or(rest.len());
+        let body = &rest[..end];
+        assert!(
+            body.contains("effective_output_power"),
+            "how the blank path answers has to match the backend's own power gate"
+        );
+        assert!(
+            body.contains("output_power_state.changed("),
+            "set_outputs_enabled must tell output-power watchers about a blank"
+        );
     }
 }

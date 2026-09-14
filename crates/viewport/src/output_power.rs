@@ -27,6 +27,18 @@ use smithay::reexports::wayland_server::{
 
 use crate::state::trusted_native;
 
+/// The state a watcher should be told, given an output's own switch and the
+/// session-wide blank that overrides it.
+///
+/// The DRM backend's last gate before a frame is queued is
+/// `blanked || !powered`, so the answer given to a client has to combine the
+/// two the same way. They used to be independent: `changed` ran only for a
+/// client-requested mode, so an idle blank left a watcher reading On while
+/// every panel was off.
+pub fn effective_output_power(powered: bool, blanked: bool) -> bool {
+    powered && !blanked
+}
+
 /// What the compositor has to be able to do for the request to mean anything.
 pub trait OutputPowerHandler {
     fn output_power_state(&mut self) -> &mut OutputPowerState;
@@ -235,4 +247,20 @@ macro_rules! delegate_output_power {
             smithay::reexports::wayland_protocols_wlr::output_power_management::v1::server::zwlr_output_power_v1::ZwlrOutputPowerV1: $crate::output_power::ControlData
         ] => $crate::output_power::OutputPowerState);
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::effective_output_power;
+
+    /// The four combinations the backend gate can see: a session blank has to
+    /// win over a client's On, and a client's Off has to stay Off when the
+    /// blank lifts.
+    #[test]
+    fn a_session_blank_overrides_a_client_requested_on() {
+        assert!(effective_output_power(true, false));
+        assert!(!effective_output_power(true, true));
+        assert!(!effective_output_power(false, false));
+        assert!(!effective_output_power(false, true));
+    }
 }
