@@ -1307,6 +1307,52 @@ pub fn desk_placement(
     (bounds, at)
 }
 
+/// Where a window sits relative to an output: the layout origin, less the
+/// output's origin, less the window's own geometry origin.
+///
+/// Three layout coordinates whose ends can meet at the edges of `i32`, so the
+/// subtraction is done in i64 before the physical conversion. `to_i32_round`
+/// saturates, which holds a nonsense origin at the edge of the layout instead
+/// of wrapping it onto the other monitor.
+fn window_offset(
+    layout: Point<i32, Logical>,
+    output: Point<i32, Logical>,
+    window_geometry: Point<i32, Logical>,
+    scale: f64,
+) -> Point<i32, Physical> {
+    Point::<f64, Logical>::from((
+        (i64::from(layout.x) - i64::from(output.x) - i64::from(window_geometry.x)) as f64,
+        (i64::from(layout.y) - i64::from(output.y) - i64::from(window_geometry.y)) as f64,
+    ))
+    .to_physical(scale)
+    .to_i32_round()
+}
+
+/// The shell's clip in the output's own coordinates.
+///
+/// The clip is shell input and its origin is subtracted from the output's, so
+/// the difference can leave `i32` even when both are representable. Holding it
+/// at the edge rather than wrapping keeps the crop on the same side of the
+/// screen the input crop is; a clip that was never on this output intersects
+/// the surface to nothing either way.
+fn clip_in_output(
+    clip: Rectangle<i32, Logical>,
+    output: Rectangle<i32, Logical>,
+    scale: f64,
+) -> Rectangle<i32, Physical> {
+    Rectangle::<i32, Logical>::new(
+        (
+            clamp_i32(i64::from(clip.loc.x) - i64::from(output.loc.x)),
+            clamp_i32(i64::from(clip.loc.y) - i64::from(output.loc.y)),
+        )
+            .into(),
+        clip.size,
+    )
+    .to_f64()
+    .to_physical(scale)
+    .to_i32_round()
+}
+
 /// Where a window sits relative to an output, and what it is cropped to.
 ///
 /// Kept here so both backends agree: the geometry origin has to be subtracted,
@@ -1320,23 +1366,13 @@ pub fn window_placement(
     clip: Option<Rectangle<i32, Logical>>,
     scale: f64,
 ) -> (Point<i32, Physical>, Option<Rectangle<i32, Physical>>) {
-    let location = (layout.loc - output_geometry.loc - window.geometry().loc)
-        .to_f64()
-        .to_physical(scale)
-        .to_i32_round();
-    let clip = clip.map(|clip| {
-        Rectangle::<i32, Logical>::new(
-            (
-                clip.loc.x - output_geometry.loc.x,
-                clip.loc.y - output_geometry.loc.y,
-            )
-                .into(),
-            clip.size,
-        )
-        .to_f64()
-        .to_physical(scale)
-        .to_i32_round()
-    });
+    let location = window_offset(
+        layout.loc,
+        output_geometry.loc,
+        window.geometry().loc,
+        scale,
+    );
+    let clip = clip.map(|clip| clip_in_output(clip, output_geometry, scale));
     (location, clip)
 }
 
@@ -1601,5 +1637,35 @@ mod tests {
         assert_eq!(bottom, Box::new(5, i32::MAX, i32::MAX, 0));
         assert_eq!(left, Box::new(5, 10, 5, i32::MAX));
         assert_eq!(right, Box::new(i32::MAX, 10, 0, i32::MAX));
+    }
+
+    /// A clip at the edge of the coordinate space is shell input like any
+    /// other; subtracting the output origin used to wrap it across the screen
+    /// (or abort a debug build) before the crop was formed.
+    #[test]
+    fn a_clip_at_the_edge_of_the_range_is_held_in_range() {
+        let output = Rectangle::<i32, Logical>::new((1, 0).into(), (1920, 1080).into());
+        let clip = Rectangle::<i32, Logical>::new((i32::MIN, 0).into(), (10, 10).into());
+        let placed = clip_in_output(clip, output, 1.0);
+        assert_eq!(placed.loc.x, i32::MIN);
+        assert_eq!(placed.loc.y, 0);
+
+        let output = Rectangle::<i32, Logical>::new((-1, -1).into(), (1920, 1080).into());
+        let clip = Rectangle::<i32, Logical>::new((i32::MAX, i32::MAX).into(), (10, 10).into());
+        let placed = clip_in_output(clip, output, 1.0);
+        assert_eq!(placed.loc, (i32::MAX, i32::MAX).into());
+    }
+
+    /// The three-term origin subtraction is the same shape: `layout.loc` can
+    /// be `i32::MIN` while the output's own origin is positive.
+    #[test]
+    fn a_window_origin_at_the_edge_of_the_range_does_not_wrap() {
+        let offset = window_offset(
+            Point::from((i32::MIN, i32::MAX)),
+            Point::from((1, -1)),
+            Point::from((0, 0)),
+            1.0,
+        );
+        assert_eq!(offset, Point::from((i32::MIN, i32::MAX)));
     }
 }
