@@ -1266,6 +1266,17 @@ impl crate::state::ViewportState {
         if let InputEvent::Keyboard { event } = event {
             let code = event.key_code().raw().saturating_sub(8);
             let pressed = event.state() == KeyState::Pressed;
+            // The modifier flags are updated before anything below can return.
+            // A Ctrl or Alt whose release is consumed by the capture
+            // bookkeeping (a suppressed key, or one that was already down when
+            // capture began) is still physically up; leaving the flag latched
+            // let the capture-release chord fire on its own later, with no
+            // modifier held at all.
+            match code {
+                29 | 97 => self.input_capture_connections.ctrl = pressed,
+                56 | 100 => self.input_capture_connections.alt = pressed,
+                _ => {}
+            }
             if pressed {
                 self.input_capture_connections.down_keys.insert(code);
             } else {
@@ -1289,20 +1300,16 @@ impl crate::state::ViewportState {
                     return false;
                 }
             }
-            match code {
-                29 | 97 => self.input_capture_connections.ctrl = pressed,
-                56 | 100 => self.input_capture_connections.alt = pressed,
-                1 if pressed
-                    && self.input_capture_connections.ctrl
-                    && self.input_capture_connections.alt =>
-                {
-                    self.input_capture_connections.suppressed_keys.insert(code);
-                    self.update_input_capture_key::<I>(event);
-                    self.suspend_input_capture();
-                    self.sync_input_capture_modifiers();
-                    return true;
-                }
-                _ => {}
+            if code == 1
+                && pressed
+                && self.input_capture_connections.ctrl
+                && self.input_capture_connections.alt
+            {
+                self.input_capture_connections.suppressed_keys.insert(code);
+                self.update_input_capture_key::<I>(event);
+                self.suspend_input_capture();
+                self.sync_input_capture_modifiers();
+                return true;
             }
         }
         if let InputEvent::PointerButton { event } = event {
