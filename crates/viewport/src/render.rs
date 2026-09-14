@@ -471,13 +471,21 @@ where
             // bar's own text. The client path in `render_surface_tree_with_effect`
             // orders a surface and its effect the same way round.
             if let Some((blur_id, commit)) = blur.as_ref().filter(|_| effects_available) {
-                elements.push(OutputElement::from(
+                // The frame's effect budget is what keeps a shell.overlay full
+                // of screen-sized blur rectangles from allocating an offscreen
+                // capture for every one of them. No budget left: the overlay is
+                // drawn without its glass, exactly as on a renderer whose
+                // effects are unavailable.
+                if let Some(effect) =
                     crate::background_effect::BackgroundEffectRenderElement::for_shell(
                         blur_id.clone(),
                         *crop,
                         *commit,
-                    ),
-                ));
+                        effects,
+                    )
+                {
+                    elements.push(OutputElement::from(effect));
+                }
             }
         }
     }

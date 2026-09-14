@@ -385,13 +385,25 @@ impl BackgroundEffectRenderElement {
     /// surface metadata replaced by what came over the socket. `commit` is the
     /// shell's overlay counter, so a moved rectangle repaints what was under
     /// the old one.
+    ///
+    /// The shell's blur obeys the frame's effect budget like every client's.
+    ///
+    /// `shell.overlay` may carry up to `MAX_SHELL_OVERLAYS` rectangles in one
+    /// message and every one of them may ask to blur and cover a screen, so the
+    /// unbudgeted path allocated an offscreen capture per rectangle: past the
+    /// per-frame count or the total texture pixels the overlay is drawn flat
+    /// rather than holding tens of gigabytes of unusable captures.
     pub(crate) fn for_shell(
         id: Id,
         requested: Rectangle<i32, Physical>,
         commit: CommitCounter,
-    ) -> Self {
+        budget: &mut BackgroundEffectBudget,
+    ) -> Option<Self> {
         let geometry = expand_blur_geometry(requested);
-        Self {
+        if !budget.take(geometry.size) {
+            return None;
+        }
+        Some(Self {
             id,
             commit,
             geometry,
@@ -404,7 +416,7 @@ impl BackgroundEffectRenderElement {
                     .into(),
                 (requested.size.w, requested.size.h).into(),
             )],
-        }
+        })
     }
 
     #[cfg(test)]
@@ -1369,6 +1381,61 @@ mod tests {
         assert!(
             !effect.clip_regions(Rectangle::new((0, 0).into(), (i32::MAX, i32::MAX).into())),
             "the region wrapper past i32 is dropped, not wrapped"
+        );
+    }
+
+    /// The shell is a client of the frame budget too. A `shell.overlay` may
+    /// carry `MAX_SHELL_OVERLAYS` full-screen rectangles, each with
+    /// `blur: true`; without consulting the budget each one kept an offscreen
+    /// capture of its own.
+    #[test]
+    fn shell_blurs_are_held_to_the_frame_budget() {
+        let small = Rectangle::<i32, Physical>::from_size((1, 1).into());
+        let full = Rectangle::<i32, Physical>::from_size((4064, 4064).into());
+
+        // The count: the sixty-fourth is admitted, the sixty-fifth is not.
+        let mut count = BackgroundEffectBudget::default();
+        for _ in 0..MAX_BACKGROUND_EFFECTS_PER_FRAME {
+            assert!(BackgroundEffectRenderElement::for_shell(
+                Id::new(),
+                small,
+                CommitCounter::default(),
+                &mut count,
+            )
+            .is_some());
+        }
+        assert!(
+            BackgroundEffectRenderElement::for_shell(
+                Id::new(),
+                small,
+                CommitCounter::default(),
+                &mut count,
+            )
+            .is_none(),
+            "the sixty-fifth effect is refused"
+        );
+
+        // The storage: 4064 plus the blur padding expands to 4096, which
+        // downsamples to 1024x1024, so four of them are the whole 4M budget.
+        let mut pixels = BackgroundEffectBudget::default();
+        for _ in 0..4 {
+            assert!(BackgroundEffectRenderElement::for_shell(
+                Id::new(),
+                full,
+                CommitCounter::default(),
+                &mut pixels,
+            )
+            .is_some());
+        }
+        assert!(
+            BackgroundEffectRenderElement::for_shell(
+                Id::new(),
+                full,
+                CommitCounter::default(),
+                &mut pixels,
+            )
+            .is_none(),
+            "the fifth full-size effect is refused"
         );
     }
 }
