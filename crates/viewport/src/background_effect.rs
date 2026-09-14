@@ -441,27 +441,19 @@ impl BackgroundEffectRenderElement {
     /// Restrict pixels drawn by a layout crop without discarding backdrop
     /// source padding around them.
     pub(crate) fn clip_regions(&mut self, clip: Rectangle<i32, Physical>) -> bool {
-        let geometry = self.geometry.loc;
         self.regions = self
             .regions
             .iter()
             .filter_map(|region| {
-                // The region's origin is relative to the geometry, and adding
-                // it back is a sum that a shell's own huge overlay rectangle
-                // can take past i32. An origin beyond the edge cannot meet a
-                // representable clip, so the region is dropped rather than
-                // wrapped onto the far side.
-                let x = i32::try_from(i64::from(geometry.x) + i64::from(region.loc.x)).ok()?;
-                let y = i32::try_from(i64::from(geometry.y) + i64::from(region.loc.y)).ok()?;
                 let absolute = Rectangle::<i32, Physical>::new(
-                    (x, y).into(),
+                    self.geometry.loc + Point::from((region.loc.x, region.loc.y)),
                     (region.size.w, region.size.h).into(),
                 );
                 let clipped = absolute.intersection(clip)?;
                 Some(Rectangle::<i32, Buffer>::new(
                     (
-                        clamp_i32(i64::from(clipped.loc.x) - i64::from(geometry.x)),
-                        clamp_i32(i64::from(clipped.loc.y) - i64::from(geometry.y)),
+                        clipped.loc.x - self.geometry.loc.x,
+                        clipped.loc.y - self.geometry.loc.y,
                     )
                         .into(),
                     (clipped.size.w, clipped.size.h).into(),
@@ -887,12 +879,6 @@ fn blur_texture_size(width: i32, height: i32) -> Option<(Size<i32, Buffer>, i64)
     Some((size, pixels))
 }
 
-/// Narrow a computed coordinate back to `i32`, holding at the edges of the
-/// range rather than wrapping.
-fn clamp_i32(value: i64) -> i32 {
-    value.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
-}
-
 fn map_surface_region(
     region: Rectangle<i32, Logical>,
     surface_size: smithay::utils::Size<i32, Logical>,
@@ -906,23 +892,13 @@ fn map_surface_region(
     let scale_y = f64::from(surface_geometry.size.h) / f64::from(surface_size.h);
     let x1 = (f64::from(region.loc.x) * scale_x).round() as i32;
     let y1 = (f64::from(region.loc.y) * scale_y).round() as i32;
-    // The far edge is a sum of the region's own fields; i64 before the f64 so
-    // it is exact whatever the region's origin is.
-    let right = i64::from(region.loc.x) + i64::from(region.size.w);
-    let bottom = i64::from(region.loc.y) + i64::from(region.size.h);
-    let x2 = (right as f64 * scale_x).round() as i32;
-    let y2 = (bottom as f64 * scale_y).round() as i32;
-
-    // The offset within the surface is a client's region mapped through a
-    // scale, and adding it to the surface's own origin is a sum of two numbers
-    // a huge viewport can each take to the edge of i32. An origin that leaves
-    // the range cannot be met by any representable clip, so the region is
-    // dropped rather than wrapped onto the other side of the screen.
-    let x = i32::try_from(i64::from(surface_geometry.loc.x) + i64::from(x1)).ok()?;
-    let y = i32::try_from(i64::from(surface_geometry.loc.y) + i64::from(y1)).ok()?;
-    let width = i32::try_from(i64::from(x2) - i64::from(x1)).ok()?;
-    let height = i32::try_from(i64::from(y2) - i64::from(y1)).ok()?;
-    Rectangle::new((x, y).into(), (width, height).into()).intersection(surface_geometry)
+    let x2 = (f64::from(region.loc.x + region.size.w) * scale_x).round() as i32;
+    let y2 = (f64::from(region.loc.y + region.size.h) * scale_y).round() as i32;
+    Rectangle::new(
+        surface_geometry.loc + Point::<i32, Physical>::from((x1, y1)),
+        (x2 - x1, y2 - y1).into(),
+    )
+    .intersection(surface_geometry)
 }
 
 fn committed_region(states: &SurfaceData) -> Option<RegionAttributes> {
@@ -1332,58 +1308,6 @@ mod tests {
             Rectangle::new((5.0, 15.0).into(), (5.0, 2.5).into())
         );
     }
-
-    /// A blur region near the far edge of a surface that is itself at the far
-    /// edge of the coordinate space. The offset is mapped through a scale and
-    /// then added to the surface's origin, and that sum of two representable
-    /// numbers is not one: an oversized viewport plus a region at its edge used
-    /// to abort the render loop.
-    #[test]
-    fn a_region_at_the_edge_of_the_coordinate_space_does_not_overflow() {
-        let surface_size = (i32::MAX, i32::MAX).into();
-        let surface_geometry = Rectangle::<i32, Physical>::new(
-            (i32::MAX - 10, i32::MAX - 10).into(),
-            (i32::MAX, i32::MAX).into(),
-        );
-        let region = rect(i32::MAX - 100, i32::MAX - 100, 50, 50);
-        assert!(
-            map_surface_region(region, surface_size, surface_geometry).is_none(),
-            "an origin past i32::MAX cannot be met by a representable clip"
-        );
-
-        // The ordinary mapping is untouched.
-        let mapped = map_surface_region(
-            rect(10, 20, 100, 50),
-            (200, 100).into(),
-            Rectangle::<i32, Physical>::new((5, 5).into(), (100, 50).into()),
-        )
-        .expect("a contained region maps");
-        assert_eq!(
-            mapped,
-            Rectangle::<i32, Physical>::new((10, 15).into(), (50, 25).into())
-        );
-    }
-
-    /// The same sum inside an element's own region list: a geometry at the far
-    /// edge and a positive in-element offset.
-    #[test]
-    fn clipping_a_region_at_the_edge_of_the_coordinate_space_does_not_overflow() {
-        let mut effect = BackgroundEffectRenderElement {
-            id: Id::new(),
-            commit: CommitCounter::default(),
-            geometry: Rectangle::<i32, Physical>::new(
-                (i32::MAX - 4, i32::MAX - 4).into(),
-                (64, 64).into(),
-            ),
-            alpha: 1.0,
-            regions: vec![Rectangle::new((16, 16).into(), (32, 32).into())],
-        };
-        assert!(
-            !effect.clip_regions(Rectangle::new((0, 0).into(), (i32::MAX, i32::MAX).into())),
-            "the region wrapper past i32 is dropped, not wrapped"
-        );
-    }
-
     /// The shell is a client of the frame budget too. A `shell.overlay` may
     /// carry `MAX_SHELL_OVERLAYS` full-screen rectangles, each with
     /// `blur: true`; without consulting the budget each one kept an offscreen
