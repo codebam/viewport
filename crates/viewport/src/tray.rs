@@ -100,6 +100,22 @@ const MAX_ICON_CACHE_ENTRIES: usize = 256;
 /// The most the resolved-icon cache may hold, in bytes of data URLs.
 const MAX_ICON_CACHE_BYTES: usize = 8 << 20;
 
+/// How many items the tray will hold.
+///
+/// A registration is a D-Bus method any session peer can call, and an item it
+/// names costs a row here, a row in the watcher's registry and a row in every
+/// snapshot the shell is sent. The specification has nothing like a ceiling, so
+/// the ceiling is this process's: a desk with more than this many tray icons is
+/// not a desk whose bar can draw them.
+const MAX_ITEMS: usize = 256;
+/// The longest object path a path-form registration may name.
+///
+/// An object path is client-chosen, and the key built from it is stored in
+/// `entries`, in the registry and in every published snapshot. A real
+/// `StatusNotifierItem` path is a hundred bytes at the outside; refusing an
+/// oversized one is both the memory bound and the shape check.
+const MAX_PATH: usize = 1024;
+
 /// The identity of one resolved icon file: where it really is, its size and
 /// its modification time. The strings an item published are deliberately not
 /// part of it: they are app-controlled, and the same file can be named by a
@@ -229,6 +245,93 @@ impl Tray {
     }
 }
 
+/// What the registry did with a registration.
+#[derive(Debug, PartialEq, Eq)]
+enum Admission {
+    /// Already known: a re-registration, which is an item saying it is back.
+    Known,
+    /// Recorded for the first time.
+    Added,
+    /// The ceiling is reached; nothing was recorded.
+    Full,
+}
+
+/// Add a key to the watcher's registry, within [`MAX_ITEMS`].
+fn admit(items: &mut Vec<String>, key: &str) -> Admission {
+    if items.iter().any(|item| item == key) {
+        Admission::Known
+    } else if items.len() >= MAX_ITEMS {
+        Admission::Full
+    } else {
+        items.push(key.to_owned());
+        Admission::Added
+    }
+}
+
+/// The path half of a registration: the sender's unique name and the object
+/// path it named.
+///
+/// The bus-name half needs an async ownership check and is handled by the
+/// caller. This is the pure part — the shape and the size — so a registration
+/// whose argument is not an object path is refused before anything stores it.
+fn path_registration(sender: &str, service: &str) -> Option<(String, String)> {
+    if sender.is_empty() || service.len() > MAX_PATH {
+        return None;
+    }
+    zvariant::ObjectPath::try_from(service).ok()?;
+    Some((sender.to_owned(), service.to_owned()))
+}
+
+/// One queued change per item key; the value is whether it must be forced.
+///
+/// `Register` forces a fetch because a fresh registration is the one event that
+/// gives an unresponsive item another chance; a signal does not. When a
+/// registration arrives behind a signal already waiting, the waiting entry is
+/// upgraded rather than a second command queued.
+type PendingItems = std::sync::Arc<std::sync::Mutex<HashMap<String, bool>>>;
+
+/// Queue one item change, coalescing a burst for the same key into one command.
+fn queue_item_change(
+    pending: &PendingItems,
+    commands: &mpsc::Sender<Command>,
+    key: String,
+    force: bool,
+) {
+    let mut pending = pending.lock().unwrap_or_else(|e| e.into_inner());
+    match pending.get_mut(&key) {
+        Some(waiting) => {
+            *waiting |= force;
+            return;
+        }
+        None => {
+            // Also the ceiling on what a signal flood can hold: the worker
+            // takes one key out before it looks at the item, so this is a
+            // queue of at most one command per registered item.
+            if pending.len() >= MAX_ITEMS {
+                return;
+            }
+            pending.insert(key.clone(), force);
+        }
+    }
+    drop(pending);
+    let _ = commands.send(Command::ItemChanged { key, force });
+}
+
+/// Take a key out of the pending set; the value is whether it was forced.
+fn take_item_change(pending: &PendingItems, key: &str) -> bool {
+    pending
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(key)
+        .unwrap_or(false)
+}
+
+/// The worker's view of a change: the force the command carried, or the one a
+/// later registration upgraded the waiting entry with.
+fn take_item_force(pending: &PendingItems, key: &str, force: bool) -> bool {
+    take_item_change(pending, key) || force
+}
+
 /// What the worker thread is asked to do, by the compositor and by the bus.
 enum Command {
     /// An application registered itself, or re-registered after a restart.
@@ -236,12 +339,12 @@ enum Command {
         service: String,
         path: String,
     },
-    /// One item said something about itself changed — a new icon, a new
-    /// title, a new status. Which of them it was is not worth tracking: the
-    /// answer is to ask the item what it looks like now, and that is one round
-    /// trip either way.
-    Refresh {
+    /// One item changed: a signal saying so, or a re-registration. `force` is
+    /// the re-registration, which is the one event that gives an item marked
+    /// unresponsive another chance.
+    ItemChanged {
         key: String,
+        force: bool,
     },
     /// A bus name went away. Every item owned by it goes with it, which is the
     /// only removal notice a crashing application gives.
@@ -268,6 +371,34 @@ enum Command {
     IconTheme(String),
 }
 
+/// One thread reading one match rule, turning messages into commands.
+///
+/// The shape of [`crate::dbus_util::pump`], except the handler is generic
+/// rather than a plain `fn`: the signal feed needs the registry and the
+/// coalescing map, and a function pointer cannot capture either. The
+/// subscription is made here, on the caller's thread, before the reader starts
+/// — the same order the shared helper uses.
+fn pump_signals<F>(
+    connection: zbus::blocking::Connection,
+    commands: mpsc::Sender<Command>,
+    rule: String,
+    handle: F,
+) -> anyhow::Result<()>
+where
+    F: Fn(&zbus::Message, &mpsc::Sender<Command>) + Send + 'static,
+{
+    let parsed = zbus::MatchRule::try_from(rule.as_str())?;
+    let messages = zbus::blocking::MessageIterator::for_match_rule(parsed, &connection, None)?;
+    std::thread::Builder::new()
+        .name("tray-signals".to_owned())
+        .spawn(move || {
+            for message in messages.flatten() {
+                handle(&message, &commands);
+            }
+        })?;
+    Ok(())
+}
+
 /// Claim the names, serve the watcher, and start the threads that feed it.
 ///
 /// Connecting happens inside the thread this spawns, not on its caller — which
@@ -286,6 +417,9 @@ fn start(events: smithay::reexports::calloop::channel::Sender<Message>) -> mpsc:
     // that lists the dead forever is worse than none. One list, two readers,
     // and the worker does the pruning.
     let items: std::sync::Arc<std::sync::Mutex<Vec<String>>> = std::sync::Arc::default();
+    // One queued change per item key, shared with the signal feed so a burst
+    // from one item is one command rather than one per message.
+    let pending: PendingItems = std::sync::Arc::default();
 
     let (worker_events, worker_commands) = (events.clone(), commands.clone());
     let spawned = std::thread::Builder::new()
@@ -303,6 +437,7 @@ fn start(events: smithay::reexports::calloop::channel::Sender<Message>) -> mpsc:
                             Watcher {
                                 commands: worker_commands.clone(),
                                 items: items.clone(),
+                                pending: pending.clone(),
                             },
                         )
                         .and_then(|builder| builder.build())
@@ -319,49 +454,81 @@ fn start(events: smithay::reexports::calloop::channel::Sender<Message>) -> mpsc:
             // than a subscription per item: an item that changes its icon does
             // not send it, it says that it changed, and the answer is the same
             // refresh whichever item and whichever signal it was.
-            if let Err(e) = crate::dbus_util::pump(
-                connection.clone(),
-                worker_commands.clone(),
-                "tray-signals",
-                format!("type='signal',interface='{ITEM}'"),
-                |message, commands| {
-                    let header = message.header();
-                    let (Some(sender), Some(path)) = (header.sender(), header.path()) else {
-                        return;
-                    };
-                    let _ = commands.send(Command::Refresh {
-                        key: key(sender.as_str(), path.as_str()),
-                    });
-                },
-            ) {
-                tracing::warn!("the system tray: could not follow tray items: {e:#}");
+            {
+                let items = items.clone();
+                let pending = pending.clone();
+                if let Err(e) = pump_signals(
+                    connection.clone(),
+                    worker_commands.clone(),
+                    format!("type='signal',interface='{ITEM}'"),
+                    move |message, commands| {
+                        let header = message.header();
+                        let (Some(sender), Some(path)) = (header.sender(), header.path()) else {
+                            return;
+                        };
+                        let key = key(sender.as_str(), path.as_str());
+                        // Only a registered item is worth a fetch, and that
+                        // keeps the pending map bounded by the same cap the
+                        // registry has rather than by whatever paths a peer
+                        // feels like putting on the wire.
+                        let known = items
+                            .lock()
+                            .map(|items| items.iter().any(|item| item == &key))
+                            .unwrap_or(false);
+                        if !known {
+                            return;
+                        }
+                        queue_item_change(&pending, commands, key, false);
+                    },
+                ) {
+                    tracing::warn!("the system tray: could not follow tray items: {e:#}");
+                }
             }
 
             // And the only notice an application that dies gives.
-            if let Err(e) = crate::dbus_util::pump(
-                connection.clone(),
-                worker_commands.clone(),
-                "tray-signals",
-                "type='signal',sender='org.freedesktop.DBus',\
-                 interface='org.freedesktop.DBus',member='NameOwnerChanged'"
-                    .to_owned(),
-                |message, commands| {
-                    let Ok((name, _old, new)) =
-                        message.body().deserialize::<(String, String, String)>()
-                    else {
-                        return;
-                    };
-                    // An empty new owner is the name being given up, which for
-                    // a unique name means the process is gone.
-                    if new.is_empty() {
-                        let _ = commands.send(Command::NameLost(name));
-                    }
-                },
-            ) {
-                tracing::warn!("the system tray: could not follow the bus: {e:#}");
+            {
+                let items = items.clone();
+                if let Err(e) = pump_signals(
+                    connection.clone(),
+                    worker_commands.clone(),
+                    "type='signal',sender='org.freedesktop.DBus',\
+                     interface='org.freedesktop.DBus',member='NameOwnerChanged'"
+                        .to_owned(),
+                    move |message, commands| {
+                        let Ok((name, _old, new)) =
+                            message.body().deserialize::<(String, String, String)>()
+                        else {
+                            return;
+                        };
+                        // An empty new owner is the name being given up, which
+                        // for a unique name means the process is gone.
+                        if !new.is_empty() {
+                            return;
+                        }
+                        // Only a name an item was actually registered under is
+                        // worth a command: a peer that opens and closes
+                        // connections in a loop otherwise puts one `NameLost`
+                        // in the worker's channel per connection for as long
+                        // as it cares to.
+                        let known = items
+                            .lock()
+                            .map(|items| {
+                                items.iter().any(|key| {
+                                    key.split_once('/')
+                                        .is_some_and(|(service, _)| service == name)
+                                })
+                            })
+                            .unwrap_or(false);
+                        if known {
+                            let _ = commands.send(Command::NameLost(name));
+                        }
+                    },
+                ) {
+                    tracing::warn!("the system tray: could not follow the bus: {e:#}");
+                }
             }
 
-            Worker::new(connection, worker_events, items).run(&inbox);
+            Worker::new(connection, worker_events, items, pending).run(&inbox);
         });
 
     if spawned.is_err() {
@@ -392,6 +559,9 @@ struct Watcher {
     /// that a name the worker watches die is pruned from it instead of being
     /// reported until the session ends.
     items: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    /// Shared with the signal feed so a re-registration coalesces with a
+    /// signal already queued for the same item.
+    pending: PendingItems,
 }
 
 #[zbus::interface(name = "org.kde.StatusNotifierWatcher")]
@@ -411,7 +581,15 @@ impl Watcher {
     ) {
         let sender = header.sender().map(|s| s.to_string()).unwrap_or_default();
         let (service, path) = if service.starts_with('/') {
-            (sender, service)
+            // The path form names an object the sender owns, so the argument
+            // has to be an object path rather than any string starting with a
+            // slash, and it has to be bounded before it becomes a registry row
+            // and a row in every snapshot.
+            let Some(registration) = path_registration(&sender, &service) else {
+                tracing::debug!("tray: refusing a registration with an invalid object path");
+                return;
+            };
+            registration
         } else {
             // A bus name, which the sender has to actually own. Without this
             // any session client could register another application's name —
@@ -437,12 +615,27 @@ impl Watcher {
         }
 
         let key = key(&service, &path);
-        if let Ok(mut items) = self.items.lock() {
-            if !items.contains(&key) {
-                items.push(key.clone());
+        let admission = match self.items.lock() {
+            Ok(mut items) => admit(&mut items, &key),
+            // A poisoned registry cannot answer `RegisteredStatusNotifierItems`
+            // honestly; refusing the registration is the safe side of that.
+            Err(_) => return,
+        };
+        match admission {
+            Admission::Added => {
+                let _ = self.commands.send(Command::Register { service, path });
+            }
+            Admission::Known => {
+                // A re-registration: the item may have been marked
+                // unresponsive, so this forces a fetch — but as one coalesced
+                // command, because a peer is free to repeat it in a loop.
+                queue_item_change(&self.pending, &self.commands, key.clone(), true);
+            }
+            Admission::Full => {
+                tracing::warn!("tray: refusing {key}: {MAX_ITEMS} items is the ceiling");
+                return;
             }
         }
-        let _ = self.commands.send(Command::Register { service, path });
         let _ = Self::status_notifier_item_registered(&emitter, &key).await;
     }
 
@@ -554,6 +747,9 @@ struct Worker {
     /// watches die can be taken out of `RegisteredStatusNotifierItems` the
     /// moment it dies, rather than reported to the end of the session.
     registry: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    /// One queued change per item key, shared with the signal feed. Taken out
+    /// when the command is handled so a later change queues again.
+    pending: PendingItems,
     /// Icon names already resolved to a data URL, because resolving one walks
     /// the icon theme directories and an item that says its icon changed
     /// usually means its *status* changed and the icon with it — between two
@@ -582,12 +778,14 @@ impl Worker {
         connection: zbus::blocking::Connection,
         events: smithay::reexports::calloop::channel::Sender<Message>,
         registry: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+        pending: PendingItems,
     ) -> Self {
         Self {
             connection,
             events,
             entries: Vec::new(),
             registry,
+            pending,
             icons: HashMap::new(),
             icon_bytes: 0,
             // What the configuration has not overridden. hicolor is searched
@@ -613,23 +811,29 @@ impl Worker {
                         self.publish();
                     }
                 }
+                // Before the disabled arm: the pending slot has to come back
+                // out even while the tray is off, or the first signal after it
+                // is enabled would be the last one ever queued.
+                Command::ItemChanged { key, force } => {
+                    let force = take_item_force(&self.pending, &key, force);
+                    if self.enabled {
+                        if let Some(index) = self.index_of(&key) {
+                            // Forced only when a registration said so: a
+                            // signal from an item is not evidence it has
+                            // recovered, and an unresponsive one would be
+                            // re-asked on every signal it fails to send —
+                            // which is to say, never.
+                            self.refresh_at(index, force);
+                            self.publish();
+                        }
+                    }
+                }
                 // Everything below is a no-op while the tray is off. A
                 // registration cannot arrive then — the name is not held — but
                 // a signal from an item registered before it was turned off
                 // can.
                 _ if !self.enabled => {}
                 Command::Register { service, path } => self.register(service, path),
-                Command::Refresh { key } => {
-                    if let Some(index) = self.index_of(&key) {
-                        // Not forced: a signal from an item is not evidence it
-                        // has recovered, and an unresponsive one would be
-                        // re-asked on every signal it fails to send — which
-                        // is to say, never. Recovery goes through
-                        // `Register`, as a restart does.
-                        self.refresh_at(index, false);
-                        self.publish();
-                    }
-                }
                 Command::NameLost(name) => self.drop_owner(&name),
                 Command::Activate { id, button, x, y } => {
                     // What the specification calls the two clicks, plus the
@@ -769,6 +973,12 @@ impl Worker {
             // also the one piece of evidence that an item marked unresponsive
             // has come back.
             self.refresh_at(index, true);
+        } else if self.entries.len() >= MAX_ITEMS {
+            // The watcher caps the registry, so this is the safety net for a
+            // race between its list and this one; refusing here rather than
+            // growing past the ceiling keeps them from disagreeing.
+            tracing::warn!("tray: refusing {key}: {MAX_ITEMS} items is the ceiling");
+            return;
         } else {
             self.entries.push(Entry {
                 service,
@@ -1459,6 +1669,82 @@ mod tests {
     /// this replaced was keyed on `IconThemePath` + `IconName`, so one item
     /// pointing a changing `theme_path` at the same file got a fresh entry,
     /// and a fresh value of up to ~683 KiB, per signal.
+    /// A path-form registration is a string any session peer chooses. It has
+    /// to be a real object path, and it has to be bounded before it becomes a
+    /// registry row and a row in every snapshot.
+    #[test]
+    fn a_registration_path_is_validated_and_bounded() {
+        assert!(path_registration(":1.7", "/StatusNotifierItem").is_some());
+        assert!(path_registration(":1.7", "/org/ayatana/NotificationItem/a").is_some());
+        assert!(
+            path_registration(":1.7", "/not a path").is_none(),
+            "a space is not an object-path byte"
+        );
+        assert!(path_registration(":1.7", "").is_none());
+        assert!(
+            path_registration("", "/StatusNotifierItem").is_none(),
+            "a registration with no sender has no owner to name"
+        );
+        let long = format!("/{}", "a".repeat(MAX_PATH));
+        assert!(
+            path_registration(":1.7", &long).is_none(),
+            "an oversized path must be refused, not stored"
+        );
+    }
+
+    /// The registry is the list every snapshot and every `NameLost` prune is
+    /// built from. A peer that registers distinct paths forever must hit a
+    /// ceiling rather than growing it for the session.
+    #[test]
+    fn the_registry_caps_items_and_accepts_repeats() {
+        let mut items = Vec::new();
+        for n in 0..MAX_ITEMS {
+            assert_eq!(
+                admit(&mut items, &format!(":1.{n}/item")),
+                Admission::Added,
+                "row {n}"
+            );
+        }
+        assert_eq!(admit(&mut items, ":1.0/item"), Admission::Known);
+        assert_eq!(admit(&mut items, ":1.999/item"), Admission::Full);
+        assert_eq!(items.len(), MAX_ITEMS);
+    }
+
+    /// A signal burst for one item is one command, and a registration arriving
+    /// behind a signal upgrades the waiting entry rather than queueing a second
+    /// one — the forced fetch is the whole point of a re-registration.
+    #[test]
+    fn per_item_changes_are_coalesced_and_keep_the_force() {
+        let pending: PendingItems = std::sync::Arc::default();
+        let (commands, inbox) = mpsc::channel();
+        queue_item_change(&pending, &commands, ":1.7/item".to_owned(), false);
+        // The command was already sent when this arrives; the upgrade lives
+        // in the pending map until the worker takes it.
+        queue_item_change(&pending, &commands, ":1.7/item".to_owned(), true);
+        queue_item_change(&pending, &commands, ":1.7/item".to_owned(), false);
+        assert!(
+            matches!(
+                inbox.try_recv(),
+                Ok(Command::ItemChanged { force: false, .. })
+            ),
+            "the burst is one command"
+        );
+        assert!(inbox.try_recv().is_err(), "one command per key");
+        // What the worker does when it handles the command: the stored bit
+        // carries the registration that arrived after the send.
+        assert!(
+            take_item_force(&pending, ":1.7/item", false),
+            "a registration behind a signal must still force the fetch"
+        );
+        // And the next signal queues again rather than being eaten by a stale
+        // slot.
+        queue_item_change(&pending, &commands, ":1.7/item".to_owned(), false);
+        assert!(matches!(
+            inbox.try_recv(),
+            Ok(Command::ItemChanged { force: false, .. })
+        ));
+    }
+
     #[test]
     fn an_icon_cache_key_follows_the_resolved_file() {
         let dir =
