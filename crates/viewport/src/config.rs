@@ -1656,9 +1656,12 @@ pub fn parse_xwayland_scale(value: &XwaylandScaleSetting) -> anyhow::Result<Xway
 ///
 /// Layout policy belongs to the shell, but privacy cannot fail open while that
 /// shell starts or after it crashes. Any identity-matching `capture: false`
-/// rule starts the view private. Workspace predicates are deliberately treated
-/// as possible matches here because only the shell knows the opening workspace;
-/// its later `view.capture` answer may safely make the result less conservative.
+/// rule starts the view private. `class`/`initial_class` are matched as the
+/// app_id and `initial_title` as the title, the aliases the shell resolves at
+/// map time. Predicates this side cannot evaluate — `workspace`, `xwayland`,
+/// `modal`, `content` and anything a newer shell may know — are deliberately
+/// treated as possible matches; the shell's later `view.capture` answer may
+/// safely make the result less conservative.
 ///
 /// A shell that is lost has the answers it gave forgotten, so this is asked
 /// again for each window (`ViewportState::forget_capture_answers`).
@@ -1688,22 +1691,29 @@ fn capture_rule_might_match(
     };
     if let Some(matcher) = rule.get("match").and_then(serde_json::Value::as_object) {
         let mut matched = false;
-        for (name, value) in [
-            ("app_id", app_id),
-            ("title", title),
-            ("tag", tag.unwrap_or("")),
-        ] {
-            let Some(condition) = matcher.get(name) else {
-                continue;
-            };
+        for (name, condition) in matcher {
             matched = true;
+            let value = match name.as_str() {
+                // Hyprland's names for the same strings. The shell resolves
+                // them to `app_id`/`title` at map time — which is when this
+                // runs — so a `capture: false` rule that uses one must not
+                // fail open here.
+                "app_id" | "class" | "initial_class" => app_id,
+                "title" | "initial_title" => title,
+                "tag" => tag.unwrap_or(""),
+                // `workspace`, `xwayland`, `modal`, `content` and anything a
+                // newer shell knows are facts this side cannot evaluate.
+                // Treating them as possible matches is the safe startup
+                // answer: the shell's later `view.capture` can lift the
+                // denial, and losing the shell must not turn a deny rule
+                // into an allow.
+                _ => continue,
+            };
             if !capture_value_matches(value, condition) {
                 return false;
             }
         }
-        // Potentially matching is the safe startup answer; the shell applies
-        // the actual opening workspace and can explicitly allow capture.
-        matched || matcher.contains_key("workspace")
+        matched
     } else {
         let app = rule.get("app_id").filter(|value| json_truthy(value));
         let title_rule = rule.get("title").filter(|value| json_truthy(value));
@@ -1824,6 +1834,95 @@ mod tests {
             Some(&rules),
             "terminal",
             "Terminal",
+            None
+        ));
+    }
+
+    #[test]
+    fn capture_denials_understand_the_shells_matcher_aliases() {
+        // `class`/`initial_class` are the app_id under Hyprland's names, and
+        // `initial_title` is the title at map time. The shell resolves them
+        // that way (`data/shell/session.js`), so a deny rule that uses one
+        // has to keep the window private before the shell answers and after
+        // it is lost.
+        let rules = serde_json::json!([
+            {"match": {"class": {"equals": "org.keepassxc.KeePassXC"}}, "capture": false}
+        ]);
+        assert!(!initially_allows_capture(
+            Some(&rules),
+            "org.keepassxc.KeePassXC",
+            "Passwords",
+            None
+        ));
+        assert!(initially_allows_capture(
+            Some(&rules),
+            "firefox",
+            "Tab",
+            None
+        ));
+
+        // `initial_class` and `initial_title` are the same strings at this
+        // point in a window's life, because this is where a new window is
+        // resolved.
+        let rules = serde_json::json!([
+            {"match": {"initial_class": "keepass"}, "capture": false}
+        ]);
+        assert!(!initially_allows_capture(
+            Some(&rules),
+            "org.keepassxc.KeePassXC",
+            "Passwords",
+            None
+        ));
+        let rules = serde_json::json!([
+            {"match": {"initial_title": {"contains": "secret"}}, "capture": false}
+        ]);
+        assert!(!initially_allows_capture(
+            Some(&rules),
+            "terminal",
+            "Project Secret",
+            None
+        ));
+        assert!(initially_allows_capture(
+            Some(&rules),
+            "terminal",
+            "ordinary",
+            None
+        ));
+
+        // The matchers this side cannot evaluate are possible matches, like
+        // `workspace`: losing the shell must not turn one into an allow.
+        for matcher in [
+            serde_json::json!({"xwayland": true}),
+            serde_json::json!({"modal": true}),
+            serde_json::json!({"content": "game"}),
+            serde_json::json!({"something_from_a_newer_shell": "x"}),
+        ] {
+            let rules = serde_json::json!([{"match": matcher, "capture": false}]);
+            assert!(
+                !initially_allows_capture(Some(&rules), "game", "Game", None),
+                "{rules}"
+            );
+        }
+
+        // A known field that disagrees still rules the rule out, even when
+        // an unevaluable one is along for the ride.
+        let rules = serde_json::json!([
+            {"match": {"class": "keepass", "xwayland": true}, "capture": false}
+        ]);
+        assert!(initially_allows_capture(
+            Some(&rules),
+            "firefox",
+            "Tab",
+            None
+        ));
+
+        // An empty matcher still matches nothing, exactly as it does in the
+        // shell.
+        let rules = serde_json::json!([{"match": {}, "capture": false}]);
+        assert!(initially_allows_capture(
+            Some(&rules),
+            "firefox",
+            "Tab",
             None
         ));
     }
