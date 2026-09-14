@@ -19,7 +19,8 @@
 // track title.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Mutex};
 
 use viewport_ipc::event::MprisPlayer;
 
@@ -165,12 +166,11 @@ enum Command {
     /// property is not worth tracking: the answer is one round trip either
     /// way, and the bar shows one player.
     Refresh,
-    /// A bus name has appeared or been taken again. This is the one event
-    /// that says a player marked unresponsive deserves another chance, which
-    /// is why it is distinguished from an ordinary refresh.
-    Announce(String),
-    /// A bus name went away.
-    Gone(String),
+    /// One or more bus names appeared, were taken again, or went away since
+    /// the last look. This is the one event that says a player marked
+    /// unresponsive deserves another chance, so the names themselves are in
+    /// [`MPRIS_OWNERS_CHANGED`] rather than in the command.
+    OwnerChanged,
     Control(String),
     Enable(bool),
 }
@@ -191,8 +191,45 @@ static MPRIS_REFRESH_PENDING: std::sync::atomic::AtomicBool =
 /// second would otherwise put a `Refresh` behind every message, and the worker
 /// would spend its life re-reading a player that has not changed.
 fn note_refresh(commands: &mpsc::Sender<Command>) {
-    if !MPRIS_REFRESH_PENDING.swap(true, std::sync::atomic::Ordering::AcqRel) {
+    if !MPRIS_REFRESH_PENDING.swap(true, Ordering::AcqRel) {
         let _ = commands.send(Command::Refresh);
+    }
+}
+
+/// How many bus names one owner-change burst may carry into the worker.
+///
+/// The names are only needed to clear `unresponsive`; a peer that switches a
+/// well-known name on and off in a loop must not grow this list, and the
+/// refresh that follows the first name does not need the four-hundredth.
+const MAX_OWNER_CHANGES: usize = 256;
+
+/// The most players one refresh probes.
+///
+/// `ListNames` is a value from the bus daemon, and every name beginning with
+/// the MPRIS prefix costs a `PlaybackStatus` round trip — up to the player
+/// timeout each for one that has stopped answering. A session with hundreds of
+/// names is not a session whose bar can draw hundreds of widgets anyway, so a
+/// bounded prefix is the right sample rather than an arbitrary one.
+const MAX_PLAYERS_PROBED: usize = 32;
+
+/// Names whose owner changed since the worker last looked, coalesced.
+///
+/// A `NameOwnerChanged` for an MPRIS name is one `Announce` or `Gone` in the
+/// old shape, and both did the same two things: clear the name from
+/// `unresponsive` and refresh. One bus peer can flip names in a loop, so the
+/// worker gets one command per burst and takes the names from here.
+static MPRIS_OWNERS_CHANGED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+static MPRIS_OWNERS_PENDING: AtomicBool = AtomicBool::new(false);
+
+/// Note one bus-name transition, coalescing a burst into a single command.
+fn note_owner_changed(name: String, commands: &mpsc::Sender<Command>) {
+    if let Ok(mut changed) = MPRIS_OWNERS_CHANGED.lock() {
+        if changed.len() < MAX_OWNER_CHANGES && !changed.iter().any(|seen| seen == &name) {
+            changed.push(name);
+        }
+    }
+    if !MPRIS_OWNERS_PENDING.swap(true, Ordering::AcqRel) {
+        let _ = commands.send(Command::OwnerChanged);
     }
 }
 
@@ -244,7 +281,7 @@ fn start(events: smithay::reexports::calloop::channel::Sender<Message>) -> mpsc:
                  interface='org.freedesktop.DBus',member='NameOwnerChanged'"
                     .to_owned(),
                 |message, commands| {
-                    let Ok((name, _old, new)) =
+                    let Ok((name, _old, _new)) =
                         message.body().deserialize::<(String, String, String)>()
                     else {
                         return;
@@ -254,12 +291,9 @@ fn start(events: smithay::reexports::calloop::channel::Sender<Message>) -> mpsc:
                     }
                     // An empty new owner is the name being given up, which is
                     // the player dying; a new one is it announcing itself.
-                    let command = if new.is_empty() {
-                        Command::Gone(name)
-                    } else {
-                        Command::Announce(name)
-                    };
-                    let _ = commands.send(command);
+                    // Both clear `unresponsive` and refresh, so one coalesced
+                    // command carries either.
+                    note_owner_changed(name, commands);
                 },
             ) {
                 tracing::warn!("media controls: could not follow the bus: {e:#}");
@@ -326,22 +360,32 @@ impl Worker {
                         let _ = self.events.send(Message::Player(None));
                     }
                 }
-                _ if !self.enabled => {}
+                // Both coalesced commands come before the disabled arm: their
+                // bits have to come back down even while the widget is off, or
+                // the first burst after it is enabled would be the last one
+                // ever seen.
                 Command::Refresh => {
-                    MPRIS_REFRESH_PENDING.store(false, std::sync::atomic::Ordering::Release);
-                    self.refresh();
+                    MPRIS_REFRESH_PENDING.store(false, Ordering::Release);
+                    if self.enabled {
+                        self.refresh();
+                    }
                 }
-                Command::Announce(name) => {
-                    self.unresponsive.remove(&name);
-                    self.refresh();
+                Command::OwnerChanged => {
+                    MPRIS_OWNERS_PENDING.store(false, Ordering::Release);
+                    let changed = MPRIS_OWNERS_CHANGED
+                        .lock()
+                        .map(|mut changed| std::mem::take(&mut *changed))
+                        .unwrap_or_default();
+                    for name in changed {
+                        self.unresponsive.remove(&name);
+                    }
+                    if self.enabled {
+                        // A name that is gone no longer answers `ListNames`, so
+                        // the refresh shows whatever is left, or nothing.
+                        self.refresh();
+                    }
                 }
-                Command::Gone(name) => {
-                    self.unresponsive.remove(&name);
-                    // Not special-cased beyond the bookkeeping: a name that is
-                    // gone no longer answers `ListNames`, so the refresh below
-                    // shows whatever is left, or nothing.
-                    self.refresh();
-                }
+                _ if !self.enabled => {}
                 Command::Control(action) => self.control(&action),
             }
         }
@@ -384,8 +428,18 @@ impl Worker {
             .filter(|name| name.starts_with(PREFIX))
             .collect();
 
+        // The list is the authority: a name no longer on the bus cannot answer
+        // again, so keeping its `unresponsive` row would be memory for
+        // nothing. And probing is bounded, because one round trip here can be
+        // the player timeout and a hundred fake names would be a hundred of
+        // them back to back.
+        {
+            let listed: HashSet<&str> = names.iter().map(String::as_str).collect();
+            self.unresponsive
+                .retain(|name| listed.contains(name.as_str()));
+        }
         let mut ranked: Vec<(u8, String)> = Vec::new();
-        for name in names {
+        for name in names.into_iter().take(MAX_PLAYERS_PROBED) {
             if self.unresponsive.contains(&name) {
                 continue;
             }
@@ -706,6 +760,35 @@ mod tests {
             inbox.try_recv().is_ok(),
             "a signal after the widget came back was silenced by a stale pending bit"
         );
+    }
+
+    /// A peer flipping an MPRIS name in a loop must not put one command per
+    /// message into the worker's channel, and the names have to survive until
+    /// the worker takes them: clearing `unresponsive` is why they are carried
+    /// at all.
+    #[test]
+    fn an_owner_change_burst_is_coalesced_into_one_command() {
+        let (commands, inbox) = mpsc::channel();
+        MPRIS_OWNERS_PENDING.store(false, Ordering::Release);
+        MPRIS_OWNERS_CHANGED.lock().unwrap().clear();
+        note_owner_changed("org.mpris.MediaPlayer2.a".to_owned(), &commands);
+        note_owner_changed("org.mpris.MediaPlayer2.b".to_owned(), &commands);
+        assert!(
+            matches!(inbox.try_recv(), Ok(Command::OwnerChanged)),
+            "the first name queues the one command"
+        );
+        assert!(
+            inbox.try_recv().is_err(),
+            "the rest of the burst is coalesced"
+        );
+        let names = std::mem::take(&mut *MPRIS_OWNERS_CHANGED.lock().unwrap());
+        assert!(names.contains(&"org.mpris.MediaPlayer2.b".to_owned()));
+
+        // The worker clears the bit when it takes the command; the next
+        // change must then be seen again.
+        MPRIS_OWNERS_PENDING.store(false, Ordering::Release);
+        note_owner_changed("org.mpris.MediaPlayer2.c".to_owned(), &commands);
+        assert!(matches!(inbox.try_recv(), Ok(Command::OwnerChanged)));
     }
 
     #[test]
