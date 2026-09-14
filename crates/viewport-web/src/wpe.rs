@@ -356,9 +356,20 @@ unsafe extern "C" fn render_frame(user: *mut c_void, frame: *const ShimFrame) ->
         }
 
         let fence = if raw.fence_fd >= 0 {
-            std::os::fd::BorrowedFd::borrow_raw(raw.fence_fd)
-                .try_clone_to_owned()
-                .ok()
+            // Borrowed for the callback's duration, like the plane fds; the
+            // clone is what outlives it. A failed clone is not "no fence":
+            // this frame may still be being painted into, and handing the
+            // compositor a `None` here would let it read the buffer without
+            // the wait the fence exists to provide. Fail the frame instead,
+            // which WebKit answers by painting again.
+            let borrowed = std::os::fd::BorrowedFd::borrow_raw(raw.fence_fd);
+            match borrowed.try_clone_to_owned() {
+                Ok(fence) => Some(fence),
+                Err(error) => {
+                    tracing::error!("could not duplicate the frame's fence fd: {error}");
+                    return false;
+                }
+            }
         } else {
             None
         };

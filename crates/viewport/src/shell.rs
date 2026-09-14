@@ -32,6 +32,7 @@
 
 use std::collections::VecDeque;
 use std::ffi::c_void;
+use std::os::fd::OwnedFd;
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
@@ -54,6 +55,13 @@ pub struct Pending {
     /// Returned once the frame has been presented, which is what releases
     /// WebKit to paint the next one.
     pub token: FrameToken,
+    /// The engine's rendering fence for this buffer, if it produced one.
+    ///
+    /// Signalled when the paint into `buffer` has finished, so nothing may
+    /// read the buffer before then. Kept with the frame rather than waited on
+    /// where it is collected: the wait belongs on the renderer that is about
+    /// to copy the buffer, not on the compositor's own thread.
+    pub fence: Option<OwnedFd>,
 }
 
 /// What the callbacks drop things into.
@@ -236,8 +244,8 @@ struct Queue {
 impl Queue {
     fn push(&mut self, command: Command) {
         match command {
-            Command::PointerMotion { .. } => self.pending_motion = Some(command),
-            Command::PointerAxis { .. } => self.pending_axis = Some(command),
+            command @ Command::PointerMotion { .. } => self.coalesce(command, true),
+            command @ Command::PointerAxis { .. } => self.coalesce(command, false),
             command => {
                 self.seal();
                 if !self.has_room(&command) {
@@ -249,6 +257,29 @@ impl Queue {
                 }
                 self.commands.push_back(command);
             }
+        }
+    }
+
+    /// Keep the newest coalesced pointer event, budget allowing.
+    ///
+    /// Replacing one already waiting costs no entry. Adding one when the queue
+    /// is full is a drop like any other: otherwise the event sits in `pending`
+    /// until the next non-pointer command seals it, and `seal` is what has to
+    /// push it past the ceiling.
+    fn coalesce(&mut self, command: Command, motion: bool) {
+        let replacing = if motion {
+            self.pending_motion.is_some()
+        } else {
+            self.pending_axis.is_some()
+        };
+        if !replacing && self.entries() >= MAX_QUEUE_ENTRIES {
+            self.note_drop();
+            return;
+        }
+        if motion {
+            self.pending_motion = Some(command);
+        } else {
+            self.pending_axis = Some(command);
         }
     }
 
@@ -296,12 +327,23 @@ impl Queue {
 
     /// Push the coalesced pointer events, so whatever follows them keeps its
     /// order relative to them.
+    ///
+    /// Budgeted like `push`: a sealed event is a command, and the ceiling has
+    /// to hold whether it was queued directly or through `pending`.
     fn seal(&mut self) {
         if let Some(motion) = self.pending_motion.take() {
-            self.commands.push_back(motion);
+            if self.commands.len() < MAX_QUEUE_ENTRIES {
+                self.commands.push_back(motion);
+            } else {
+                self.note_drop();
+            }
         }
         if let Some(axis) = self.pending_axis.take() {
-            self.commands.push_back(axis);
+            if self.commands.len() < MAX_QUEUE_ENTRIES {
+                self.commands.push_back(axis);
+            } else {
+                self.note_drop();
+            }
         }
     }
 
@@ -367,7 +409,11 @@ impl FrameSink for Frames {
         // Replacing an undrawn frame hands its buffer back, which is what lets
         // WebKit carry on if the compositor is behind. Dropping the token
         // instead loses the buffer for good.
-        if let Some(previous) = mailbox.frame.replace(Pending { buffer, token }) {
+        if let Some(previous) = mailbox.frame.replace(Pending {
+            buffer,
+            token,
+            fence: frame.fence,
+        }) {
             tracing::trace!("dropped an undrawn shell frame");
             mailbox.stale.push(previous.token);
         }
@@ -1003,6 +1049,28 @@ fn to_dmabuf(frame: &Frame) -> Result<Dmabuf> {
         .ok_or_else(|| anyhow::anyhow!("the frame did not describe a complete buffer"))
 }
 
+/// Queue a renderer-side wait for a shell frame's rendering fence.
+///
+/// The fence is a `sync_file`: it becomes readable when WebKit's GPU work has
+/// finished writing the buffer. Reading the buffer before then is the tear
+/// explicit sync exists to prevent, and waiting on the compositor's own thread
+/// would stall the whole desktop on one page's paint. So the fence is handed
+/// to the renderer that is about to copy the buffer: Vulkan imports the fd
+/// into a semaphore the copy's submission waits on, and GLES inserts the wait
+/// before the copy's commands with `eglWaitSync`.
+///
+/// Returning `Err` is not a reason to copy anyway -- the caller keeps the
+/// previous frame on screen and gives this WebKit buffer back unpresented.
+pub(crate) fn wait_for_frame_fence<R>(renderer: &mut R, fence: OwnedFd) -> Result<(), String>
+where
+    R: smithay::backend::renderer::Renderer,
+{
+    let sync = smithay::backend::renderer::sync::SyncPoint::from(
+        viewport_vulkan::sync::SyncFile::new(fence),
+    );
+    renderer.wait(&sync).map_err(|error| format!("{error:?}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1202,5 +1270,76 @@ mod tests {
         assert!(queue.entries() <= MAX_QUEUE_ENTRIES);
         assert_eq!(queue.dropped, 10);
         assert_eq!(queue.commands.len(), MAX_QUEUE_ENTRIES);
+    }
+
+    /// A coalesced pointer motion is sealed -- pushed in order -- by whatever
+    /// command follows it. The seal is a push like any other and has to pay
+    /// the same budget: without the check each motion/reload pair grew the
+    /// queue by one entry for as long as the web thread stayed behind.
+    #[test]
+    fn sealing_a_coalesced_motion_cannot_outgrow_the_entry_ceiling() {
+        let mut queue = Queue::default();
+        for _ in 0..MAX_QUEUE_ENTRIES {
+            queue.push(Command::Reload);
+        }
+        assert_eq!(queue.commands.len(), MAX_QUEUE_ENTRIES);
+
+        for _ in 0..MAX_QUEUE_ENTRIES * 2 {
+            queue.push(Command::PointerMotion {
+                time: 0,
+                x: 0.0,
+                y: 0.0,
+                modifiers: 0,
+            });
+            queue.push(Command::Reload);
+            assert!(
+                queue.entries() <= MAX_QUEUE_ENTRIES,
+                "{} entries",
+                queue.entries()
+            );
+            assert!(
+                queue.commands.len() <= MAX_QUEUE_ENTRIES,
+                "{} commands",
+                queue.commands.len()
+            );
+        }
+    }
+
+    /// The compositor cannot wait for a fence it never received. A frame's
+    /// fence has to survive the callback and the mailbox, or the import path
+    /// reads a buffer WebKit may still be painting into.
+    #[test]
+    fn a_frames_fence_is_carried_into_the_mailbox() {
+        use viewport_web::Plane;
+
+        let mailbox = Arc::new(Mutex::new(Mailbox::default()));
+        let mut frames = Frames(mailbox.clone());
+        let plane: OwnedFd = std::fs::File::open("/dev/null").unwrap().into();
+        let fence: OwnedFd = std::fs::File::open("/dev/null").unwrap().into();
+
+        let frame = Frame {
+            planes: vec![Plane {
+                fd: plane,
+                offset: 0,
+                stride: 4,
+            }],
+            format: Fourcc::Argb8888 as u32,
+            modifier: 0,
+            width: 1,
+            height: 1,
+            fence: Some(fence),
+        };
+
+        assert!(frames.frame(frame, unsafe { FrameToken::from_ptr(std::ptr::null_mut()) }));
+
+        let mailbox = mailbox.lock().unwrap();
+        assert!(
+            mailbox
+                .frame
+                .as_ref()
+                .and_then(|pending| pending.fence.as_ref())
+                .is_some(),
+            "the fence did not survive into the mailbox"
+        );
     }
 }

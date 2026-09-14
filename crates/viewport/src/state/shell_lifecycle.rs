@@ -362,7 +362,7 @@ impl ViewportState {
         use smithay::backend::allocator::Buffer as _;
         use smithay::backend::renderer::ImportDma as _;
 
-        if let Some(pending) = self.shells[page].engine.take_frame() {
+        if let Some(mut pending) = self.shells[page].engine.take_frame() {
             let size: smithay::utils::Size<i32, smithay::utils::Physical> = (
                 pending.buffer.width() as i32,
                 pending.buffer.height() as i32,
@@ -393,12 +393,24 @@ impl ViewportState {
                 // First frame.
                 None => true,
             };
-            if stale {
+            // Computed before the renderer is taken out, because it is a fact
+            // about the renderer's dmabuf formats and the allocation below has
+            // to happen before the renderer is handed over to the copy.
+            let copy_modifiers = stale.then(|| self.shell_copy_modifiers());
+
+            // The renderer comes out for the whole frame, so the buffer is
+            // never read without its fence having gone somewhere first.
+            let mut renderer = self.shell_renderer.take();
+            let mut frame_fence = pending.fence.take();
+            // Whether the copy was attempted under the fence's wait. The dump
+            // below reads the same buffer, so it only runs when that happened.
+            let mut copy_safe = false;
+
+            if let Some(modifiers) = copy_modifiers {
                 // Two renderers touch this buffer: the shell's copies into it,
                 // and the output's samples from it. Only a modifier both of
                 // them advertise works, and on a machine where one is Vulkan
                 // that rules out the implicit one entirely — see `owned_image`.
-                let modifiers = self.shell_copy_modifiers();
                 match self
                     .shell_allocator
                     .as_mut()
@@ -417,53 +429,80 @@ impl ViewportState {
             // Import and copy in one place, because the texture belongs to the
             // renderer that made it: a Vulkan texture and a GLES texture share
             // a trait and nothing else, so the copy has to happen while that
-            // renderer is still in hand. Taken out of `self` for the duration
-            // so the body can reach the rest of it.
-            let mut renderer = self.shell_renderer.take();
+            // renderer is still in hand.
             if let Some(gpu) = renderer.as_mut() {
                 crate::with_gpu!(gpu, |shell_renderer| {
                     match shell_renderer.import_dmabuf(&pending.buffer, None) {
                         Ok(texture) => {
-                            // Once. "The shell did not appear" has two causes
-                            // that look identical in the log otherwise: WebKit
-                            // never painted, or it painted and the frame was
-                            // not drawn.
-                            if first {
-                                tracing::info!(
-                                    "shell {page}: first frame imported, {}x{}",
-                                    size.w,
-                                    size.h
-                                );
-                            }
-                            match self.shells[page].owned.take() {
-                                // Only into a buffer the frame actually fits.
-                                // The allocation above failed if this does not
-                                // match, and copying anyway would paint a new
-                                // frame into part of an old one — a torn
-                                // composite of two layouts, which reads as a
-                                // rendering bug rather than as the allocation
-                                // failure it is.
-                                Some((mut buffer, at)) if at == size => {
-                                    if let Err(e) = crate::dump::copy_texture(
-                                        shell_renderer,
-                                        &texture,
-                                        &mut buffer,
-                                        at,
-                                    ) {
-                                        tracing::error!("could not copy the shell's frame: {e:#}");
+                            // The fence goes in here, after the import and
+                            // immediately before the copy. Vulkan's import
+                            // may submit a layout transition of its own;
+                            // queueing the wait before that would let it
+                            // be consumed by a submission that does not
+                            // read the buffer. The copy is the read.
+                            let fence_queued = match frame_fence.take() {
+                                Some(fence) => {
+                                    match crate::shell::wait_for_frame_fence(shell_renderer, fence)
+                                    {
+                                        Ok(()) => true,
+                                        Err(error) => {
+                                            tracing::error!(
+                                                "could not queue the shell's frame fence: \
+                                                     {error}"
+                                            );
+                                            false
+                                        }
                                     }
-                                    // Whichever renderer draws this output
-                                    // imports it itself — see `render::build`.
-                                    self.shells[page].owned = Some((buffer, at));
                                 }
-                                Some(kept) => {
-                                    tracing::warn!(
+                                // The engine said the frame is already
+                                // complete when it could not produce one.
+                                None => true,
+                            };
+                            if fence_queued {
+                                copy_safe = true;
+                                // Once. "The shell did not appear" has two causes
+                                // that look identical in the log otherwise: WebKit
+                                // never painted, or it painted and the frame was
+                                // not drawn.
+                                if first {
+                                    tracing::info!(
+                                        "shell {page}: first frame imported, {}x{}",
+                                        size.w,
+                                        size.h
+                                    );
+                                }
+                                match self.shells[page].owned.take() {
+                                    // Only into a buffer the frame actually fits.
+                                    // The allocation above failed if this does not
+                                    // match, and copying anyway would paint a new
+                                    // frame into part of an old one — a torn
+                                    // composite of two layouts, which reads as a
+                                    // rendering bug rather than as the allocation
+                                    // failure it is.
+                                    Some((mut buffer, at)) if at == size => {
+                                        if let Err(e) = crate::dump::copy_texture(
+                                            shell_renderer,
+                                            &texture,
+                                            &mut buffer,
+                                            at,
+                                        ) {
+                                            tracing::error!(
+                                                "could not copy the shell's frame: {e:#}"
+                                            );
+                                        }
+                                        // Whichever renderer draws this output
+                                        // imports it itself — see `render::build`.
+                                        self.shells[page].owned = Some((buffer, at));
+                                    }
+                                    Some(kept) => {
+                                        tracing::warn!(
                                         "keeping the shell's last frame; this one has nowhere to go"
                                     );
-                                    self.shells[page].owned = Some(kept);
-                                }
-                                None => {
-                                    tracing::error!("no image to copy the shell's frame into")
+                                        self.shells[page].owned = Some(kept);
+                                    }
+                                    None => {
+                                        tracing::error!("no image to copy the shell's frame into")
+                                    }
                                 }
                             }
                         }
@@ -480,7 +519,7 @@ impl ViewportState {
             // nothing. Re-imported rather than threaded out of the body above,
             // because it runs on the first frame of a session that asked for
             // it and nowhere else.
-            if first {
+            if first && copy_safe {
                 if let (Some(path), Some(crate::udev::Gpu::Vulkan(vulkan))) =
                     (crate::dump::target(), renderer.as_mut())
                 {
@@ -494,6 +533,7 @@ impl ViewportState {
                     }
                 }
             }
+
             self.shell_renderer = renderer;
 
             {

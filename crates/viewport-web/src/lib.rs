@@ -24,8 +24,9 @@ use viewport_ipc::{Event, Request};
 /// A frame the engine has finished painting.
 ///
 /// The compositor never touches these pixels. The buffer is imported straight
-/// into the scene and the fence is imported into a `drm_syncobj` timeline, so
-/// the render waits on the GPU rather than the compositor blocking on the CPU.
+/// into the scene, and the engine's fence is handed to the renderer that
+/// copies it: the GPU waits for the paint to finish rather than the
+/// compositor blocking on the CPU.
 #[derive(Debug)]
 pub struct Frame {
     /// The exported DMA-BUF planes.
