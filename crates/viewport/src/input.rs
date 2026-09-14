@@ -1360,6 +1360,36 @@ impl ViewportState {
         }
     }
 
+    /// Count an event against the session's idle deadlines.
+    ///
+    /// Split out of `process_input_event` because input capture consumes
+    /// events before they reach it: a keystroke or motion a capture session
+    /// took is still somebody using the desk, and without this the blank and
+    /// lock deadlines run down under the person typing and end the capture
+    /// (`suspend_input_capture`) rather than the idle state.
+    ///
+    /// A hotplug is not somebody using the desk; those events still reach
+    /// `process_input_event` for the tablet, touch and device-config
+    /// lifecycle.
+    pub(crate) fn note_input_activity<I: InputBackend>(&mut self, event: &InputEvent<I>) {
+        if matches!(
+            event,
+            InputEvent::DeviceAdded { .. } | InputEvent::DeviceRemoved { .. }
+        ) {
+            return;
+        }
+        if self.idle.activity(activity_kind(event)) {
+            // The screens were off. Bring them back through the same path the
+            // deadline turned them off by.
+            self.set_outputs_enabled(true);
+        }
+        // And any client that asked to be told when the session goes idle —
+        // a chat program marking you away, which is not the compositor's
+        // business to decide but is its business to report.
+        let seat = self.seat.clone();
+        self.idle_notifier_state.notify_activity(&seat);
+    }
+
     pub fn process_input_event<I: InputBackend>(&mut self, event: InputEvent<I>) {
         // Anything the shell asked for and has not been given yet, before this
         // event is tested against the desktop.
@@ -1374,24 +1404,10 @@ impl ViewportState {
         // on that.
         self.settle();
 
-        // A hotplug is not somebody using the desk. These events still reach
-        // the match below for tablet, touch and device-config lifecycle.
-        let device_change = matches!(
-            &event,
-            InputEvent::DeviceAdded { .. } | InputEvent::DeviceRemoved { .. }
-        );
-        if !device_change && self.idle.activity(activity_kind(&event)) {
-            // The screens were off. Bring them back through the same path the
-            // deadline turned them off by.
-            self.set_outputs_enabled(true);
-        }
-        // And any client that asked to be told when the session goes idle —
-        // a chat program marking you away, which is not the compositor's
-        // business to decide but is its business to report.
-        if !device_change {
-            let seat = self.seat.clone();
-            self.idle_notifier_state.notify_activity(&seat);
-        }
+        // The idle deadlines are shared with input capture, which consumes
+        // events before this function runs; a hotplug is not activity and is
+        // filtered there. See `note_input_activity`.
+        self.note_input_activity(&event);
 
         // And the pointer's own deadline, which counts a narrower set of
         // events than either of those — see `uses_the_pointer`.

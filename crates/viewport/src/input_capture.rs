@@ -1246,6 +1246,12 @@ impl crate::state::ViewportState {
 
     pub fn process_local_input_event<I: InputBackend>(&mut self, event: InputEvent<I>) {
         if self.intercept_input_capture(&event) {
+            // The event was the capture's, so `process_input_event` — where
+            // the idle deadlines normally move — never saw it. A captured
+            // keystroke or motion is still somebody using the desk; without
+            // this the blank and lock deadlines run down under the person
+            // typing mid-capture.
+            self.note_input_activity(&event);
             return;
         }
         self.process_input_event(event);
