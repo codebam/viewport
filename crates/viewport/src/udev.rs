@@ -230,6 +230,13 @@ type Exporter = GbmFramebufferExporter<DrmDeviceFd>;
 /// it reached the screen.
 type Feedback = Option<smithay::desktop::utils::OutputPresentationFeedback>;
 
+/// An output that has gone since the last scan: the `Output` itself and the
+/// `wl_output` global it was advertised under.
+type GoneOutput = (
+    Output,
+    Option<smithay::reexports::wayland_server::backend::GlobalId>,
+);
+
 type Manager = DrmOutputManager<GbmAllocator<DrmDeviceFd>, Exporter, Feedback, DrmDeviceFd>;
 
 /// One CRTC being driven.
@@ -2343,10 +2350,7 @@ impl ViewportState {
         // connector unable to take the one its neighbour had just given up.
         let live: std::collections::HashSet<connector::Handle> =
             connectors.iter().map(|info| info.handle()).collect();
-        let mut gone: Vec<(
-            Output,
-            Option<smithay::reexports::wayland_server::backend::GlobalId>,
-        )> = Vec::new();
+        let mut gone: Vec<GoneOutput> = Vec::new();
         {
             let surfaces = &mut udev.devices[index].surfaces;
             let dead: Vec<crtc::Handle> = surfaces
@@ -2689,6 +2693,13 @@ impl ViewportState {
                          drawing with OpenGL instead"
                     );
                     udev.devices[index].renderer = Gpu::Gles(Box::new(gles));
+                    // The outputs that went away are finished here, before
+                    // the restart: the recursive pass recomputes `gone` from
+                    // a surface map this one has already emptied, so an
+                    // output left for the normal tail would never be taken
+                    // out of the space at all — a phantom monitor with a
+                    // live `wl_output` global for the rest of the session.
+                    self.finish_unplugged(std::mem::take(&mut gone));
                     // Once: the renderer is OpenGL now, so this cannot arrive
                     // back here and swap again.
                     self.scan_device(index);
@@ -2722,6 +2733,30 @@ impl ViewportState {
         // came back between two scans is not in `gone`, because `live` is read
         // from this same pass — so nothing here can remove an output the pass
         // just created.
+        self.finish_unplugged(gone);
+
+        // The shell decides layout from the output list, and one screen fewer
+        // is a different layout. Without this the windows stay where they were
+        // — including on the monitor that is no longer there.
+        self.notify_output_layout();
+        self.advertise_outputs();
+    }
+
+    /// Take a monitor that has gone out of the desktop.
+    ///
+    /// Its Surface — and so its CRTC — was already dropped before the
+    /// connector loop, because the `DrmOutput` dropping is what frees the CRTC
+    /// for a repurposed connector. What is left is everything keyed on the
+    /// `Output` itself: the `wl_output` global clients hold, the space the
+    /// shell lays out from, the per-output state, and `active_output` if this
+    /// was the screen new windows opened on.
+    ///
+    /// Called before the OpenGL renderer swap restarts a scan, too. That pass
+    /// recomputes its own `gone` from the surface map this one has already
+    /// emptied, so an output left to the normal tail would never be finished
+    /// at all — a phantom monitor with a live `wl_output` global for the rest
+    /// of the session.
+    fn finish_unplugged(&mut self, gone: Vec<GoneOutput>) {
         for (output, global) in gone {
             if let Some(global) = global {
                 self.display_handle.remove_global::<Self>(global);
@@ -2752,11 +2787,6 @@ impl ViewportState {
 
             tracing::info!("{}: unplugged", output.name());
         }
-        // The shell decides layout from the output list, and one screen fewer
-        // is a different layout. Without this the windows stay where they were
-        // — including on the monitor that is no longer there.
-        self.notify_output_layout();
-        self.advertise_outputs();
     }
 
     /// Everyone waiting to hear that this output's frame reached the screen.
