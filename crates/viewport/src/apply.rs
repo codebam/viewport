@@ -1105,7 +1105,10 @@ fn config_save(state: &mut ViewportState) {
 
     let mut overlay = crate::settings::Overlay {
         dark_mode: Some(state.dark_mode),
-        wallpaper: state.config.wallpaper.clone(),
+        // Some("") rather than None: absent means "leave what the file
+        // said", so a picture the panel cleared would come back on the next
+        // start. The empty string is the config file's "no wallpaper".
+        wallpaper: Some(state.config.wallpaper.clone().unwrap_or_default()),
         wallpaper_mode: state.config.wallpaper_mode.clone(),
         gaps: state.config.gaps.clone(),
         border: state.config.border.clone(),
