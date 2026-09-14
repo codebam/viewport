@@ -961,11 +961,12 @@ fn send_description(
 /// Hand a client an image description that fails as soon as it is made.
 ///
 /// The protocol asks for this when the output object is inert: the new
-/// description delivers `failed` with the cause instead of `ready`, and
-/// using it is then the client's error to see.
+/// description delivers `failed` with the cause and a human-readable reason
+/// instead of `ready`, and using it is then the client's error to see.
 fn send_failed_description(
     object: New<WpImageDescriptionV1>,
     cause: wp_image_description_v1::Cause,
+    reason: &str,
     data_init: &mut DataInit<'_, ViewportState>,
 ) {
     let object = data_init.init(
@@ -974,7 +975,7 @@ fn send_failed_description(
             description: Mutex::new(None),
         },
     );
-    object.failed(cause);
+    object.failed(cause, reason.to_owned());
 }
 
 impl Dispatch<WpImageDescriptionInfoV1, ()> for ViewportState {
@@ -1021,6 +1022,7 @@ impl Dispatch<WpColorManagementOutputV1, WlOutput> for ViewportState {
                     None => send_failed_description(
                         image_description,
                         wp_image_description_v1::Cause::NoOutput,
+                        "the output no longer exists",
                         data_init,
                     ),
                 }
