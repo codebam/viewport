@@ -1967,11 +1967,13 @@ impl ViewportState {
                     DragEffect::Free => {}
                 }
 
-                // A configured mouse binding, fired on the press like a key
-                // binding is. The modifier prefix is the keyboard's, exactly
-                // as in a chord: `Mod4+Mouse4=shell workspace.switch 1` needs
-                // Mod4 held. Runs before the drag line so a bound button is
-                // the user's gesture, not the window's.
+                // A configured mouse binding, fired on the half it names like
+                // a key binding is: `release+` is matched on the button coming
+                // up, below, and a binding without it on the press here. The
+                // modifier prefix is the keyboard's, exactly as in a chord:
+                // `Mod4+Mouse4=shell workspace.switch 1` needs Mod4 held. Runs
+                // before the drag line so a bound button is the user's gesture,
+                // not the window's.
                 if state == ButtonState::Pressed {
                     if let Some(bound) = crate::binding::find_button(
                         &self.bindings,
@@ -1979,6 +1981,7 @@ impl ViewportState {
                         event.button_code(),
                         &self.binding_mode,
                         self.locked,
+                        false,
                     ) {
                         let consuming = !bound.non_consuming;
                         let action = bound.action.clone();
@@ -2007,21 +2010,23 @@ impl ViewportState {
                         // `non_consuming+`: the action has run, and the button
                         // goes on to the client like any other.
                     }
-                } else if let Some((action, from, click)) =
-                    self.pending_click.remove(&event.button_code())
-                {
+                } else {
                     // A `click+` or `drag+` binding: the distance between the
                     // press and the release is the whole question. The press
-                    // was kept, so the release goes with it.
-                    let at = pointer.current_location();
-                    let moved = ((at.x - from.x).powi(2) + (at.y - from.y).powi(2)).sqrt();
-                    let fires = if click {
-                        moved <= self.drag_threshold
-                    } else {
-                        moved > self.drag_threshold
-                    };
-                    if fires {
-                        self.handle_action(Action::Bound(action));
+                    // kept the decision, so the release answers it.
+                    let pending = self.pending_click.remove(&event.button_code());
+                    let was_pending = pending.is_some();
+                    if let Some((action, from, click)) = pending {
+                        let at = pointer.current_location();
+                        let moved = ((at.x - from.x).powi(2) + (at.y - from.y).powi(2)).sqrt();
+                        let fires = if click {
+                            moved <= self.drag_threshold
+                        } else {
+                            moved > self.drag_threshold
+                        };
+                        if fires {
+                            self.handle_action(Action::Bound(action));
+                        }
                     }
                     // The press put this button in `SUPPRESSED_BUTTONS`, and
                     // this branch is the only place its release will ever be
@@ -2029,16 +2034,39 @@ impl ViewportState {
                     // *next* ordinary release of the same button was swallowed
                     // by the branch below — a client told a button came up that
                     // never went down.
-                    release_suppressed(event.button_code());
-                    return;
-                } else if release_suppressed(event.button_code()) {
-                    // The other half of the same chord. Matching again would
-                    // answer the wrong question — the modifier is usually let
-                    // go of before the button is — so the press records what it
-                    // took and the release goes by that, exactly as
-                    // `suppressed_keys` does for a key. Without it the client
-                    // was handed a release for a press it never saw.
-                    return;
+                    let suppressed = release_suppressed(event.button_code());
+                    // A `release+` binding fires now, exactly as
+                    // `find_binding(.., true)` does for a key. It is matched
+                    // even when the press was consumed, because the two halves
+                    // are independent records and the same chord may carry
+                    // both.
+                    if let Some(bound) = crate::binding::find_button(
+                        &self.bindings,
+                        &keyboard.modifier_state(),
+                        event.button_code(),
+                        &self.binding_mode,
+                        self.locked,
+                        true,
+                    ) {
+                        let consuming = !bound.non_consuming;
+                        self.handle_action(Action::Bound(bound.action.clone()));
+                        if consuming {
+                            // The release goes no further, so the shell grab
+                            // record cannot outlive it: the shell saw the
+                            // press, before there was a release to match.
+                            self.shell_grabbed_buttons
+                                .retain(|held| *held != event.button_code());
+                            return;
+                        }
+                    }
+                    if was_pending || suppressed {
+                        // Nothing below may see this release: either it belongs
+                        // to a press a binding kept, or the press itself was
+                        // kept and its release goes by that record, exactly as
+                        // `suppressed_keys` does for a key. Without this the
+                        // client was handed a release for a press it never saw.
+                        return;
+                    }
                 }
 
                 // Something the shell drew in front and asked to be clicked:
@@ -2290,6 +2318,7 @@ impl ViewportState {
                             wheel,
                             &self.binding_mode,
                             self.locked,
+                            false,
                         ) {
                             let consuming = !bound.non_consuming;
                             let action = bound.action.clone();

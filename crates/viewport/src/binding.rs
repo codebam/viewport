@@ -925,20 +925,26 @@ pub fn match_button<'a>(
     mode: &str,
     locked: bool,
 ) -> Option<&'a Action> {
-    find_button(bindings, modifiers, button, mode, locked).map(|binding| &binding.action)
+    find_button(bindings, modifiers, button, mode, locked, false).map(|binding| &binding.action)
 }
 
-/// The binding a pressed mouse button fires, with its flags.
+/// The binding a mouse button fires on `release` or on press, with its flags.
+///
+/// `release` selects the half of the event, exactly as it does for a key in
+/// [`find_binding`]: a `release+` binding names the button coming up and must
+/// not fire on the way down.
 pub fn find_button<'a>(
     bindings: &'a [Binding],
     modifiers: &ModifiersState,
     button: u32,
     mode: &str,
     locked: bool,
+    release: bool,
 ) -> Option<&'a Binding> {
     let wanted = Modifiers::from_state(modifiers);
     bindings.iter().find(|binding| {
         (binding.universal || binding.mode == mode)
+            && binding.release == release
             && (binding.ignore_mods || binding.modifiers == wanted)
             && binding.button == Some(button)
             && (!locked || binding.locked)
@@ -957,20 +963,27 @@ pub fn match_wheel<'a>(
     mode: &str,
     locked: bool,
 ) -> Option<&'a Action> {
-    find_wheel(bindings, modifiers, wheel, mode, locked).map(|binding| &binding.action)
+    find_wheel(bindings, modifiers, wheel, mode, locked, false).map(|binding| &binding.action)
 }
 
 /// The binding a scroll fires, with its flags.
+///
+/// `release` is the same half-of-the-event selector [`find_button`] takes. A
+/// wheel has no press and release of its own, so every real caller passes
+/// `false`; a `release+WheelUp` binding therefore matches nothing rather than
+/// quietly firing on the notch.
 pub fn find_wheel<'a>(
     bindings: &'a [Binding],
     modifiers: &ModifiersState,
     wheel: Wheel,
     mode: &str,
     locked: bool,
+    release: bool,
 ) -> Option<&'a Binding> {
     let wanted = Modifiers::from_state(modifiers);
     bindings.iter().find(|binding| {
         (binding.universal || binding.mode == mode)
+            && binding.release == release
             && (binding.ignore_mods || binding.modifiers == wanted)
             && binding.wheel == Some(wheel)
             && (!locked || binding.locked)
@@ -1444,6 +1457,39 @@ mod tests {
         assert!(match_button(&bindings, &released, 0x113, "", false).is_none());
     }
 
+    /// `release+` on a button is the other half of the event, exactly as it is
+    /// on a key. Before this the finder never looked at the flag, so
+    /// `release+Mod4+Mouse4` fired on the press and stole the button from
+    /// every ordinary press binding on the same chord.
+    #[test]
+    fn a_release_button_binding_is_matched_only_on_release() {
+        let press = parse("Mod4+Mouse4=close").unwrap();
+        let release = parse("release+Mod4+Mouse4=exit").unwrap();
+        let held = ModifiersState {
+            logo: true,
+            ..Default::default()
+        };
+        let bindings = vec![press, release];
+
+        assert_eq!(
+            find_button(&bindings, &held, 0x113, "", false, false).map(|b| &b.action),
+            Some(&Action::Close),
+            "the press half sees the press binding, and only it"
+        );
+        assert_eq!(
+            find_button(&bindings, &held, 0x113, "", false, true).map(|b| &b.action),
+            Some(&Action::Exit),
+            "the release half sees the release binding, and only it"
+        );
+
+        // A lone `release+` binding matches nothing on the way down. That is
+        // what `match_button`, the press-only convenience, asks for.
+        let only_release = vec![parse("release+Mod4+Mouse4=exit").unwrap()];
+        assert!(find_button(&only_release, &held, 0x113, "", false, false).is_none());
+        assert!(match_button(&only_release, &held, 0x113, "", false).is_none());
+        assert!(find_button(&only_release, &held, 0x113, "", false, true).is_some());
+    }
+
     #[test]
     fn a_button_never_matches_a_key_and_vice_versa() {
         let key = parse("Mod4+q=close").unwrap();
@@ -1537,6 +1583,28 @@ mod tests {
         let key = parse("Mod4+q=close").unwrap();
         let button = parse("Mod4+Mouse4=close").unwrap();
         assert!(match_wheel(&[key, button], &held, Wheel::Up, "", false).is_none());
+    }
+
+    /// A wheel has no release event of its own, so every real caller asks for
+    /// the press half. The lookup still has to honour the flag: before this a
+    /// `release+WheelUp` binding fired on the notch like an ordinary one.
+    #[test]
+    fn a_release_wheel_binding_matches_only_the_release_selector() {
+        let held = ModifiersState {
+            logo: true,
+            ..Default::default()
+        };
+        let only_release = vec![parse("release+Mod4+WheelUp=exit").unwrap()];
+        assert!(find_wheel(&only_release, &held, Wheel::Up, "", false, false).is_none());
+        assert!(match_wheel(&only_release, &held, Wheel::Up, "", false).is_none());
+        assert!(find_wheel(&only_release, &held, Wheel::Up, "", false, true).is_some());
+
+        // A plain wheel binding is unchanged on the only path a wheel has.
+        let plain = vec![parse("Mod4+WheelUp=close").unwrap()];
+        assert_eq!(
+            find_wheel(&plain, &held, Wheel::Up, "", false, false).map(|b| &b.action),
+            Some(&Action::Close)
+        );
     }
 
     #[test]
