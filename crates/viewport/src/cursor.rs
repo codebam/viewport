@@ -174,7 +174,7 @@ impl Theme {
 
     fn load_uncached(&self, name: &str, scale: i32) -> Option<Cursor> {
         let scale = scale.max(1);
-        let wanted = (self.size as i32 * scale).max(1) as u32;
+        let wanted = wanted_size(self.size, scale);
 
         let mut names = vec![name];
         for alias in ALIASES {
@@ -270,6 +270,21 @@ fn rescale(value: u32, have: u32, wanted: u32) -> i32 {
 fn logical(value: u32, have: u32, wanted: u32, scale: i32) -> i32 {
     let physical = rescale(value, have, wanted) as f64;
     ((physical / scale.max(1) as f64).round() as i32).max(1)
+}
+
+/// The physical size an icon is loaded at: the configured size times the
+/// output scale, with the scale clamped at 1.
+///
+/// Neither side is bounded — a config file may name any size, and an output
+/// any scale — and the plain `i32` multiply this replaced panicked in a debug
+/// build on a large pair before the theme was even read. Saturating turns the
+/// hostile pair into the largest representable icon; every sane pair is
+/// unchanged.
+fn wanted_size(size: u32, scale: i32) -> u32 {
+    let scale = scale.max(1);
+    (size.min(i32::MAX as u32) as i32)
+        .saturating_mul(scale)
+        .max(1) as u32
 }
 
 /// Names that different themes use for the same cursor.
@@ -637,6 +652,21 @@ mod tests {
     fn an_exact_size_is_left_alone() {
         assert_eq!(rescale(24, 24, 24), 24);
         assert_eq!(logical(24, 24, 24, 1), 24);
+    }
+
+    #[test]
+    fn a_hostile_cursor_size_saturates_instead_of_panicking() {
+        // Every sane pair is what it always was.
+        assert_eq!(wanted_size(24, 1), 24);
+        assert_eq!(wanted_size(24, 2), 48);
+        assert_eq!(wanted_size(0, 1), 1, "an empty cursor is still one pixel");
+        assert_eq!(wanted_size(24, 0), 24, "scale zero clamps to one");
+        assert_eq!(wanted_size(24, -3), 24);
+
+        // The pair that used to overflow `i32` in a debug build: an unbounded
+        // cursor size from the config file, on a scaled output.
+        assert_eq!(wanted_size(i32::MAX as u32, 2), i32::MAX as u32);
+        assert_eq!(wanted_size(u32::MAX, i32::MAX), i32::MAX as u32);
     }
 
     #[test]
