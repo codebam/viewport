@@ -517,6 +517,47 @@ fn release_suppressed(button: u32) -> bool {
     })
 }
 
+// Keys whose press was handed to the shell page, so the matching release goes
+// there even if a click moved focus to a window in between.
+//
+// `suppressed_keys` says a press was taken, not who took it: a binding's
+// release must be swallowed, and the page's must be delivered, and the focus
+// at release time cannot tell the two apart. This is the page's half of that
+// record.
+//
+// A thread local for the same reason `SUPPRESSED_BUTTONS` is: input is
+// dispatched on the compositor's own thread and nowhere else, and this is the
+// key handler's private bookkeeping.
+thread_local! {
+    static WEB_KEYS: std::cell::RefCell<Vec<u32>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Remember that this key's press went to the page. The unmodified symbol is
+/// the one the press and its release are paired by.
+fn remember_web_key(sym: Keysym) {
+    WEB_KEYS.with(|keys| {
+        let mut keys = keys.borrow_mut();
+        if !keys.contains(&sym.raw()) {
+            keys.push(sym.raw());
+        }
+    });
+}
+
+/// Whether this key's press went to the page, forgetting it if so.
+fn release_web_key(sym: Keysym) -> bool {
+    WEB_KEYS.with(|keys| {
+        let mut keys = keys.borrow_mut();
+        match keys.iter().position(|held| *held == sym.raw()) {
+            Some(at) => {
+                keys.remove(at);
+                true
+            }
+            None => false,
+        }
+    })
+}
+
 /// Whether a press starts one of the compositor's own pointer gestures —
 /// Mod4 and a button to move, resize or pan.
 ///
@@ -781,7 +822,6 @@ impl ViewportState {
         };
         let serial = SERIAL_COUNTER.next_serial();
         let time = InputTime::now();
-        let to_shell = keyboard.current_focus().is_none() && self.shell_is_up();
         // The modifiers are read only by a page, so they are only worth
         // computing when there is one; without the web engine they go
         // nowhere, and the placeholder only keeps the key's shape.
@@ -821,8 +861,10 @@ impl ViewportState {
                     return FilterResult::Forward;
                 }
                 // A key the page was given has to be released to it as well,
-                // or the page has one held down for ever.
-                if to_shell {
+                // or the page has one held down for ever. The record of the
+                // press says whether it was the page's; where focus is now
+                // does not.
+                if release_web_key(unmodified_sym) {
                     FilterResult::Intercept(Some(Action::Web(WebKey {
                         keycode: handle.raw_code().raw() + 8,
                         keysym: keysym.raw(),
@@ -1569,6 +1611,10 @@ impl ViewportState {
                                         return FilterResult::Forward;
                                     }
                                     state.suppressed_keys.push(unmodified_sym);
+                                    // Remember that it was the page's, so the
+                                    // release goes there even if a click moves
+                                    // focus to a window before it comes up.
+                                    remember_web_key(unmodified_sym);
                                     FilterResult::Intercept(Some(Action::Web(WebKey {
                                         keycode: handle.raw_code().raw() + 8,
                                         keysym: keysym.raw(),
@@ -1597,11 +1643,13 @@ impl ViewportState {
                                 &mut state.shortcuts_to_announce,
                             );
                             let mut result = FilterResult::Forward;
+                            // Whose release this is was decided by the press,
+                            // not by where focus is now: a page-bound key that
+                            // was held while a click focused a window still
+                            // belongs to the page, or the page latches it.
+                            let web = release_web_key(unmodified_sym);
                             if take_suppressed(&mut state.suppressed_keys, unmodified_sym) {
-                                // A key the page was given has to be released
-                                // to it as well, or the page has one held down
-                                // for ever.
-                                result = if to_shell {
+                                result = if web {
                                     FilterResult::Intercept(Some(Action::Web(WebKey {
                                         keycode: handle.raw_code().raw() + 8,
                                         keysym: keysym.raw(),
@@ -1612,6 +1660,18 @@ impl ViewportState {
                                 } else {
                                     FilterResult::Intercept(Some(Action::Swallow))
                                 };
+                            } else if web {
+                                // The suppression is already gone — the press
+                                // was released through `release_injected_key`,
+                                // say — but the page saw it go down and still
+                                // has to see it come up.
+                                result = FilterResult::Intercept(Some(Action::Web(WebKey {
+                                    keycode: handle.raw_code().raw() + 8,
+                                    keysym: keysym.raw(),
+                                    pressed: false,
+                                    modifiers: modifiers_now,
+                                    time: time.millis(),
+                                })));
                             }
 
                             // The unmodified symbol, as on the press half.
@@ -4119,6 +4179,27 @@ mod tests {
     /// for `g` in a set holding `G`, never finds it, and leaves the press
     /// behind to swallow somebody's later `g` — and the focused client gets a
     /// release it never saw go down.
+    /// A key handed to the page comes back to the page even after a click
+    /// moved focus to a window.
+    ///
+    /// The release used to decide by the focus at release time, so pressing a
+    /// page-bound key, clicking a window while holding it and letting go
+    /// swallowed the key-up and left the page's own key state latched.
+    #[test]
+    fn a_page_key_releases_to_the_page_after_focus_moves() {
+        let sym = Keysym::new(keysyms::KEY_a);
+        assert!(!release_web_key(sym), "nothing was handed to the page yet");
+
+        remember_web_key(sym);
+        // A duplicate record must not make one release count for two.
+        remember_web_key(sym);
+        assert!(
+            release_web_key(sym),
+            "the release must go to the page that saw the press"
+        );
+        assert!(!release_web_key(sym), "one release per press");
+    }
+
     /// The release half of a hold runs whichever path the release arrives on.
     ///
     /// A libei client that disconnects mid-chord releases through
