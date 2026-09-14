@@ -43,6 +43,12 @@ function validWorkspaceId(value) {
   return Number.isInteger(value) && value >= 1 && value <= MAX_WORKSPACE_ID;
 }
 
+/* True while restoreSession is rebuilding the previous page's workspaces.
+ * A workspace named by the session file is a place the desktop had, not a
+ * switch the user just made, so `on_created_empty` must not run for it — the
+ * same reason a rule for a workspace nobody visits starts nothing. */
+let restoringSession = false;
+
 function ensureWorkspace(value, name = null) {
   const n = Number(value);
   if (!validWorkspaceId(n)) return null;
@@ -62,11 +68,12 @@ function ensureWorkspace(value, name = null) {
       workspaceCatalog.set(n, rule.default_name.trim());
     }
   }
-  if (created) {
+  if (created && !restoringSession) {
     /* Hyprland's `on-created-empty`. A ruled workspace is not made until
        something asks for it — see applyWorkspaceRules — so this is the moment
        a switch first brings it into being, and it is empty by definition
-       because the window that would fill it has not arrived yet. */
+       because the window that would fill it has not arrived yet. A workspace
+       made while a session file is being restored is not that moment. */
     const rule = workspaceRules.get(n);
     if (typeof rule?.on_created_empty === 'string'
         && rule.on_created_empty.trim() !== '') {

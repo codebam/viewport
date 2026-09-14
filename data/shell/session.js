@@ -254,6 +254,16 @@ function reviveNode(node, depth = 0, budget = { nodes: 0 }) {
 }
 
 function restoreSession(text) {
+  const previous = restoringSession;
+  restoringSession = true;
+  try {
+    restoreSessionImpl(text);
+  } finally {
+    restoringSession = previous;
+  }
+}
+
+function restoreSessionImpl(text) {
   if (!text) return;
 
   let saved;

@@ -750,6 +750,32 @@ if (sessionTest) {
   check('an application with no saved place still opens',
     ws(14) !== null);
 
+  /* U3: a workspace named by the session file is a place, not a switch. Its
+   * `on_created_empty` waits for somebody actually to ask for the workspace. */
+  emit({ type: 'config', layout: mode, rules: HARNESS_RULES,
+    workspaces: [
+      { workspace: 404, on_created_empty: 'echo restored' },
+      { workspace: 405, on_created_empty: 'echo switched' },
+    ] });
+  globalThis.__shell.views.clear();
+  const restoreMark = sent.length;
+  emit({ type: 'session.restore', state: JSON.stringify({
+    version: 1, layout: mode,
+    workspace_catalog: [{ id: 404, name: 'restored place' }],
+    workspaces: {}, outputs: {},
+  }) });
+  check('a session restore does not run on-created-empty',
+    !sent.slice(restoreMark).some((m) => m.type === 'shell.exec'
+      && m.command === 'echo restored'));
+  check('yet the workspace the session named exists',
+    globalThis.__shell.workspaceCatalog.has(404));
+
+  const switchMark = sent.length;
+  emit({ type: 'shell.command', command: 'workspace.switch', args: ['405'] });
+  check('a normal switch to a new ruled workspace runs it once',
+    sent.slice(switchMark).filter((m) => m.type === 'shell.exec'
+      && m.command === 'echo switched').length === 1);
+
   check('teardown clean', process.exitCode !== 1);
   process.exit(process.exitCode ?? 0);
 }
