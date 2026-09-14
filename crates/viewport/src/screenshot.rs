@@ -3,7 +3,9 @@
 // org.freedesktop.impl.portal.Screenshot.
 //
 // Answering screenshot requests from desktop portals and applications.
-// A screenshot of an output, a window, or an interactive region.
+// Whole outputs are served today; a request that asks the user to choose what
+// is captured is refused rather than quietly downgraded to an output, because
+// the picker lives in the compositor loop and not behind this interface.
 
 use std::collections::HashMap;
 
@@ -30,6 +32,32 @@ pub enum Message {
         modal: bool,
         reply: async_channel::Sender<Result<String, String>>,
     },
+}
+
+/// What a screenshot call's options ask this interface to do.
+///
+/// `interactive` asks for a picker, which is not behind this method: the
+/// caller wanted to choose what is captured, and answering with the whole
+/// output is not the same request. `None` refuses. `modal` only qualifies the
+/// picker, so it is carried when the request is answerable and ignored
+/// otherwise.
+///
+/// The options are advisory and the portal frontend is trusted for their
+/// shape, so a wrong D-Bus type reads as an absent option rather than a
+/// failure.
+fn capture_options(options: &HashMap<String, OwnedValue>) -> Option<(bool, bool)> {
+    let interactive = options
+        .get("interactive")
+        .and_then(|v| bool::try_from(v).ok())
+        .unwrap_or(false);
+    if interactive {
+        return None;
+    }
+    let modal = options
+        .get("modal")
+        .and_then(|v| bool::try_from(v).ok())
+        .unwrap_or(false);
+    Some((false, modal))
 }
 
 #[derive(Clone)]
@@ -67,14 +95,13 @@ impl Screenshot {
         if !crate::screencast::portal::called_by_frontend(&self.sessions, "screenshot", &header) {
             return (RESPONSE_CANCELLED, HashMap::new());
         }
-        let interactive = options
-            .get("interactive")
-            .and_then(|v| bool::try_from(v).ok())
-            .unwrap_or(false);
-        let modal = options
-            .get("modal")
-            .and_then(|v| bool::try_from(v).ok())
-            .unwrap_or(false);
+        let Some((interactive, modal)) = capture_options(&options) else {
+            // No picker is behind this method yet. Refusing is the honest
+            // answer; capturing the active output would hand the application
+            // something it did not ask for.
+            tracing::warn!("screenshot: refusing an interactive request with no picker to show");
+            return (RESPONSE_FAILED, HashMap::new());
+        };
 
         let (reply_tx, reply_rx) = async_channel::bounded(1);
         let msg = Message::Capture {
@@ -96,5 +123,51 @@ impl Screenshot {
             Ok(Err(_)) => (RESPONSE_CANCELLED, HashMap::new()),
             Err(_) => (RESPONSE_FAILED, HashMap::new()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn options(entries: &[(&str, OwnedValue)]) -> HashMap<String, OwnedValue> {
+        entries
+            .iter()
+            .map(|(key, value)| ((*key).to_owned(), value.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn an_interactive_request_is_refused_rather_than_downgraded() {
+        // The caller asked to choose; the whole output is not that request.
+        assert_eq!(
+            capture_options(&options(&[("interactive", OwnedValue::from(true))])),
+            None
+        );
+        assert_eq!(
+            capture_options(&options(&[
+                ("interactive", OwnedValue::from(true)),
+                ("modal", OwnedValue::from(true)),
+            ])),
+            None
+        );
+    }
+
+    #[test]
+    fn a_plain_or_modal_request_is_an_output_capture() {
+        assert_eq!(capture_options(&HashMap::new()), Some((false, false)));
+        assert_eq!(
+            capture_options(&options(&[("modal", OwnedValue::from(true))])),
+            Some((false, true))
+        );
+    }
+
+    #[test]
+    fn a_wrongly_typed_option_is_ignored_like_a_missing_one() {
+        // Advisory options; a non-bool must not read as "interactive".
+        assert_eq!(
+            capture_options(&options(&[("interactive", OwnedValue::from(1u32))])),
+            Some((false, false))
+        );
     }
 }
