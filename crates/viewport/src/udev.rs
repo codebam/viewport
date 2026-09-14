@@ -3048,7 +3048,7 @@ impl ViewportState {
                 },
             );
         }
-        for lock in self.lock_surfaces.values() {
+        for lock in self.live_lock_surfaces() {
             smithay::desktop::utils::with_surfaces_surface_tree(
                 lock.wl_surface(),
                 |surface, surface_states| {
@@ -3858,7 +3858,7 @@ impl ViewportState {
         // so nothing else reaches it — and a locker that never gets a frame
         // callback draws once and then stops, which is a lock screen whose
         // indicator never appears no matter what is typed.
-        for lock in self.lock_surfaces.values() {
+        for lock in self.live_lock_surfaces() {
             smithay::desktop::utils::send_frames_surface_tree(
                 lock.wl_surface(),
                 output,
@@ -4225,5 +4225,32 @@ mod tests {
             "an unmapped head's name is still taken"
         );
         assert_eq!(names.len(), 2);
+    }
+
+    /// The DRM frame and vblank paths walk external locker surfaces every
+    /// frame. `state/frame_barriers.rs` has the same guard for the state-side
+    /// walks; the backend was missed, and a locker that exited without
+    /// unlocking left a destroyed `LockSurface` in the map until the
+    /// housekeeping sweep. A render or vblank in that window walked a dead
+    /// surface tree and panicked in Smithay's `lock_user_data` unwrap.
+    ///
+    /// `LockSurface` cannot be built in a unit test — its constructor is
+    /// `pub(crate)` in Smithay — so the invariant is checked against the
+    /// source the walks are written in, as the frame-barrier guard does.
+    #[test]
+    fn every_udev_lock_walk_keeps_the_live_ones() {
+        let source = include_str!("udev.rs");
+        let source = source.split("#[cfg(test)]").next().unwrap_or(source);
+        for (at, line) in source.lines().enumerate() {
+            assert!(
+                !line.contains(".lock_surfaces"),
+                "udev.rs:{} walks lock_surfaces directly; use live_lock_surfaces()",
+                at + 1
+            );
+        }
+        assert!(
+            source.matches("live_lock_surfaces()").count() >= 2,
+            "both udev lock-surface walks must go through live_lock_surfaces()"
+        );
     }
 }
