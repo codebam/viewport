@@ -439,6 +439,7 @@ impl PortalInhibit {
     /// screen that stays lit while an application that asked for something
     /// else is running, and refusing costs an application concluding there is
     /// no inhibit backend at all and giving up on the idle flag with it.
+    #[allow(clippy::too_many_arguments)]
     async fn inhibit(
         &self,
         handle: ObjectPath<'_>,
