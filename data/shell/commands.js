@@ -639,6 +639,14 @@ function cancelLiveGesture() {
  * --------------------------------------------------------------------- */
 
 let initialConfigReady = false;
+/* Whether this page has been given the session to restore. Until it has, a
+   Config message is the page's only source of layout policy and may still
+   reset a runtime command made since it started. Once `session.restore` has
+   arrived — it precedes the initial Config on the wire — a later Config must
+   not drop what the restore put in place or the runtime choices made after
+   it: the compositor re-announces the whole Config for a runtime setter and
+   for the `view.query` that follows an output.layout. See the config case. */
+let sessionRestored = false;
 let layoutLoadGeneration = 0;
 let widgetLoadGeneration = 0;
 const pendingViewReplay = [];
@@ -793,10 +801,15 @@ window.addEventListener('viewport', (event) => {
          its switches from. Before anything below unpacks it: what the panel
          needs is what the compositor *said*, not what the page did with it. */
       shellConfig = message;
-      /* Config is the base layer. A reload historically replaced runtime
-         layout commands; session.restore follows initial config and reapplies
-         persisted per-workspace choices. */
-      workspaceRuntime.clear();
+      /* Config is the base layer, but it is only a reset until the session has
+         been restored. `session.restore` (which restores the persisted
+         per-workspace layout choices) arrives before the initial Config on a
+         real load, and a Config also arrives for every runtime setter and for
+         the `view.query` that follows an output.layout. Clearing after a
+         restore dropped both those choices and the ones made this session;
+         before any restore there is nothing to lose, which is the one case a
+         plain config message may still reset a runtime command. */
+      if (!sessionRestored) workspaceRuntime.clear();
       /* Which layout model to run. Sent on connect and on reload, so switching
          it in the config file and reloading takes effect without a restart —
          the tree survives, it is only presented differently. */
@@ -1256,6 +1269,7 @@ window.addEventListener('viewport', (event) => {
       break;
 
     case 'session.restore':
+      sessionRestored = true;
       restoreSession(message.state);
       break;
 
