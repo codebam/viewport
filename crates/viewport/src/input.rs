@@ -632,6 +632,34 @@ fn take_suppressed(keys: &mut Vec<Keysym>, sym: Keysym) -> bool {
     }
 }
 
+/// The end of a key hold, whichever path the release arrived on.
+///
+/// A `long_press+` or `repeating+` binding is cancelled here — taking its
+/// entry out is what stops the timer firing — and a global shortcut that was
+/// held is queued as deactivated, because an application holding a microphone
+/// open on a push-to-talk key has to hear that it came up. The physical
+/// release and `release_injected_key` (a libei client that vanished mid-chord)
+/// both run this; before, only the former did, so a remote client's hold
+/// repeated for ever.
+fn finish_key_hold(
+    code: u32,
+    long_press_pending: &mut std::collections::HashMap<u32, crate::binding::Action>,
+    repeating_held: &mut std::collections::HashMap<u32, crate::binding::Action>,
+    shortcuts_held: &mut Vec<(u32, crate::shortcuts::Fired)>,
+    shortcuts_to_announce: &mut Vec<(bool, crate::shortcuts::Fired)>,
+) -> bool {
+    long_press_pending.remove(&code);
+    repeating_held.remove(&code);
+    match shortcuts_held.iter().position(|(held, _)| *held == code) {
+        Some(at) => {
+            let (_, fired) = shortcuts_held.remove(at);
+            shortcuts_to_announce.push((false, fired));
+            true
+        }
+        None => false,
+    }
+}
+
 /// Whether this event is someone using the pointer.
 ///
 /// What `cursor.hide_after_ms` measures, and the reason it is not simply every
@@ -771,12 +799,27 @@ impl ViewportState {
             time,
             |state, _modifiers, handle| {
                 let keysym = handle.modified_sym();
-                let Some(at) = state.suppressed_keys.iter().position(|k| *k == keysym) else {
+                // The key is paired with its press by the symbol at level 0,
+                // exactly as the physical release pairs it: `modified_sym`
+                // changes if a modifier was let go of first, and the press
+                // pushed the unmodified one.
+                let unmodified_sym = handle.raw_latin_sym_or_raw_current_sym().unwrap_or(keysym);
+                let unmodified = unmodified_sym.raw();
+                // A hold this press armed ends with it, whichever way the
+                // release arrives, and a global shortcut is told the key came
+                // up.
+                finish_key_hold(
+                    unmodified,
+                    &mut state.long_press_pending,
+                    &mut state.repeating_held,
+                    &mut state.shortcuts_held,
+                    &mut state.shortcuts_to_announce,
+                );
+                if !take_suppressed(&mut state.suppressed_keys, unmodified_sym) {
                     // Nobody took the press, so the client that has it now is
                     // the client that saw it: an ordinary release.
                     return FilterResult::Forward;
-                };
-                state.suppressed_keys.remove(at);
+                }
                 // A key the page was given has to be released to it as well,
                 // or the page has one held down for ever.
                 if to_shell {
@@ -797,6 +840,10 @@ impl ViewportState {
         if let Some(action) = action.flatten() {
             self.handle_action(action);
         }
+        // A shortcut deactivation noticed by the filter is announced here, as
+        // `process_input_event` announces it, rather than left queued for a
+        // key that will never come.
+        self.flush_shortcuts();
         // For the reason the same two lines in `process_input_event` give: an
         // intercepted key is never forwarded, so a modifier that has just been
         // let go of would otherwise stay depressed as far as the focused client
@@ -1540,25 +1587,17 @@ impl ViewportState {
                             //
                             // A held `long_press+` or `repeating+` binding
                             // ends here: taking it out is what cancels the
-                            // hold and stops the repeat.
-                            state.long_press_pending.remove(&unmodified);
-                            state.repeating_held.remove(&unmodified);
+                            // hold and stops the repeat. A push-to-talk
+                            // shortcut is told it came up at the same time.
+                            finish_key_hold(
+                                unmodified,
+                                &mut state.long_press_pending,
+                                &mut state.repeating_held,
+                                &mut state.shortcuts_held,
+                                &mut state.shortcuts_to_announce,
+                            );
                             let mut result = FilterResult::Forward;
                             if take_suppressed(&mut state.suppressed_keys, unmodified_sym) {
-                                // The other half of a global shortcut. A
-                                // push-to-talk key is the case that makes this
-                                // more than tidiness: the application is
-                                // holding a microphone open on the strength of
-                                // the press, and nothing else will ever tell it
-                                // the key came back up.
-                                if let Some(at) = state
-                                    .shortcuts_held
-                                    .iter()
-                                    .position(|(code, _)| *code == unmodified)
-                                {
-                                    let (_, fired) = state.shortcuts_held.remove(at);
-                                    state.shortcuts_to_announce.push((false, fired));
-                                }
                                 // A key the page was given has to be released
                                 // to it as well, or the page has one held down
                                 // for ever.
@@ -4080,6 +4119,50 @@ mod tests {
     /// for `g` in a set holding `G`, never finds it, and leaves the press
     /// behind to swallow somebody's later `g` — and the focused client gets a
     /// release it never saw go down.
+    /// The release half of a hold runs whichever path the release arrives on.
+    ///
+    /// A libei client that disconnects mid-chord releases through
+    /// `release_injected_key`, not through the physical key path. Before this
+    /// helper it cancelled neither a `repeating+` timer nor a held global
+    /// shortcut, so a remote push-to-talk key repeated for ever.
+    #[test]
+    fn a_release_ends_a_hold_and_announces_the_shortcut() {
+        let mut long_press = std::collections::HashMap::new();
+        long_press.insert(keysyms::KEY_v, crate::binding::Action::Close);
+        let mut repeating = std::collections::HashMap::new();
+        repeating.insert(keysyms::KEY_v, crate::binding::Action::Close);
+        let fired = crate::shortcuts::Fired {
+            session: zvariant::OwnedObjectPath::try_from("/org/example/session").unwrap(),
+            id: "push-to-talk".to_owned(),
+        };
+        let mut held = vec![(keysyms::KEY_v, fired.clone())];
+        let mut announced = Vec::new();
+
+        assert!(finish_key_hold(
+            keysyms::KEY_v,
+            &mut long_press,
+            &mut repeating,
+            &mut held,
+            &mut announced
+        ));
+        assert!(long_press.is_empty(), "the long-press timer must not fire");
+        assert!(repeating.is_empty(), "the repeat timer must stop");
+        assert!(held.is_empty());
+        assert_eq!(announced, vec![(false, fired)]);
+
+        // A key with no shortcut cancels its holds and announces nothing.
+        let mut long_press = std::collections::HashMap::new();
+        long_press.insert(keysyms::KEY_b, crate::binding::Action::Close);
+        assert!(!finish_key_hold(
+            keysyms::KEY_b,
+            &mut long_press,
+            &mut std::collections::HashMap::new(),
+            &mut Vec::new(),
+            &mut Vec::new(),
+        ));
+        assert!(long_press.is_empty());
+    }
+
     #[test]
     fn virtual_keys_pair_by_the_symbol_on_the_key() {
         let lower = Keysym::new(keysyms::KEY_g);
