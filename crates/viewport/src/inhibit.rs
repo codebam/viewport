@@ -36,6 +36,29 @@ use std::sync::{Arc, Mutex};
 
 use zvariant::{ObjectPath, OwnedObjectPath, OwnedValue};
 
+use crate::text::truncate;
+
+/// The most an `application_name` may contribute.
+const MAX_APP: usize = 256;
+/// The most a `reason_for_inhibit` may contribute.
+const MAX_REASON: usize = 1024;
+/// The most holds kept across both interfaces at once.
+///
+/// Every hold is a screen held awake, and `Inhibit` is a method any session
+/// peer can call in a loop. A ceiling is not a working limit — a session with
+/// this many films playing is not one whose idle policy matters any more — it
+/// is what stops a peer from growing this table without bound.
+const MAX_HOLDS: usize = 256;
+/// The most holds one bus name may take.
+///
+/// A well-behaved client holds one — the film, the presentation, the download —
+/// and a peer looping `Inhibit` is distinguishable from one that is really
+/// watching something well before this.
+const MAX_HOLDS_PER_OWNER: usize = 16;
+
+/// The frontend every `org.freedesktop.impl.portal.*` call has to come from.
+const FRONTEND_NAME: &str = "org.freedesktop.portal.Desktop";
+
 /// The name a screensaver holds, which is what a browser looks for.
 const SCREENSAVER_NAME: &str = "org.freedesktop.ScreenSaver";
 
@@ -99,29 +122,64 @@ struct Inner {
 #[derive(Clone, Default)]
 pub struct Registry(Arc<Mutex<Inner>>);
 
+/// One row, with the client's own strings bounded before they are stored or
+/// logged.
+fn held(owner: Option<String>, app: &str, reason: &str) -> Held {
+    Held {
+        owner,
+        app: truncate(app, MAX_APP, "inhibit application name"),
+        reason: truncate(reason, MAX_REASON, "inhibit reason"),
+    }
+}
+
+/// How many holds this owner already has, across both interfaces.
+fn held_by(inner: &Inner, owner: Option<&str>) -> usize {
+    inner
+        .cookies
+        .values()
+        .chain(inner.requests.values())
+        .filter(|held| held.owner.as_deref() == owner)
+        .count()
+}
+
 impl Registry {
+    /// The table, without letting a panic somewhere else take the idle path
+    /// down with it.
+    ///
+    /// A bus thread takes and releases holds while the compositor's own thread
+    /// reads `inhibited()` on every idle tick. If a panic in one of those bus
+    /// handlers poisoned the mutex, `unwrap()` here would be a compositor
+    /// crash caused by a client, which is the one outcome a table read must not
+    /// have.
+    fn inner(&self) -> std::sync::MutexGuard<'_, Inner> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// Whether anything at all is holding idle off.
     pub fn inhibited(&self) -> bool {
-        let inner = self.0.lock().unwrap();
+        let inner = self.inner();
         !inner.cookies.is_empty() || !inner.requests.is_empty()
     }
 
     /// Take a hold and name it with a cookie.
+    ///
+    /// Zero comes back when the ceiling is reached: cookies start at one, so a
+    /// client that gets it has no hold to release and cannot mistake it for
+    /// somebody else's.
     fn hold(&self, owner: Option<String>, app: &str, reason: &str) -> u32 {
-        let mut inner = self.0.lock().unwrap();
+        let mut inner = self.inner();
         // Zero is the value a client that never got one has, so cookies start
         // at one and a zero handed back is always this compositor's fault
         // rather than an ambiguity.
         inner.next = inner.next.wrapping_add(1).max(1);
         let cookie = inner.next;
-        inner.cookies.insert(
-            cookie,
-            Held {
-                owner,
-                app: app.to_owned(),
-                reason: reason.to_owned(),
-            },
-        );
+        if inner.cookies.len() + inner.requests.len() >= MAX_HOLDS
+            || held_by(&inner, owner.as_deref()) >= MAX_HOLDS_PER_OWNER
+        {
+            tracing::debug!("inhibit: refusing a hold from {owner:?}: the ceiling is reached");
+            return 0;
+        }
+        inner.cookies.insert(cookie, held(owner, app, reason));
         cookie
     }
 
@@ -131,7 +189,7 @@ impl Registry {
     /// process in the session can reach, and one program guessing another's
     /// would turn the screen off in the middle of somebody's film.
     fn release(&self, cookie: u32, owner: Option<&str>) -> Option<Held> {
-        let mut inner = self.0.lock().unwrap();
+        let mut inner = self.inner();
         let held = inner.cookies.get(&cookie)?;
         if held.owner.as_deref() != owner {
             tracing::warn!(
@@ -144,19 +202,33 @@ impl Registry {
     }
 
     /// Take a hold named by the portal request that will end it.
-    fn hold_request(&self, path: OwnedObjectPath, owner: Option<String>, app: &str, reason: &str) {
-        self.0.lock().unwrap().requests.insert(
-            path,
-            Held {
-                owner,
-                app: app.to_owned(),
-                reason: reason.to_owned(),
-            },
-        );
+    ///
+    /// Returns whether it was taken. The caller must not publish a request
+    /// object for a hold that was refused at the ceiling: a request nobody can
+    /// see is one nobody can close, and the compositor would keep the screen
+    /// awake for it until the owner died.
+    fn hold_request(
+        &self,
+        path: OwnedObjectPath,
+        owner: Option<String>,
+        app: &str,
+        reason: &str,
+    ) -> bool {
+        let mut inner = self.inner();
+        if inner.cookies.len() + inner.requests.len() >= MAX_HOLDS
+            || held_by(&inner, owner.as_deref()) >= MAX_HOLDS_PER_OWNER
+        {
+            tracing::debug!(
+                "inhibit: refusing a portal hold from {owner:?}: the ceiling is reached"
+            );
+            return false;
+        }
+        inner.requests.insert(path, held(owner, app, reason));
+        true
     }
 
     fn release_request(&self, path: &OwnedObjectPath) -> Option<Held> {
-        self.0.lock().unwrap().requests.remove(path)
+        self.inner().requests.remove(path)
     }
 
     /// Drop everything a departed bus name was holding.
@@ -164,7 +236,7 @@ impl Registry {
     /// Returns the request handles that went with it, because those are
     /// objects on the bus as well as rows in a table and both have to go.
     fn drop_owner(&self, name: &str) -> Vec<OwnedObjectPath> {
-        let mut inner = self.0.lock().unwrap();
+        let mut inner = self.inner();
         let owner = Some(name);
         let cookies: Vec<u32> = inner
             .cookies
@@ -202,17 +274,25 @@ impl Registry {
     /// Remember the portal connection, so abandoned requests can be removed
     /// from it. Set once the portal object is actually on the bus.
     pub fn set_portal_connection(&self, connection: zbus::blocking::Connection) {
-        self.0.lock().unwrap().portal = Some(connection);
+        self.inner().portal = Some(connection);
     }
 
     fn portal_connection(&self) -> Option<zbus::blocking::Connection> {
-        self.0.lock().unwrap().portal.clone()
+        self.inner().portal.clone()
     }
 
     #[cfg(test)]
     fn holds(&self) -> usize {
-        let inner = self.0.lock().unwrap();
+        let inner = self.inner();
         inner.cookies.len() + inner.requests.len()
+    }
+
+    #[cfg(test)]
+    fn text(&self, cookie: u32) -> Option<(String, String)> {
+        self.inner()
+            .cookies
+            .get(&cookie)
+            .map(|held| (held.app.clone(), held.reason.clone()))
     }
 }
 
@@ -289,6 +369,37 @@ impl ScreenSaver {
 /// Served on the portal connection beside Settings, ScreenCast, RemoteDesktop
 /// and Screenshot — they share a bus name, and a second connection asking for
 /// it does not get it.
+/// Whether a call came from the portal frontend.
+///
+/// The other portal interfaces ask the shared frontend registry that their
+/// watcher keeps up to date. This object is built with the inhibit registry
+/// alone — it is constructed beside the screen-saver service, not beside the
+/// portal connection — so it asks the bus which unique name owns the frontend
+/// name at the moment of the call. Same question, same answer, and no second
+/// watcher whose lifetime would have to be managed for it.
+async fn called_by_frontend(
+    connection: &zbus::Connection,
+    header: &zbus::message::Header<'_>,
+) -> bool {
+    let sender = header.sender().map(|name| name.as_str());
+    let owner = match zbus::fdo::DBusProxy::new(connection).await {
+        Ok(proxy) => match zbus::names::BusName::try_from(FRONTEND_NAME) {
+            Ok(name) => proxy
+                .get_name_owner(name)
+                .await
+                .ok()
+                .map(|owner| owner.as_str().to_owned()),
+            Err(_) => None,
+        },
+        Err(_) => None,
+    };
+    if sender.is_some() && owner.as_deref() == sender {
+        return true;
+    }
+    tracing::warn!("inhibit: refusing a call from {sender:?} — the portal frontend is {owner:?}");
+    false
+}
+
 pub struct PortalInhibit {
     registry: Registry,
 }
@@ -335,8 +446,17 @@ impl PortalInhibit {
         _window: &str,
         options: HashMap<String, OwnedValue>,
         #[zbus(object_server)] server: &zbus::ObjectServer,
+        #[zbus(signal_emitter)] emitter: zbus::object_server::SignalEmitter<'_>,
         #[zbus(header)] header: zbus::message::Header<'_>,
     ) {
+        // The session bus is reachable by every process in the session, and
+        // this call is "hold the screen awake". Only the frontend has any
+        // business here; a peer that knows the backend's name must not be able
+        // to pin the screen by asking directly. Same check as the other
+        // `impl.portal` interfaces, against the same name.
+        if !called_by_frontend(emitter.connection(), &header).await {
+            return;
+        }
         let flags = options
             .get("flags")
             .and_then(|value| u32::try_from(value).ok())
@@ -361,8 +481,12 @@ impl PortalInhibit {
             tracing::info!("inhibit: {app_id} is holding the screen awake ({reason})");
         }
 
-        self.registry
-            .hold_request(path.clone(), owner.clone(), app_id, &reason);
+        if !self
+            .registry
+            .hold_request(path.clone(), owner.clone(), app_id, &reason)
+        {
+            return;
+        }
         let request = RequestObject {
             path: path.clone(),
             registry: self.registry.clone(),
@@ -602,6 +726,96 @@ mod tests {
             "video",
         );
         assert_eq!(registry.drop_owner(":1.7"), vec![path]);
+        assert!(!registry.inhibited());
+    }
+
+    /// `Inhibit` is a method any session peer can call in a loop. One owner
+    /// must not be able to hold the table for itself; a different owner is
+    /// still served, because that is an honest client on the same bus.
+    #[test]
+    fn holds_are_capped_per_owner() {
+        let registry = registry();
+        for _ in 0..MAX_HOLDS_PER_OWNER {
+            assert_ne!(registry.hold(Some(":1.7".to_owned()), "app", "reason"), 0);
+        }
+        assert_eq!(
+            registry.hold(Some(":1.7".to_owned()), "app", "reason"),
+            0,
+            "the owner's ceiling must refuse rather than grow"
+        );
+        assert_ne!(registry.hold(Some(":1.9".to_owned()), "app", "reason"), 0);
+        assert_eq!(registry.holds(), MAX_HOLDS_PER_OWNER + 1);
+    }
+
+    /// The other half of the ceiling: many owners, each under their own limit,
+    /// still cannot grow the table without bound.
+    #[test]
+    fn holds_are_capped_in_total() {
+        let registry = registry();
+        for owner in 0..MAX_HOLDS / MAX_HOLDS_PER_OWNER {
+            for _ in 0..MAX_HOLDS_PER_OWNER {
+                assert_ne!(
+                    registry.hold(Some(format!(":1.{owner}")), "app", "reason"),
+                    0
+                );
+            }
+        }
+        assert_eq!(registry.holds(), MAX_HOLDS);
+        assert_eq!(registry.hold(Some(":1.999".to_owned()), "app", "reason"), 0);
+        assert_eq!(
+            registry.holds(),
+            MAX_HOLDS,
+            "the refused hold was not stored"
+        );
+    }
+
+    /// A portal hold that was refused must not publish a request object: one
+    /// nobody can see is one nobody can close, and the screen would stay lit
+    /// for it until the owner died.
+    #[test]
+    fn a_portal_hold_is_refused_at_the_ceiling() {
+        let registry = registry();
+        for n in 0..MAX_HOLDS_PER_OWNER {
+            let path = OwnedObjectPath::try_from(format!("/request/{n}")).expect("a path");
+            assert!(registry.hold_request(path, Some(":1.7".to_owned()), "app", "reason"));
+        }
+        let path = OwnedObjectPath::try_from("/request/last").expect("a path");
+        assert!(
+            !registry.hold_request(path.clone(), Some(":1.7".to_owned()), "app", "reason"),
+            "the ceiling has to refuse the request"
+        );
+        assert!(registry.release_request(&path).is_none());
+        assert_eq!(registry.holds(), MAX_HOLDS_PER_OWNER);
+    }
+
+    /// The application name and reason are strings from a bus client; they are
+    /// bounded before they are stored, not when they are logged.
+    #[test]
+    fn hold_text_is_truncated_at_ingestion() {
+        let registry = registry();
+        let cookie = registry.hold(
+            Some(":1.7".to_owned()),
+            &"a".repeat(MAX_APP * 2),
+            &"r".repeat(MAX_REASON * 2),
+        );
+        let (app, reason) = registry.text(cookie).expect("the hold was taken");
+        assert_eq!(app.len(), MAX_APP);
+        assert_eq!(reason.len(), MAX_REASON);
+    }
+
+    /// `inhibited()` is read on the compositor's idle path. A panic in a bus
+    /// handler must leave a readable table, not a panic in the frame loop.
+    #[test]
+    fn a_poisoned_table_does_not_take_the_idle_path_down() {
+        let registry = registry();
+        {
+            let registry = registry.clone();
+            let _ = std::thread::spawn(move || {
+                let _guard = registry.0.lock().unwrap();
+                panic!("poison the table");
+            })
+            .join();
+        }
         assert!(!registry.inhibited());
     }
 
