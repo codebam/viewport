@@ -562,15 +562,25 @@ fn peer_uid(stream: &TcpStream) -> Option<u32> {
     let local = ipv4_proc_key(stream.local_addr().ok()?)?;
     let remote = ipv4_proc_key(stream.peer_addr().ok()?)?;
     let table = std::fs::read_to_string("/proc/net/tcp").ok()?;
-    for line in table.lines().skip(1) {
+    peer_uid_from_table(&table, &local, &remote)
+}
+
+/// The uid of the socket on the other end of `local`/`remote`.
+///
+/// The accepted socket's own row has `local` first and `remote` second and is
+/// owned by this process; the peer's row is the transpose. Matching the row as
+/// written rather than the transpose therefore always selected our own uid,
+/// which made the `uid != euid` check in `serve` unreachable — every peer
+/// looked like this process. The columns are `sl local_address rem_address st
+/// tx_queue:rx_queue tr:tm->when retrnsmt uid ...`, and only the uid is read.
+fn peer_uid_from_table(table: &str, local: &str, remote: &str) -> Option<u32> {
+    table.lines().skip(1).find_map(|line| {
         let fields: Vec<&str> = line.split_whitespace().collect();
-        if fields.get(1).copied() == Some(local.as_str())
-            && fields.get(2).copied() == Some(remote.as_str())
-        {
-            return fields.get(7).and_then(|uid| uid.parse().ok());
+        if fields.get(1).copied() != Some(remote) || fields.get(2).copied() != Some(local) {
+            return None;
         }
-    }
-    None
+        fields.get(7).and_then(|uid| uid.parse().ok())
+    })
 }
 
 /// `127.0.0.1:80` as `/proc/net/tcp` spells it: little-endian IPv4 hex and a
@@ -1829,6 +1839,34 @@ mod tests {
             start.elapsed() >= Duration::from_millis(40),
             "the poll returned without waiting, which is a spin"
         );
+    }
+
+    /// The peer's uid is the transposed row, not the accepted socket's own.
+    ///
+    /// `/proc/net/tcp` lists both ends of a loopback connection: our accepted
+    /// socket has `local` then `remote` and our uid, while the peer's socket
+    /// has them the other way round and its uid. The old lookup matched ours
+    /// and so reported this process for every peer, which is what made the
+    /// uid refusal dead code.
+    #[test]
+    fn the_peer_uid_comes_from_the_transposed_row() {
+        let local = "0100007F:1F90";
+        let remote = "0100007F:C350";
+        let own =
+            format!("0: {local} {remote} 01 00000000:00000000 00:00000000 00000000 1000 0 0 0 0");
+        let peer =
+            format!("0: {remote} {local} 01 00000000:00000000 00:00000000 00000000 4242 0 0 0 0");
+        let table = format!("  sl  local_address rem_address ...\n{own}\n{peer}\n");
+
+        assert_eq!(
+            peer_uid_from_table(&table, local, remote),
+            Some(4242),
+            "the peer row is local=remote, remote=local"
+        );
+        // Counter-evidence: with only our own row present, the old match
+        // returned 1000 (this process); the transpose finds nothing.
+        let only_ours = format!("  sl  local_address rem_address ...\n{own}\n");
+        assert_eq!(peer_uid_from_table(&only_ours, local, remote), None);
     }
 
     /// The page has to ask, or none of the above happens.
