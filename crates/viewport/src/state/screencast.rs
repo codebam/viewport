@@ -707,8 +707,23 @@ impl ViewportState {
     /// a zero-sized stream, which PipeWire accepts and no consumer can read.
     fn desk_size(&self) -> Option<smithay::utils::Size<i32, smithay::utils::Physical>> {
         let (union, scale) = self.all_outputs_layout()?;
-        let size: smithay::utils::Size<i32, smithay::utils::Physical> =
-            union.size.to_f64().to_physical(scale).to_i32_round();
+        let size = union.size.to_f64().to_physical(scale);
+        // The two dimensions are multiplied together as `stride * height`
+        // when a frame is allocated, so a scale far outside anything a
+        // monitor can carry must not be saturated into an impossible frame:
+        // it is refused while it is still a real number.
+        let pixels = size.w * size.h;
+        if !size.w.is_finite() || !size.h.is_finite() || pixels < 1.0
+            || pixels > f64::from(i32::MAX)
+        {
+            tracing::warn!(
+                "screencast: refusing a desk of {}x{} pixels",
+                size.w,
+                size.h
+            );
+            return None;
+        }
+        let size: smithay::utils::Size<i32, smithay::utils::Physical> = size.to_i32_round();
         Some((size.w.max(1), size.h.max(1)).into())
     }
 

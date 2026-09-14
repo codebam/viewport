@@ -44,6 +44,25 @@ const INVALID_NODE: u32 = u32::MAX;
 /// inside PipeWire's callback. 512 MiB is far past an 8K frame.
 const MAX_SHARED_BYTES: i64 = 512 << 20;
 
+/// The packed XRGB8888 size of one frame, checked and bounded.
+///
+/// Four bytes a pixel, one block, one row after another: the product is a
+/// byte count computed from a size the source can influence, so it is checked
+/// rather than trusted. `None` when either dimension is not positive or the
+/// frame is larger than [`MAX_SHARED_BYTES`] — the callers that clamp with
+/// `max(1)` do so before asking.
+fn packed_frame_size(width: i32, height: i32) -> Option<(i32, i64)> {
+    if width <= 0 || height <= 0 {
+        return None;
+    }
+    let stride = i64::from(width).checked_mul(4)?;
+    let total = stride.checked_mul(i64::from(height))?;
+    if total > MAX_SHARED_BYTES {
+        return None;
+    }
+    Some((i32::try_from(stride).ok()?, total))
+}
+
 /// Where stream identities come from.
 ///
 /// A counter rather than anything derived from the stream, because the point
@@ -391,19 +410,17 @@ impl Stream {
             return;
         };
         tracing::debug!("screencast: filling a buffer");
-        // Wide, and bounded: `w * 4 * h` overflows `i32` on a size a client
-        // is free to declare, and the product is used as a byte count.
-        let stride = (size.w as i64) * 4;
-        let wanted = stride * size.h as i64;
-        if stride <= 0 || wanted <= 0 || wanted > MAX_SHARED_BYTES {
+        // Wide, checked and bounded: `w * 4 * h` is a byte count computed
+        // from a size a client is free to declare, and it overflows `i32` on
+        // one the compositor will never really draw.
+        let Some((stride, wanted)) = packed_frame_size(size.w, size.h) else {
             tracing::warn!(
                 "screencast: refusing an implausible frame size {}x{}",
                 size.w,
                 size.h
             );
             return;
-        }
-        let stride = stride as i32;
+        };
         let wanted = wanted as usize;
 
         {
@@ -1002,20 +1019,17 @@ unsafe fn attach_shared(
 ) {
     use smithay::reexports::rustix::{fs, mm};
 
-    // Wide, and bounded: the size is client-influenced and this runs inside
-    // PipeWire's callback, where an overflow panic aborts the process rather
-    // than unwinding.
-    let stride = (size.w.max(1) as i64) * 4;
-    let len = stride * size.h.max(1) as i64;
-    if len <= 0 || len > MAX_SHARED_BYTES {
+    // Wide, checked and bounded: the size is client-influenced and this runs
+    // inside PipeWire's callback, where an overflow panic aborts the process
+    // rather than unwinding.
+    let Some((stride, len)) = packed_frame_size(size.w.max(1), size.h.max(1)) else {
         tracing::warn!(
             "screencast: refusing an implausible shared buffer {}x{}",
             size.w,
             size.h
         );
         return;
-    }
-    let stride = stride as i32;
+    };
     let len = len as usize;
 
     let fd = match fs::memfd_create("viewport-screencast", fs::MemfdFlags::CLOEXEC) {
@@ -1197,14 +1211,20 @@ fn buffer_params(size: Size<i32, Physical>, dmabuf: Option<Layout>) -> anyhow::R
                 .map_err(|_| anyhow::anyhow!("a stream buffer larger than i32"))?,
         ),
         None => {
-            // Wide, and bounded by the same limit the allocation uses.
-            let stride = (size.w.max(1) as i64) * 4;
-            let total = stride * size.h.max(1) as i64;
-            anyhow::ensure!(
-                total > 0 && total <= MAX_SHARED_BYTES,
-                "a stream buffer of {total} bytes is larger than this will allocate"
-            );
-            (stride as i32, total as i32)
+            // Wide, checked and bounded by the same limit the allocation
+            // uses.
+            let Some((stride, total)) = packed_frame_size(size.w.max(1), size.h.max(1)) else {
+                anyhow::bail!(
+                    "a stream buffer for {}x{} is larger than this will allocate",
+                    size.w,
+                    size.h
+                );
+            };
+            (
+                stride,
+                i32::try_from(total)
+                    .map_err(|_| anyhow::anyhow!("a stream buffer larger than i32"))?,
+            )
         }
     };
     // Built from the raw keys rather than a typed enum: the binding has names
@@ -1509,5 +1529,21 @@ mod tests {
 
         assert!(!arrival.fail());
         assert_eq!(arrival.status(), Arrived::Now(5));
+    }
+    /// The byte count is checked in both directions: a size that would wrap
+    /// `i64` is refused, and so is one that would allocate past the limit.
+    #[test]
+    fn an_implausible_frame_size_is_refused_not_overflowed() {
+        assert_eq!(packed_frame_size(1920, 1080), Some((7680, 1920 * 1080 * 4)));
+        assert_eq!(packed_frame_size(0, 1080), None);
+        assert_eq!(packed_frame_size(-1, 1080), None);
+        assert_eq!(packed_frame_size(i32::MAX, i32::MAX), None);
+        assert_eq!(packed_frame_size(16384, 16384), None);
+
+        // The same through the published buffer parameters, which is the
+        // callback the abort used to happen in.
+        assert!(buffer_params((i32::MAX, i32::MAX).into(), None).is_err());
+        assert!(buffer_params((16384, 16384).into(), None).is_err());
+        assert!(buffer_params((1920, 1080).into(), None).is_ok());
     }
 }
