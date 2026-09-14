@@ -608,6 +608,30 @@ fn activity_kind<I: InputBackend>(event: &InputEvent<I>) -> crate::idle::Activit
     }
 }
 
+/// The symbol a key press and its release are paired by.
+///
+/// A modified symbol is not stable across the pair: Shift+G is `G` on the way
+/// down and `g` on the way up when the modifier is let go of first. The symbol
+/// at level 0 is what both halves agree on, which is why the physical path
+/// pairs on `raw_latin_sym_or_raw_current_sym` and a virtual keyboard client's
+/// `raw_keysym` is the same value.
+fn pairing_sym(keysym: Keysym, raw_keysym: Option<Keysym>) -> Keysym {
+    raw_keysym.unwrap_or(keysym)
+}
+
+/// Take the press this release pairs with, if the compositor is holding it.
+///
+/// `false` means nobody took the press, so the release is an ordinary one.
+fn take_suppressed(keys: &mut Vec<Keysym>, sym: Keysym) -> bool {
+    match keys.iter().position(|held| *held == sym) {
+        Some(at) => {
+            keys.remove(at);
+            true
+        }
+        None => false,
+    }
+}
+
 /// Whether this event is someone using the pointer.
 ///
 /// What `cursor.hide_after_ms` measures, and the reason it is not simply every
@@ -1520,12 +1544,7 @@ impl ViewportState {
                             state.long_press_pending.remove(&unmodified);
                             state.repeating_held.remove(&unmodified);
                             let mut result = FilterResult::Forward;
-                            if let Some(at) = state
-                                .suppressed_keys
-                                .iter()
-                                .position(|k| *k == unmodified_sym)
-                            {
-                                state.suppressed_keys.remove(at);
+                            if take_suppressed(&mut state.suppressed_keys, unmodified_sym) {
                                 // The other half of a global shortcut. A
                                 // push-to-talk key is the case that makes this
                                 // more than tidiness: the application is
@@ -3791,6 +3810,11 @@ impl smithay::wayland::virtual_keyboard::VirtualKeyboardKeyFilter for ViewportSt
     ) -> bool {
         use smithay::reexports::wayland_server::protocol::wl_keyboard::KeyState;
 
+        // The key both halves of a press/release pair are named by. `keysym`
+        // is what the modifiers make of the key, which changes between the
+        // two; `raw_keysym` is level 0, which does not. See `pairing_sym`.
+        let unmodified_sym = pairing_sym(keysym, raw_keysym);
+
         // Virtual keys arrive as their own protocol, not through the two
         // entry points above, so the locked floor has to be repeated here.
         // A grab installed after the lock must not receive the key; putting
@@ -3806,11 +3830,10 @@ impl smithay::wayland::virtual_keyboard::VirtualKeyboardKeyFilter for ViewportSt
             // `release+` binding fires — and both can happen, because the same
             // chord may have a press binding and a release one.
             let mut handled = false;
-            if let Some(at) = self.suppressed_keys.iter().position(|k| *k == keysym) {
-                self.suppressed_keys.remove(at);
+            if take_suppressed(&mut self.suppressed_keys, unmodified_sym) {
                 handled = true;
             }
-            let unmodified = raw_keysym.unwrap_or(keysym).raw();
+            let unmodified = unmodified_sym.raw();
             if let Some(bound) = crate::binding::find_binding(
                 &self.bindings,
                 &mods,
@@ -3844,7 +3867,7 @@ impl smithay::wayland::virtual_keyboard::VirtualKeyboardKeyFilter for ViewportSt
                 Keysym::Down | Keysym::j | Keysym::Tab => Some(Pick::Step(1)),
                 _ => None,
             };
-            self.suppressed_keys.push(keysym);
+            self.suppressed_keys.push(unmodified_sym);
             self.handle_action(pick.map(Action::Pick).unwrap_or(Action::Swallow));
             return true;
         }
@@ -3853,7 +3876,7 @@ impl smithay::wayland::virtual_keyboard::VirtualKeyboardKeyFilter for ViewportSt
             if self.locked && !matches!(action, Action::SwitchVt(_)) {
                 return false;
             }
-            self.suppressed_keys.push(keysym);
+            self.suppressed_keys.push(unmodified_sym);
             self.handle_action(action);
             return true;
         }
@@ -3862,7 +3885,7 @@ impl smithay::wayland::virtual_keyboard::VirtualKeyboardKeyFilter for ViewportSt
         // written "Mod4+Shift+q": the shift is in the modifiers and the key is
         // still q, so matching the modified symbol would look for Q and never
         // find it.
-        let unmodified = raw_keysym.unwrap_or(keysym).raw();
+        let unmodified = unmodified_sym.raw();
         match crate::binding::find_binding(
             &self.bindings,
             &mods,
@@ -3875,7 +3898,7 @@ impl smithay::wayland::virtual_keyboard::VirtualKeyboardKeyFilter for ViewportSt
                 let consuming = !bound.non_consuming;
                 let action = bound.action.clone();
                 if consuming {
-                    self.suppressed_keys.push(keysym);
+                    self.suppressed_keys.push(unmodified_sym);
                 }
                 self.handle_action(Action::Bound(action));
                 consuming
@@ -4047,6 +4070,36 @@ mod tests {
 
         // And an ordinary click on a window is not the page's either.
         assert!(!shell_gets_button(false, false, true));
+    }
+
+    /// A shifted key pairs by the symbol on the key, not by what the
+    /// modifiers made of it.
+    ///
+    /// A virtual keyboard client sets its own modifiers: press Shift+G, let
+    /// Shift go, release g. Keyed by the modified symbol the release searches
+    /// for `g` in a set holding `G`, never finds it, and leaves the press
+    /// behind to swallow somebody's later `g` — and the focused client gets a
+    /// release it never saw go down.
+    #[test]
+    fn virtual_keys_pair_by_the_symbol_on_the_key() {
+        let lower = Keysym::new(keysyms::KEY_g);
+        let upper = Keysym::new(keysyms::KEY_G);
+
+        // The modifier changed between press and release; the level-0 symbol
+        // did not.
+        assert_eq!(pairing_sym(upper, Some(lower)), lower);
+        assert_eq!(pairing_sym(lower, Some(lower)), lower);
+        // No keymap layout to read level 0 from: the modified symbol is all
+        // there is, as before.
+        assert_eq!(pairing_sym(lower, None), lower);
+
+        let mut suppressed = vec![pairing_sym(upper, Some(lower))];
+        assert!(
+            take_suppressed(&mut suppressed, pairing_sym(lower, Some(lower))),
+            "the release must find the press it pairs with"
+        );
+        assert!(suppressed.is_empty());
+        assert!(!take_suppressed(&mut suppressed, lower));
     }
 
     #[test]
