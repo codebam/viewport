@@ -167,6 +167,22 @@ static GUARD_STALE: AtomicBool = AtomicBool::new(false);
 /// same reason the pre-attach drop warning is once-per-session.
 static DEVTOOLS_DROP_WARNED: AtomicBool = AtomicBool::new(false);
 
+/// The session a reload has to be sent to, if there is one yet.
+///
+/// A reload is a control message, not page data: with no session to carry it
+/// it must not be queued among the events (the queue would deliver it to the
+/// page as a `CustomEvent` nobody handles). It is remembered instead and
+/// replayed when the page attaches.
+fn reload_target<'a>(session: Option<&'a str>, pending: &mut bool) -> Option<&'a str> {
+    match session {
+        Some(session) => Some(session),
+        None => {
+            *pending = true;
+            None
+        }
+    }
+}
+
 /// Whether a DevTools message is one the frame guard cannot lose.
 ///
 /// The main frame's navigation and the frame-tree reply are what move the
@@ -392,6 +408,10 @@ fn run(browser: &mut Browser, options: &Options) -> Result<()> {
     let mut attaching = false;
     let mut ready = false;
     let mut queued: Vec<String> = Vec::new();
+    // A reload that arrived before there was a session to send it to. The
+    // message is not page data and must not be queued as if it were; it is
+    // replayed once the page is attached.
+    let mut pending_reload = false;
     // Set when a DevTools frame message was dropped: events wait until a
     // fresh frame tree names the document again.
     let mut waiting_for_url = false;
@@ -442,7 +462,7 @@ fn run(browser: &mut Browser, options: &Options) -> Result<()> {
                 }
                 if viewport_shell_bridge::is_reload(&json) {
                     tracing::info!("reloading the shell");
-                    if let Some(session) = session.as_deref() {
+                    if let Some(session) = reload_target(session.as_deref(), &mut pending_reload) {
                         ready = false;
                         browser.call(
                             &mut next_id,
@@ -482,23 +502,40 @@ fn run(browser: &mut Browser, options: &Options) -> Result<()> {
                     install_bridge(browser, &mut next_id, &id)?;
                     session = Some(id);
                     attaching = false;
-                    // Ready only once the frame tree has named a main URL
-                    // that passes the policy. Until then queued events wait
-                    // rather than being evaluated into a document whose origin
-                    // is not yet known; if the URL is known and disallowed, the
-                    // queue is dropped outright.
-                    ready = guard.url_known_allowed() && !waiting_for_url;
-                    if ready {
-                        for json in queued.drain(..) {
-                            let script = viewport_ipc::js::dispatch(&json);
-                            let session = session.as_deref().expect("just set");
-                            browser.evaluate(&mut next_id, session, &script)?;
+                    if pending_reload {
+                        // A reload asked for while the page was still coming
+                        // up. The shim is installed above, so the document the
+                        // reload produces has it; the queued events wait for
+                        // its load event rather than going into the document
+                        // that is being replaced.
+                        pending_reload = false;
+                        ready = false;
+                        let session = session.as_deref().expect("just set");
+                        browser.call(
+                            &mut next_id,
+                            session,
+                            "Page.reload",
+                            json!({"ignoreCache": true}),
+                        )?;
+                    } else {
+                        // Ready only once the frame tree has named a main URL
+                        // that passes the policy. Until then queued events wait
+                        // rather than being evaluated into a document whose
+                        // origin is not yet known; if the URL is known and
+                        // disallowed, the queue is dropped outright.
+                        ready = guard.url_known_allowed() && !waiting_for_url;
+                        if ready {
+                            for json in queued.drain(..) {
+                                let script = viewport_ipc::js::dispatch(&json);
+                                let session = session.as_deref().expect("just set");
+                                browser.evaluate(&mut next_id, session, &script)?;
+                            }
+                        } else if guard.main_url.is_some() && !waiting_for_url {
+                            queued.clear();
+                            tracing::warn!(
+                                "dropping queued compositor events: the shell left the allowed origin"
+                            );
                         }
-                    } else if guard.main_url.is_some() && !waiting_for_url {
-                        queued.clear();
-                        tracing::warn!(
-                            "dropping queued compositor events: the shell left the allowed origin"
-                        );
                     }
                     continue;
                 }
@@ -1029,6 +1066,19 @@ mod tests {
         });
         assert!(forward_compositor(&tx, Line::Closed));
         assert!(closed.join().expect("the queue reader"));
+    }
+
+    /// A reload asked for before the page attached must not be discarded.
+    #[test]
+    fn a_reload_before_the_page_attaches_is_remembered() {
+        let mut pending = false;
+        assert_eq!(reload_target(None, &mut pending), None);
+        assert!(pending, "the reload was consumed with nowhere to send it");
+        assert_eq!(
+            reload_target(Some("session"), &mut pending),
+            Some("session"),
+            "an attached page takes the reload directly"
+        );
     }
 
     /// Only the messages that move the document the origin policy checks are

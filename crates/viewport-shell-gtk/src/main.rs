@@ -317,6 +317,22 @@ fn activate(app: &gtk::Application, options: &Options) -> Result<()> {
     Ok(())
 }
 
+/// Hand one line to the UI loop, without blocking on an ordinary event.
+///
+/// The reader cannot block on a message — a compositor that sees one stop
+/// reading drops the whole shell — so a full queue drops it. `Line::Closed` is
+/// not one of a run of events: it is the session ending, and it is exactly
+/// when the queue is full (a UI thread wedged in a relayout, the case the
+/// bound exists for) that losing it would leave a live window on a dead
+/// socket. The socket is closed by then, so waiting for a slot outlasts
+/// nothing.
+fn forward_line(tx: &async_channel::Sender<Line>, line: Line) -> bool {
+    match line {
+        Line::Closed => tx.send_blocking(Line::Closed).is_ok(),
+        line => tx.try_send(line).is_ok(),
+    }
+}
+
 /// Wire the page to the compositor, in both directions.
 ///
 /// The socket, its two threads and the framing are
@@ -336,7 +352,7 @@ fn bridge(
     let out = viewport_shell_bridge::connect(&options.socket, move |line| {
         // A closed channel means the loop below has already stopped, which is
         // to say the process is on its way out.
-        if in_tx.try_send(line).is_err() {
+        if !forward_line(&in_tx, line) {
             tracing::warn!("the shell's incoming queue is full; dropping a message");
         }
     })?;
@@ -506,4 +522,24 @@ fn post(view: &webkit6::WebView, json: &str) {
         gtk::gio::Cancellable::NONE,
         |_| {},
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_full_queue_drops_an_event_but_waits_for_the_close() {
+        let (tx, rx) = async_channel::bounded::<Line>(1);
+        assert!(forward_line(&tx, Line::Event("one".into())));
+        assert!(!forward_line(&tx, Line::Event("two".into())));
+
+        let closed = std::thread::spawn(move || {
+            // The event already queued, then the close behind it.
+            let _ = rx.recv_blocking();
+            matches!(rx.recv_blocking(), Ok(Line::Closed))
+        });
+        assert!(forward_line(&tx, Line::Closed));
+        assert!(closed.join().expect("the queue reader"));
+    }
 }

@@ -54,6 +54,15 @@ static OUT: OnceLock<viewport_shell_bridge::Sender> = OnceLock::new();
 static QUEUE: Mutex<VecDeque<String>> = Mutex::new(VecDeque::new());
 static READY: AtomicBool = AtomicBool::new(false);
 
+/// A reload that arrived before there was a browser to send it to.
+///
+/// The socket reader posts a `Deliver` task for every event, and the task's
+/// `execute` has no browser until the window exists. A reload is a control
+/// message, not page data; queueing it in `QUEUE` would have it evaluated as a
+/// `CustomEvent` when the page finally arrives, where nothing handles it.
+/// Remembered here and replayed at the end of `install_bridge`.
+static PENDING_RELOAD: AtomicBool = AtomicBool::new(false);
+
 /// `Deliver` tasks posted to CEF's UI thread but not yet run.
 ///
 /// CEF's own task queue has no ceiling, so the `QUEUE` cap below only bounds
@@ -649,6 +658,22 @@ fn install_bridge(browser: &Browser) {
         .map(|guard| guard.url_known_allowed())
         .unwrap_or(false);
     READY.store(allowed, Ordering::SeqCst);
+    if PENDING_RELOAD.swap(false, Ordering::SeqCst) {
+        // Asked for before the page existed. The shim above is installed, so
+        // the document this reload produces has it; the queued events wait for
+        // its load event rather than going into the document being replaced.
+        tracing::info!("reloading the shell as soon as its page exists");
+        READY.store(false, Ordering::SeqCst);
+        send(
+            browser,
+            &json!({
+                "id": next_id(),
+                "method": "Page.reload",
+                "params": {"ignoreCache": true},
+            }),
+        );
+        return;
+    }
     if allowed {
         let waiting: Vec<String> = QUEUE
             .lock()
@@ -893,6 +918,13 @@ wrap_task! {
             BROWSER.with(|slot| {
                 let slot = slot.borrow();
                 let Some(browser) = slot.as_ref() else {
+                    if viewport_shell_bridge::is_reload(&self.json) {
+                        // No browser to send a reload command to yet. A
+                        // reload is not page data, so it cannot go in the
+                        // queue; `install_bridge` replays it.
+                        PENDING_RELOAD.store(true, Ordering::SeqCst);
+                        return;
+                    }
                     enqueue(self.json.clone());
                     return;
                 };
