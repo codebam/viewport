@@ -57,6 +57,16 @@ pub fn bands_within(rect: Rectangle<i32, Physical>, radius: i32) -> Vec<Rectangl
     bands_by(rect, radius, inset_within)
 }
 
+/// Narrow a computed coordinate back to `i32`, holding at the edges of the
+/// range rather than wrapping.
+///
+/// Every number that goes into a band is a shell- or client-controlled `i32`,
+/// but their sums and differences are not, and the render loop must not abort
+/// on the ones at the edge.
+fn clamp_i32(value: i64) -> i32 {
+    value.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
+}
+
 fn bands_by(
     rect: Rectangle<i32, Physical>,
     radius: i32,
@@ -75,49 +85,62 @@ fn bands_by(
         return vec![rect];
     }
 
+    // The rectangle is a client's viewport destination, which the shell can be
+    // asked for at the far edge of `i32` on both axes. Every field is
+    // representable and `loc + size` still is not, so the edges are laid out
+    // in i64 and narrowed only at the end: a window too large to draw comes
+    // back as a rectangle held at the edge of the coordinate space instead of
+    // an arithmetic abort in the render loop.
+    let left = i64::from(rect.loc.x);
+    let top = i64::from(rect.loc.y);
+    let width = i64::from(rect.size.w);
+    let height = i64::from(rect.size.h);
+
     let mut bands: Vec<Rectangle<i32, Physical>> = Vec::new();
-    let mut push = |y: i32, height: i32, inset: i32| {
-        let width = rect.size.w - inset * 2;
-        if width > 0 && height > 0 {
+    let mut push = |y: i64, band_height: i64, inset: i64| {
+        let band_width = width - inset * 2;
+        if band_width > 0 && band_height > 0 {
             bands.push(Rectangle::new(
-                (rect.loc.x + inset, y).into(),
-                (width, height).into(),
+                (clamp_i32(left + inset), clamp_i32(y)).into(),
+                (clamp_i32(band_width), clamp_i32(band_height)).into(),
             ));
         }
     };
 
     // The top corner, as runs of rows that share an inset.
-    let mut run_start = 0;
-    let mut run_inset = inset(radius, 0);
+    let mut run_start = 0i64;
+    let mut run_inset = i64::from(inset(radius, 0));
     for row in 1..=radius {
+        let row_at = i64::from(row);
         let this = if row == radius {
             -1
         } else {
-            inset(radius, row)
+            i64::from(inset(radius, row))
         };
         if this != run_inset {
-            push(rect.loc.y + run_start, row - run_start, run_inset);
-            run_start = row;
+            push(top + run_start, row_at - run_start, run_inset);
+            run_start = row_at;
             run_inset = this;
         }
     }
 
     // The middle, full width.
-    push(rect.loc.y + radius, rect.size.h - radius * 2, 0);
+    push(top + i64::from(radius), height - i64::from(radius) * 2, 0);
 
     // The bottom corner, the top one upside down.
-    let bottom = rect.loc.y + rect.size.h;
-    let mut run_end = 0;
-    let mut run_inset = inset(radius, 0);
+    let bottom = top + height;
+    let mut run_end = 0i64;
+    let mut run_inset = i64::from(inset(radius, 0));
     for row in 1..=radius {
+        let row_at = i64::from(row);
         let this = if row == radius {
             -1
         } else {
-            inset(radius, row)
+            i64::from(inset(radius, row))
         };
         if this != run_inset {
-            push(bottom - row, row - run_end, run_inset);
-            run_end = row;
+            push(bottom - row_at, row_at - run_end, run_inset);
+            run_end = row_at;
             run_inset = this;
         }
     }
@@ -138,7 +161,10 @@ fn bands_by(
 /// background, and drawing that over the window a floating one is lifted above
 /// is four triangles of wallpaper punched through it.
 pub fn cutaway(rect: Rectangle<i32, Physical>, radius: i32) -> Vec<Rectangle<i32, Physical>> {
-    let right_of = |r: Rectangle<i32, Physical>| r.loc.x + r.size.w;
+    // The far edge is a sum of two fields, and the rectangle can be the one a
+    // client asked for at the edge of `i32`; i64 for the same reason as
+    // `bands_by`.
+    let right_of = |r: Rectangle<i32, Physical>| i64::from(r.loc.x) + i64::from(r.size.w);
     let mut wedges = Vec::new();
     for band in bands(rect, radius) {
         // The rows of a band are inset by the same amount on both sides, so
@@ -147,18 +173,18 @@ pub fn cutaway(rect: Rectangle<i32, Physical>, radius: i32) -> Vec<Rectangle<i32
         // two have to tile the rectangle exactly, and a pixel that belongs to
         // neither falls through to the shell's buffer — where, inside a
         // window's hole, the desktop's own background is what is waiting.
-        let left = band.loc.x - rect.loc.x;
+        let left = i64::from(band.loc.x) - i64::from(rect.loc.x);
         if left > 0 {
             wedges.push(Rectangle::new(
                 (rect.loc.x, band.loc.y).into(),
-                (left, band.size.h).into(),
+                (clamp_i32(left), band.size.h).into(),
             ));
         }
         let right = right_of(rect) - right_of(band);
         if right > 0 {
             wedges.push(Rectangle::new(
-                (right_of(band), band.loc.y).into(),
-                (right, band.size.h).into(),
+                (clamp_i32(right_of(band)), band.loc.y).into(),
+                (clamp_i32(right), band.size.h).into(),
             ));
         }
     }
@@ -326,18 +352,26 @@ fn shape(
         .collect();
 
         let radius = radius.min(rect.size.w / 2).min(rect.size.h / 2).max(0);
+        // The same edge arithmetic as the bands: the far corner of a rectangle
+        // at the edge of `i32` is a sum that leaves it.
+        let bottom = i64::from(rect.loc.y) + i64::from(rect.size.h);
+        let inset = i64::from(radius);
         let solid: Vec<_> = [
             Rectangle::new(
-                (rect.loc.x, rect.loc.y + radius).into(),
-                (rect.size.w, rect.size.h - radius * 2).into(),
+                (rect.loc.x, clamp_i32(i64::from(rect.loc.y) + inset)).into(),
+                (rect.size.w, clamp_i32(i64::from(rect.size.h) - inset * 2)).into(),
             ),
             Rectangle::new(
-                (rect.loc.x + radius, rect.loc.y).into(),
-                (rect.size.w - radius * 2, radius).into(),
+                (clamp_i32(i64::from(rect.loc.x) + inset), rect.loc.y).into(),
+                (clamp_i32(i64::from(rect.size.w) - inset * 2), radius).into(),
             ),
             Rectangle::new(
-                (rect.loc.x + radius, rect.loc.y + rect.size.h - radius).into(),
-                (rect.size.w - radius * 2, radius).into(),
+                (
+                    clamp_i32(i64::from(rect.loc.x) + inset),
+                    clamp_i32(bottom - inset),
+                )
+                    .into(),
+                (clamp_i32(i64::from(rect.size.w) - inset * 2), radius).into(),
             ),
         ]
         .into_iter()
@@ -1194,6 +1228,36 @@ mod tests {
             assert!(band.size.w > 0 && band.size.h > 0);
             assert!(band.loc.x >= 0 && band.loc.x + band.size.w <= 20);
             assert!(band.loc.y >= 0 && band.loc.y + band.size.h <= 10);
+        }
+    }
+
+    /// A client can ask for a viewport destination at the far edge of `i32` on
+    /// both axes through `wp_viewport.destination`. Every field is
+    /// representable, `loc + size` is not, and the bands used to add it in
+    /// i32 — an abort in the render loop on a message a client chose. The
+    /// shape is held at the edge instead, and every band stays inside the
+    /// rectangle it was cut from.
+    #[test]
+    fn bands_of_a_rectangle_at_the_edge_of_the_range_do_not_overflow() {
+        let rect = rect(1, 1, i32::MAX, i32::MAX);
+        let full = i64::from(rect.loc.x) + i64::from(rect.size.w);
+        for bands in [bands(rect, 6), bands_within(rect, 6), cutaway(rect, 6)] {
+            assert!(!bands.is_empty());
+            for band in &bands {
+                assert!(band.size.w >= 0 && band.size.h >= 0, "{band:?}");
+                let left = i64::from(band.loc.x);
+                let top = i64::from(band.loc.y);
+                assert!(left >= i64::from(rect.loc.x), "{band:?} left the box");
+                assert!(top >= i64::from(rect.loc.y), "{band:?} left the box");
+                assert!(
+                    left + i64::from(band.size.w) <= full,
+                    "{band:?} left the box"
+                );
+                assert!(
+                    top + i64::from(band.size.h) <= i64::from(rect.loc.y) + i64::from(rect.size.h),
+                    "{band:?} left the box"
+                );
+            }
         }
     }
 }
