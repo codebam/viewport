@@ -82,21 +82,41 @@ impl SelectionHandler for ViewportState {
 
     /// Somebody copied something.
     ///
-    /// Only the clipboard, and only text: recording the primary selection
-    /// would mean an entry for every word dragged over with a mouse. A `None`
-    /// source is the compositor's own selection — a paste out of the history —
-    /// and reading that back would be recording our own echo.
+    /// The clipboard is also where a remote desktop session keeps a claim,
+    /// and a real local source takes that claim away whatever it offers and
+    /// whether or not this end keeps history for it: a stale claim is what
+    /// lets the remote side answer a transfer that a local copy has already
+    /// replaced.
+    ///
+    /// The history is narrower: only the clipboard, and only text. Recording
+    /// the primary selection would mean an entry for every word dragged over
+    /// with a mouse. A `None` source is the compositor's own selection — a
+    /// paste out of the history — and reading that back would be recording our
+    /// own echo.
     fn new_selection(
         &mut self,
         ty: SelectionTarget,
         source: Option<smithay::wayland::selection::SelectionSource>,
         _seat: Seat<Self>,
     ) {
-        if ty != SelectionTarget::Clipboard || !self.clipboard.enabled() {
+        if ty != SelectionTarget::Clipboard {
             return;
         }
         let Some(source) = source else { return };
-        let Some(mime) = crate::clipboard::Clipboard::text_mime(&source.mime_types()) else {
+        let mimes = source.mime_types();
+        let mime = crate::clipboard::Clipboard::text_mime(&mimes);
+
+        // The local client owns the selection now, whichever remote session
+        // claimed it before. Announced from the bus watcher rather than here:
+        // the announcement is about who owns the selection, and the history's
+        // text-only recording below must not decide whether the remote side is
+        // told it lost it.
+        crate::screencast::remote::local_selection_changed(mimes);
+
+        if !self.clipboard.enabled() {
+            return;
+        }
+        let Some(mime) = mime else {
             // An image, a file list, an application's private type. Not an
             // error and not worth a line: a screenshot tool puts one on the
             // clipboard every time it runs.

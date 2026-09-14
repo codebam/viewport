@@ -1202,6 +1202,179 @@ fn finish_clipboard_transfer(
     ));
 }
 
+/// One local selection change on its way to the portal object on the bus.
+struct LocalSelectionChange {
+    /// The sessions whose claim this change cleared, and which have to be
+    /// told the local side owns the selection now.
+    sessions: Vec<OwnedObjectPath>,
+    /// What the local selection offers, handed to the frontend so the remote
+    /// application has something to paste.
+    mimes: Vec<String>,
+}
+
+/// The way back from the compositor thread to the `Clipboard` object.
+///
+/// `ViewportState` has no handle to that object: it is built and served by the
+/// appearance process, on a connection the compositor state never sees. But a
+/// local copy or a history paste has to tell every remote session that was
+/// holding the clipboard that it no longer holds it. The sessions and
+/// transfers are shared with the object, and the object server is captured
+/// from the first bus call that can hand out ownership; a watcher thread does
+/// the signalling, so a D-Bus write is never on the compositor's path.
+struct ClipboardBridge {
+    sessions: Sessions,
+    transfers: Arc<Mutex<Transfers>>,
+    /// The bus object, known only once an interface method has run. It is
+    /// captured before a session can be made an owner, so there is always a
+    /// way to tell that owner the selection has gone.
+    server: Mutex<Option<zbus::ObjectServer>>,
+    /// Where a local change waits for the watcher.
+    changes: std::sync::mpsc::Sender<LocalSelectionChange>,
+}
+
+/// The one `Clipboard` object this process serves.
+static CLIPBOARD_BRIDGE: std::sync::OnceLock<ClipboardBridge> = std::sync::OnceLock::new();
+
+/// Start the watcher that takes local ownership changes to the bus.
+///
+/// One thread for the life of the process, parked on the channel. It exists
+/// because `ViewportState` cannot emit a portal signal itself, and the
+/// compositor thread must not wait on D-Bus to announce a copy.
+fn start_local_selection_watch(sessions: &Sessions, transfers: &Arc<Mutex<Transfers>>) {
+    if CLIPBOARD_BRIDGE.get().is_some() {
+        return;
+    }
+    let (changes, receiver) = std::sync::mpsc::channel();
+    let bridge = ClipboardBridge {
+        sessions: sessions.clone(),
+        transfers: transfers.clone(),
+        server: Mutex::new(None),
+        changes,
+    };
+    if CLIPBOARD_BRIDGE.set(bridge).is_err() {
+        return;
+    }
+    if let Err(e) = std::thread::Builder::new()
+        .name("clipboard-owner".to_owned())
+        .spawn(move || watch_local_selection(receiver))
+    {
+        // The ownership flags still clear; only the frontend misses the
+        // announcement, which is worth a line rather than silence.
+        tracing::warn!("clipboard: could not start the local-selection watcher: {e}");
+    }
+}
+
+/// Emit `SelectionOwnerChanged(false)` for each session a local selection took
+/// the clipboard from.
+fn watch_local_selection(changes: std::sync::mpsc::Receiver<LocalSelectionChange>) {
+    let Some(bridge) = CLIPBOARD_BRIDGE.get() else {
+        return;
+    };
+    for change in changes {
+        let Some(server) = bridge.server.lock().unwrap().clone() else {
+            // An owner cannot exist before the bus object has answered a call,
+            // so this only happens while the connection is going away.
+            tracing::warn!("clipboard: no bus object to announce the local selection");
+            continue;
+        };
+        for session in change.sessions {
+            // The session may have claimed the selection again while this
+            // change waited for the bus, or may have closed. In either case
+            // the false this change carries is no longer the truth about the
+            // session, and emitting it would tell the frontend the opposite
+            // of what `SetSelection` just said.
+            if !selection_still_local(&bridge.sessions, &session) {
+                continue;
+            }
+            zbus::block_on(emit_owner_changed(&server, &session, &change.mimes, false));
+        }
+    }
+}
+
+/// Whether `session` still has no claim on the clipboard.
+///
+/// The watcher asks this just before sending the false ownership, because a
+/// later `SetSelection` can win a race against a local copy that has already
+/// cleared the flag. A session that is gone answers false: there is nobody to
+/// tell.
+fn selection_still_local(sessions: &Sessions, session: &OwnedObjectPath) -> bool {
+    sessions
+        .lock()
+        .unwrap()
+        .sessions
+        .get(session)
+        .is_some_and(|row| !row.clipboard_owner)
+}
+
+/// A local selection has replaced whatever a remote session had claimed.
+///
+/// Called from the compositor thread when a Wayland client copies, or when the
+/// compositor offers an entry out of the history. Every session that still
+/// claimed the clipboard is marked as not owning it, under the same sessions
+/// lock `SetSelection` takes, and its outstanding transfers are dropped so a
+/// serial minted before this copy cannot be answered after it. The frontend is
+/// told from a watcher thread, so this never blocks the event loop on D-Bus.
+///
+/// A cheap no-op when no `Clipboard` object was ever built — no session can
+/// have been granted the clipboard through it — and when no session still
+/// claims the selection.
+pub(crate) fn local_selection_changed(mimes: Vec<String>) {
+    let Some(bridge) = CLIPBOARD_BRIDGE.get() else {
+        return;
+    };
+    let sessions = take_remote_ownership(&bridge.sessions, &bridge.transfers);
+    if sessions.is_empty() {
+        return;
+    }
+    if bridge
+        .changes
+        .send(LocalSelectionChange { sessions, mimes })
+        .is_err()
+    {
+        // The watcher only goes away with the process or when its thread could
+        // not start; there is nobody left to tell.
+        tracing::debug!("clipboard: no watcher for local selection changes");
+    }
+}
+
+/// Take the selection back from every remote session that still claims it.
+///
+/// The sessions that claimed it are returned so the caller can announce it to
+/// each one. Their transfers go with the claim: a serial the remote side was
+/// given before the local copy is not an answer to anything any more, even if
+/// the session later re-advertises a type this end cannot read and so mints no
+/// replacement serial.
+fn take_remote_ownership(
+    sessions: &Sessions,
+    transfers: &Mutex<Transfers>,
+) -> Vec<OwnedObjectPath> {
+    // Sessions and then transfers, held together, in the order every other
+    // path takes them. Clearing the claim and dropping its transfer in one
+    // critical section is what stops a `SetSelection` arriving in between
+    // from being treated as neither owner nor claimant: it either happens
+    // before, and its transfer is dropped with the claim, or after, and it
+    // gets a fresh serial.
+    let mut shared = sessions.lock().unwrap();
+    let claimed = shared
+        .sessions
+        .iter_mut()
+        .filter_map(|(path, session)| {
+            session.clipboard_owner.then(|| {
+                session.clipboard_owner = false;
+                path.clone()
+            })
+        })
+        .collect::<Vec<_>>();
+    if claimed.is_empty() {
+        return claimed;
+    }
+    let mut transfers = transfers.lock().unwrap();
+    for path in &claimed {
+        transfers.released(path);
+    }
+    claimed
+}
+
 /// The `org.freedesktop.impl.portal.Clipboard` object.
 ///
 /// A session created by RemoteDesktop or InputCapture asks for clipboard
@@ -1228,10 +1401,25 @@ impl Clipboard {
         sender: smithay::reexports::calloop::channel::Sender<Message>,
         sessions: Sessions,
     ) -> Self {
+        let transfers = Arc::new(Mutex::new(Transfers::default()));
+        start_local_selection_watch(&sessions, &transfers);
         Self {
             sender,
             sessions,
-            transfers: Arc::new(Mutex::new(Transfers::default())),
+            transfers,
+        }
+    }
+
+    /// Remember the bus object from a live interface call.
+    ///
+    /// The server reaches `SetSelection` and `SelectionWrite` as an argument
+    /// and nowhere else; a later local selection needs it to emit an ownership
+    /// change, so the first call that is in a position to grant ownership
+    /// leaves it here for the watcher thread. Before then no session can own
+    /// the selection, so not having it is not a gap.
+    fn remember_bus(&self, server: &zbus::ObjectServer) {
+        if let Some(bridge) = CLIPBOARD_BRIDGE.get() {
+            *bridge.server.lock().unwrap() = Some(server.clone());
         }
     }
 
@@ -1303,6 +1491,7 @@ impl Clipboard {
         if !self.called_by_frontend(&header) {
             return;
         }
+        self.remember_bus(server);
         let path = OwnedObjectPath::from(session_handle);
         let mimes = mime_types(&options);
         let wanted = transfer_mime(&mimes);
@@ -1430,6 +1619,7 @@ impl Clipboard {
                 "that is not the portal frontend".to_owned(),
             ));
         }
+        self.remember_bus(server);
         let path = OwnedObjectPath::from(session_handle);
         if !self.granted(&path) {
             return Err(zbus::fdo::Error::AccessDenied(
@@ -2049,5 +2239,153 @@ mod tests {
             TransferAnswer::Unknown,
             "a released serial cannot answer"
         );
+    }
+
+    /// A session row claiming, or not claiming, the clipboard, for the tests
+    /// of what a local copy does to a remote one.
+    fn claimed_session(
+        path: &str,
+        owner: bool,
+        mimes: &[&str],
+    ) -> (OwnedObjectPath, crate::screencast::portal::Session) {
+        let mut session = crate::screencast::portal::Session::default();
+        session.clipboard_owner = owner;
+        session.clipboard_mimes = mimes.iter().map(|mime| (*mime).to_owned()).collect();
+        (
+            OwnedObjectPath::try_from(path).expect("a valid object path"),
+            session,
+        )
+    }
+
+    /// A local copy takes the clipboard away from every remote session that
+    /// claimed it, and leaves a session that did not alone.
+    #[test]
+    fn a_local_selection_takes_the_clipboard_back_from_every_owner() {
+        let sessions = Sessions::default();
+        let transfers = Mutex::new(Transfers::default());
+        let (one, owner) =
+            claimed_session("/org/freedesktop/portal/desktop/one", true, &["text/plain"]);
+        let (two, quiet) = claimed_session(
+            "/org/freedesktop/portal/desktop/two",
+            false,
+            &["text/plain"],
+        );
+        let (three, other) = claimed_session(
+            "/org/freedesktop/portal/desktop/three",
+            true,
+            &["image/png"],
+        );
+        {
+            let mut shared = sessions.lock().unwrap();
+            shared.sessions.insert(one.clone(), owner);
+            shared.sessions.insert(two.clone(), quiet);
+            shared.sessions.insert(three.clone(), other);
+        }
+
+        let returned = take_remote_ownership(&sessions, &transfers);
+
+        assert_eq!(returned.len(), 2);
+        assert!(returned.contains(&one));
+        assert!(returned.contains(&three));
+        let shared = sessions.lock().unwrap();
+        assert!(!shared.sessions.get(&one).unwrap().clipboard_owner);
+        assert!(!shared.sessions.get(&three).unwrap().clipboard_owner);
+        assert!(!shared.sessions.get(&two).unwrap().clipboard_owner);
+        assert_eq!(
+            shared.sessions.get(&two).unwrap().clipboard_mimes,
+            vec!["text/plain"],
+            "a session that was not an owner is untouched"
+        );
+    }
+
+    /// A local copy with no remote owner has nothing to hand the bus.
+    #[test]
+    fn a_local_selection_with_no_remote_owner_hands_nothing_over() {
+        let sessions = Sessions::default();
+        let transfers = Mutex::new(Transfers::default());
+        let (one, row) = claimed_session(
+            "/org/freedesktop/portal/desktop/one",
+            false,
+            &["text/plain"],
+        );
+        sessions.lock().unwrap().sessions.insert(one.clone(), row);
+
+        assert!(take_remote_ownership(&sessions, &transfers).is_empty());
+        assert!(
+            !sessions
+                .lock()
+                .unwrap()
+                .sessions
+                .get(&one)
+                .unwrap()
+                .clipboard_owner
+        );
+    }
+
+    /// Taking the clipboard back is one event per claim: a second local
+    /// selection has nothing new to tell the bus.
+    #[test]
+    fn the_remote_owner_is_told_once_per_claim() {
+        let sessions = Sessions::default();
+        let transfers = Mutex::new(Transfers::default());
+        let (one, row) =
+            claimed_session("/org/freedesktop/portal/desktop/one", true, &["text/plain"]);
+        sessions.lock().unwrap().sessions.insert(one, row);
+
+        assert_eq!(take_remote_ownership(&sessions, &transfers).len(), 1);
+        assert!(take_remote_ownership(&sessions, &transfers).is_empty());
+    }
+
+    /// A transfer the remote side was given before the local copy cannot be
+    /// answered after it, even if a later `SetSelection` with a type this end
+    /// cannot read never mints a replacement serial.
+    #[test]
+    fn a_local_selection_drops_the_transfers_it_replaced() {
+        let sessions = Sessions::default();
+        let transfers = Mutex::new(Transfers::default());
+        let (one, row) =
+            claimed_session("/org/freedesktop/portal/desktop/one", true, &["text/plain"]);
+        let start = std::time::Instant::now();
+        transfers.lock().unwrap().requested(&one, 11, start);
+        sessions.lock().unwrap().sessions.insert(one.clone(), row);
+
+        assert_eq!(take_remote_ownership(&sessions, &transfers).len(), 1);
+        assert_eq!(
+            transfers
+                .lock()
+                .unwrap()
+                .answered(&one, 11, start, CLIPBOARD_TRANSFER),
+            TransferAnswer::Unknown,
+            "the old serial is not an answer after the local copy"
+        );
+    }
+
+    /// The watcher only says a session lost the clipboard if it still has no
+    /// claim: a `SetSelection` that won the race, or a session that has
+    /// closed, must not be told the local side owns anyway.
+    #[test]
+    fn a_session_that_claimed_again_is_not_told_the_local_side_won() {
+        let sessions = Sessions::default();
+        let (quiet, quiet_row) = claimed_session(
+            "/org/freedesktop/portal/desktop/quiet",
+            false,
+            &["text/plain"],
+        );
+        let (claimed, claimed_row) = claimed_session(
+            "/org/freedesktop/portal/desktop/claimed",
+            true,
+            &["text/plain"],
+        );
+        {
+            let mut shared = sessions.lock().unwrap();
+            shared.sessions.insert(quiet.clone(), quiet_row);
+            shared.sessions.insert(claimed.clone(), claimed_row);
+        }
+
+        let gone = OwnedObjectPath::try_from("/org/freedesktop/portal/desktop/gone")
+            .expect("a valid object path");
+        assert!(selection_still_local(&sessions, &quiet));
+        assert!(!selection_still_local(&sessions, &claimed));
+        assert!(!selection_still_local(&sessions, &gone));
     }
 }

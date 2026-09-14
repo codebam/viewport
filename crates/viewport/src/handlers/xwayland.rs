@@ -363,12 +363,22 @@ impl XwmHandler for ViewportState {
             // Tagged as the X side's, so that a Wayland client pasting is
             // answered by asking the XWM rather than by handing it a
             // clipboard entry that has nothing to do with this selection.
-            SelectionTarget::Clipboard => set_data_device_selection(
-                &dh,
-                &self.seat,
-                mime_types,
-                crate::clipboard::Owner::Xwayland,
-            ),
+            SelectionTarget::Clipboard => {
+                // The X client holds the selection now, and this path does
+                // not go through `SelectionHandler::new_selection` (smithay's
+                // compositor-side setter stands outside the Wayland one), so
+                // a remote desktop session that was holding the clipboard is
+                // told here, with the types this copy offers. The bytes still
+                // travel over the X connection, not through the portal.
+                let mimes = mime_types.clone();
+                set_data_device_selection(
+                    &dh,
+                    &self.seat,
+                    mime_types,
+                    crate::clipboard::Owner::Xwayland,
+                );
+                crate::screencast::remote::local_selection_changed(mimes);
+            }
             SelectionTarget::Primary => set_primary_selection(
                 &dh,
                 &self.seat,

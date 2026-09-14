@@ -54,7 +54,9 @@ impl ViewportState {
     /// copied something may have exited hours ago, and a Wayland selection
     /// lives only as long as the client offering it. Owning it here means the
     /// compositor answers when a client pastes — see `send_selection` in
-    /// `handlers`.
+    /// `handlers`. It also takes the selection back from a remote desktop
+    /// session that was holding it, so a remote paste reads this entry rather
+    /// than the selection that session copied.
     pub fn offer_clipboard(&mut self) {
         use smithay::wayland::selection::data_device::set_data_device_selection;
         let dh = self.display_handle.clone();
@@ -64,6 +66,7 @@ impl ViewportState {
             crate::clipboard::offered_mimes(),
             crate::clipboard::Owner::History,
         );
+        crate::screencast::remote::local_selection_changed(crate::clipboard::offered_mimes());
     }
 
     /// The largest list the launcher answers with.
