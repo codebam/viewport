@@ -23,6 +23,11 @@
 // felt like it.
 
 use std::io::{Read, Write};
+use std::time::{Duration, Instant};
+
+use smithay::reexports::rustix::event::{poll, PollFd, PollFlags, Timespec};
+use smithay::reexports::rustix::fs::{fcntl_setfl, OFlags};
+use smithay::reexports::rustix::io::Errno;
 
 use viewport_ipc::event::ClipboardEntry;
 
@@ -149,7 +154,7 @@ impl Clipboard {
         // A client can offer a selection as often as it likes, and each offer
         // is a pipe it may never write to. Past a handful in flight the new
         // one is dropped rather than allowed to pin another thread and fd.
-        let Some(live) = LiveThread::acquire() else {
+        let Some(live) = LiveThread::acquire(LiveKind::Reader) else {
             tracing::warn!("too many clipboard reads in flight; dropping this copy");
             return;
         };
@@ -158,30 +163,11 @@ impl Clipboard {
             .spawn(move || {
                 let _live = live;
                 let mut file = std::fs::File::from(read);
-                let mut buffer = Vec::new();
-                // Bounded, and bounded by *reading* rather than by asking how
-                // much there is: a pipe has no length, and a client offering
-                // more than the cap is one whose first quarter-megabyte is
-                // still worth keeping.
-                let mut chunk = [0u8; 8192];
-                loop {
-                    match file.read(&mut chunk) {
-                        Ok(0) => break,
-                        Ok(n) => {
-                            buffer.extend_from_slice(&chunk[..n]);
-                            if buffer.len() >= MAX_BYTES {
-                                buffer.truncate(MAX_BYTES);
-                                break;
-                            }
-                        }
-                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-                        Err(_) => return,
-                    }
-                }
-                // Lossy, deliberately: a truncated read can cut a character in
-                // half, and a picker showing one replacement mark is better
-                // than an entry silently dropped.
-                let text = String::from_utf8_lossy(&buffer).into_owned();
+                let Some(text) = read_selection(&mut file, Instant::now() + TRANSFER_TIMEOUT)
+                else {
+                    tracing::warn!("could not read the clipboard; dropping this copy");
+                    return;
+                };
                 let _ = reader.send(Message::Copied(text));
             });
         if let Err(e) = spawned {
@@ -276,28 +262,151 @@ pub fn offered_mimes() -> Vec<String> {
 /// Both are started from a client's request and both block on a pipe the other
 /// end controls: a client that offers a selection and never writes, or asks to
 /// paste and never reads, would otherwise leave one thread and one fd per
-/// request behind. Eight is far more than a desktop does at once.
-const MAX_THREADS: usize = 8;
+/// request behind. They are separate budgets so a run of stalled offers cannot
+/// starve the pastes the session is waiting on, and vice versa. Eight is far
+/// more than a desktop does at once.
+const MAX_READERS: usize = 8;
+const MAX_WRITERS: usize = 8;
 
-static LIVE_THREADS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// How long one transfer may stall before its thread gives its slot back.
+///
+/// Without this the budget was a permanent cap as well as a bound: eight
+/// clients that each offered a selection and then kept the pipe open without
+/// writing left every later copy dropped for the rest of the session. Ten
+/// seconds is long enough for a slow but real source to finish and short
+/// enough that a stuck one cannot hold the clipboard hostage.
+const TRANSFER_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// A slot in [`LIVE_THREADS`], released when the thread that holds it ends.
-struct LiveThread;
+static LIVE_READERS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static LIVE_WRITERS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+#[derive(Clone, Copy)]
+enum LiveKind {
+    Reader,
+    Writer,
+}
+
+/// A slot in one of the [`LIVE_READERS`]/[`LIVE_WRITERS`] budgets, released
+/// when the thread that holds it ends.
+struct LiveThread {
+    counter: &'static std::sync::atomic::AtomicUsize,
+}
 
 impl LiveThread {
-    fn acquire() -> Option<Self> {
-        if LIVE_THREADS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1 > MAX_THREADS {
-            LIVE_THREADS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    fn acquire(kind: LiveKind) -> Option<Self> {
+        let (counter, limit) = match kind {
+            LiveKind::Reader => (&LIVE_READERS, MAX_READERS),
+            LiveKind::Writer => (&LIVE_WRITERS, MAX_WRITERS),
+        };
+        if counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1 > limit {
+            counter.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
             return None;
         }
-        Some(Self)
+        Some(Self { counter })
     }
 }
 
 impl Drop for LiveThread {
     fn drop(&mut self) {
-        LIVE_THREADS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        self.counter
+            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
     }
+}
+
+/// Put a transfer's fd in non-blocking mode, so the poll below is the only
+/// place a thread ever waits. The Rustix call is the same one the shell's
+/// spawn path uses; if it fails the transfer is dropped, because the deadline
+/// below cannot bound a blocking read or write.
+fn set_nonblocking(file: &std::fs::File) -> bool {
+    fcntl_setfl(file, OFlags::NONBLOCK).is_ok()
+}
+
+/// Wait for `events` on `file`, or `false` at `deadline`.
+fn wait_for(file: &std::fs::File, events: PollFlags, deadline: Instant) -> bool {
+    let mut poll_fds = [PollFd::new(file, events)];
+    loop {
+        let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+            return false;
+        };
+        let timeout = Timespec {
+            tv_sec: left.as_secs() as i64,
+            tv_nsec: i64::from(left.subsec_nanos()),
+        };
+        match poll(&mut poll_fds, Some(&timeout)) {
+            Ok(0) => return false,
+            Ok(_) => {
+                let ready = poll_fds[0].revents();
+                if ready.intersects(PollFlags::ERR | PollFlags::NVAL) {
+                    return false;
+                }
+                // HUP is readiness for both directions: the read below gets
+                // EOF, and the write below gets the peer's error. Either is
+                // the end of this transfer, not a reason to wait out the
+                // whole deadline first.
+                return ready.intersects(events | PollFlags::HUP);
+            }
+            Err(Errno::INTR) => poll_fds[0].clear_revents(),
+            Err(_) => return false,
+        }
+    }
+}
+
+/// Read a selection to EOF, or `None` if the source stalls past `deadline`.
+fn read_selection(file: &mut std::fs::File, deadline: Instant) -> Option<String> {
+    if !set_nonblocking(file) {
+        return None;
+    }
+    let mut buffer = Vec::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        match file.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => {
+                buffer.extend_from_slice(&chunk[..n]);
+                if buffer.len() >= MAX_BYTES {
+                    buffer.truncate(MAX_BYTES);
+                    break;
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                if !wait_for(file, PollFlags::IN, deadline) {
+                    // The source stopped mid-transfer. A pipe has no length,
+                    // so what it wrote before stalling is all there is; keep
+                    // it rather than throwing away a usable copy because the
+                    // client never closed its end.
+                    break;
+                }
+            }
+            Err(_) => return None,
+        }
+    }
+    // Lossy, deliberately: a truncated read can cut a character in half, and
+    // a picker showing one replacement mark is better than an entry
+    // silently dropped.
+    Some(String::from_utf8_lossy(&buffer).into_owned())
+}
+
+/// Write a paste to the client, or `false` if it stalls past `deadline`.
+fn write_selection(file: &mut std::fs::File, bytes: &[u8], deadline: Instant) -> bool {
+    if !set_nonblocking(file) {
+        return false;
+    }
+    let mut at = 0;
+    while at < bytes.len() {
+        match file.write(&bytes[at..]) {
+            Ok(0) => return false,
+            Ok(n) => at += n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                if !wait_for(file, PollFlags::OUT, deadline) {
+                    return false;
+                }
+            }
+            Err(_) => return false,
+        }
+    }
+    true
 }
 
 /// Hand text to a client that is pasting.
@@ -307,7 +416,7 @@ impl Drop for LiveThread {
 /// that, so the write blocks until the client gets round to it. That is fine
 /// on a thread and is a frozen desktop anywhere else.
 pub fn serve(text: String, fd: std::os::unix::io::OwnedFd) {
-    let Some(live) = LiveThread::acquire() else {
+    let Some(live) = LiveThread::acquire(LiveKind::Writer) else {
         tracing::warn!("too many clipboard writers in flight; dropping the paste");
         return;
     };
@@ -316,10 +425,18 @@ pub fn serve(text: String, fd: std::os::unix::io::OwnedFd) {
         .spawn(move || {
             let _live = live;
             let mut file = std::fs::File::from(fd);
-            // The error is dropped rather than logged: a client that asks for
-            // the selection and exits before reading it closes the pipe, and
-            // EPIPE here is that and nothing else.
-            let _ = file.write_all(text.as_bytes());
+            // Failure is dropped rather than logged as an error: a client that
+            // asks for the selection and exits before reading it closes the
+            // pipe, and EPIPE here is that and nothing else. A timeout is the
+            // one case worth saying out loud, because it means a client left
+            // the clipboard held.
+            if !write_selection(
+                &mut file,
+                text.as_bytes(),
+                Instant::now() + TRANSFER_TIMEOUT,
+            ) {
+                tracing::debug!("clipboard write stalled; dropping this paste");
+            }
         });
     if let Err(e) = spawned {
         tracing::warn!("could not hand over the clipboard: {e}");
@@ -472,5 +589,64 @@ mod tests {
         clipboard.record("two".to_owned());
         assert_eq!(clipboard.entries()[1].id, id);
         assert_eq!(clipboard.take(id).as_deref(), Some("one"));
+    }
+
+    /// A source that never writes gives its slot back at the deadline rather
+    /// than pinning a reader for the session.
+    #[test]
+    fn a_stalled_read_gives_its_slot_back_at_its_deadline() {
+        let (read, _write) = std::os::unix::net::UnixStream::pair().unwrap();
+        let mut file = std::fs::File::from(std::os::fd::OwnedFd::from(read));
+        let began = Instant::now();
+        assert_eq!(
+            read_selection(&mut file, Instant::now() + Duration::from_millis(50)).as_deref(),
+            Some("")
+        );
+        assert!(began.elapsed() < Duration::from_secs(2));
+    }
+
+    /// A paste the client never reads does not leave its writer holding the
+    /// budget forever.
+    #[test]
+    fn a_stalled_write_is_dropped_at_its_deadline() {
+        let (write, _read) = std::os::unix::net::UnixStream::pair().unwrap();
+        let mut file = std::fs::File::from(std::os::fd::OwnedFd::from(write));
+        let began = Instant::now();
+        assert!(!write_selection(
+            &mut file,
+            &vec![0u8; 8 * 1024 * 1024],
+            Instant::now() + Duration::from_millis(50)
+        ));
+        assert!(began.elapsed() < Duration::from_secs(2));
+    }
+
+    /// The ordinary path still finishes.
+    #[test]
+    fn a_read_that_finishes_is_captured() {
+        let (read, mut write) = std::os::unix::net::UnixStream::pair().unwrap();
+        let mut file = std::fs::File::from(std::os::fd::OwnedFd::from(read));
+        let producer = std::thread::spawn(move || {
+            let _ = write.write_all(b"hello");
+        });
+        assert_eq!(
+            read_selection(&mut file, Instant::now() + Duration::from_secs(2)).as_deref(),
+            Some("hello")
+        );
+        producer.join().unwrap();
+    }
+
+    /// Readers and writers draw on separate budgets, so a run of stalled
+    /// offers cannot drop the pastes the session is waiting on.
+    #[test]
+    fn reader_and_writer_slots_are_separate() {
+        let readers: Vec<_> = (0..MAX_READERS)
+            .map(|_| LiveThread::acquire(LiveKind::Reader).expect("reader slot"))
+            .collect();
+        assert!(LiveThread::acquire(LiveKind::Reader).is_none());
+        assert!(
+            LiveThread::acquire(LiveKind::Writer).is_some(),
+            "stalled reads must not starve a paste"
+        );
+        drop(readers);
     }
 }
