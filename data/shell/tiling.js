@@ -198,6 +198,7 @@ function collapse(node, isRoot = false, workspace = null) {
      root's children *are* the columns, so a single column holding three windows
      would be flattened into three columns. */
   if (node.children.length === 1 && node.children[0].type === 'split' &&
+      !isGroup(node.children[0]) &&
       !(isRoot && layoutModeOf(workspace ?? undefined) === 'scrolling')) {
     const only = node.children[0];
     node.dir = only.dir;

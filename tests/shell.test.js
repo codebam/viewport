@@ -8615,6 +8615,32 @@ if (mode !== 'scrolling') {
     && Number.isFinite(viewport.zoom));
 }
 
+if (mode === 'tiling') {
+  /* J2: closing the only sibling of a tabbed group must not dissolve it. */
+  const sh = globalThis.__shell;
+  const ws = sh.workspaceOfForTest(1);
+  sh.workspaces.set(ws, {
+    type: 'split', dir: 'horizontal', layout: 'split', active: 0, weight: 1,
+    children: [
+      { type: 'leaf', id: 1, weight: 1 },
+      {
+        type: 'split', dir: 'vertical', layout: 'tabbed', active: 0, weight: 1,
+        children: [
+          { type: 'leaf', id: 2, weight: 1 },
+          { type: 'leaf', id: 3, weight: 1 },
+        ],
+      },
+    ],
+  });
+  emit({ type: 'view.focused', id: 1 });
+  emit({ type: 'view.removed', id: 1 });
+  const group = sh.workspaces.get(ws)?.children?.[0];
+  check('a lone tabbed group stays a tabbed group',
+    sh.workspaces.get(ws)?.children?.length === 1
+    && group?.layout === 'tabbed'
+    && group?.children?.length === 2);
+}
+
 emit({ type: 'view.removed', id: 1 });
 emit({ type: 'view.removed', id: 2 });
 emit({ type: 'view.removed', id: 3 });
