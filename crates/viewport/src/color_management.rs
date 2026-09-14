@@ -19,7 +19,7 @@
 
 use std::sync::Mutex;
 
-use smithay::output::Output;
+use smithay::output::{Output, WeakOutput};
 use smithay::reexports::wayland_protocols::wp::color_management::v1::server::{
     wp_color_management_output_v1::{self, WpColorManagementOutputV1},
     wp_color_management_surface_feedback_v1::{self, WpColorManagementSurfaceFeedbackV1},
@@ -57,9 +57,32 @@ pub struct ColorManagementState {
     /// list an output switched into HDR stays SDR to every client already
     /// running — and to every client started afterwards, since nothing else
     /// consulted the output's state either.
-    outputs: Vec<(WpColorManagementOutputV1, WlOutput)>,
+    outputs: Vec<OutputObject>,
     /// The per-surface feedback objects, for the same reason.
     feedback: Vec<Feedback>,
+}
+
+/// One client's output object, and the output global it describes.
+///
+/// The protocol ties the object to the output global, not to the `wl_output`
+/// resource the client named it with: destroying that resource has no
+/// impact. The description is therefore resolved from a `WeakOutput` taken
+/// when the object was made, and the `WlOutput` is held only so
+/// `image_description_changed` can still be followed by `wl_output.done`
+/// while the client has the resource.
+#[derive(Debug)]
+struct OutputObject {
+    object: WpColorManagementOutputV1,
+    wl_output: WlOutput,
+    /// `None` when the object was made for an output the compositor no
+    /// longer had: the object is inert from birth, and a description asked
+    /// of it must fail with `no_output`.
+    output: Option<WeakOutput>,
+}
+
+/// The output an output object currently describes, if it still exists.
+fn described_output(output: Option<&WeakOutput>) -> Option<Output> {
+    output.and_then(WeakOutput::upgrade)
 }
 
 /// One client's feedback object, and the last answer it was given.
@@ -87,7 +110,7 @@ impl ColorManagementState {
 
     /// Drop the objects whose client has gone.
     fn reap(&mut self) {
-        self.outputs.retain(|(object, _)| object.is_alive());
+        self.outputs.retain(|entry| entry.object.is_alive());
         self.feedback
             .retain(|entry| feedback_usable(entry.object.is_alive(), entry.surface.is_alive()));
     }
@@ -370,8 +393,16 @@ impl Dispatch<WpColorManagerV1, ()> for ViewportState {
 
             wp_color_manager_v1::Request::GetOutput { id, output } => {
                 let object = data_init.init(id, output.clone());
+                // Resolve the global now, while the client's wl_output is
+                // there to name it. Releasing that resource later must not
+                // change the answer, per the protocol.
+                let described = Output::from_resource(&output).map(|output| output.downgrade());
                 state.color_management.reap();
-                state.color_management.outputs.push((object, output));
+                state.color_management.outputs.push(OutputObject {
+                    object,
+                    wl_output: output,
+                    output: described,
+                });
             }
 
             wp_color_manager_v1::Request::CreateWindowsScrgb { image_description }
@@ -882,6 +913,25 @@ fn send_description(
     object.ready(identity_for(&description));
 }
 
+/// Hand a client an image description that fails as soon as it is made.
+///
+/// The protocol asks for this when the output object is inert: the new
+/// description delivers `failed` with the cause instead of `ready`, and
+/// using it is then the client's error to see.
+fn send_failed_description(
+    object: New<WpImageDescriptionV1>,
+    cause: wp_image_description_v1::Cause,
+    data_init: &mut DataInit<'_, ViewportState>,
+) {
+    let object = data_init.init(
+        object,
+        ImageDescription {
+            description: Mutex::new(None),
+        },
+    );
+    object.failed(cause);
+}
+
 impl Dispatch<WpImageDescriptionInfoV1, ()> for ViewportState {
     fn request(
         _state: &mut Self,
@@ -900,17 +950,35 @@ impl Dispatch<WpColorManagementOutputV1, WlOutput> for ViewportState {
     fn request(
         state: &mut Self,
         _client: &Client,
-        _object: &WpColorManagementOutputV1,
+        object: &WpColorManagementOutputV1,
         request: wp_color_management_output_v1::Request,
-        wl_output: &WlOutput,
+        _wl_output: &WlOutput,
         _display: &DisplayHandle,
         data_init: &mut DataInit<'_, Self>,
     ) {
         match request {
             wp_color_management_output_v1::Request::GetImageDescription { image_description } => {
-                let output = Output::from_resource(wl_output);
-                let description = output_description(state, output.as_ref());
-                send_description(image_description, description, data_init);
+                // The global, not the wl_output resource the client used to
+                // name it: releasing that resource has no impact, while an
+                // output the compositor has removed leaves this object inert
+                // and its description has to say so.
+                let described = state
+                    .color_management
+                    .outputs
+                    .iter()
+                    .find(|entry| &entry.object == object)
+                    .and_then(|entry| described_output(entry.output.as_ref()));
+                match described {
+                    Some(output) => {
+                        let description = output_description(state, Some(&output));
+                        send_description(image_description, description, data_init);
+                    }
+                    None => send_failed_description(
+                        image_description,
+                        wp_image_description_v1::Cause::NoOutput,
+                        data_init,
+                    ),
+                }
             }
             wp_color_management_output_v1::Request::Destroy => {}
             _ => {}
@@ -929,7 +997,7 @@ impl Dispatch<WpColorManagementOutputV1, WlOutput> for ViewportState {
         state
             .color_management
             .outputs
-            .retain(|(held, _)| held != object);
+            .retain(|entry| &entry.object != object);
     }
 }
 
@@ -1071,16 +1139,18 @@ impl ViewportState {
             .color_management
             .outputs
             .iter()
-            .filter(|(_, wl_output)| {
-                Output::from_resource(wl_output).is_some_and(|output| output.name() == name)
+            .filter(|entry| {
+                described_output(entry.output.as_ref()).is_some_and(|output| output.name() == name)
             })
-            .map(|(object, wl_output)| (object.clone(), wl_output.clone()))
+            .map(|entry| (entry.object.clone(), entry.wl_output.clone()))
             .collect();
         for (object, wl_output) in outputs {
             object.image_description_changed();
             // The protocol asks for it, and a client that batches on
-            // `wl_output.done` never applies the change without one.
-            if wl_output.version() >= 2 {
+            // `wl_output.done` never applies the change without one. A
+            // client that released its wl_output still gets the change on
+            // the colour object; the done event has nowhere to go.
+            if wl_output.is_alive() && wl_output.version() >= 2 {
                 wl_output.done();
             }
         }
@@ -1340,6 +1410,29 @@ mod tests {
         // Not a guess: the protocol requires it.
         assert_eq!(Description::default().transfer, TransferFunction::Srgb);
         assert_eq!(Description::default().primaries, Primaries::SRGB);
+    }
+
+    #[test]
+    fn an_output_object_describes_the_global_not_the_client_resource() {
+        // The wl_output resource may be released at any time, and the object
+        // still has to describe the global. Only the compositor dropping the
+        // output takes the answer away, and then it has to say `no_output`
+        // rather than make an SDR description up.
+        let output = Output::new(
+            "test-output".to_owned(),
+            smithay::output::PhysicalProperties {
+                size: (0, 0).into(),
+                subpixel: smithay::output::Subpixel::Unknown,
+                make: String::new(),
+                model: String::new(),
+                serial_number: String::new(),
+            },
+        );
+        let weak = output.downgrade();
+        assert!(described_output(Some(&weak)).is_some());
+        drop(output);
+        assert!(described_output(Some(&weak)).is_none());
+        assert!(described_output(None).is_none());
     }
 
     #[test]
