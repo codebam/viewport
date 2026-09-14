@@ -477,7 +477,19 @@ pub fn apply(state: &mut ViewportState, request: Request) {
         }
         Request::OutputConfigure(config) => output_configure(state, config),
 
-        Request::OutputActive { name } => state.active_output = Some(name),
+        Request::OutputActive { name } => {
+            // A real head, not just a string: `active_output` is where a new
+            // window opens and which output layer surfaces default to, and a
+            // name nothing answers to leaves `ViewAdded` naming a monitor
+            // that does not exist. `any_output_by_name` rather than
+            // `output_by_name`, because a mirror sink is a real head that is
+            // deliberately absent from the logical `Space`.
+            if state.any_output_by_name(&name).is_none() {
+                reject(state, "output.active", "no such output");
+            } else {
+                state.active_output = Some(name);
+            }
+        }
 
         Request::GestureCapture { gestures } => {
             // Whole replacement, with malformed zero-finger entries and
