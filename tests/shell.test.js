@@ -499,6 +499,7 @@ const EXPORTS = ';globalThis.__shell = { views, workspaces, outputs, scrollOffse
      as the live maps rather than as copies, so a test can watch what a pan or
      a newly opened window did to them. */
   + ' canvasForTest: { project: canvasProject, fit: canvasFitViewport,'
+  + '   sanitize: sanitizeCanvasState,'
   + '   follow: canvasFollow, zoomed: canvasZoomed, bounds: canvasBounds,'
   + '   clamp: canvasClampZoom, places: canvasPlaces,'
   + '   viewport: canvasViewportOf, area: canvasAreaOf,'
@@ -8592,6 +8593,26 @@ if (mode !== 'scrolling') {
   check('a divider drag between tiny weights keeps both non-negative',
     a.weight > 0 && b.weight > 0
     && a.weight + b.weight > 0);
+}
+
+/* J6: a huge saved canvas place must not become an infinite viewport. */
+{
+  const sanitize = globalThis.__shell.canvasForTest.sanitize;
+  const clean = sanitize({
+    places: [{
+      app: 'ghost', workspace: 1,
+      x: 1e308, y: 1e308, width: 1e308, height: 1e308,
+    }],
+    viewports: {},
+  });
+  check('a huge saved canvas place is refused', clean.places.length === 0);
+
+  const viewport = globalThis.__shell.canvasForTest.fit(
+    [{ id: 1, rect: { x: 1e308, y: 1e308, width: 1e308, height: 1e308 } }],
+    { width: 1920, height: 1080 });
+  check('fit over a huge place stays finite',
+    Number.isFinite(viewport.x) && Number.isFinite(viewport.y)
+    && Number.isFinite(viewport.zoom));
 }
 
 emit({ type: 'view.removed', id: 1 });

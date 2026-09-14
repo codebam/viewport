@@ -476,6 +476,11 @@ function canvasFitViewport(items, area, margin = CANVAS.margin) {
   if (!box || !area || !(area.width > 0) || !(area.height > 0)) {
     return { x: 0, y: 0, zoom: 1 };
   }
+  /* A finite coordinate can still make a bound overflow — 1e308 + 1e308 is
+     Infinity — and a viewport centred on Infinity hides the whole plane. */
+  if (![box.left, box.top, box.right, box.bottom].every(Number.isFinite)) {
+    return { x: 0, y: 0, zoom: 1 };
+  }
 
   const width = Math.max(1, box.right - box.left);
   const height = Math.max(1, box.bottom - box.top);
@@ -486,11 +491,12 @@ function canvasFitViewport(items, area, margin = CANVAS.margin) {
   /* The visible span in world units, which is what the view has to be centred
      against — the area is screen pixels and the plane is not. */
   const span = { x: area.width / zoom, y: area.height / zoom };
-  return {
-    x: (box.left + box.right) / 2 - span.x / 2,
-    y: (box.top + box.bottom) / 2 - span.y / 2,
-    zoom,
-  };
+  const x = (box.left + box.right) / 2 - span.x / 2;
+  const y = (box.top + box.bottom) / 2 - span.y / 2;
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(zoom)) {
+    return { x: 0, y: 0, zoom: 1 };
+  }
+  return { x, y, zoom };
 }
 
 /* The gap left between a followed window and the edge it came in from, in

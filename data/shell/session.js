@@ -115,6 +115,9 @@ let saveTimer = null;
 const MAX_SESSION_DEPTH = 64;
 const MAX_SESSION_NODES = 10000;
 const MAX_SESSION_WEIGHT = 1000000;
+/* Canvas coordinates are world units. A finite 1e308 is still absurd enough
+   that x + width becomes Infinity and a fitted viewport leaves the plane. */
+const MAX_CANVAS_COORD = 2 ** 31;
 
 /* A saved number only becomes layout state if it is a finite number; NaN and
  * Infinity parse (1e400 parses to Infinity) and reach the DOM style as a
@@ -160,13 +163,15 @@ function sanitizeFloatingSlot(slot) {
  * zoom and turned back into window geometry. */
 function sanitizeCanvasState(saved) {
   if (!saved || typeof saved !== 'object') return { places: [], viewports: {} };
+  const inCanvasBounds = (value) =>
+    Number.isFinite(value) && Math.abs(value) <= MAX_CANVAS_COORD;
   const places = (Array.isArray(saved.places) ? saved.places : [])
     .slice(0, MAX_SESSION_NODES)
     .filter((slot) => slot && typeof slot === 'object'
       && typeof slot.app === 'string' && slot.app
-      && Number.isFinite(slot.x) && Number.isFinite(slot.y)
-      && Number.isFinite(slot.width) && slot.width > 0
-      && Number.isFinite(slot.height) && slot.height > 0)
+      && inCanvasBounds(slot.x) && inCanvasBounds(slot.y)
+      && inCanvasBounds(slot.width) && slot.width > 0
+      && inCanvasBounds(slot.height) && slot.height > 0)
     .map((slot) => ({
       app: slot.app,
       workspace: Number(slot.workspace),
@@ -175,7 +180,7 @@ function sanitizeCanvasState(saved) {
   const viewports = {};
   for (const [workspace, viewport] of Object.entries(saved.viewports ?? {})) {
     if (!viewport || typeof viewport !== 'object'
-        || !Number.isFinite(viewport.x) || !Number.isFinite(viewport.y)) continue;
+        || !inCanvasBounds(viewport.x) || !inCanvasBounds(viewport.y)) continue;
     viewports[workspace] = {
       x: viewport.x, y: viewport.y, zoom: viewport.zoom,
     };
