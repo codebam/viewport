@@ -12,6 +12,7 @@ use smithay::input::{Seat, SeatState};
 use smithay::output::Output;
 use smithay::reexports::calloop::generic::Generic;
 use smithay::reexports::calloop::{EventLoop, Interest, LoopHandle, LoopSignal, Mode, PostAction};
+use smithay::reexports::wayland_protocols::ext::session_lock::v1::server::ext_session_lock_v1::ExtSessionLockV1;
 use smithay::reexports::wayland_server::backend::{
     ClientData, ClientId, DisconnectReason, ObjectId,
 };
@@ -1145,6 +1146,14 @@ pub struct ViewportState {
     /// this rather than the mode: a shell lock screen this compositor does not
     /// own must not be focused, drawn, or asked for a password.
     pub lock_owned_by_shell: bool,
+    /// The `ext-session-lock-v1` instance that owns the session, if an
+    /// external locker does.
+    ///
+    /// Smithay hands `new_surface` surfaces from every lock object, including
+    /// lockers that lost the race; only a surface whose lock instance is this
+    /// one may enter `lock_surfaces`. See
+    /// [`SessionLockHandler::new_surface`](crate::handlers::session_lock::SessionLockHandler::new_surface).
+    pub accepted_lock: Option<ExtSessionLockV1>,
     /// When the session was locked, so a locker that never draws can be
     /// noticed rather than leaving a black screen that says nothing.
     pub locked_at: Option<std::time::Instant>,
@@ -1988,6 +1997,7 @@ impl ViewportState {
             session_lock_state,
             locked: false,
             lock_owned_by_shell: false,
+            accepted_lock: None,
             locked_at: None,
             lock_warned: false,
             lock_surfaces: std::collections::HashMap::new(),

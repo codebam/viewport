@@ -47,6 +47,18 @@ fn lock_surface_drawing(alive: bool, has_buffer: bool) -> bool {
     alive && has_buffer
 }
 
+/// Whether a lock surface belongs to the lock this compositor accepted.
+///
+/// Smithay hands `new_surface` every lock object a client made, including
+/// lockers that lost the race; matching the surface to the accepted
+/// `ExtSessionLockV1` is what the trait documentation requires. Trusting the
+/// output name alone let a superseded locker replace the accepted locker's
+/// surface under that key and take the keyboard. Generic so the decision is
+/// unit-testable without a Wayland display.
+fn surface_lock_matches<T: PartialEq>(accepted: Option<&T>, surface_lock: &T) -> bool {
+    accepted == Some(surface_lock)
+}
+
 impl SessionLockHandler for ViewportState {
     fn lock_state(&mut self) -> &mut SessionLockManagerState {
         &mut self.session_lock_state
@@ -87,6 +99,7 @@ impl SessionLockHandler for ViewportState {
         // `session.lock.drawn`, `session.unlock` and PAM verdicts all stop
         // belonging to the shell at once.
         self.lock_owned_by_shell = false;
+        self.accepted_lock = Some(confirmation.ext_session_lock().clone());
 
         tracing::info!("session locked");
         self.cancel_gesture();
@@ -151,6 +164,7 @@ impl SessionLockHandler for ViewportState {
         tracing::info!("session unlocked");
         self.locked = false;
         self.lock_owned_by_shell = false;
+        self.accepted_lock = None;
         self.locked_at = None;
         self.lock_surfaces.clear();
         // The page is told either way. It will not normally have a lock screen
@@ -166,6 +180,19 @@ impl SessionLockHandler for ViewportState {
     }
 
     fn new_surface(&mut self, surface: LockSurface, output: WlOutput) {
+        // Only the accepted lock's surfaces are ours. Smithay calls this for
+        // every lock object a client made, including a locker that lost the
+        // race to take the session; its surface replacing the accepted one
+        // under the output key is a keyboard takeover by a lock screen nobody
+        // can see.
+        if !surface_lock_matches(self.accepted_lock.as_ref(), surface.ext_session_lock()) {
+            tracing::warn!(
+                "ignoring a lock surface from an ext-session-lock client that does not \
+                 own the session"
+            );
+            return;
+        }
+
         use smithay::output::Output;
 
         let Some(output) = Output::from_resource(&output) else {
@@ -420,7 +447,7 @@ impl ViewportState {
 
 #[cfg(test)]
 mod tests {
-    use super::lock_surface_drawing;
+    use super::{lock_surface_drawing, surface_lock_matches};
 
     /// An alive locker that never committed a buffer is not drawing: that is
     /// what lets a takeover rescue a hung locker, and what makes
@@ -431,5 +458,17 @@ mod tests {
         assert!(!lock_surface_drawing(true, false));
         assert!(!lock_surface_drawing(false, true));
         assert!(!lock_surface_drawing(false, false));
+    }
+
+    /// A superseded locker's `new_surface` must not become ours: its surface
+    /// under the output key can take the keyboard from the accepted locker.
+    #[test]
+    fn only_the_accepted_lockers_surfaces_are_ours() {
+        assert!(surface_lock_matches(Some(&7u64), &7));
+        assert!(!surface_lock_matches(Some(&7u64), &8));
+        assert!(
+            !surface_lock_matches(None, &7),
+            "with no accepted locker there is no surface of ours"
+        );
     }
 }

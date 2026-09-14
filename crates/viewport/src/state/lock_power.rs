@@ -126,6 +126,7 @@ impl ViewportState {
         // taking over is not drawn and not typed into any more, and its
         // messages name the generation just replaced above.
         self.lock_owned_by_shell = true;
+        self.accepted_lock = None;
         self.cancel_gesture();
         self.locked = true;
         self.suspend_input_capture();
@@ -308,6 +309,7 @@ impl ViewportState {
     fn unlock_session(&mut self) {
         self.locked = false;
         self.lock_owned_by_shell = false;
+        self.accepted_lock = None;
         self.locked_at = None;
         self.lock_warned = false;
         self.lock_shell_drawn = None;
