@@ -879,15 +879,11 @@ impl ViewportState {
         let Some(size) = self.output_gamma_size(output) else {
             return false;
         };
-        let effective = match (
-            self.gamma_vcgt.get(&name).cloned(),
-            self.gamma_ramps.get(&name).cloned(),
-        ) {
-            (Some(vcgt), Some(client)) => vcgt.compose(&client),
-            (Some(vcgt), None) => vcgt,
-            (None, Some(client)) => client,
-            (None, None) => crate::gamma::identity(size as usize),
-        };
+        let effective = crate::gamma::effective_ramp(
+            self.gamma_vcgt.get(&name),
+            self.gamma_ramps.get(&name),
+            size as usize,
+        );
         self.apply_gamma(output, &effective)
     }
 

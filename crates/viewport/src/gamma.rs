@@ -118,6 +118,47 @@ impl Ramp {
     }
 }
 
+/// The ramp an output should actually wear, at exactly `size` entries.
+///
+/// `calibration` is the `vcgt` table read from a monitor profile, `client`
+/// is what a `wlr-gamma-control` client last set, and either may be absent.
+/// The client's table is applied through the calibration when both exist, the
+/// same composition [`Ramp::compose`] documents.
+///
+/// Always `size` entries, because the CRTC's LUT is a fixed size and the two
+/// sides disagree about it. `drm`'s `set_gamma` refuses a table shorter than
+/// the CRTC's `gamma_length` outright — the ramp is silently not applied —
+/// and takes only the first `gamma_length` entries of a longer one, which
+/// programmes the bottom slice of the curve instead of the curve. A profile
+/// written by a colorimeter carries whatever entry count its author chose
+/// (commonly 256) against LUTs of 1024 or 4096, so a table of the wrong
+/// length is the ordinary case, not a corrupt one.
+///
+/// A table that already has one entry per slot is returned untouched: sampling
+/// it again through the identity would move every value by a float rounding
+/// step, and a client's ramp is the one thing here that should reach the
+/// hardware exactly as it was sent.
+pub fn effective_ramp(calibration: Option<&Ramp>, client: Option<&Ramp>, size: usize) -> Ramp {
+    match (calibration, client) {
+        // The client's table is what is being mapped, so the result has the
+        // client's length; fitted below if that is not this CRTC's.
+        (Some(calibration), Some(client)) => fitted(calibration.compose(client), size),
+        // No client: the calibration is the curve, sampled at every slot.
+        (Some(calibration), None) => calibration.compose(&identity(size)),
+        (None, Some(client)) => fitted(client.clone(), size),
+        (None, None) => identity(size),
+    }
+}
+
+/// `ramp` at exactly `size` entries, sampling it only when it is not already
+/// the right shape.
+fn fitted(ramp: Ramp, size: usize) -> Ramp {
+    if ramp.red.len() == size && ramp.green.len() == size && ramp.blue.len() == size {
+        return ramp;
+    }
+    ramp.compose(&identity(size))
+}
+
 /// What the compositor has to be able to do for a ramp to reach a monitor.
 pub trait GammaControlHandler {
     fn gamma_control_state(&mut self) -> &mut GammaControlState;
@@ -540,5 +581,72 @@ mod tests {
         assert_eq!(ramp.red.len(), 256);
         assert_eq!(ramp.green[0], 256);
         assert_eq!(ramp.blue[255], 767);
+    }
+
+    #[test]
+    fn a_calibration_of_another_size_is_sampled_at_every_lut_slot() {
+        // A colorimeter profile with four entries against a 256-entry CRTC:
+        // the raw table is shorter than the LUT, which drm's set_gamma
+        // refuses, so it has to arrive as one entry per slot.
+        let calibration = Ramp {
+            red: vec![0, 1000, 2000, 3000],
+            green: vec![0, 1000, 2000, 3000],
+            blue: vec![0, 1000, 2000, 3000],
+        };
+        let ramp = effective_ramp(Some(&calibration), None, 256);
+        assert_eq!(ramp.red.len(), 256);
+        assert_eq!(ramp.green.len(), 256);
+        assert_eq!(ramp.blue.len(), 256);
+        // The curve survives the sampling: the ends and the first quarter of
+        // the table land where they should on a 0..255 index.
+        assert_eq!(ramp.red[0], 0);
+        assert_eq!(ramp.red[255], 3000);
+        assert_eq!(ramp.red[85], 1000);
+    }
+
+    #[test]
+    fn a_client_ramp_of_the_lut_size_is_untouched() {
+        // The one table that must reach the hardware exactly as sent: the
+        // client asked for it, entry for entry, and it already fits.
+        let client = Ramp {
+            red: (0..256).map(|i| i as u16 * 257).collect(),
+            green: (0..256).map(|i| (255 - i) as u16 * 257).collect(),
+            blue: vec![1234; 256],
+        };
+        assert_eq!(effective_ramp(None, Some(&client), 256), client);
+    }
+
+    #[test]
+    fn a_client_ramp_from_another_lut_is_resampled_too() {
+        // The client set 1024 entries and the output came back on a
+        // 256-entry CRTC, or the entry was made for a different output: the
+        // table has to be sampled rather than handed over truncated.
+        let client = Ramp {
+            red: (0..1024).map(|i| (i * 64) as u16).collect(),
+            green: (0..1024).map(|i| (i * 64) as u16).collect(),
+            blue: (0..1024).map(|i| (i * 64) as u16).collect(),
+        };
+        let ramp = effective_ramp(None, Some(&client), 256);
+        assert_eq!(ramp.red.len(), 256);
+        assert_eq!(ramp.red[0], 0);
+        assert_eq!(ramp.red[255], client.red[1023]);
+    }
+
+    #[test]
+    fn a_calibration_still_composes_with_a_client_ramp_of_lut_size() {
+        let calibration = Ramp {
+            red: vec![0, 1000, 2000, 3000],
+            green: vec![0, 1000, 2000, 3000],
+            blue: vec![0, 1000, 2000, 3000],
+        };
+        let client = identity(256);
+        let ramp = effective_ramp(Some(&calibration), Some(&client), 256);
+        assert_eq!(ramp.red.len(), 256);
+        assert_eq!(ramp, calibration.compose(&client));
+    }
+
+    #[test]
+    fn no_ramp_at_all_is_the_identity_at_the_lut_size() {
+        assert_eq!(effective_ramp(None, None, 256), identity(256));
     }
 }
