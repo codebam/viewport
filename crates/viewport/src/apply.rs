@@ -1809,8 +1809,17 @@ fn output_configure(state: &mut ViewportState, config: OutputConfigure) {
         tracing::info!("{}: transform {transform:?}", output.name());
     }
 
-    output.change_current_state(mode, transform, scale, None);
+    // The description fields first: a transform or a scale is part of the
+    // shape the mode is arranged into, so it has to be in place before
+    // `set_output_mode` re-arranges the layer map. The mode itself is not
+    // passed here — `set_output_mode` is the one routine that programs the
+    // CRTC, and `change_current_state` alone moves what every client is told
+    // while a real panel keeps scanning out the old resolution.
+    if transform.is_some() || scale.is_some() {
+        output.change_current_state(None, transform, scale, None);
+    }
     if let Some(mode) = mode {
+        state.set_output_mode(&output, mode);
         output.set_preferred(mode);
     }
 
@@ -1823,7 +1832,10 @@ fn output_configure(state: &mut ViewportState, config: OutputConfigure) {
     // portrait screen: the shell was told the output was 1440x2560 and that
     // windows could use 2560x1440 of it, so it laid out a desktop wider than
     // the screen and half of it fell off the side.
-    if mode.is_some() || transform.is_some() || scale.is_some() {
+    if mode.is_none() && (transform.is_some() || scale.is_some()) {
+        // `set_output_mode` has already re-arranged an output whose mode
+        // changed, with the transform and scale above in place. This is what
+        // arranges a transform or scale on its own.
         let current = state.space.output_geometry(&output).unwrap_or_default();
         let x = config.x.unwrap_or(current.loc.x);
         let y = config.y.unwrap_or(current.loc.y);
@@ -2027,6 +2039,42 @@ mod tests {
         assert_eq!(
             crate::binding::match_wheel(&bindings, &held, Wheel::Up, "", false),
             Some(&Action::Shell("workspace.switch 2".to_owned()))
+        );
+    }
+
+    /// The shell's `output.configure` used to call `change_current_state` with
+    /// the mode and nothing else. On udev that moves what every client is told
+    /// and leaves the CRTC scanning out whatever it was driving, so the panel
+    /// mode dropdown, `viewport msg -t output.configure --mode ...` and a
+    /// config-reload mode change were all silent no-ops on real hardware.
+    ///
+    /// The fix is that this path delegates to the same `set_output_mode` that
+    /// wlr-output-management uses. A DRM rig is not available in a unit test,
+    /// so — like the lock-surface walks in `state/frame_barriers.rs` — the
+    /// invariant is checked against the source the path is written in.
+    #[test]
+    fn output_configure_programs_a_mode_through_the_shared_crtc_path() {
+        let source = include_str!("apply.rs");
+        let start = source
+            .find("fn output_configure(state: &mut ViewportState, config: OutputConfigure) {")
+            .expect("output_configure in apply.rs");
+        let rest = &source[start..];
+        let end = rest.find("\n}\n").expect("the end of output_configure");
+        let body = &rest[..end];
+
+        assert!(
+            body.contains("state.set_output_mode(&output, mode)"),
+            "output.configure must program a mode through ViewportState::set_output_mode"
+        );
+        assert!(
+            body.contains("change_current_state(None"),
+            "the mode travels through set_output_mode; change_current_state must not carry it again"
+        );
+
+        let outputs = include_str!("state/outputs.rs");
+        assert!(
+            outputs.contains("pub(crate) fn set_output_mode("),
+            "set_output_mode has to be reachable from apply.rs"
         );
     }
 }

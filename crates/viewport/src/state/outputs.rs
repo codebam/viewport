@@ -630,10 +630,35 @@ impl ViewportState {
     /// `change_current_state` alone moves what every client is told and leaves
     /// the CRTC scanning out what it was: the windows resize and the picture
     /// does not.
-    fn set_output_mode(&mut self, output: &Output, mode: smithay::output::Mode) {
+    ///
+    /// This is the one path a mode takes to the hardware. Both
+    /// `apply_output_configuration` and the shell's `output.configure` go
+    /// through it; a second copy of this body is how the shell mode dropdown
+    /// became a silent no-op on udev while `wlr-randr` worked.
+    pub(crate) fn set_output_mode(&mut self, output: &Output, mode: smithay::output::Mode) {
         self.output_vrr_wanted.remove(&output.name());
         output.change_current_state(Some(mode), None, None, None);
 
+        self.program_output_mode(output, mode);
+
+        // A different mode is a different screen, so the layer map and the
+        // damage history are as stale as they are after a rotation. This runs
+        // whichever way the programming went: a nested host decides the mode
+        // itself, and a refused modeset still leaves the description changed,
+        // so both still owe the re-arrange. Leaving it inside the success
+        // branch is how a mode-only `output.configure` on a backend whose early
+        // return fired would have moved what clients were told and never
+        // re-arranged the layers over it.
+        self.output_reshaped(output)
+    }
+
+    /// Program `mode` on the CRTC, or leave it to a nested host.
+    ///
+    /// Split out of [`Self::set_output_mode`] so the re-arrange that every
+    /// mode change owes runs on the paths that cannot reach a CRTC as well.
+    /// Failure and absence are not errors here: the mode is already in the
+    /// output description, and each branch says why it could not go further.
+    fn program_output_mode(&mut self, output: &Output, mode: smithay::output::Mode) {
         let Some(udev) = self.udev.as_mut() else {
             // Nested, where the mode is the host window's to decide.
             return;
@@ -712,10 +737,6 @@ impl ViewportState {
         }
         // A modeset invalidates what was queued for this output.
         surface.pending = false;
-
-        // And a different mode is a different screen, so the layer map and the
-        // damage history are as stale as they are after a rotation.
-        self.output_reshaped(output);
     }
 
     /// Turn one output on or off.
