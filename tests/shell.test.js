@@ -8750,6 +8750,46 @@ if (mode === 'scrolling') {
   }] });
 }
 
+/* U6: the popup cap is about what is on screen, not only what the map still
+ * counts. A sender can evict faster than the exit tween finishes, so a cap
+ * eviction has to take its element and fallback timer with it. */
+{
+  const sh = globalThis.__shell;
+  const strip = sh.outputs.get('DP-1').notificationsEl;
+  emit({ type: 'shell.command', command: 'workspace.switch', args: ['390'] });
+  emit({ type: 'shell.command', command: 'notifications.dnd', args: ['off'] });
+  emit({ type: 'screencast.active', active: false });
+  /* A live popup from an earlier check would be rehomed rather than counted
+     against this one; clear the strip through the real path first. */
+  emit({ type: 'shell.command', command: 'notifications.dnd', args: ['on'] });
+  emit({ type: 'shell.command', command: 'notifications.dnd', args: ['off'] });
+  check('the popup strip is empty before the flood', strip.children.length === 0);
+
+  const realTo = global.gsap.to;
+  const realSetTimeout = global.setTimeout;
+  let fallbacks = 0;
+  global.gsap.to = () => {}; // the exit tween never finishes
+  global.setTimeout = (fn, ms) => {
+    if (ms === 2000) fallbacks++;
+    return realSetTimeout(fn, ms);
+  };
+  try {
+    for (let i = 0; i < 20; i++) {
+      emit({ type: 'notification.add', id: 1000 + i, app_name: 'flood',
+        summary: `flood ${i}`, body: '', urgency: 1, timeout: 0, actions: [] });
+    }
+  } finally {
+    global.gsap.to = realTo;
+    global.setTimeout = realSetTimeout;
+  }
+  check('a popup flood keeps the DOM at the cap', strip.children.length <= 8);
+  check('and arms no exit fallback for an evicted popup', fallbacks === 0);
+
+  for (let i = 12; i < 20; i++) {
+    emit({ type: 'notification.close', id: 1000 + i });
+  }
+}
+
 emit({ type: 'view.removed', id: 1 });
 emit({ type: 'view.removed', id: 2 });
 emit({ type: 'view.removed', id: 3 });

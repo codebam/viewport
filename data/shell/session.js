@@ -602,7 +602,10 @@ function showNotification(message) {
   while (notifications.size >= MAX_NOTIFICATION_POPUPS) {
     const oldest = notifications.keys().next().value;
     if (oldest === undefined) break;
-    dropNotification(oldest, true);
+    /* The map is what the cap counts, but the element and its fallback timer
+       are not bounded by it: a sender can evict faster than an exit tween
+       finishes. A cap eviction removes synchronously instead. */
+    dropNotification(oldest, true, true);
   }
 
   notifications.set(message.id, {
@@ -621,7 +624,7 @@ function showNotification(message) {
 
 /* Remove one from the screen. `expired` distinguishes a timer running out from
  * a user acting, because the sending application is told which happened. */
-function dropNotification(id, expired) {
+function dropNotification(id, expired, immediate = false) {
   const entry = notifications.get(id);
   if (!entry) return;
 
@@ -650,8 +653,15 @@ function dropNotification(id, expired) {
      child, so the compositor is still told to draw that rectangle of shell
      over the windows, and no click and no timer will ever take it away.
      setTimeout is not on the animation clock, so this is the one that lands. */
-  entry.fallback = setTimeout(remove, NOTIFICATION_EXIT_FALLBACK_MS);
-  animateNotificationOut(entry.el, remove);
+  if (immediate) {
+    /* Called for a cap eviction, where the tween must not be the thing that
+       decides when the element and its timer go: 20 senders can arrive while
+       one exit runs. The map key is already gone; take the element with it. */
+    remove();
+  } else {
+    entry.fallback = setTimeout(remove, NOTIFICATION_EXIT_FALLBACK_MS);
+    animateNotificationOut(entry.el, remove);
+  }
   reportNotificationRect();
 
   if (expired) send({ type: 'notification.expire', id });
