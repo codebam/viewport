@@ -21,7 +21,7 @@ use smithay::input::Seat;
 use smithay::reexports::wayland_server::protocol::wl_seat;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::Resource as _;
-use smithay::utils::{Logical, Point, Serial};
+use smithay::utils::{Logical, Point, Rectangle, Serial};
 use smithay::wayland::compositor::with_states;
 use smithay::wayland::shell::xdg::decoration::XdgDecorationHandler;
 use smithay::wayland::shell::xdg::{
@@ -755,9 +755,7 @@ impl ViewportState {
 
         // The positioner's target is relative to the parent's geometry.
         let parent_offset = get_popup_toplevel_coords(&PopupKind::Xdg(popup.clone()));
-        let mut target = output_geo;
-        target.loc -= parent_offset;
-        target.loc -= window_geo.loc;
+        let target = popup_target(output_geo, parent_offset, window_geo.loc);
 
         popup.with_pending_state(|state| {
             let asked = state.positioner.get_geometry();
@@ -790,6 +788,24 @@ impl ViewportState {
             );
         });
     }
+}
+
+/// Translate an output rectangle into the parent surface's coordinate space.
+///
+/// Both origins are untrusted: the shell controls where `Space` maps the
+/// window, and a client controls the popup's offset inside its toplevel. The
+/// subtraction is done wide so either can be at a coordinate limit without
+/// aborting the compositor; a rectangle driven off the edge of the world
+/// clamps there, which is the same non-answer the positioner already handles.
+fn popup_target(
+    output: Rectangle<i32, Logical>,
+    parent_offset: Point<i32, Logical>,
+    window_offset: Point<i32, Logical>,
+) -> Rectangle<i32, Logical> {
+    let x = i64::from(output.loc.x) - i64::from(parent_offset.x) - i64::from(window_offset.x);
+    let y = i64::from(output.loc.y) - i64::from(parent_offset.y) - i64::from(window_offset.y);
+    let clamp = |value: i64| value.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
+    Rectangle::new((clamp(x), clamp(y)).into(), output.size)
 }
 
 fn xdg_resize_edges(edges: xdg_toplevel::ResizeEdge) -> Option<(&'static str, (bool, bool))> {
@@ -1034,5 +1050,25 @@ mod drag_tests {
         assert_eq!(xdg_resize_edges(Top), Some(("top", (false, true))));
         assert_eq!(xdg_resize_edges(Left), Some(("left", (true, false))));
         assert_eq!(xdg_resize_edges(None), std::option::Option::None);
+    }
+
+    /// The popup target translation must survive coordinate limits on either
+    /// side: the shell places windows, and clients place popups.
+    #[test]
+    fn popup_target_saturates_extreme_origins() {
+        let output = Rectangle::<i32, Logical>::new((0, 0).into(), (100, 50).into());
+        let target = popup_target(output, (i32::MIN, i32::MIN).into(), (0, 0).into());
+        assert_eq!(target.loc, (i32::MAX, i32::MAX).into());
+        assert_eq!(target.size, output.size);
+
+        let target = popup_target(output, (0, 0).into(), (i32::MIN, i32::MAX).into());
+        assert_eq!(target.loc, (i32::MAX, -i32::MAX).into());
+
+        let target = popup_target(
+            Rectangle::<i32, Logical>::new((i32::MIN, i32::MIN).into(), (1, 1).into()),
+            (1, 1).into(),
+            (0, 0).into(),
+        );
+        assert_eq!(target.loc, (i32::MIN, i32::MIN).into());
     }
 }
