@@ -75,6 +75,19 @@ impl SessionLockHandler for ViewportState {
             return;
         }
 
+        // A new lock is a new generation. A PAM verdict still in flight for a
+        // built-in attempt, and every `session.*` message a page sent for the
+        // lock this replaces, then name a lock that is over. The bump has to
+        // come after the refusal above: `lock_screen_is_drawing` compares the
+        // generation too, and bumping first would make a working shell lock
+        // screen look dead and let this locker take over.
+        self.lock_generation = self.lock_generation.wrapping_add(1);
+        // The shell is not the lock screen any more, whatever it was before
+        // this line. The gates in `state/lock_power.rs` read this, so focus,
+        // `session.lock.drawn`, `session.unlock` and PAM verdicts all stop
+        // belonging to the shell at once.
+        self.lock_owned_by_shell = false;
+
         tracing::info!("session locked");
         self.cancel_gesture();
         self.locked = true;
@@ -121,8 +134,23 @@ impl SessionLockHandler for ViewportState {
     }
 
     fn unlock(&mut self) {
+        if self.lock_owned_by_shell {
+            // An external lock is calling unlock while this compositor's own
+            // shell screen owns the session. Smithay has already marked the
+            // external lock unlocked, but that locker did not own what is on
+            // screen: this is the shape left when a locker held the session
+            // without drawing and the built-in screen took it over. Clearing
+            // the lock here would let that locker dismiss a screen it does not
+            // own; instead the session stays locked and is unlocked by the
+            // password the screen actually asks for.
+            tracing::warn!(
+                "ignoring an external unlock while the built-in lock screen owns the session"
+            );
+            return;
+        }
         tracing::info!("session unlocked");
         self.locked = false;
+        self.lock_owned_by_shell = false;
         self.locked_at = None;
         self.lock_surfaces.clear();
         // The page is told either way. It will not normally have a lock screen
@@ -219,7 +247,7 @@ impl ViewportState {
         if self.lock_surfaces.values().any(lock_surface_is_drawing) {
             return true;
         }
-        self.lock_mode.is_built_in()
+        self.lock_owned_by_shell
             && self.lock_shell_drawn.is_some_and(|(lock, frames)| {
                 lock == self.lock_generation && self.shell_frames > frames
             })
@@ -288,7 +316,7 @@ impl ViewportState {
         // draws is the desktop itself, and the answer is `idle.lock_command` —
         // a locker that is not this shell, for a machine whose shell will not
         // paint.
-        if self.lock_mode.is_built_in() {
+        if self.lock_owned_by_shell {
             if self.lock_screen_is_drawing() {
                 return;
             }
@@ -340,7 +368,10 @@ impl ViewportState {
         if !self.locked {
             return;
         }
-        if self.lock_mode.is_built_in() {
+        // Ownership rather than the configured mode: on a machine configured
+        // for the built-in screen an external locker can still be the one
+        // holding the session, and its surface is where the key has to go.
+        if self.lock_owned_by_shell {
             self.focus_lock_shell();
             return;
         }

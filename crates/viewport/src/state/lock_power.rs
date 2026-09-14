@@ -121,6 +121,11 @@ impl ViewportState {
         self.lock_generation = self.lock_generation.wrapping_add(1);
         self.lock_shell_drawn = None;
         self.lock_attempt = None;
+        // This lock is the shell's, whatever held the session before it. An
+        // external locker that had been holding a session the shell is now
+        // taking over is not drawn and not typed into any more, and its
+        // messages name the generation just replaced above.
+        self.lock_owned_by_shell = true;
         self.cancel_gesture();
         self.locked = true;
         self.suspend_input_capture();
@@ -174,7 +179,10 @@ impl ViewportState {
     /// to find the mouse — which on the desk this feature exists for is not a
     /// thing they have.
     pub fn focus_lock_shell(&mut self) {
-        if !self.locked || !self.lock_mode.is_built_in() {
+        // Ownership, not the configured mode: an external locker on a machine
+        // configured for the built-in screen is still the thing the keyboard
+        // has to go to.
+        if !shell_owns_lock(self.locked, self.lock_owned_by_shell) {
             return;
         }
         if !self.focus_shell_at(None) {
@@ -195,7 +203,7 @@ impl ViewportState {
     /// half of the rule that a message cannot fake: see
     /// `lock_screen_is_drawing`.
     pub fn lock_screen_drawn(&mut self, generation: u64) {
-        if !self.locked || !self.lock_mode.is_built_in() {
+        if !shell_owns_lock(self.locked, self.lock_owned_by_shell) {
             return;
         }
         if generation != self.lock_generation {
@@ -221,11 +229,13 @@ impl ViewportState {
     /// from one that is broken, and the person's next move is to hold the
     /// power button.
     pub fn try_unlock(&mut self, generation: u64, password: viewport_ipc::request::Secret) {
-        if !self.locked || !self.lock_mode.is_built_in() {
+        if !shell_owns_lock(self.locked, self.lock_owned_by_shell) {
             // Nothing to unlock, or a locker of somebody else's is holding it
             // — in which case this compositor has no business checking a
             // password on its behalf, and unlocking on one would be a way
-            // past a lock screen it does not own.
+            // past a lock screen it does not own. The configured mode cannot
+            // answer this: an external locker can hold a session configured
+            // for the built-in screen.
             return;
         }
         if generation != self.lock_generation {
@@ -254,10 +264,18 @@ impl ViewportState {
         if self.lock_attempt == Some(verdict.generation) {
             self.lock_attempt = None;
         }
-        if !self.locked || verdict.generation != self.lock_generation {
+        if !shell_lock_message_applies(
+            self.locked,
+            self.lock_owned_by_shell,
+            verdict.generation,
+            self.lock_generation,
+        ) {
             // The lock ended while the stack was thinking — a takeover, a
             // `viewport msg`. The verdict is about a lock that is over, and a
-            // true one must not unlock the lock that came after it.
+            // true one must not unlock the lock that came after it. The
+            // ownership half is the same fact for a verdict: PAM checks
+            // passwords for this compositor's own screen, not for an external
+            // locker that took the session while the stack was busy.
             return;
         }
         if verdict.ok {
@@ -286,6 +304,7 @@ impl ViewportState {
     /// socket would be a lock screen anything on the machine could dismiss.
     fn unlock_session(&mut self) {
         self.locked = false;
+        self.lock_owned_by_shell = false;
         self.locked_at = None;
         self.lock_warned = false;
         self.lock_shell_drawn = None;
@@ -310,5 +329,64 @@ impl ViewportState {
     pub fn blank_screens(&mut self) {
         self.idle.force_blank();
         self.set_outputs_enabled(false);
+    }
+}
+
+/// Whether this compositor's own shell lock screen may drive the lock.
+///
+/// The one answer every built-in-lock message gate asks, in a free function so
+/// it can be unit-tested without a whole `ViewportState`. The configured
+/// `lock_mode` is deliberately not part of it: a session configured for the
+/// built-in screen can still be locked by an `ext-session-lock-v1` client, and
+/// this compositor has no business checking its passwords, moving its keyboard,
+/// or drawing its own page over it.
+fn shell_owns_lock(locked: bool, lock_owned_by_shell: bool) -> bool {
+    locked && lock_owned_by_shell
+}
+
+/// Whether a message naming `generation` belongs to the lock now in force.
+///
+/// Both halves matter for the same reason: the session has to be locked, this
+/// compositor has to own it, and the message has to name the current lock.
+fn shell_lock_message_applies(
+    locked: bool,
+    lock_owned_by_shell: bool,
+    generation: u64,
+    current_generation: u64,
+) -> bool {
+    shell_owns_lock(locked, lock_owned_by_shell) && generation == current_generation
+}
+
+#[cfg(test)]
+mod lock_power_tests {
+    use super::*;
+
+    /// The configuration is still `Mode::BuiltIn` here; ownership is what says
+    /// the shell is not the lock screen. This is the bug an external locker on
+    /// the default config used to hit.
+    #[test]
+    fn an_external_locker_owns_a_lock_the_shell_must_not_touch() {
+        assert!(!shell_owns_lock(true, false));
+        assert!(!shell_lock_message_applies(true, false, 7, 7));
+    }
+
+    /// The built-in flow has to keep working: the shell owns the lock it took,
+    /// under the generation it took it at.
+    #[test]
+    fn the_shell_owns_its_own_lock() {
+        assert!(shell_owns_lock(true, true));
+        assert!(shell_lock_message_applies(true, true, 7, 7));
+    }
+
+    #[test]
+    fn an_unlocked_session_owns_nothing() {
+        assert!(!shell_owns_lock(false, true));
+        assert!(!shell_lock_message_applies(false, true, 7, 7));
+    }
+
+    #[test]
+    fn a_message_for_an_older_lock_is_over() {
+        assert!(!shell_lock_message_applies(true, true, 6, 7));
+        assert!(!shell_lock_message_applies(true, false, 6, 6));
     }
 }

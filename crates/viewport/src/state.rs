@@ -1126,6 +1126,16 @@ pub struct ViewportState {
     /// Whether the session is locked. Stays true if the locker dies, because
     /// otherwise killing it would be the way past it.
     pub locked: bool,
+    /// Whether this compositor's own shell lock screen is the one holding the
+    /// lock.
+    ///
+    /// [`lock_mode`](Self::lock_mode) says what locking means on this machine;
+    /// this says who actually took the session. They come apart whenever an
+    /// `ext-session-lock-v1` client locks a session configured for the
+    /// built-in screen, and every message gate for the built-in screen asks
+    /// this rather than the mode: a shell lock screen this compositor does not
+    /// own must not be focused, drawn, or asked for a password.
+    pub lock_owned_by_shell: bool,
     /// When the session was locked, so a locker that never draws can be
     /// noticed rather than leaving a black screen that says nothing.
     pub locked_at: Option<std::time::Instant>,
@@ -1967,6 +1977,7 @@ impl ViewportState {
             relative_pointer_state,
             session_lock_state,
             locked: false,
+            lock_owned_by_shell: false,
             locked_at: None,
             lock_warned: false,
             lock_surfaces: std::collections::HashMap::new(),
