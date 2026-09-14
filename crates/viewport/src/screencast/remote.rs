@@ -915,6 +915,92 @@ impl RemoteDesktop {
     }
 }
 
+/// How many remote clipboard reads may be blocked at once.
+///
+/// The same ceiling the local clipboard uses (`clipboard::MAX_THREADS`): a
+/// peer that never writes the bytes it was asked for must not pin a thread and
+/// a pipe per `SelectionWrite`, which would exhaust the process one D-Bus call
+/// at a time.
+const MAX_CLIPBOARD_READERS: usize = 8;
+
+/// How long a silent selection writer is given before its reader reaps it.
+const CLIPBOARD_IDLE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The longest one transfer may hold a reader, activity or not.
+const CLIPBOARD_TOTAL: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How many remote clipboard readers are alive.
+static LIVE_CLIPBOARD_READERS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// A slot in [`LIVE_CLIPBOARD_READERS`], released when the thread ends.
+struct ClipboardReader;
+
+impl ClipboardReader {
+    fn acquire() -> Option<Self> {
+        if LIVE_CLIPBOARD_READERS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1
+            > MAX_CLIPBOARD_READERS
+        {
+            LIVE_CLIPBOARD_READERS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+            return None;
+        }
+        Some(Self)
+    }
+}
+
+impl Drop for ClipboardReader {
+    fn drop(&mut self) {
+        LIVE_CLIPBOARD_READERS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// Read what the application writes into a `SelectionWrite` pipe, and record
+/// it as the local selection.
+///
+/// On its own thread because the pipe blocks. The read end is non-blocking and
+/// the thread gives up on a peer that goes quiet or never finishes, so a pipe
+/// whose other end is held open and empty does not park a thread for the life
+/// of the session; [`ClipboardReader`] bounds how many can be parked at once.
+fn read_clipboard_pipe(
+    read: std::os::fd::OwnedFd,
+    sender: smithay::reexports::calloop::channel::Sender<Message>,
+) {
+    use smithay::reexports::rustix::fs::{fcntl_setfl, OFlags};
+    use std::io::Read as _;
+
+    if fcntl_setfl(&read, OFlags::NONBLOCK).is_err() {
+        return;
+    }
+    let mut file = std::fs::File::from(read);
+    let mut buffer = Vec::new();
+    let mut chunk = [0u8; 8192];
+    let started = std::time::Instant::now();
+    let mut last = started;
+    loop {
+        match file.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => {
+                buffer.extend_from_slice(&chunk[..n]);
+                if buffer.len() >= crate::clipboard::MAX_BYTES {
+                    buffer.truncate(crate::clipboard::MAX_BYTES);
+                    break;
+                }
+                last = std::time::Instant::now();
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                if last.elapsed() >= CLIPBOARD_IDLE || started.elapsed() >= CLIPBOARD_TOTAL {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(_) => return,
+        }
+    }
+    let text = String::from_utf8_lossy(&buffer).into_owned();
+    let _ = sender.send(Message::ClipboardSet { text });
+}
+
 /// The `org.freedesktop.impl.portal.Clipboard` object.
 ///
 /// A session created by RemoteDesktop or InputCapture asks for clipboard
@@ -1066,22 +1152,12 @@ impl Clipboard {
 
         // A pipe the application reads: this end is written on a thread,
         // because the application may not read it for as long as it likes and
-        // this is the bus connection the rest of the desktop shares.
+        // this is the bus connection the rest of the desktop shares. The
+        // thread and its fd are bounded by the clipboard's own writer cap,
+        // which `serve` owns.
         let (read, write) = smithay::reexports::rustix::pipe::pipe()
             .map_err(|e| zbus::fdo::Error::Failed(format!("no pipe for the clipboard: {e}")))?;
-        if let Err(e) = std::thread::Builder::new()
-            .name("clipboard-read".to_owned())
-            .spawn(move || {
-                use std::io::Write as _;
-                let mut file = std::fs::File::from(write);
-                let _ = file.write_all(text.as_bytes());
-            })
-        {
-            tracing::warn!("clipboard: could not start a writer: {e}");
-            return Err(zbus::fdo::Error::Failed(
-                "could not start a writer".to_owned(),
-            ));
-        }
+        crate::clipboard::serve(text, write);
         Ok(zvariant::OwnedFd::from(read))
     }
 
@@ -1105,22 +1181,20 @@ impl Clipboard {
             ));
         }
 
+        let Some(reader) = ClipboardReader::acquire() else {
+            tracing::warn!("clipboard: too many remote reads in flight; refusing a transfer");
+            return Err(zbus::fdo::Error::Failed(
+                "too many clipboard transfers in flight".to_owned(),
+            ));
+        };
         let (read, write) = smithay::reexports::rustix::pipe::pipe()
             .map_err(|e| zbus::fdo::Error::Failed(format!("no pipe for the clipboard: {e}")))?;
         let sender = self.sender.clone();
         if let Err(e) = std::thread::Builder::new()
             .name("clipboard-write".to_owned())
             .spawn(move || {
-                use std::io::Read as _;
-                let file = std::fs::File::from(read);
-                let mut buffer = Vec::new();
-                // Bounded by reading, as the history is: a remote that offers
-                // more than the cap still has its first quarter-megabyte kept.
-                let _ = file
-                    .take(crate::clipboard::MAX_BYTES as u64)
-                    .read_to_end(&mut buffer);
-                let text = String::from_utf8_lossy(&buffer).into_owned();
-                let _ = sender.send(Message::ClipboardSet { text });
+                let _reader = reader;
+                read_clipboard_pipe(read, sender);
             })
         {
             tracing::warn!("clipboard: could not start a reader: {e}");
@@ -1522,5 +1596,24 @@ mod tests {
         ] {
             assert!(injection.is_finite(), "{injection:?}");
         }
+    }
+    /// The remote clipboard keeps the same ceiling the local one does: a peer
+    /// that starts transfers and never finishes them uses a fixed number of
+    /// threads and pipe fds, not one per D-Bus call.
+    #[test]
+    fn remote_clipboard_readers_are_capped() {
+        let mut held = Vec::new();
+        for _ in 0..MAX_CLIPBOARD_READERS {
+            held.push(ClipboardReader::acquire().expect("under the cap"));
+        }
+        assert!(
+            ClipboardReader::acquire().is_none(),
+            "the cap must be a ceiling"
+        );
+        held.pop();
+        assert!(
+            ClipboardReader::acquire().is_some(),
+            "a finished reader frees its slot"
+        );
     }
 }
