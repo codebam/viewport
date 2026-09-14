@@ -1091,6 +1091,23 @@ pub(crate) fn set_view_minimized(state: &mut ViewportState, id: u32, minimized: 
     true
 }
 
+/// Whether a head is inside the pending output-revert window.
+///
+/// A mode, scale, rotation or power change arms a twelve-second countdown
+/// (`ViewportState::arm_output_revert`). During it the configuration on screen
+/// is the one nobody has confirmed, and the compositor is going to put the head
+/// back. Writing that head into the settings overlay now would persist the
+/// mode or scale the person could not read the screen to reject — and because
+/// the overlay is rewritten whole, a `config.save` from the shell or the CLI
+/// during the countdown is the one way that still happens now that the panel
+/// disables its Save button while confirming.
+fn head_is_unconfirmed(
+    revert: Option<&[crate::output_management::HeadChange]>,
+    name: &str,
+) -> bool {
+    revert.is_some_and(|changes| changes.iter().any(|change| change.name == name))
+}
+
 /// Write the runtime settings out so they survive the next start.
 ///
 /// The reasoning for the overlay file — and for why this is one explicit
@@ -1139,6 +1156,13 @@ fn config_save(state: &mut ViewportState) {
     for output in state.physical_outputs() {
         let name = output.name();
         if !touched.contains(&name) {
+            continue;
+        }
+        if head_is_unconfirmed(state.output_revert.as_deref(), &name) {
+            // Its current mode and scale belong to a configuration that is
+            // about to be reverted; saving them would outlive the countdown
+            // and the confirmation it was waiting for.
+            tracing::info!("{name}: not saving an unconfirmed output configuration");
             continue;
         }
         let mode = output.current_mode().map(|mode| {
@@ -2083,5 +2107,26 @@ mod tests {
             outputs.contains("pub(crate) fn set_output_mode("),
             "set_output_mode has to be reachable from apply.rs"
         );
+    }
+
+    /// A save during the revert countdown must not write the mode or scale the
+    /// revert is about to take back. The panel disables Save while it is
+    /// confirming, but `config.save` is a plain IPC message and can arrive from
+    /// the shell or the CLI at any point in the twelve seconds.
+    #[test]
+    fn saving_omits_heads_waiting_on_confirmation() {
+        use crate::output_management::HeadChange;
+
+        let reverting = [HeadChange {
+            name: "DP-1".to_owned(),
+            enabled: true,
+            ..Default::default()
+        }];
+        assert!(head_is_unconfirmed(Some(&reverting), "DP-1"));
+        // A head the pending revert does not cover is still saved; the
+        // countdown is about one configuration, not a freeze on saving.
+        assert!(!head_is_unconfirmed(Some(&reverting), "HDMI-A-1"));
+        // No countdown, nothing withheld.
+        assert!(!head_is_unconfirmed(None, "DP-1"));
     }
 }
