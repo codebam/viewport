@@ -444,6 +444,45 @@ mod tests {
         assert_eq!(output.vrr, Some(viewport_ipc::event::VrrMode::Fullscreen));
     }
 
+    /// A detached mirror and a cleared wallpaper are settings with an
+    /// explicit "nothing" spelling, and the overlay has to carry that
+    /// spelling rather than leaving the key out: absence means "the config
+    /// file is still in charge", so a panel that removed the mirror or the
+    /// picture would watch them come back on the next start.
+    #[test]
+    fn an_empty_mirror_or_wallpaper_clears_what_the_file_said() {
+        let mut base: crate::config::File = serde_json::from_str(
+            r#"{
+                "wallpaper": "file:///pic/wall.png",
+                "outputs": {"DP-1": {"mirror": "HDMI-A-1"}}
+            }"#,
+        )
+        .expect("the config file");
+
+        let mut outputs = BTreeMap::new();
+        outputs.insert(
+            "DP-1".to_owned(),
+            OutputOverlay {
+                mirror: Some(String::new()),
+                ..OutputOverlay::default()
+            },
+        );
+        let overlay = Overlay {
+            wallpaper: Some(String::new()),
+            outputs,
+            ..Overlay::default()
+        };
+
+        apply(&mut base, &overlay);
+
+        assert_eq!(base.wallpaper.as_deref(), Some(""));
+        assert_eq!(
+            base.outputs["DP-1"].mirror.as_deref(),
+            Some(""),
+            "a detached mirror is empty, not absent"
+        );
+    }
+
     /// An overlay is what the panel set, not a restatement of the defaults —
     /// otherwise every save would freeze the shipped defaults into the file
     /// and a later release could never change one.

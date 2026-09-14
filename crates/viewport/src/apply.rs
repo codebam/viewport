@@ -1165,7 +1165,17 @@ fn config_save(state: &mut ViewportState) {
                 transform,
                 x: Some(position.x),
                 y: Some(position.y),
-                mirror: state.output_mirrors.get(&output.name()).cloned(),
+                // Some("") rather than None: absent means "leave what the
+                // file said", so a mirror the panel detached would come back
+                // on the next start. The empty string is how the request and
+                // the config file spell "not mirrored".
+                mirror: Some(
+                    state
+                        .output_mirrors
+                        .get(&output.name())
+                        .cloned()
+                        .unwrap_or_default(),
+                ),
                 vrr: Some(state.configured_vrr(&output.name())),
             },
         );
