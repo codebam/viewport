@@ -1261,6 +1261,23 @@ impl crate::state::ViewportState {
     fn intercept_input_capture<I: InputBackend>(&mut self, event: &InputEvent<I>) -> bool {
         if self.locked {
             self.deactivate_input_capture();
+            // The locked path is not allowed to touch the seat, but a release
+            // that arrives here still has to close the record its press
+            // opened. Leaving it behind means the next press after the screen
+            // is unlocked finds the suppression, and its release is swallowed
+            // by a lock screen that never saw it.
+            match event {
+                InputEvent::Keyboard { event } if event.state() != KeyState::Pressed => {
+                    let code = event.key_code().raw().saturating_sub(8);
+                    self.input_capture_connections.suppressed_keys.remove(&code);
+                }
+                InputEvent::PointerButton { event } if event.state() != ButtonState::Pressed => {
+                    self.input_capture_connections
+                        .suppressed_buttons
+                        .remove(&event.button_code());
+                }
+                _ => {}
+            }
             return false;
         }
         if let InputEvent::Keyboard { event } = event {
@@ -1306,6 +1323,13 @@ impl crate::state::ViewportState {
                 && self.input_capture_connections.alt
             {
                 self.input_capture_connections.suppressed_keys.insert(code);
+                // Recorded before `update_input_capture_key` puts it into the
+                // seat: `suspend_input_capture` below releases only
+                // `captured_keys`, so without this the chord's Escape stays
+                // pressed in the seat and absorbs the next one.
+                if let Some(active) = self.input_capture_connections.active.as_mut() {
+                    active.captured_keys.insert(code);
+                }
                 self.update_input_capture_key::<I>(event);
                 self.suspend_input_capture();
                 self.sync_input_capture_modifiers();
