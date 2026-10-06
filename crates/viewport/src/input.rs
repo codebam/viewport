@@ -2369,34 +2369,28 @@ impl ViewportState {
                 let Some(pointer) = self.seat.get_pointer() else {
                     return;
                 };
-                // Keep the hit test `refresh_pointer_focus` has to run: the
-                // question below is the same one, at the same position, and
-                // `surface_under` walks the whole window stack.
-                #[cfg(feature = "wpe")]
-                let under = if !pointer.is_grabbed() {
-                    self.refresh_pointer_focus()
-                } else {
-                    // A grab suppressed the refresh, so nothing has asked
-                    // where this position lands yet.
-                    self.surface_under(pointer.current_location())
-                };
-                #[cfg(not(feature = "wpe"))]
-                if !pointer.is_grabbed() {
-                    // Without `wpe` no shell can receive the scroll, so the
-                    // hit test has no reader; the refresh is still what keeps
-                    // pointer focus describing the desktop under it.
-                    let _ = self.refresh_pointer_focus();
-                }
                 // Scrolling the shell: the taskbar, the notification list,
                 // and a chooser longer than the screen. Compiled out without
                 // `wpe` — no page, and `shell_pointer_axis` has no body there
-                // — so the hit test above is never asked in builds that cannot
-                // use its answer. With a page, `shell_is_up` goes first so a
-                // shell that is down does not cost a window-stack walk.
+                // — so the hit test is never asked in builds that cannot use
+                // its answer.
+                //
+                // The hit test is asked directly rather than through
+                // `refresh_pointer_focus`, which is what this used to call.
+                // That refresh sends a pointer *motion* first, and a motion is
+                // an absolute event with no relative component: Xwayland posts
+                // such a motion on the absolute pointer device rather than the
+                // relative one it drives everything else through, and a
+                // Chromium-family client — Steam's client among them — reads
+                // scroll valuators per device and drops the notch that arrives
+                // after the switch. Nothing is lost by not refreshing: the
+                // motion path runs this same hit test for every pointer event,
+                // so the focus the refresh was keeping current is already
+                // current, and a scroll is not a motion to be sent as one.
                 #[cfg(feature = "wpe")]
                 {
                     let at = pointer.current_location();
-                    if self.shell_is_up() && under.is_none() {
+                    if self.shell_is_up() && self.surface_under(at).is_none() {
                         self.shell_pointer_axis(
                             at,
                             horizontal,

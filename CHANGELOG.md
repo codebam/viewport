@@ -35,6 +35,19 @@ to summarise rather than to duplicate.
   second against 43 to 48); see `docs/benchmarks.md`.
 
 ### Fixed
+- Scrolling works in Chromium-family clients, Steam's included. The axis path
+  refreshed the pointer focus before forwarding each scroll, and that refresh
+  is a pointer *motion*: an absolute event with no relative component.
+  Xwayland posts such a motion on the absolute pointer device rather than the
+  relative one it drives everything else through, and a Chromium-family client
+  reads scroll valuators per device — so the notch that arrived after the
+  switch was dropped. The wheel did nothing at all in Steam or Chromium while
+  `xev` still received buttons 4 and 5 and Firefox still scrolled, because the
+  scroll was being delivered the whole time to a client that had stopped
+  reading it. The refresh was also redundant: the motion path runs the same hit
+  test for every pointer event, and the paths that change what is under the
+  pointer — a map, an unmap, a relayout — refresh it themselves. The shell's
+  own scroll still asks that hit test, directly, and only while the shell is up.
 - Copying in a Wayland client is visible to X11 applications. The clipboard is
   one selection spoken by two protocols, and Xwayland owns the X11 side on the
   compositor's behalf only when it is told to — nothing else calls
