@@ -60,13 +60,28 @@ impl ViewportState {
     pub fn offer_clipboard(&mut self) {
         use smithay::wayland::selection::data_device::set_data_device_selection;
         let dh = self.display_handle.clone();
+        let mimes = crate::clipboard::offered_mimes();
         set_data_device_selection(
             &dh,
             &self.seat,
-            crate::clipboard::offered_mimes(),
+            mimes.clone(),
             crate::clipboard::Owner::History,
         );
-        crate::screencast::remote::local_selection_changed(crate::clipboard::offered_mimes());
+        // And the same news to Xwayland, which holds the X11 selection on this
+        // end's behalf. A selection the compositor sets itself goes around
+        // `SelectionHandler::new_selection`, so this is the only place that
+        // can say so — and without it a paste out of the history reaches
+        // Wayland clients and no X11 client at all, because as far as the X
+        // side is concerned nobody ever took the clipboard.
+        if let Some(xwm) = self.xwm.as_mut() {
+            if let Err(e) = xwm.new_selection(
+                smithay::wayland::selection::SelectionTarget::Clipboard,
+                Some(mimes.clone()),
+            ) {
+                tracing::warn!("could not hand the clipboard history to Xwayland: {e}");
+            }
+        }
+        crate::screencast::remote::local_selection_changed(mimes);
     }
 
     /// The largest list the launcher answers with.

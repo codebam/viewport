@@ -216,10 +216,11 @@ run output-management "$root/tests/output-management.test.sh" \
 run workspace "$root/tests/workspace.test.sh" \
 	"$VIEWPORT" "$work/workspace-client"
 
-# Compiles its own client, because it is the one test here that needs X11 and
+# Compiles its own client, because these are the tests here that need X11 and
 # the suite is deliberately buildable without it. Skips where there is none.
 run xwayland-focus "$root/tests/xwayland-focus.test.sh" "$VIEWPORT"
 run xwayland-scale "$root/tests/xwayland-scale.test.sh" "$VIEWPORT"
 run xwayland-float "$root/tests/xwayland-float.test.sh" "$VIEWPORT"
+run xwayland-clipboard "$root/tests/xwayland-clipboard.test.sh" "$VIEWPORT"
 
 exit "$failed"

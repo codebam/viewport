@@ -35,6 +35,17 @@ to summarise rather than to duplicate.
   second against 43 to 48); see `docs/benchmarks.md`.
 
 ### Fixed
+- Copying in a Wayland client is visible to X11 applications. The clipboard is
+  one selection spoken by two protocols, and Xwayland owns the X11 side on the
+  compositor's behalf only when it is told to — nothing else calls
+  `SetSelectionOwner` for it. The compositor told it about copies made *by* X
+  clients and about nothing else, so a copy made in a Wayland client left the
+  X11 CLIPBOARD owned by nobody: `XGetSelectionOwner` answered `None`, and
+  pasting into Steam, a browser or an X terminal read nothing at all. Both
+  places a selection is set now hand it over — a Wayland client's copy, in
+  `SelectionHandler::new_selection`, and the clipboard history, in
+  `offer_clipboard` — and `tests/xwayland-clipboard.test.sh` fails against a
+  compositor that does not.
 - A new window no longer opens in the top-left corner. A window joins the
   shell's `views` before its element leaves the template's detached fragment,
   and `flipFrom` — which animates a relayout by inverting it — reads the

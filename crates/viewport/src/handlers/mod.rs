@@ -82,6 +82,15 @@ impl SelectionHandler for ViewportState {
 
     /// Somebody copied something.
     ///
+    /// Two audiences hear about it, and the first is not optional. Xwayland
+    /// has its own idea of who owns the X11 selection and no way to learn
+    /// about a Wayland client's copy except being told: nothing else takes the
+    /// X11 CLIPBOARD on its behalf. Untold, a copy made in a Wayland client
+    /// leaves the X11 clipboard owned by nobody, and every X11 application
+    /// pasting out of it — Steam's text fields, a browser's URL bar, an X
+    /// terminal — reads nothing at all. The other direction is Xwayland's own
+    /// news, and comes in through `XwmHandler::new_selection`.
+    ///
     /// The clipboard is also where a remote desktop session keeps a claim,
     /// and a real local source takes that claim away whatever it offers and
     /// whether or not this end keeps history for it: a stale claim is what
@@ -90,15 +99,25 @@ impl SelectionHandler for ViewportState {
     ///
     /// The history is narrower: only the clipboard, and only text. Recording
     /// the primary selection would mean an entry for every word dragged over
-    /// with a mouse. A `None` source is the compositor's own selection — a
-    /// paste out of the history — and reading that back would be recording our
-    /// own echo.
+    /// with a mouse. A `None` source is a client giving the selection up, and
+    /// that is passed on rather than skipped: releasing Xwayland's claim is
+    /// how the X11 clipboard stops answering with what nobody is offering.
     fn new_selection(
         &mut self,
         ty: SelectionTarget,
         source: Option<smithay::wayland::selection::SelectionSource>,
         _seat: Seat<Self>,
     ) {
+        // Ahead of the returns below: Xwayland is owed this for every
+        // selection, whether or not it is the clipboard and whether or not
+        // this end keeps a history of it.
+        if let Some(xwm) = self.xwm.as_mut() {
+            let mimes = source.as_ref().map(|source| source.mime_types());
+            if let Err(e) = xwm.new_selection(ty, mimes) {
+                tracing::warn!("could not hand the selection to Xwayland: {e}");
+            }
+        }
+
         if ty != SelectionTarget::Clipboard {
             return;
         }
