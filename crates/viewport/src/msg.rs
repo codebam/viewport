@@ -93,8 +93,13 @@ const STRING_FIELDS: &[&str] = &[
     "mode",
     // `sink` and `source`, which are words.
     "target",
-    // A tray item's button and the axis its wheel turned, both words.
-    "button",
+    // The axis a tray item's wheel turned, a word.
+    //
+    // The tray's `button` is a word too — `primary`, `secondary`, `menu` —
+    // but `button` is also the evdev code `input.button` takes, a number, so
+    // it cannot be named here: this table is name-only and would turn
+    // `--button 272` into the string `"272"`. The tray entry carries its own
+    // copy instead, the same way its `id` does.
     "orientation",
     // And a media button, which is a word with a hyphen in it.
     "action",
@@ -297,10 +302,13 @@ const TYPES: &[Type] = &[
     },
     Type {
         // The tray's ids are strings — a bus name and an object path joined —
-        // rather than the numbers every other `--id` here takes.
+        // rather than the numbers every other `--id` here takes, and its
+        // `--button` names a button rather than the evdev code
+        // `input.button`'s carries. Both live here because `id` and `button`
+        // name numbers elsewhere.
         name: "tray.activate",
         fields: &["id", "button", "x", "y"],
-        strings: &["id"],
+        strings: &["id", "button"],
         hint: "--id KEY [--button primary|secondary|menu] [--x N --y N]",
     },
     Type {
@@ -1608,6 +1616,30 @@ mod tests {
         assert_eq!(
             value(&["-t", "view.focus", "--id", "42"]),
             serde_json::json!({"type": "view.focus", "id": 42})
+        );
+    }
+
+    #[test]
+    fn a_button_is_a_word_on_the_tray_and_a_code_on_a_pointer() {
+        // `button` is a name-only table entry's problem twice over: the
+        // tray's is a word and the synthetic input's is an evdev code. While
+        // the global table held it, every `input.button --button 272` went
+        // out as the string `"272"` and was refused as a bad body — the one
+        // message a scripted click needs most.
+        assert_eq!(
+            value(&[
+                "-t",
+                "tray.activate",
+                "--id",
+                "some:item",
+                "--button",
+                "secondary"
+            ]),
+            serde_json::json!({"type": "tray.activate", "id": "some:item", "button": "secondary"})
+        );
+        assert_eq!(
+            value(&["-t", "input.button", "--button", "272"]),
+            serde_json::json!({"type": "input.button", "button": 272})
         );
     }
 

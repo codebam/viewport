@@ -142,6 +142,14 @@ to summarise rather than to duplicate.
   comment above it says it exists to prevent. The deadline is the share's own
   now, on a timer of its own, and only the output a share is served from is
   asked to draw.
+- `viewport msg -t input.button --button 272` sends a number, not the string
+  `"272"`. The CLI types a bare flag value against one global list of field
+  names, and the tray's `button` — a word, `primary` or `menu` — is on that
+  list, so every evdev code left as text and the compositor refused it as a
+  bad body: no spelling of the flag could click a button from a script. The
+  tray entry now carries its own `strings` list, the mechanism its `id`
+  already used, and `button` is the number `input.button` takes everywhere
+  else.
 
 ## [0.3.0] - 2026-09-09
 
