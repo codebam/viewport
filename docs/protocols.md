@@ -41,7 +41,10 @@ otherwise the picture changes and nothing says why, and a monitor left in HDR
 by a mis-hit key looks like a broken colour profile rather than a setting.
 
 Only the features this renderer actually implements are advertised: parametric
-image descriptions, named primaries and named luminances. ICC profiles, power
+image descriptions, named primaries and named luminances, and the two
+well-known Windows descriptions below — which are advertised at the version
+their requests exist at, so a client bound below version 3 is not offered a
+request it cannot make. ICC profiles, power
 curves and arbitrary chromaticities are refused rather than accepted and
 ignored, and mastering metadata is accepted and dropped, because tone mapping
 is not done here.
@@ -75,6 +78,30 @@ import calls handed the surface the buffer came from, so they are the only
 place a description recorded against a surface can be attached to the texture
 made from its buffer. Recording it anywhere else means recording it and then
 decoding the buffer as sRGB anyway.
+
+Two of the descriptions are pre-defined rather than built from parameters, and
+this compositor implements both: `windows_scrgb` (sRGB primaries, extended
+linear, reference white assumed at 203 cd/m²) and, from protocol version 3,
+`windows_bt2100` (BT.2020, PQ, the same 203 cd/m²). They exist for Windows
+stimulus encodings, which is to say for Wine, which is to say for Proton: a
+D3D swapchain's colour space is attached to the surface as one of these, and a
+game's HDR mode is offered or not on the strength of them. Wine reads
+`windows_scrgb` as the answer to "does this display do HDR at all" and
+`windows_bt2100` as the description for an HDR10 swapchain, and it learns both
+from the `supported_feature` events a client is sent at bind — so a compositor
+that implements the parametric path alone looks, to every game running under
+Proton, like a display that cannot do HDR. The global is therefore bound at
+version 3 rather than 1: `create_windows_bt2100` does not exist below it, and a
+client bound lower is never told about a feature whose request it cannot make.
+Both descriptions forbid `get_information`, as the protocol says they must —
+they are defined encodings, not measurements — and asking is `no_information`.
+
+What Wine also needs before it reports HDR is an output that says it is *in*
+HDR: it compares the maximum luminance of the output's image description
+against that description's reference white, and equality means no headroom. So
+`Mod4+Shift+p` belongs before the game launches, exactly as the display's HDR
+setting does on Windows, and for the same reason — the state, not the
+capability, is what a client is told.
 
 ## Background effects
 

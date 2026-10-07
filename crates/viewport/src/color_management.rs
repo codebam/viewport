@@ -43,7 +43,15 @@ pub use viewport_vulkan::color::SurfaceColor;
 use viewport_vulkan::color::{Description, Primaries, TransferFunction};
 
 /// The version of the protocol this implements.
-const VERSION: u32 = 1;
+///
+/// Three, and the difference is not decoration. `create_windows_bt2100` is a
+/// version 3 request, and it is the one Wine asks for to say "this surface
+/// carries an HDR10 swapchain, hand it to the display unadjusted". A client
+/// binds the global at the version it is offered, so a compositor that binds
+/// at one gives every Wine client a manager that cannot be asked for it — and
+/// Wine, not the compositor, is what decides whether a game is even offered an
+/// HDR mode. See `supported_feature` in `bind` for the other half.
+const VERSION: u32 = 3;
 
 /// Everything the compositor holds for colour management.
 #[derive(Debug)]
@@ -101,6 +109,11 @@ struct Feedback {
     /// A client is entitled to fetch a new description on every event, and
     /// this runs on every layout.
     last: Option<u32>,
+    /// The version this object was made at, which picks between the
+    /// single-number `preferred_changed` and version 2's `preferred_changed2`.
+    /// Stored rather than read off the object at send time because the answer
+    /// has to be the same one the client's listener is built for.
+    version: u32,
 }
 
 impl ColorManagementState {
@@ -146,7 +159,15 @@ fn feedback_usable(object_alive: bool, surface_alive: bool) -> bool {
 pub fn transfer_from_wire(wire: WireTransferFunction) -> Option<TransferFunction> {
     Some(match wire {
         WireTransferFunction::ExtLinear => TransferFunction::Linear,
-        WireTransferFunction::Srgb | WireTransferFunction::ExtSrgb => TransferFunction::Srgb,
+        // Three names, one curve. `compound_power_2_4` is what the protocol
+        // renamed sRGB's encoding to at version 2, when `srgb` and `ext_srgb`
+        // were deprecated for being ambiguous; the curve IEC 61966-2-1 defines
+        // is the one this renderer has always called sRGB, so the three decode
+        // through it. Nothing else maps — a curve substituted here is a
+        // picture that looks right and is not.
+        WireTransferFunction::Srgb
+        | WireTransferFunction::ExtSrgb
+        | WireTransferFunction::CompoundPower24 => TransferFunction::Srgb,
         WireTransferFunction::Gamma22 => TransferFunction::Gamma22,
         WireTransferFunction::Gamma28 => TransferFunction::Gamma28,
         WireTransferFunction::St2084Pq => TransferFunction::Pq,
@@ -172,17 +193,30 @@ pub fn primaries_from_wire(wire: WirePrimaries) -> Option<Primaries> {
     })
 }
 
-/// The named transfer functions this compositor advertises.
-pub fn supported_transfer_functions() -> &'static [WireTransferFunction] {
-    &[
+/// The named transfer functions this compositor advertises to a client bound
+/// at `version`.
+///
+/// Version 2 deprecated `srgb` and `ext_srgb` — one name for a curve that is
+/// not always the same one — and gave the sRGB encoding its own name,
+/// `compound_power_2_4`. A client bound at two or later must not be offered the
+/// deprecated pair, so it is offered the name that replaced them, and one
+/// bound at one is offered the names that exist at one. The curve behind them
+/// is the same either way.
+pub fn supported_transfer_functions(version: u32) -> Vec<WireTransferFunction> {
+    let mut functions = vec![
         WireTransferFunction::ExtLinear,
-        WireTransferFunction::Srgb,
-        WireTransferFunction::ExtSrgb,
         WireTransferFunction::Gamma22,
         WireTransferFunction::Gamma28,
         WireTransferFunction::St2084Pq,
         WireTransferFunction::Hlg,
-    ]
+    ];
+    if version >= 2 {
+        functions.push(WireTransferFunction::CompoundPower24);
+    } else {
+        functions.push(WireTransferFunction::Srgb);
+        functions.push(WireTransferFunction::ExtSrgb);
+    }
+    functions
 }
 
 /// The named primaries this compositor advertises.
@@ -193,6 +227,35 @@ pub fn supported_primaries() -> &'static [WirePrimaries] {
         WirePrimaries::DisplayP3,
         WirePrimaries::AdobeRgb,
     ]
+}
+
+/// The features advertised to a client bound at `version`.
+///
+/// Split out because the rule is a version rule, not a list: a feature is only
+/// advertised when the request behind it exists in the client's version, or
+/// the client is offered something it cannot ask for. `windows_bt2100` is the
+/// case that matters — `create_windows_bt2100` is a version 3 request, and
+/// Wine binds this global at whatever it is offered and calls exactly the
+/// requests the features name.
+///
+/// The two Windows descriptions are not a convenience. Wine reads
+/// `windows_scrgb` as the answer to "can this display do HDR at all", and
+/// Proton runs on Wine: with the feature missing, every output reports no
+/// HDR, `DXGI_OUTPUT_DESC1::ColorSpace` stays sRGB, and a game's HDR setting
+/// is never offered — however capable the monitor, the driver and this
+/// compositor are. `windows_bt2100` is the same answer for an HDR10
+/// swapchain, which is what a Proton game actually presents.
+fn supported_features(version: u32) -> Vec<Feature> {
+    let mut features = vec![
+        Feature::Parametric,
+        Feature::SetPrimaries,
+        Feature::SetLuminances,
+        Feature::WindowsScrgb,
+    ];
+    if version >= 3 {
+        features.push(Feature::WindowsBt2100);
+    }
+    features
 }
 
 /// Parameters accumulated by a parametric creator.
@@ -261,10 +324,25 @@ fn apply_pending_colour(surface: &WlSurface) {
     });
 }
 
+/// Whether a description may be asked what it is made of.
+///
+/// The protocol allows `get_information` on the descriptions this compositor
+/// builds, and on the one it answers for an output. The two well-known Windows
+/// descriptions forbid it: their whole point is a signal handed over
+/// unexamined, and their contents are defined by the protocol rather than
+/// measured. Asking anyway is `no_information`, not a guess.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Information {
+    Allowed,
+    Forbidden,
+}
+
 /// A created image description, or the reason it could not be created.
 #[derive(Debug)]
 pub struct ImageDescription {
     pub description: Mutex<Option<Description>>,
+    /// Whether `get_information` is allowed on this object.
+    pub information: Information,
 }
 
 /// The identity assigned to a description, which clients use to tell whether
@@ -326,11 +404,11 @@ impl GlobalDispatch<WpColorManagerV1, ()> for ViewportState {
         // that would then be rejected at create time is worse than not
         // advertising it.
         manager.supported_intent(RenderIntent::Perceptual);
-        manager.supported_feature(Feature::Parametric);
-        manager.supported_feature(Feature::SetPrimaries);
-        manager.supported_feature(Feature::SetLuminances);
-        for transfer in supported_transfer_functions() {
-            manager.supported_tf_named(*transfer);
+        for feature in supported_features(manager.version()) {
+            manager.supported_feature(feature);
+        }
+        for transfer in supported_transfer_functions(manager.version()) {
+            manager.supported_tf_named(transfer);
         }
         for primaries in supported_primaries() {
             manager.supported_primaries_named(*primaries);
@@ -416,6 +494,7 @@ impl Dispatch<WpColorManagerV1, ()> for ViewportState {
                 let object = data_init.init(id, surface.clone());
                 state.color_management.reap();
                 state.color_management.feedback.push(Feedback {
+                    version: object.version(),
                     object,
                     surface,
                     last: None,
@@ -436,15 +515,45 @@ impl Dispatch<WpColorManagerV1, ()> for ViewportState {
                 });
             }
 
-            wp_color_manager_v1::Request::CreateWindowsScrgb { image_description }
-            | wp_color_manager_v1::Request::CreateWindowsBt2100 {
+            // The two well-known Windows descriptions. Pre-defined, so there
+            // is nothing for a client to set and nothing to validate; both
+            // map onto a description this renderer already converts.
+            wp_color_manager_v1::Request::CreateWindowsScrgb { image_description } => {
+                send_description(
+                    image_description,
+                    windows_scrgb_description(),
+                    Information::Forbidden,
+                    data_init,
+                );
+            }
+
+            wp_color_manager_v1::Request::CreateWindowsBt2100 {
                 image_description, ..
             } => {
-                manager.post_error(
-                    wp_color_manager_v1::Error::UnsupportedFeature,
-                    "this well-known description is not supported",
+                send_description(
+                    image_description,
+                    windows_bt2100_description(),
+                    Information::Forbidden,
+                    data_init,
                 );
-                let _ = image_description;
+            }
+
+            // Version 2's way of asking for the description behind a
+            // reference another protocol made. Nothing this compositor
+            // implements creates one, so there is nothing to hand back —
+            // a failed description rather than a silently never-ready object
+            // a client would wait on forever.
+            wp_color_manager_v1::Request::GetImageDescription {
+                image_description,
+                reference,
+            } => {
+                let _ = reference;
+                send_failed_description(
+                    image_description,
+                    wp_image_description_v1::Cause::Unsupported,
+                    "this compositor creates no image description references",
+                    data_init,
+                );
             }
 
             wp_color_manager_v1::Request::Destroy => {}
@@ -570,13 +679,12 @@ impl Dispatch<WpImageDescriptionCreatorParamsV1, Mutex<CreatorParams>> for Viewp
                         .unwrap_or(Description::default().reference_luminance),
                 };
 
-                let object = data_init.init(
+                send_description(
                     image_description,
-                    ImageDescription {
-                        description: Mutex::new(Some(description)),
-                    },
+                    description,
+                    Information::Allowed,
+                    data_init,
                 );
-                object.ready(next_identity());
             }
 
             _ => {}
@@ -596,6 +704,10 @@ impl Dispatch<WpImageDescriptionV1, ImageDescription> for ViewportState {
     ) {
         match request {
             wp_image_description_v1::Request::GetInformation { information } => {
+                // Readiness first, because the protocol puts it first: an
+                // object that is not ready may only be destroyed, and every
+                // request on it is `not_ready` — a description that failed is
+                // that, whatever it would have said about information.
                 let Some(held) = data.description.lock().ok().and_then(|held| *held) else {
                     description.post_error(
                         wp_image_description_v1::Error::NotReady,
@@ -603,6 +715,18 @@ impl Dispatch<WpImageDescriptionV1, ImageDescription> for ViewportState {
                     );
                     return;
                 };
+                // Then the descriptions that are ready but are not this
+                // compositor's to explain: the protocol's two well-known
+                // Windows encodings forbid `get_information`, and asking is
+                // `no_information` rather than a description the client was
+                // never promised.
+                if data.information == Information::Forbidden {
+                    description.post_error(
+                        wp_image_description_v1::Error::NoInformation,
+                        "this image description does not allow get_information",
+                    );
+                    return;
+                }
                 let info = data_init.init(information, ());
 
                 // Deferred to an idle rather than sent here, because `done` is
@@ -897,6 +1021,31 @@ pub fn hdr_description() -> Description {
     }
 }
 
+/// The description `create_windows_scrgb` hands back, in this renderer's terms.
+///
+/// Windows-scRGB: sRGB (BT.709) primaries and white point with the extended
+/// linear curve, an extended range on top of that. The protocol says the
+/// reference white is unknown and 203 cd/m² of Report ITU-R BT.2408-7 is what
+/// to assume for compositor processing — which is also this renderer's default
+/// reference white, so the number is named rather than invented.
+pub fn windows_scrgb_description() -> Description {
+    Description {
+        primaries: Primaries::SRGB,
+        transfer: TransferFunction::Linear,
+        reference_luminance: Description::default().reference_luminance,
+    }
+}
+
+/// The description `create_windows_bt2100` hands back.
+///
+/// Windows-BT.2100 is BT.2020 primaries with PQ and a reference white the
+/// protocol also puts at 203 cd/m² — exactly what this compositor drives an
+/// HDR output with, which is why an HDR10 game surface and the screen it is
+/// shown on end up describing the same encoding and no conversion runs.
+pub fn windows_bt2100_description() -> Description {
+    hdr_description()
+}
+
 /// How many distinct descriptions the identity table remembers.
 ///
 /// The parametric creator lets a client mint a description around any
@@ -947,15 +1096,31 @@ fn identity_for(description: &Description) -> u32 {
 fn send_description(
     object: New<WpImageDescriptionV1>,
     description: Description,
+    information: Information,
     data_init: &mut DataInit<'_, ViewportState>,
 ) {
     let object = data_init.init(
         object,
         ImageDescription {
             description: Mutex::new(Some(description)),
+            information,
         },
     );
-    object.ready(identity_for(&description));
+    // Version 2 replaced `ready` with `ready2`, and a client bound at two or
+    // three is built for the pair: the deprecated single-number form is still
+    // legal to send, but the identity it carries means something weaker, so
+    // the version the object was made at is what picks between them. This is
+    // read off the object rather than the manager because they are the same
+    // number — a child is made at its parent's version — and this one is
+    // already in hand.
+    let identity = identity_for(&description);
+    if object.version() >= 2 {
+        // Identity 0 is reserved, so a 32-bit identity never fills the high
+        // half.
+        object.ready2(0, identity);
+    } else {
+        object.ready(identity);
+    }
 }
 
 /// Hand a client an image description that fails as soon as it is made.
@@ -973,6 +1138,11 @@ fn send_failed_description(
         object,
         ImageDescription {
             description: Mutex::new(None),
+            // A failed description is not ready, and every request on a
+            // not-ready object is `not_ready` before this is ever consulted;
+            // forbidding information here only keeps the two flags from
+            // disagreeing about an object that has nothing to say.
+            information: Information::Forbidden,
         },
     );
     object.failed(cause, reason.to_owned());
@@ -1017,7 +1187,12 @@ impl Dispatch<WpColorManagementOutputV1, WlOutput> for ViewportState {
                 match described {
                     Some(output) => {
                         let description = output_description(state, Some(&output));
-                        send_description(image_description, description, data_init);
+                        send_description(
+                            image_description,
+                            description,
+                            Information::Allowed,
+                            data_init,
+                        );
                     }
                     None => send_failed_description(
                         image_description,
@@ -1073,7 +1248,12 @@ impl Dispatch<WpColorManagementSurfaceFeedbackV1, WlSurface> for ViewportState {
                 }
                 let output = state.output_of_surface(surface);
                 let description = output_description(state, output.as_ref());
-                send_description(image_description, description, data_init);
+                send_description(
+                    image_description,
+                    description,
+                    Information::Allowed,
+                    data_init,
+                );
             }
             // A destructor is legal on an inert object; there is nothing to
             // unset here (feedback only reads).
@@ -1168,7 +1348,14 @@ impl ViewportState {
                 continue;
             }
             entry.last = Some(identity);
-            entry.object.preferred_changed(identity);
+            // Version 2 replaced one event with the other for the same reason
+            // `ready2` replaced `ready`: a 32-bit identity can be recycled, and
+            // the pair is what says a description record is the same one.
+            if entry.version >= 2 {
+                entry.object.preferred_changed2(0, identity);
+            } else {
+                entry.object.preferred_changed(identity);
+            }
         }
     }
 
@@ -1216,12 +1403,16 @@ mod tests {
     #[test]
     fn the_named_curves_this_renderer_has_all_map() {
         // Everything advertised must map, or a client would pick something
-        // that is then rejected at create time.
-        for wire in supported_transfer_functions() {
-            assert!(
-                transfer_from_wire(*wire).is_some(),
-                "advertised {wire:?} but cannot map it"
-            );
+        // that is then rejected at create time. Both sides of the version 2
+        // rename are walked, because which names a client is offered depends
+        // on the version it bound at.
+        for version in [1, 3] {
+            for wire in supported_transfer_functions(version) {
+                assert!(
+                    transfer_from_wire(wire).is_some(),
+                    "advertised {wire:?} at version {version} but cannot map it"
+                );
+            }
         }
         for wire in supported_primaries() {
             assert!(
@@ -1229,6 +1420,24 @@ mod tests {
                 "advertised {wire:?} but cannot map it"
             );
         }
+    }
+
+    #[test]
+    fn a_deprecated_name_is_not_advertised_to_the_version_that_deprecated_it() {
+        // The protocol says a compositor must not advertise a transfer
+        // function deprecated in the bound version, and version 2 deprecated
+        // `srgb` and `ext_srgb` in favour of `compound_power_2_4`. A client
+        // bound at one is the other way round: the replacement does not exist
+        // there, and the pair is all it has.
+        let old = supported_transfer_functions(1);
+        assert!(old.contains(&WireTransferFunction::Srgb));
+        assert!(old.contains(&WireTransferFunction::ExtSrgb));
+        assert!(!old.contains(&WireTransferFunction::CompoundPower24));
+
+        let new = supported_transfer_functions(3);
+        assert!(!new.contains(&WireTransferFunction::Srgb));
+        assert!(!new.contains(&WireTransferFunction::ExtSrgb));
+        assert!(new.contains(&WireTransferFunction::CompoundPower24));
     }
 
     #[test]
@@ -1242,12 +1451,17 @@ mod tests {
     }
 
     #[test]
-    fn srgb_and_ext_srgb_share_a_curve() {
-        // ext-sRGB is sRGB's curve extended beyond 0..1; the encoding is the
-        // same, so the same decode applies.
+    fn srgb_ext_srgb_and_compound_power_2_4_share_a_curve() {
+        // ext-sRGB is sRGB's curve extended beyond 0..1, and
+        // compound_power_2_4 is the name the protocol gave the same IEC
+        // 61966-2-1 encoding at version 2. One decode covers all three.
         assert_eq!(
             transfer_from_wire(WireTransferFunction::Srgb),
             transfer_from_wire(WireTransferFunction::ExtSrgb)
+        );
+        assert_eq!(
+            transfer_from_wire(WireTransferFunction::Srgb),
+            transfer_from_wire(WireTransferFunction::CompoundPower24)
         );
     }
 
@@ -1386,6 +1600,49 @@ mod tests {
             named_primaries(&description.primaries),
             Some(WirePrimaries::Bt2020)
         );
+    }
+
+    #[test]
+    fn a_client_is_never_offered_a_request_its_version_does_not_have() {
+        // `create_windows_bt2100` is a version 3 request. A client bound at
+        // one or two that is told the feature is supported would read it as
+        // an offer, call the request, and have libwayland refuse it locally.
+        assert!(supported_features(1).contains(&Feature::WindowsScrgb));
+        assert!(!supported_features(1).contains(&Feature::WindowsBt2100));
+        assert!(!supported_features(2).contains(&Feature::WindowsBt2100));
+        assert!(supported_features(3).contains(&Feature::WindowsBt2100));
+    }
+
+    #[test]
+    fn the_windows_scrgb_description_is_linear_srgb() {
+        // Wine attaches this to a D3D scRGB surface and to
+        // VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT. The curve is the part that
+        // is silently wrong if it is: sRGB's piecewise curve here is a gamma
+        // shift in every game that uses the colorspace, and the primaries are
+        // a gamut shift.
+        let description = windows_scrgb_description();
+        assert_eq!(description.primaries, Primaries::SRGB);
+        assert_eq!(description.transfer, TransferFunction::Linear);
+        // The protocol says the reference white is unknown and 203 cd/m² is
+        // what to assume; that is this renderer's default, named rather than
+        // invented.
+        assert_eq!(
+            description.reference_luminance,
+            Description::default().reference_luminance
+        );
+    }
+
+    #[test]
+    fn the_windows_bt2100_description_is_what_an_hdr_output_is_driven_as() {
+        // Windows-BT.2100 is BT.2020 with PQ, and the protocol puts its
+        // reference white at the same 203 cd/m² this compositor drives an HDR
+        // output with. That equality is the point of supporting it: an HDR10
+        // game surface and the screen it is shown on describe the same
+        // encoding, so the renderer has nothing to convert and the signal is
+        // the one the game authored.
+        assert_eq!(windows_bt2100_description(), hdr_description());
+        assert_eq!(windows_bt2100_description().primaries, Primaries::BT2020);
+        assert_eq!(windows_bt2100_description().transfer, TransferFunction::Pq);
     }
 
     #[test]

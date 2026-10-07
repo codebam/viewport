@@ -68,9 +68,14 @@ sources+=("$(generate ext-workspace-v1 \
 	"$protocols/staging/ext-workspace/ext-workspace-v1.xml")")
 sources+=("$(generate color-representation-v1 \
 	"$protocols/staging/color-representation/color-representation-v1.xml")")
+# The colour management protocol, which is what a game's HDR mode actually
+# depends on: Wine reads the two Windows descriptions here as the answer to
+# whether the display can do HDR at all.
+sources+=("$(generate color-management-v1 \
+	"$protocols/staging/color-management/color-management-v1.xml")")
 
 for client in paint capture lock foreign-toplevel output-management workspace background-effect \
-	color-representation; do
+	color-representation color-management; do
 	# shellcheck disable=SC2046 # pkg-config output is a word list on purpose
 	cc -std=c11 -Wall -Wextra -Wno-unused-parameter \
 		-I"$work" \
@@ -124,6 +129,8 @@ run background-effect "$root/tests/background-effect.test.sh" \
 	"$VIEWPORT" "$work/background-effect-client" "$work/capture-client"
 run color-representation "$root/tests/color-representation.test.sh" \
 	"$VIEWPORT" "$work/color-representation-client"
+run color-management "$root/tests/color-management.test.sh" \
+	"$VIEWPORT" "$work/color-management-client"
 run output-order "$root/tests/output-order.test.sh" "$VIEWPORT"
 
 # The screencast frontend is Rust — it speaks D-Bus rather than Wayland, so it

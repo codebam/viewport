@@ -45,6 +45,20 @@ to summarise rather than to duplicate.
   second against 43 to 48); see `docs/benchmarks.md`.
 
 ### Fixed
+- HDR works in games under Proton. `wp_color_management_v1` was bound at
+  version 1 and refused both of the protocol's pre-defined Windows
+  descriptions, `create_windows_scrgb` among them — and Wine reads the feature
+  advertising that request, not the monitor, as the answer to whether the
+  display can do HDR at all. Every output therefore reported no HDR, a DXGI
+  output's colour space stayed sRGB, and no game offered an HDR mode whatever
+  the compositor's own `Mod4+Shift+p` said. The global is now version 3, both
+  descriptions are implemented (`windows_bt2100`, the HDR10 one, only exists
+  from version 3), a client bound at two or more gets `ready2` and
+  `preferred_changed2` rather than the deprecated single-number forms, and
+  `get_information` on a well-known description answers `no_information` as
+  the protocol requires. Wine still needs the output itself in HDR before it
+  calls a display HDR-capable, so `Mod4+Shift+p` comes first — the same order
+  KDE asks for.
 - Scrolling works in Chromium-family clients, Steam's included. The axis path
   refreshed the pointer focus before forwarding each scroll, and that refresh
   is a pointer *motion*: an absolute event with no relative component.
