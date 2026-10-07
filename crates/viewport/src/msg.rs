@@ -561,6 +561,12 @@ const TYPES: &[Type] = &[
         hint: "--keycode 34 [--pressed BOOL]",
     },
     Type {
+        name: "input.scroll",
+        fields: &["dx", "dy"],
+        strings: &[],
+        hint: "[--dx N --dy N]   (turn the wheel; positive is right, or up; each is optional)",
+    },
+    Type {
         name: "quit",
         fields: &[],
         strings: &[],
@@ -1695,10 +1701,10 @@ mod tests {
 
     #[test]
     fn the_offered_types_are_the_whole_request_set() {
-        // `viewport_ipc::Request` has 68 variants. A new one that is not listed
+        // `viewport_ipc::Request` has 69 variants. A new one that is not listed
         // here cannot be sent, and the only place that would show up is a
         // prompt saying it is unknown.
-        assert_eq!(TYPES.len(), 68);
+        assert_eq!(TYPES.len(), 69);
     }
 
     #[test]

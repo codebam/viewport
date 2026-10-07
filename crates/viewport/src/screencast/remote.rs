@@ -1869,6 +1869,22 @@ pub fn discrete_v120(steps: i32) -> i32 {
     steps.saturating_mul(120)
 }
 
+/// Both axes of one wheel turn, in notches, in the shape `inject_axis` takes
+/// them: the two distances `wl_pointer.axis` carries and the v120 pair a
+/// modern client counts detents from.
+///
+/// Per axis rather than per call because a caller names both at once — the
+/// portal's `NotifyPointerAxisDiscrete` names one and goes through
+/// [`discrete_axis`] directly — but each axis goes through the very same
+/// conversion, so a scripted notch and a remote one stay one event.
+pub fn wheel_notches(dx: i32, dy: i32) -> (f64, f64, (i32, i32)) {
+    (
+        discrete_axis(AXIS_HORIZONTAL, dx).0,
+        discrete_axis(AXIS_VERTICAL, dy).1,
+        (discrete_v120(dx), discrete_v120(dy)),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2042,6 +2058,22 @@ mod tests {
         // And an absurd count saturates rather than wrapping into a scroll in
         // the other direction. The number comes off the bus.
         assert_eq!(discrete_v120(i32::MAX), i32::MAX);
+    }
+
+    /// A wheel turned on both axes at once comes out on both, each the way
+    /// its own axis goes — and round the right way, which is the only thing
+    /// this pair exists to get right.
+    #[test]
+    fn a_wheel_turn_scrolls_where_it_was_asked() {
+        assert_eq!(wheel_notches(0, 1), (0.0, NOTCH, (0, 120)));
+        assert_eq!(wheel_notches(1, 0), (NOTCH, 0.0, (120, 0)));
+        assert_eq!(
+            wheel_notches(-2, 3),
+            (-2.0 * NOTCH, 3.0 * NOTCH, (-240, 360))
+        );
+        // Neither axis is not a turn at all, which is what lets the caller
+        // treat a message with nothing in it as the no-op it is.
+        assert_eq!(wheel_notches(0, 0), (0.0, 0.0, (0, 0)));
     }
     /// Every event carrying a coordinate refuses NaN and infinities, and every
     /// event without one passes. A NaN that reached the seat would become the

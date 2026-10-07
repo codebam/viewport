@@ -39,12 +39,12 @@ fn moves_focus(request: &Request) -> bool {
 /// or on the session itself.
 ///
 /// Moving the keyboard is one way to act on a locked session and not the only
-/// one. `shell.exec` runs a line on the host; the three `input.*` requests
-/// press keys and click as though a hand had, which behind a lock screen means
-/// into whatever box the locker drew; `bind.add` installs a chord that the
-/// key path will refuse while locked but that survives past the unlock; and
-/// quitting takes the lock screen down with the compositor — a frozen session
-/// is logind's to recover, not the socket's.
+/// one. `shell.exec` runs a line on the host; the four `input.*` requests
+/// drive the seat as though a hand had — keys, buttons, motion and the wheel —
+/// which behind a lock screen means into whatever box the locker drew;
+/// `bind.add` installs a chord that the key path will refuse while locked but
+/// that survives past the unlock; and quitting takes the lock screen down with
+/// the compositor — a frozen session is logind's to recover, not the socket's.
 fn acts_while_locked(request: &Request) -> bool {
     matches!(
         request,
@@ -52,6 +52,7 @@ fn acts_while_locked(request: &Request) -> bool {
             | Request::InputKey { .. }
             | Request::InputButton { .. }
             | Request::InputPointer { .. }
+            | Request::InputScroll { .. }
             | Request::BindAdd { .. }
             | Request::AiLogin { .. }
             | Request::Quit
@@ -805,14 +806,16 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             }
         }
 
-        // Driving the pointer from the socket. The same three calls the
-        // libinput path makes, in the same order, so a scripted click and a
-        // real one are the same event by the time anything sees it.
+        // Driving the pointer from the socket. The same calls the libinput
+        // path makes, in the same order, so a scripted click and a real one
+        // are the same event by the time anything sees it.
         Request::InputPointer { x, y } => state.inject_pointer(x, y),
 
         Request::InputButton { button, pressed } => state.inject_button(button, pressed),
 
         Request::InputKey { keycode, pressed } => state.inject_key(keycode, pressed),
+
+        Request::InputScroll { dx, dy } => state.inject_scroll(dx, dy),
 
         Request::ConfigGaps {
             inner,

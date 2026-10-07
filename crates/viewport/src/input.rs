@@ -976,6 +976,21 @@ impl ViewportState {
         self.cursor_activity();
     }
 
+    /// A wheel turned from the control socket rather than from libinput.
+    ///
+    /// Notches on both axes at once, because a message names both and a
+    /// wheel has two even when only one of them has anything in it. The
+    /// conversion is the one a remote-desktop discrete scroll goes through —
+    /// `wheel_notches`, beside the portal's own callers — so a scripted notch
+    /// and a remote one are the same event by the time a client reads it.
+    pub fn inject_scroll(&mut self, dx: i32, dy: i32) {
+        let (horizontal, vertical, v120) = crate::screencast::remote::wheel_notches(dx, dy);
+        if horizontal == 0.0 && vertical == 0.0 {
+            return;
+        }
+        self.inject_axis(horizontal, vertical, Some(v120), false);
+    }
+
     /// A touch from the control socket rather than from libinput.
     ///
     /// Same path as a real finger: hit-test, focus the window under it, then

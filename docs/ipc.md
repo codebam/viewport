@@ -195,6 +195,7 @@ Also accepted on the UNIX socket, which speaks the same message set.
 | `input.pointer` | `x`, `y` — move the pointer, in the layout's own coordinates. Everything a real pointer does goes through the same path: the hit test, the focus and the shell's overlays. See below |
 | `input.button` | `button` (an evdev code — 272 left, 273 right, 274 middle), optional `pressed` (default true) — press or release a pointer button wherever the pointer is. See below |
 | `input.key` | `keycode` (an evdev code — 29 left control, 56 left alt, 34 `g`), optional `pressed` (default true) — press or release a key, through the same filter that decides what a chord means. See below |
+| `input.scroll` | `dx`, `dy` — wheel notches on either axis, positive right and up, each defaulting to none; a message that names neither is a no-op. Each notch goes out as one detent — fifteen units of axis distance and a hundred and twenty of v120 — the same conversion remote-desktop discrete scroll goes through. See below |
 | `config.gaps` | optional `inner`, optional `outer`, optional `smart` — set the window gaps at runtime, as the `gaps` block in the config file. Only the fields given change; the file is not touched. Zero is accepted, a negative value is refused |
 | `config.border` | optional `radius`, optional `width`, optional `smart` — the same for the `border` block. Read by the compositor as well as the shell, since the client is cropped to the corner the shell draws. Zero is accepted, a negative value is refused |
 | `config.wallpaper` | optional `path` (a file or a URL, picture or video; the empty string removes the wallpaper), optional `mode` — set the desktop background at runtime, as `wallpaper` and `wallpaper_mode` in the config file. Only the fields given change; a path that is not there, or an unknown mode, comes back as an `error` and nothing is applied |
@@ -230,12 +231,16 @@ cumulative from `gesture.begin`, not a delta from the previous update; this
 makes coalescing updates safe. A declaration changed during a gesture applies
 to the next begin only.
 
-`input.pointer`, `input.button` and `input.key` are synthetic input, and they
-exist for the same reason `shell.command` does: a test that wants to know
-whether a notification can be clicked has to be able to click it, and there is
-no other way in. They enter the compositor where libinput's own events do, so
-what they exercise is what a hand exercises — the hit test, the focus, the
-keybinding filter and the shell's overlays, in that order.
+`input.pointer`, `input.button`, `input.key` and `input.scroll` are synthetic
+input, and they exist for the same reason `shell.command` does: a test that
+wants to know whether a notification can be clicked has to be able to click
+it, and there is no other way in. They enter the compositor where libinput's
+own events do, so what they exercise is what a hand exercises — the hit test,
+the focus, the keybinding filter and the shell's overlays, in that order.
+`input.scroll` counts notches the way `tray.scroll` does — positive up,
+positive right — and turns each into the fifteen units and hundred and twenty
+a wheel detent carries, so a scripted scroll reaches a client as the same
+event a turned wheel is.
 
 This is not a privilege escalation for an ordinary same-user process. The
 socket is 0600 and owned by the user running the session, but 0600 is an owner

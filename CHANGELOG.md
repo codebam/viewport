@@ -23,6 +23,16 @@ to summarise rather than to duplicate.
   where nothing can be seen. Which codecs actually play is the engine's, as
   with any picture format. A config event about something else does not
   restart the film, and switching back to a picture unloads it.
+- `input.scroll` turns the wheel over the control socket, in notches on
+  either axis — positive up, positive right, as `tray.scroll` counts them —
+  completing the synthetic-input family `input.pointer`, `input.button` and
+  `input.key` began. Each notch goes out as one detent: fifteen units of axis
+  distance and a hundred and twenty of v120, the same conversion
+  remote-desktop discrete scroll passes through, so a scripted scroll and a
+  remote one reach the client as one event (`crates/viewport/src/input.rs`'s
+  `inject_scroll`, `wheel_notches` in `crates/viewport/src/screencast/
+  remote.rs`). Like the rest of the family it is refused on an untrusted
+  client and while the session is locked.
 
 ### Changed
 - **`cef` is the default backend** — `nix build`, `nix run`,

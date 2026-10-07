@@ -831,6 +831,28 @@ pub enum Request {
         pressed: bool,
     },
 
+    /// Turn the pointer's wheel, in notches on either axis.
+    ///
+    /// Notches rather than pixels, positive right and positive up — the
+    /// convention `tray.scroll` shares, and the one this compositor's own
+    /// `WheelUp` binding reads a physical wheel as. Each notch goes out as
+    /// one detent: the fifteen units of axis distance libinput reports for a
+    /// wheel click and the hundred and twenty a modern client counts, which
+    /// is the same conversion remote-desktop discrete scroll goes through.
+    ///
+    /// A message that moves neither axis — both fields absent, or zero — is
+    /// a no-op rather than a refusal: zero notches is a thing a loop can
+    /// compute its way into, and it is not a mistake worth an error event.
+    #[serde(rename = "input.scroll")]
+    InputScroll {
+        /// Notches horizontally: positive is right.
+        #[serde(default)]
+        dx: i32,
+        /// Notches vertically: positive is up.
+        #[serde(default)]
+        dy: i32,
+    },
+
     #[serde(rename = "quit")]
     Quit,
 
@@ -1711,6 +1733,25 @@ mod tests {
                 keysym: 0xff08,
                 pressed: false,
             }
+        );
+    }
+
+    /// One wheel turn: notches on either axis, each defaulting to none, so a
+    /// message can name only the axis it actually means.
+    #[test]
+    fn an_input_scroll_is_notches_on_either_axis() {
+        assert_eq!(
+            parse(r#"{"type":"input.scroll","dy":3}"#),
+            Request::InputScroll { dx: 0, dy: 3 }
+        );
+        assert_eq!(
+            parse(r#"{"type":"input.scroll","dx":-1,"dy":2}"#),
+            Request::InputScroll { dx: -1, dy: 2 }
+        );
+        // Neither axis is a wheel that did not turn, not a malformed one.
+        assert_eq!(
+            parse(r#"{"type":"input.scroll"}"#),
+            Request::InputScroll { dx: 0, dy: 0 }
         );
     }
 
