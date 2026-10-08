@@ -62,7 +62,7 @@ viewport-web = { path = "crates/viewport-web" }
 # there, one bumping the revision here — and `cargo test --workspace` no longer
 # runs its tests, which run in its own CI instead. See the `[patch]` at the
 # bottom of this file for the other half of the arrangement.
-viewport-vulkan = { git = "https://github.com/codebam/viewport-vulkan.git", rev = "cc95d95d4a169d3ef25a3dfc61ae93723274c3dd" }
+viewport-vulkan = { git = "https://github.com/codebam/viewport-vulkan.git", rev = "ab93b4c4ea7a507da9e5890040afe5b244fdd40e" }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -80,7 +80,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # dozen — and Cargo unions them.
 [workspace.dependencies.smithay]
 # A fork: codebam/smithay, branch explicit-sync-scanout, which is upstream
-# master with four patches on top. Rebased onto master rather than left to
+# master with three patches on top. Rebased onto master rather than left to
 # drift, so the delta stays reviewable and the day one of these lands upstream
 # it drops out of the rebase instead of having to be untangled.
 #
@@ -88,29 +88,41 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 #   tearing-control-v1 is a protocol this compositor can advertise and never
 #   honour — the async flip flag lives inside the atomic commit smithay builds,
 #   and nothing upstream reaches it.
-# - virtual_keyboard, twice: let the compositor see the keys, and hand over the
-#   symbol on the key as well. Upstream swallows both.
 # - drm/renderer: carry a client's acquire point instead of assuming it waited.
+# - xwayland: read `_NET_WM_STATE` back when a client writes it itself. Wine
+#   sets fullscreen by writing the property, not by sending the EWMH
+#   ClientMessage, and upstream only ever hears the message; the fork re-reads
+#   the property and offers the change to `property_notify`, but only when the
+#   value actually differs, so the compositor's own writes never arrive as if
+#   a client had asked.
 #
-# It was five. The drm_lease patch — treat EACCES from DROP_MASTER like EINVAL,
-# without which the lease global was never created on 7.1 with amdgpu — is gone
-# because upstream's 7609ab82 accepts `PermissionDenied` in the same match, and
-# that is the kind Rust gives EACCES. It dropped out of the rebase, which is the
-# arrangement above working rather than a patch being lost.
+# It was five before that. The drm_lease patch — treat EACCES from DROP_MASTER
+# like EINVAL, without which the lease global was never created on 7.1 with
+# amdgpu — is gone because upstream's 7609ab82 accepts `PermissionDenied` in
+# the same match, and that is the kind Rust gives EACCES. It dropped out of the
+# rebase, which is the arrangement above working rather than a patch being
+# lost. The two virtual_keyboard patches went the same way in this pass: see
+# below.
 #
-# The previous tip is tagged pre-rebase-d64a9abe over there, because a revision
+# The previous tip is tagged pre-rebase-9d0e3650 over there, because a revision
 # no ref reaches is one GitHub may collect, and older checkouts of this
-# compositor pin it. (pre-rebase-b2cc4c51, pre-rebase-b98f667e,
-# pre-rebase-09de0d99, pre-rebase-b6e5bf02 and pre-rebase-a8f1c00 are the ones
-# before that.)
+# compositor pin it. (pre-rebase-d64a9abe, pre-rebase-b2cc4c51,
+# pre-rebase-b98f667e, pre-rebase-09de0d99, pre-rebase-b6e5bf02 and
+# pre-rebase-a8f1c00 are the ones before that.)
 #
-# This pass rebased onto upstream 0ff00983, two commits on from the last base:
-# a spelling fix in the getting-started guide and a README system-dependencies
-# list. Both are documentation, so all four patches applied unchanged — `git
-# range-diff` shows `=` for each — and this is a pin bump rather than a change
-# to the fork's delta.
+# This pass rebased onto upstream cf43a02a, 29 commits on from the last base,
+# and it is more than a bump: upstream's own virtual-keyboard rework
+# (7454d68a, 2bf8be86) landed the same idea the fork's two virtual_keyboard
+# patches carried — a key from `zwp_virtual_keyboard_v1` reaching the
+# compositor the way one from a real device does — so both dropped out of the
+# rebase. What replaces the hook they provided is upstream's:
+# `VirtualKeyboardKeyFilter` is gone and `crates/viewport/src/input.rs`
+# implements `process_virtual_keyboard_event`, which activates the device's
+# keymap on the seat and hands its keys to `process_input_event`. The other
+# three patches — the new `_NET_WM_STATE` read-back included — applied with
+# `git range-diff` showing `=` for each.
 git = "https://github.com/codebam/smithay.git"
-rev = "9d0e365048ea9b38f02085ad7c378c81e619b54d"
+rev = "71269b8a9f1c6c7693cd076157e9cac6e067dd16"
 default-features = false
 
 # The other half of moving the renderer out of this workspace.
@@ -135,7 +147,7 @@ default-features = false
 # is what makes this a redirect and not a downgrade — rebase the fork before
 # bumping either pin, not after.
 [patch."https://github.com/Smithay/smithay"]
-smithay = { git = "https://github.com/codebam/smithay.git", rev = "9d0e365048ea9b38f02085ad7c378c81e619b54d" }
+smithay = { git = "https://github.com/codebam/smithay.git", rev = "71269b8a9f1c6c7693cd076157e9cac6e067dd16" }
 
 [profile.release]
 debug = 1

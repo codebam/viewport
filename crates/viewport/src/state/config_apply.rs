@@ -800,41 +800,7 @@ impl ViewportState {
         if keyboard != &crate::config::KeyboardConfig::default()
             && keyboard != &self.keyboard_config
         {
-            let xkb = smithay::input::keyboard::XkbConfig {
-                rules: keyboard.rules.as_deref().unwrap_or(""),
-                model: keyboard.model.as_deref().unwrap_or(""),
-                layout: keyboard.layout.as_deref().unwrap_or(""),
-                variant: keyboard.variant.as_deref().unwrap_or(""),
-                options: keyboard.options.clone(),
-            };
-            // C's defaults, which are sway's (`src/main.c`): 25 a second after
-            // 200ms.
-            //
-            // Zero and below are refused rather than handed to
-            // `seat.add_keyboard`: a rate of zero is a key that repeats never
-            // and a delay of zero is one that never stops, and the runtime
-            // message that sets these is checked the same way. The field keeps
-            // the default the refused value would have displaced.
-            let delay = match keyboard.repeat_delay {
-                Some(delay) if delay <= 0 => {
-                    tracing::warn!(
-                        "keyboard.repeat_delay {delay} is not positive; keeping the default 200"
-                    );
-                    200
-                }
-                Some(delay) => delay,
-                None => 200,
-            };
-            let rate = match keyboard.repeat_rate {
-                Some(rate) if rate <= 0 => {
-                    tracing::warn!(
-                        "keyboard.repeat_rate {rate} is not positive; keeping the default 25"
-                    );
-                    25
-                }
-                Some(rate) => rate,
-                None => 25,
-            };
+            let (xkb, delay, rate) = keyboard_settings(keyboard);
             match self.seat.add_keyboard(xkb, delay, rate) {
                 Ok(_) => {
                     // Written down for anything that has to be told what this
@@ -939,4 +905,63 @@ impl ViewportState {
     /// How many empty ticks before the barrier clock stops. A second at sixty
     /// hertz, and a commit starts it again.
     const QUIET: u32 = 60;
+}
+
+/// The keyboard description and repeat settings a config asks for, ready for
+/// `Seat::add_keyboard`.
+///
+/// C's defaults, which are sway's (`src/main.c`): 25 a second after 200ms.
+/// Zero and below are refused rather than handed over — a rate of zero is a
+/// key that repeats never and a delay of zero is one that never stops, and
+/// the runtime message that sets these is checked the same way — so a refused
+/// value keeps the default it would have displaced.
+fn keyboard_settings(
+    keyboard: &crate::config::KeyboardConfig,
+) -> (smithay::input::keyboard::XkbConfig<'_>, i32, i32) {
+    let xkb = smithay::input::keyboard::XkbConfig {
+        rules: keyboard.rules.as_deref().unwrap_or(""),
+        model: keyboard.model.as_deref().unwrap_or(""),
+        layout: keyboard.layout.as_deref().unwrap_or(""),
+        variant: keyboard.variant.as_deref().unwrap_or(""),
+        options: keyboard.options.clone(),
+    };
+    let delay = match keyboard.repeat_delay {
+        Some(delay) if delay <= 0 => {
+            tracing::warn!(
+                "keyboard.repeat_delay {delay} is not positive; keeping the default 200"
+            );
+            200
+        }
+        Some(delay) => delay,
+        None => 200,
+    };
+    let rate = match keyboard.repeat_rate {
+        Some(rate) if rate <= 0 => {
+            tracing::warn!(
+                "keyboard.repeat_rate {rate} is not positive; keeping the default 25"
+            );
+            25
+        }
+        Some(rate) => rate,
+        None => 25,
+    };
+    (xkb, delay, rate)
+}
+
+impl ViewportState {
+    /// Put the seat's keyboard back to what the configuration describes.
+    ///
+    /// A keymap cannot be read back out of a seat in a form `add_keyboard`
+    /// takes — see `keyboard_config` — so a virtual keyboard that replaced it
+    /// (upstream hands its keys through the regular input path, under the
+    /// keymap its client uploaded) owes the seat this when its device goes.
+    /// It is the same replace the reload path above makes, without the
+    /// bookkeeping: that path records what it applied, this one puts back
+    /// what is recorded.
+    pub(crate) fn replace_keyboard(&mut self) {
+        let (xkb, delay, rate) = keyboard_settings(&self.keyboard_config);
+        if let Err(err) = self.seat.add_keyboard(xkb, delay, rate) {
+            tracing::warn!("the seat's keyboard could not be put back: {err}");
+        }
+    }
 }

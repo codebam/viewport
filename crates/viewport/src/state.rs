@@ -924,6 +924,14 @@ pub struct ViewportState {
     pub _text_input_state: smithay::wayland::text_input::TextInputManagerState,
     pub _input_method_state: smithay::wayland::input_method::InputMethodManagerState,
     pub _virtual_keyboard_state: smithay::wayland::virtual_keyboard::VirtualKeyboardManagerState,
+    /// Whether a virtual keyboard has put its keymap on the seat and the
+    /// seat's own is owed back. Its client's keycodes only mean anything
+    /// under the keymap it uploaded, so that one has to be the seat's while
+    /// its keys are read — and the seat's cannot be read back out (see
+    /// `keyboard_config`), so what is owed is a re-apply of the configured
+    /// one, which `replace_keyboard` in `state/config_apply.rs` does when the
+    /// device goes. See the handler in `input.rs`.
+    pub virtual_keyboard_replaced_keymap: bool,
     /// Whether the client with keyboard focus had an active text-input, last
     /// time `sync_osk_wanted` in `input.rs` checked. Mirrored to the shell as
     /// `osk.wanted` only when it changes, which is what this is kept for: the
@@ -1935,6 +1943,7 @@ impl ViewportState {
             _text_input_state: text_input_state,
             _input_method_state: input_method_state,
             _virtual_keyboard_state: virtual_keyboard_state,
+            virtual_keyboard_replaced_keymap: false,
             osk_wanted: false,
             osk_mode: crate::config::OskMode::Auto,
             xwayland_scale: crate::config::XwaylandScale::Off,

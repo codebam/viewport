@@ -671,17 +671,6 @@ fn activity_kind<I: InputBackend>(event: &InputEvent<I>) -> crate::idle::Activit
     }
 }
 
-/// The symbol a key press and its release are paired by.
-///
-/// A modified symbol is not stable across the pair: Shift+G is `G` on the way
-/// down and `g` on the way up when the modifier is let go of first. The symbol
-/// at level 0 is what both halves agree on, which is why the physical path
-/// pairs on `raw_latin_sym_or_raw_current_sym` and a virtual keyboard client's
-/// `raw_keysym` is the same value.
-fn pairing_sym(keysym: Keysym, raw_keysym: Option<Keysym>) -> Keysym {
-    raw_keysym.unwrap_or(keysym)
-}
-
 /// Take the press this release pairs with, if the compositor is holding it.
 ///
 /// `false` means nobody took the press, so the release is an ordinary one.
@@ -1272,13 +1261,18 @@ impl ViewportState {
     /// itself without a binding to press.
     ///
     /// `zwp_text_input_v3`'s `enable`/`disable` are the client's own way of
-    /// asking, but this smithay fork has no callback for them — a real
-    /// `zwp_input_method_v2` client is expected to notice by receiving
-    /// `activate`/`deactivate`, and this compositor is not one. What it has
-    /// instead is `TextInputHandle::with_active_text_input`, which is
-    /// accurate the instant it is asked but says nothing on its own, so this
-    /// is called from the two places already in this file that run close to
-    /// "the focused client just told the compositor something": every
+    /// asking, and the callback for them — `TextInputActivation`, implemented
+    /// above — runs at the commit that applies them; this read is what both
+    /// the callback and the poll sites run. The polls stay because a focus
+    /// change into a field that was already enabled is not an activation, and
+    /// because they cost nothing when nothing changed. What there was before
+    /// the callback is worth saying, though: a real `zwp_input_method_v2`
+    /// client is expected to notice by receiving `activate`/`deactivate`, and
+    /// this compositor is not one, so `TextInputHandle::with_active_text_input`
+    /// is the reading either way — accurate the instant it is asked but
+    /// saying nothing on its own. The places it is read from are the ones
+    /// that run close to "the focused client just told the compositor
+    /// something": every
     /// `wl_surface.commit`, because `enable` only takes effect on the
     /// text-input's own commit and a client asking for a keyboard tends to
     /// repaint soon after — a cursor starting to blink, if nothing else — and
@@ -3971,129 +3965,113 @@ fn axis_frame<
 /// Keys from a virtual keyboard, given the same reading as keys from a real
 /// one.
 ///
-/// `zwp_virtual_keyboard_v1` hands its keys straight to the focused client, so
-/// nothing a compositor does with a key applies to them: `wtype Return` types
-/// into a terminal, and `wtype -k Return` at a chooser that has taken the
-/// keyboard does nothing at all, because the chooser is a decision made in the
-/// filter these keys never pass through. Under wlroots the same events arrive
-/// as a keyboard on the seat and do reach the compositor, which is the
-/// behaviour anything driving a session by script expects.
+/// Upstream hands these through the regular input path now — requests arrive
+/// as ordinary `InputEvent`s from a device on the seat, and the keycodes only
+/// mean anything under the keymap the client uploaded — so this is the shape
+/// upstream's own example uses: put the device's keymap on the seat when one
+/// arrives, hand the keys themselves to `process_input_event`, apply the
+/// explicit modifier state, and put the seat's own keymap back when the
+/// device goes. Every path a physical key takes — bindings, chords, the lock
+/// floor, the chooser, shortcut inhibitors, forwarding to the focused client
+/// — applies to these keys with no second copy of any of it.
 ///
-/// The hook this implements resolves the keysym against the virtual keyboard's
-/// own keymap before offering it here — the client picked the keycode out of a
-/// keymap it uploaded, and against the seat's it would mean another key.
+/// Before the rework, the same need was answered by a hook of its own
+/// (`virtual_keyboard_key`, in the fork) that repeated the lock floor, ran the
+/// chooser again, and resolved both symbols by hand, because the keys never
+/// went through the entry point above. Upstream's rework delivers them there,
+/// so that hook and its duplicate are gone.
 ///
-/// The chooser reads the modified symbol, because that is the key it is named
-/// by; a binding reads the unmodified one, because a chord is written
-/// "Mod4+Shift+q" — the shift is in the modifiers and the key is still q.
-impl smithay::wayland::virtual_keyboard::VirtualKeyboardKeyFilter for ViewportState {
-    fn virtual_keyboard_key(
+/// A physical key arriving in the middle of a virtual keyboard's lifetime
+/// still reads under the device's keymap — upstream's example has the same
+/// caveat and says a compositor should track which keymap the seat took and
+/// restore it on the next physical key. The device's lifetime is the tracking
+/// this has: what these sessions are is script-driven and short, and the
+/// keymap goes back when the device does. A client that does not upload a
+/// keymap (`no_keymap`) leaves the seat's alone and nothing here changes.
+impl smithay::wayland::virtual_keyboard::VirtualKeyboardHandler for ViewportState {
+    fn process_virtual_keyboard_event(
         &mut self,
-        _seat: &smithay::input::Seat<Self>,
-        keysym: Keysym,
-        raw_keysym: Option<Keysym>,
-        mods: ModifiersState,
-        _keycode: u32,
-        state: smithay::reexports::wayland_server::protocol::wl_keyboard::KeyState,
-        _time: u32,
-    ) -> bool {
-        use smithay::reexports::wayland_server::protocol::wl_keyboard::KeyState;
+        event: smithay::backend::input::InputEvent<
+            smithay::wayland::virtual_keyboard::VirtualKeyboardBackend,
+        >,
+    ) {
+        use smithay::backend::input::InputEvent;
+        use smithay::wayland::virtual_keyboard::{
+            VirtualKeyboardBackend, VirtualKeyboardSpecialEvent,
+        };
 
-        // The key both halves of a press/release pair are named by. `keysym`
-        // is what the modifiers make of the key, which changes between the
-        // two; `raw_keysym` is level 0, which does not. See `pairing_sym`.
-        let unmodified_sym = pairing_sym(keysym, raw_keysym);
-
-        // Virtual keys arrive as their own protocol, not through the two
-        // entry points above, so the locked floor has to be repeated here.
-        // A grab installed after the lock must not receive the key; putting
-        // the lock surface back means an unhandled virtual key still lands on
-        // the password box rather than behind it.
-        if self.locked {
-            self.release_input_grabs();
-            self.refocus_lock();
-        }
-
-        if state != KeyState::Pressed {
-            // The release of a key whose press was kept is swallowed, or a
-            // `release+` binding fires — and both can happen, because the same
-            // chord may have a press binding and a release one.
-            let mut handled = false;
-            if take_suppressed(&mut self.suppressed_keys, unmodified_sym) {
-                handled = true;
-            }
-            let unmodified = unmodified_sym.raw();
-            if let Some(bound) = crate::binding::find_binding(
-                &self.bindings,
-                &mods,
-                unmodified,
-                &self.binding_mode,
-                self.locked,
-                true,
-            ) {
-                let consuming = !bound.non_consuming;
-                let action = bound.action.clone();
-                self.handle_action(Action::Bound(action));
-                handled = handled || consuming;
-            }
-            return handled;
-        }
-
-        // A client holding a shortcut inhibitor gets everything, exactly as it
-        // does from the real keyboard.
-        if self.shortcuts_inhibited() {
-            return false;
-        }
-
-        // The chooser owns the keyboard while it is up, and owns it here too:
-        // a keystroke that fell through would go to whatever was focused
-        // before the share was asked for.
-        if self.picker.is_some() {
-            let pick = match keysym {
-                Keysym::Escape => Some(Pick::Cancel),
-                Keysym::Return | Keysym::KP_Enter | Keysym::space => Some(Pick::Confirm),
-                Keysym::Up | Keysym::k => Some(Pick::Step(-1)),
-                Keysym::Down | Keysym::j | Keysym::Tab => Some(Pick::Step(1)),
-                _ => None,
-            };
-            self.suppressed_keys.push(unmodified_sym);
-            self.handle_action(pick.map(Action::Pick).unwrap_or(Action::Swallow));
-            return true;
-        }
-
-        if let Some(action) = shortcut(&mods, keysym) {
-            if self.locked && !matches!(action, Action::SwitchVt(_)) {
-                return false;
-            }
-            self.suppressed_keys.push(unmodified_sym);
-            self.handle_action(action);
-            return true;
-        }
-
-        // The *unmodified* symbol, as the physical path uses. A chord is
-        // written "Mod4+Shift+q": the shift is in the modifiers and the key is
-        // still q, so matching the modified symbol would look for Q and never
-        // find it.
-        let unmodified = unmodified_sym.raw();
-        match crate::binding::find_binding(
-            &self.bindings,
-            &mods,
-            unmodified,
-            &self.binding_mode,
-            self.locked,
-            false,
-        ) {
-            Some(bound) => {
-                let consuming = !bound.non_consuming;
-                let action = bound.action.clone();
-                if consuming {
-                    self.suppressed_keys.push(unmodified_sym);
+        match event {
+            InputEvent::DeviceAdded { device }
+            | InputEvent::Special(VirtualKeyboardSpecialEvent::KeymapChanged { device }) => {
+                // The client picked its keycodes out of the keymap it uploaded,
+                // so that keymap has to be the seat's before any of them are
+                // read. The seat's own is owed back when the device goes, and
+                // the flag says one is owed — it cannot be read out of the
+                // seat, so it is re-applied from the configuration then.
+                let Some(keymap) = device.keymap() else {
+                    return;
+                };
+                let Some(keyboard) = self.seat.get_keyboard() else {
+                    return;
+                };
+                self.virtual_keyboard_replaced_keymap = true;
+                if let Err(err) = keyboard.set_keymap_from_string(self, keymap.to_string()) {
+                    tracing::warn!(?err, "virtual keyboard: keymap not applied");
                 }
-                self.handle_action(Action::Bound(action));
-                consuming
             }
-            None => false,
+            InputEvent::Keyboard { event } => {
+                // The regular entry point, exactly as a physical key arrives.
+                self.process_input_event::<VirtualKeyboardBackend>(InputEvent::Keyboard { event });
+            }
+            InputEvent::Special(VirtualKeyboardSpecialEvent::Modifiers {
+                mods_depressed,
+                mods_latched,
+                mods_locked,
+                group,
+                ..
+            }) => {
+                let Some(keyboard) = self.seat.get_keyboard() else {
+                    return;
+                };
+                keyboard.with_xkb_state(self, |mut context| {
+                    context.set_modifier_mask(mods_depressed, mods_latched, mods_locked, group)
+                });
+            }
+            InputEvent::DeviceRemoved { .. } if self.virtual_keyboard_replaced_keymap => {
+                // The seat reads with its own keymap again: the configured
+                // one is re-applied, because the keymap that was on the seat
+                // before the device cannot be read back out to put back.
+                self.virtual_keyboard_replaced_keymap = false;
+                self.replace_keyboard();
+            }
+            _ => (),
         }
+    }
+}
+
+/// `zwp_text_input_v3`'s `enable`/`disable`, as a callback at last.
+///
+/// The doc comment on `sync_osk_wanted` below said a dedicated callback would
+/// close the small remaining gap and was not worth adding to a vendored fork.
+/// Upstream grew the hook instead, so both edges run the same read now — at
+/// the commit that applies the client's `enable` or `disable`, rather than
+/// waiting for the next repaint or focus change. The two poll sites stay:
+/// they cost nothing when nothing changed, and the focus one also catches a
+/// field that was enabled before its window had focus, which is not an
+/// activation.
+impl smithay::wayland::text_input::TextInputActivation for ViewportState {
+    fn activated(
+        &mut self,
+        _content_type: Option<(
+            smithay::reexports::wayland_protocols::wp::text_input::zv3::server::zwp_text_input_v3::ContentHint,
+            smithay::reexports::wayland_protocols::wp::text_input::zv3::server::zwp_text_input_v3::ContentPurpose,
+        )>,
+    ) {
+        self.sync_osk_wanted();
+    }
+
+    fn deactivated(&mut self) {
+        self.sync_osk_wanted();
     }
 }
 
@@ -4377,25 +4355,20 @@ mod tests {
     }
 
     #[test]
-    fn virtual_keys_pair_by_the_symbol_on_the_key() {
+    fn a_release_takes_the_press_it_pairs_with() {
+        // The pairing symbol is smithay's now — a virtual key goes through
+        // the physical path — but the press a pair leaves behind is still
+        // this side's to hold and take.
         let lower = Keysym::new(keysyms::KEY_g);
         let upper = Keysym::new(keysyms::KEY_G);
 
-        // The modifier changed between press and release; the level-0 symbol
-        // did not.
-        assert_eq!(pairing_sym(upper, Some(lower)), lower);
-        assert_eq!(pairing_sym(lower, Some(lower)), lower);
-        // No keymap layout to read level 0 from: the modified symbol is all
-        // there is, as before.
-        assert_eq!(pairing_sym(lower, None), lower);
-
-        let mut suppressed = vec![pairing_sym(upper, Some(lower))];
+        let mut suppressed = vec![lower];
         assert!(
-            take_suppressed(&mut suppressed, pairing_sym(lower, Some(lower))),
+            take_suppressed(&mut suppressed, lower),
             "the release must find the press it pairs with"
         );
         assert!(suppressed.is_empty());
-        assert!(!take_suppressed(&mut suppressed, lower));
+        assert!(!take_suppressed(&mut suppressed, upper));
     }
 
     #[test]
