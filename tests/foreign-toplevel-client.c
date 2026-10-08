@@ -10,6 +10,7 @@
  *
  *   foreign-toplevel-client   list, activate, minimize, maximize, fullscreen,
  *                             close; pass
+ *   foreign-toplevel-client watch
  *
  * The script that runs it starts a compositor and a paint client first, so
  * there is one window to see. This client:
@@ -22,8 +23,17 @@
  *     compositor acting: it forwarded close to the window client, and once
  *     that window goes away the handle must be told.
  *
- * Exits 0 on success, 2 if the compositor does not offer the global, 1 if
- * the compositor failed to act within the timeout.
+ * In `watch` mode none of the requests are sent: the client just prints the
+ * first toplevel's published state once per change —
+ *
+ *   state activated=0 maximized=0 minimized=0 fullscreen=1
+ *
+ * — for a script to read, so a state change the compositor makes on its own
+ * (a client's own write being answered) is observable from outside. The window
+ * may not exist yet; this client is started first and waits.
+ *
+ * Exits 0 on success, 2 if the compositor does not offer the global, 1 if the
+ * compositor failed to act within the timeout.
  */
 #define _GNU_SOURCE
 
@@ -261,8 +271,10 @@ static int dispatch_until(struct wl_display *display, int timeout_ms)
 	}
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
+	const int watch = argc > 1 && strcmp(argv[1], "watch") == 0;
+
 	struct wl_display *display = wl_display_connect(NULL);
 	if (display == NULL) {
 		fprintf(stderr, "cannot connect to WAYLAND_DISPLAY\n");
@@ -279,6 +291,35 @@ int main(void)
 			"compositor does not offer zwlr_foreign_toplevel_manager_v1\n");
 		wl_display_disconnect(display);
 		return 2;
+	}
+
+	if (watch) {
+		/* Print the first toplevel's state once per change and nothing
+		 * else. The caller reads these lines; the toplevel may arrive
+		 * at any point, so nothing is required to exist yet. */
+		int last = -1;
+		for (;;) {
+			if (dispatch_until(display, 250) < 0) {
+				break;
+			}
+			if (!state.state_seen) {
+				continue;
+			}
+			int flags = ((int)state.activated << 0)
+				| ((int)state.maximized << 1)
+				| ((int)state.minimized << 2)
+				| ((int)state.fullscreen << 3);
+			if (flags == last) {
+				continue;
+			}
+			last = flags;
+			printf("state activated=%d maximized=%d minimized=%d fullscreen=%d\n",
+				(int)state.activated, (int)state.maximized,
+				(int)state.minimized, (int)state.fullscreen);
+			fflush(stdout);
+		}
+		wl_display_disconnect(display);
+		return 0;
 	}
 
 	/* The script has already started a paint client, so the listing must

@@ -229,5 +229,7 @@ run xwayland-focus "$root/tests/xwayland-focus.test.sh" "$VIEWPORT"
 run xwayland-scale "$root/tests/xwayland-scale.test.sh" "$VIEWPORT"
 run xwayland-float "$root/tests/xwayland-float.test.sh" "$VIEWPORT"
 run xwayland-clipboard "$root/tests/xwayland-clipboard.test.sh" "$VIEWPORT"
+run xwayland-fullscreen "$root/tests/xwayland-fullscreen.test.sh" \
+	"$VIEWPORT" "$work/foreign-toplevel-client"
 
 exit "$failed"

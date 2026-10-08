@@ -35,6 +35,25 @@ to summarise rather than to duplicate.
   client and while the session is locked.
 
 ### Changed
+- The smithay fork is rebased onto upstream master (`cf43a02a`) and its
+  virtual-keyboard patches are gone: upstream's own rework of
+  `zwp_virtual_keyboard_v1` — requests arrive as ordinary input events from a
+  device on the seat, through `process_virtual_keyboard_event` — landed the
+  same idea they carried, keys from a script reaching the compositor's
+  bindings, chords and grabs the way ones from a real keyboard do, so they
+  dropped out of the rebase as it was arranged they would.
+  `crates/viewport/src/input.rs` consumes the upstream shape now: the
+  duplicate of the lock floor and the chooser that the old hook carried is
+  deleted, the device's keymap is activated on the seat while its keys are
+  read and the seat's own is put back when the device goes, and the fork's
+  delta is three patches — asynchronous flips, the renderer's acquire point,
+  and the `_NET_WM_STATE` read-back the fullscreen fix in Fixed rides on.
+  Upstream's text-input activation hooks arrive with it too, so the
+  keyboard-state read the OSK depends on runs on both edges of a client's
+  `enable`/`disable` (`TextInputActivation`) instead of waiting for the next
+  repaint or focus change. The renderer's own pin moves to the same upstream
+  commit (its `ab93b4c4`), because the `[patch]` redirect only holds while
+  the two name the same one.
 - **`cef` is the default backend** — `nix build`, `nix run`,
   `.#viewport-smithay` and `programs.viewport.shellBackend` all land on the
   embedded Chromium again, where they landed on `servoshell`. Of the three
@@ -45,6 +64,21 @@ to summarise rather than to duplicate.
   second against 43 to 48); see `docs/benchmarks.md`.
 
 ### Fixed
+- A game that sets fullscreen by writing `_NET_WM_STATE` itself opens
+  fullscreen. Wine is the client that does this: it sets
+  `_NET_WM_STATE_FULLSCREEN` by writing the property after mapping its window
+  rather than by sending the EWMH `ClientMessage`, and nothing read the write
+  back — the property said fullscreen while the window sat in its tile. The
+  smithay fork re-reads the property on `PropertyNotify` and offers the change
+  to `WmWindowProperty::NetWmState`, but only when the value actually differs,
+  so the compositor's own writes never arrive at the handler as if a client
+  had asked; `crates/viewport/src/handlers/xwayland.rs` implements
+  `property_notify` to answer it exactly as the `fullscreen_request` path
+  does. The pre-map property and the post-map `ClientMessage` shapes already
+  worked, which is why this hid for as long as it did: Final Fantasy XVI's
+  Proton launch is the case it was chased through, and `request` and
+  `unrequest` from Wine now open and leave fullscreen like anything under
+  wlroots.
 - A plain `xdg-dialog-v1` hint no longer floats a window. GTK's GDK takes
   an `xdg_dialog` object for every toplevel it commits and only toggles
   `modal` on it, so every GTK window — ghostty's terminal among them —

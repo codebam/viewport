@@ -32,7 +32,7 @@ use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Rectangle, SERIAL_COUNTER};
 use smithay::wayland::seat::WaylandFocus as _;
 use smithay::wayland::selection::SelectionTarget;
-use smithay::xwayland::xwm::{Reorder, ResizeEdge, XwmId};
+use smithay::xwayland::xwm::{Reorder, ResizeEdge, WmWindowProperty, XwmId};
 use smithay::xwayland::{X11Surface, X11Wm, XwmHandler};
 
 use viewport_ipc::Event;
@@ -279,6 +279,21 @@ impl XwmHandler for ViewportState {
 
     fn unfullscreen_request(&mut self, _xwm: XwmId, window: X11Surface) {
         self.answer_x11_fullscreen(&window, false);
+    }
+
+    /// A client changed `_NET_WM_STATE` itself — Wine's fullscreen, usually.
+    ///
+    /// Wine writes the property directly rather than sending the ClientMessage
+    /// EWMH describes, so `fullscreen_request` never fired for a game: it asked
+    /// and nothing answered, and it came up inside its tile. The fork reads the
+    /// write back and only forwards a value that actually differs, so none of
+    /// the compositor's own writes re-arrive here; what is handed over gets the
+    /// same answer the request path gives, because the client has already
+    /// committed to the state it wrote.
+    fn property_notify(&mut self, _xwm: XwmId, window: X11Surface, property: WmWindowProperty) {
+        if matches!(property, WmWindowProperty::NetWmState) {
+            self.answer_x11_fullscreen(&window, window.is_fullscreen());
+        }
     }
 
     fn maximize_request(&mut self, _xwm: XwmId, window: X11Surface) {
