@@ -437,16 +437,20 @@ impl View {
                 return true;
             }
 
-            // xdg-dialog-v1, where a client says it plainly rather than leaving
-            // it to be inferred. Modal counts the same as dialog here: both are
-            // windows that came up to be dealt with and go away, and neither
-            // belongs in a tiling column.
+            // xdg-dialog-v1, and only its modal reading. The dialog object is
+            // not the declaration it reads as: GTK's GDK takes one for every
+            // toplevel it commits and only toggles `modal` on it
+            // (`maybe_set_xdg_dialog_modal`, gdktoplevel-wayland.c), so the
+            // bare "this is a dialog" hint lands on every GTK window and says
+            // nothing — ghostty, the terminal, was floated by it. What the
+            // modal reading still says, and what nothing else here says, is
+            // that the window came up to be dealt with and go away; a
+            // non-modal dialog that is one still has its parent, checked just
+            // above.
             use smithay::wayland::shell::xdg::dialog::ToplevelDialogHint;
             if self
                 .role_attribute(|attrs| attrs.dialog_hint)
-                .is_some_and(|hint| {
-                    matches!(hint, ToplevelDialogHint::Dialog | ToplevelDialogHint::Modal)
-                })
+                .is_some_and(|hint| matches!(hint, ToplevelDialogHint::Modal))
             {
                 return true;
             }

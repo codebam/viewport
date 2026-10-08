@@ -45,6 +45,13 @@ to summarise rather than to duplicate.
   second against 43 to 48); see `docs/benchmarks.md`.
 
 ### Fixed
+- A plain `xdg-dialog-v1` hint no longer floats a window. GTK's GDK takes
+  an `xdg_dialog` object for every toplevel it commits and only toggles
+  `modal` on it, so every GTK window — ghostty's terminal among them —
+  carried the bare "this is a dialog" hint and opened as a floating box.
+  Only the modal reading floats now — the one that still means a window
+  that came up to be dealt with and go away — and a non-modal dialog that
+  is one still floats by its parent, as every parented dialog does.
 - HDR works in games under Proton. `wp_color_management_v1` was bound at
   version 1 and refused both of the protocol's pre-defined Windows
   descriptions, `create_windows_scrgb` among them — and Wine reads the feature
