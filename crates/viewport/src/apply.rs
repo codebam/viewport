@@ -15,7 +15,7 @@ use viewport_ipc::{Event, Request, Transform};
 
 use crate::session;
 use crate::state::ViewportState;
-use crate::views::NO_VIEW;
+use crate::views::{Configured, NO_VIEW};
 
 /// How many bindings the `bind.add` message may grow the list to.
 ///
@@ -1371,10 +1371,16 @@ fn view_layout(state: &mut ViewportState, mut layout: viewport_ipc::request::Vie
     // frame, because as far as the shell is concerned it is on screen, and
     // the compositor drew nothing inside it.
     view.visible = true;
-    let resize = view.configured != Some((width, height));
-    if resize {
-        view.configured = Some((width, height));
-    }
+    // The rectangle the client is about to be placed at, position included.
+    // Two gates come out of the record: `resize`, on the size half alone,
+    // because a toplevel is moved without a configure and must not pay for
+    // one; and `relaid`, on the whole rectangle, for X — which is told where
+    // it is and would otherwise draw its menus at the old place. The record
+    // updates either way; it is what the next layout is compared against.
+    let rect = Configured(width, height, resolved.box_.x, resolved.box_.y);
+    let resize = view.configured.map(Configured::size) != Some((width, height));
+    let relaid = view.configured != Some(rect);
+    view.configured = Some(rect);
     // Whether anything the renderer draws from just moved, spent at the end
     // where the rest of what this layout owes is recorded.
     let redraw = was
@@ -1434,14 +1440,33 @@ fn view_layout(state: &mut ViewportState, mut layout: viewport_ipc::request::Vie
     // a window that asked to cover its output has no journey left to make
     // anyway. The request path has already configured it, and the state is
     // what the shell's rectangle falls back to when it stops being fullscreen.
+    //
+    // And not when the client already holds this exact rectangle. The shell
+    // lays every window out on every frame of an animation and Smithay's
+    // `configure` has no identical-rectangle dedup — it sends a
+    // ConfigureNotify and flushes every time — so every frame of *another*
+    // window's animation used to be an X round trip and a client repaint for
+    // every X window on the desk.
+    //
+    // Two records guard the skip, because either alone can be wrong here.
+    // `relaid` — this rectangle against the previous layout's — cannot see
+    // the configures other paths make: the map answer, a configure-request
+    // answer, a fullscreen negotiation. `last_configure` is what Smithay
+    // last actually sent, from wherever, and a configure that failed leaves
+    // it untouched so the next layout tries again rather than believing the
+    // client was told. Only when both say the client has it is the send
+    // skipped; the toplevel above is spared by its size half and needs no
+    // position at all.
     if let Some(x11) = window.x11_surface() {
         if !x11.is_fullscreen() {
-            let rect = smithay::utils::Rectangle::new(
+            let x11_rect = smithay::utils::Rectangle::new(
                 (resolved.box_.x, resolved.box_.y).into(),
                 (width, height).into(),
             );
-            if let Err(e) = x11.configure(rect) {
-                tracing::warn!("could not configure an X11 window: {e}");
+            if relaid || x11.last_configure() != x11_rect {
+                if let Err(e) = x11.configure(x11_rect) {
+                    tracing::warn!("could not configure an X11 window: {e}");
+                }
             }
         }
     }
