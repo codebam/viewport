@@ -1387,13 +1387,23 @@ fn view_layout(state: &mut ViewportState, mut layout: viewport_ipc::request::Vie
     // separate notion of "the compositor placed you", so a window that is
     // moved and not reconfigured believes it is still where it was and draws
     // its menus there.
+    //
+    // Unless it is fullscreen. Then the only rectangle it will accept is the
+    // one it negotiated, and every frame of a shell animation in between is a
+    // rectangle the client reads as its request having been refused: wine
+    // leaves fullscreen again on the first configure that is not its own, and
+    // a window that asked to cover its output has no journey left to make
+    // anyway. The request path has already configured it, and the state is
+    // what the shell's rectangle falls back to when it stops being fullscreen.
     if let Some(x11) = window.x11_surface() {
-        let rect = smithay::utils::Rectangle::new(
-            (resolved.box_.x, resolved.box_.y).into(),
-            (width, height).into(),
-        );
-        if let Err(e) = x11.configure(rect) {
-            tracing::warn!("could not configure an X11 window: {e}");
+        if !x11.is_fullscreen() {
+            let rect = smithay::utils::Rectangle::new(
+                (resolved.box_.x, resolved.box_.y).into(),
+                (width, height).into(),
+            );
+            if let Err(e) = x11.configure(rect) {
+                tracing::warn!("could not configure an X11 window: {e}");
+            }
         }
     }
 
