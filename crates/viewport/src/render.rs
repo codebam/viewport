@@ -699,11 +699,9 @@ where
             if let Some(bounds) = bounding(wedges) {
                 if let Some(element) = shell_element(renderer, shell, id.clone()) {
                     if let Some(cropped) = CropRenderElement::from_element(element, scale, bounds) {
-                        if let Some(rounded) = crate::rounded::RoundedRenderElement::from_bands(
-                            cropped,
-                            scale,
-                            wedges,
-                        ) {
+                        if let Some(rounded) =
+                            crate::rounded::RoundedRenderElement::from_bands(cropped, scale, wedges)
+                        {
                             elements.push(OutputElement::from(rounded));
                         }
                     }

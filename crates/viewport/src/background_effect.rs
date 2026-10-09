@@ -297,7 +297,10 @@ impl Element for BackgroundEffectRenderElement {
                     continue;
                 };
                 let relative = Rectangle::<i32, Buffer>::new(
-                    (absolute.loc.x - self.geometry.loc.x, absolute.loc.y - self.geometry.loc.y)
+                    (
+                        absolute.loc.x - self.geometry.loc.x,
+                        absolute.loc.y - self.geometry.loc.y,
+                    )
                         .into(),
                     (absolute.size.w, absolute.size.h).into(),
                 );
@@ -1447,7 +1450,9 @@ mod tests {
             "the removed pixels are named by the older commit; the padding is not damage"
         );
         // Drawn again unchanged, nothing at all is damaged.
-        assert!(effect.damage_since(Scale::from(1.0), Some(commit)).is_empty());
+        assert!(effect
+            .damage_since(Scale::from(1.0), Some(commit))
+            .is_empty());
     }
 
     /// When the commit asked about is not in the history — too many changes
