@@ -992,7 +992,8 @@ fn web_thread(
         // Poison-recovered like `Commands::send`, and for the same reason:
         // breaking the loop here would leave the commands being queued on the
         // other side of the recovery stranded forever. A panic in `Queue::push`
-        // is not a reason for the web thread to quietly retire.
+        // is not a reason for the web thread to quietly retire — the loop's
+        // only exit is `Command::Quit`, which tears the context down itself.
         let drained: Vec<Command> = commands
             .queue
             .lock()
@@ -1078,7 +1079,6 @@ fn web_thread(
             }
         }
     }
-    unsafe { g_main_context_pop_thread_default(context) };
 }
 
 /// What to do about a web process that has just died.
