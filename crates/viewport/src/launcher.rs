@@ -268,7 +268,12 @@ fn entry_at(text: &str, desktop: &[&str], path: Option<&Path>) -> Option<App> {
     let name = e.name.trim().to_owned();
     let mut tokens = exec_tokens(&e.exec)?;
     expand_field_codes(&mut tokens, &name, e.icon.trim(), path);
-    if tokens.is_empty() {
+    // Empty *arguments* are carried through, but an empty command word is
+    // still not a command: `Exec=""` would otherwise become a row whose whole
+    // command line is `''`, which can only fail to start. A command that
+    // expanded away entirely (`Exec=%U`) is no entry either.
+    let command = tokens.first()?;
+    if command.is_empty() {
         return None;
     }
     let exec = sh_line(&tokens);
@@ -444,7 +449,13 @@ fn expand_field_codes(tokens: &mut Vec<String>, name: &str, icon: &str, path: Op
                 _ => {}
             }
         }
-        if !cleaned.is_empty() {
+        // An explicitly empty argument (`Exec=run ""`) is a real, spec-legal
+        // argument: programs that distinguish "no argument" from "empty
+        // argument" (`--title ''`) need it carried, and `sh_quote` renders it
+        // `''` so the re-joined line's word splitting cannot eat it. A token
+        // that only *became* empty because its field codes expanded to nothing
+        // (`%U` with no files) is not an argument at all and still goes.
+        if !cleaned.is_empty() || token.is_empty() {
             out.push(cleaned);
         }
     }
@@ -483,11 +494,16 @@ fn expand_tilde(token: &str) -> String {
 /// read as anything but itself, single-quoted otherwise. For one word only:
 /// a command line that is more than one word is not a word, and a quote is
 /// what makes the shell look for a binary of the whole line's literal name.
+/// An empty word is quoted as `''` rather than emitted bare: bare, it joins
+/// the line as nothing and the shell's word splitting drops the argument,
+/// which is exactly the distinction an explicitly empty argument exists for.
 pub fn sh_quote(word: &str) -> String {
-    if word.chars().all(|c| {
-        c.is_ascii_alphanumeric()
-            || matches!(c, '-' | '_' | '/' | '.' | ',' | '=' | ':' | '@' | '+' | '%')
-    }) {
+    if !word.is_empty()
+        && word.chars().all(|c| {
+            c.is_ascii_alphanumeric()
+                || matches!(c, '-' | '_' | '/' | '.' | ',' | '=' | ':' | '@' | '+' | '%')
+        })
+    {
         word.to_owned()
     } else {
         format!("'{}'", word.replace('\'', "'\\''"))
@@ -841,6 +857,31 @@ mod tests {
         )
         .expect("parses");
         assert_eq!(app.exec, "run --title 'two words'");
+    }
+
+    #[test]
+    fn an_explicitly_empty_argument_is_kept() {
+        // `Exec=run ""` tokenizes to run plus an empty string — a spec-legal
+        // argument, and the only way to say "empty argument" rather than "no
+        // argument" for the `--title ''` style flags that distinguish them.
+        // It used to be dropped here and word splitting would have eaten it
+        // regardless; it survives as `''` now.
+        let app = entry(
+            "[Desktop Entry]\nName=Thing\nExec=run --title \"\"\n",
+            desktop(),
+        )
+        .expect("parses");
+        assert_eq!(app.exec, "run --title ''");
+        // A field code that expands to nothing is still not an argument:
+        // only an explicitly empty one is.
+        let app = entry(
+            "[Desktop Entry]\nName=Thing\nExec=run %U --title \"\"\n",
+            desktop(),
+        )
+        .expect("parses");
+        assert_eq!(app.exec, "run --title ''");
+        // And a command that is empty is still no entry at all.
+        assert!(entry("[Desktop Entry]\nName=Thing\nExec=\"\"\n", desktop()).is_none());
     }
 
     #[test]
