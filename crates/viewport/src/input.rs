@@ -3880,7 +3880,9 @@ impl ViewportState {
         let origin = origin.to_i32_round();
 
         let mut locked = false;
-        let mut confine = None;
+        // `None`: no active confinement. `Some(None)`: confined to the whole
+        // surface. `Some(Some(rects))`: confined to those rectangles.
+        let mut confined: Option<Option<Vec<Rectangle<i32, Logical>>>> = None;
         with_pointer_constraint(surface, pointer, |constraint| {
             let Some(constraint) = constraint else {
                 return;
@@ -3893,7 +3895,7 @@ impl ViewportState {
             }
             match &*constraint {
                 PointerConstraint::Locked(_) => locked = true,
-                PointerConstraint::Confined(confined) => {
+                PointerConstraint::Confined(confined_constraint) => {
                     // The additive rectangles only. A region may also
                     // subtract, but a hole in a confinement region has no
                     // sensible edge to snap a cursor to — and no client asks
@@ -3901,41 +3903,42 @@ impl ViewportState {
                     // more than was asked, which is the safe direction: the
                     // cursor stays inside the surface either way.
                     use smithay::wayland::compositor::RectangleKind;
-                    confine = Some(
-                        confined
-                            .region()
-                            .map(|region| {
-                                region
-                                    .rects
-                                    .iter()
-                                    .filter(|(kind, _)| matches!(kind, RectangleKind::Add))
-                                    .map(|(_, rect)| *rect)
-                                    .collect()
-                            })
-                            // No region means the whole surface, not "nowhere".
-                            // Every XWayland confinement arrives this way
-                            // (`xwl_seat_confine_pointer` passes NULL), so
-                            // reading it as an empty region left an X11 game's
-                            // cursor free to walk off its own window.
-                            .unwrap_or_else(|| {
-                                let bbox = smithay::desktop::utils::bbox_from_surface_tree(
-                                    surface,
-                                    (0, 0),
-                                );
-                                // A surface with nothing committed to it has
-                                // no area, and confining to that would pin the
-                                // cursor to a corner. Leave it free instead.
-                                if bbox.is_empty() {
-                                    Vec::new()
-                                } else {
-                                    vec![bbox]
-                                }
-                            }),
-                    );
+                    confined = Some(confined_constraint.region().map(|region| {
+                        region
+                            .rects
+                            .iter()
+                            .filter(|(kind, _)| matches!(kind, RectangleKind::Add))
+                            .map(|(_, rect)| *rect)
+                            .collect()
+                    }));
                 }
             }
         });
-        (locked, confine.map(|region| (region, origin)))
+
+        // The whole-surface bounding box is computed here, outside the
+        // `with_pointer_constraint` call, and must stay here: that closure
+        // runs while holding the surface's data lock, and
+        // `bbox_from_surface_tree` takes the same lock again for every
+        // surface in the tree — including this one. Locking it twice on one
+        // thread deadlocks the whole compositor on the first pointer event
+        // after a client asks for a regionless confine, and every XWayland
+        // confinement arrives that way (`xwl_seat_confine_pointer` passes
+        // NULL), so it is the first mouse move in any captured X11 game.
+        let confine = confined.map(|rects| {
+            let region = rects.unwrap_or_else(|| {
+                let bbox = smithay::desktop::utils::bbox_from_surface_tree(surface, (0, 0));
+                // A surface with nothing committed to it has no area, and
+                // confining to that would pin the cursor to a corner. Leave
+                // it free instead.
+                if bbox.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![bbox]
+                }
+            });
+            (region, origin)
+        });
+        (locked, confine)
     }
 }
 
