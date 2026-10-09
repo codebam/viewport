@@ -777,6 +777,7 @@ impl ViewportState {
             // the field.
             settle: 5,
             lease_state,
+            lease_offered: std::collections::HashSet::new(),
         };
         match slot {
             // Assigning over the slot is what drops the old device — its
@@ -1186,7 +1187,10 @@ mod tests {
         // `next_tick` is what keeps a due-and-suppressed retry from re-arming
         // at zero.
         assert_eq!(add_wait(0, backoff(0)), Duration::ZERO);
-        assert_eq!(add_wait(0, backoff(0) + Duration::from_secs(1)), Duration::ZERO);
+        assert_eq!(
+            add_wait(0, backoff(0) + Duration::from_secs(1)),
+            Duration::ZERO
+        );
     }
 
     /// The stateful path has no test harness here — a card that never opened

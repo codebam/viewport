@@ -585,6 +585,22 @@ pub struct Device {
     /// `None` if the global could not be created, which is not fatal: it
     /// leaves a card nothing can lease, and everything else works.
     pub lease_state: Option<smithay::wayland::drm_lease::DrmLeaseState>,
+    /// Connectors this card has offered for lease, by handle.
+    ///
+    /// `scan_device` runs on udev Changed, on install and reopen and after the
+    /// driver settles, and every pass used to offer every non-desktop connector
+    /// again. That was never a duplicate on the wire — smithay's `add_connector`
+    /// returns early for a handle its lease state already holds — but with no
+    /// record the compositor did not know what it had already said, nor that a
+    /// connector under an active lease is hardware it must stop touching: the
+    /// offer was retried over a headset a client was already driving. Recorded
+    /// here, a handle is offered once and then left alone; `scan_device` asks
+    /// this and the live leases before it offers anything.
+    ///
+    /// Per card, and dropped with the device: a connector handle is only
+    /// unique within the card that issued it, and a rebuilt device comes with
+    /// a fresh lease global that must make its own offers.
+    pub lease_offered: std::collections::HashSet<connector::Handle>,
 }
 
 pub struct Udev {
@@ -1596,6 +1612,7 @@ pub fn init(
             stepped_at: None,
             settle: 0,
             lease_state,
+            lease_offered: std::collections::HashSet::new(),
         }],
         input_devices: Vec::new(),
         blanked: false,
@@ -1664,6 +1681,7 @@ pub fn init(
                     stepped_at: None,
                     settle: 0,
                     lease_state: other_lease,
+                    lease_offered: std::collections::HashSet::new(),
                 });
                 tracing::info!("gpu {index}: {other:?} also driving outputs");
 
@@ -2450,16 +2468,43 @@ impl ViewportState {
             // compositing. It is offered for lease instead, and a client that
             // knows how to drive it takes the whole connector.
             if leasable.contains(&connector.handle()) {
-                // This card's lease global, not the session's: the handles
-                // being offered belong to this device and a client told to
-                // open the primary's node would find nothing behind them.
-                if let Some(lease) = udev.devices[index].lease_state.as_mut() {
-                    tracing::info!("{name}: non-desktop, offered for lease");
-                    lease.add_connector::<ViewportState>(
-                        connector.handle(),
-                        name.clone(),
-                        format!("{name} (non-desktop)"),
-                    );
+                // Offered once per card, and never while some lease holds it.
+                //
+                // This function runs on udev Changed, on install and reopen and
+                // after the driver settles, and the offer used to go out every
+                // time. Not a client-visible duplicate — smithay's
+                // `add_connector` returns early for a handle its lease state
+                // already holds (see `drm_lease/mod.rs` in the pinned smithay)
+                // — but the compositor kept no record of what it had offered
+                // and so had no way to stand back from hardware somebody else
+                // drives: a leased-out headset is reached past by every rescan.
+                //
+                // The record is per card — a connector handle is only unique
+                // within the card that issued it — and lives as long as the
+                // card's lease global. "Currently leased" is asked of the
+                // session's live leases by handle; with two cards a coincident
+                // handle number can over-match, which only ever suppresses an
+                // offer and never makes one, and smithay's own dedupe would
+                // refuse the re-add anyway.
+                let leased = udev
+                    .leases
+                    .iter()
+                    .flat_map(|lease| lease.connectors())
+                    .any(|leased| *leased == connector.handle());
+                let device = &mut udev.devices[index];
+                if !device.lease_offered.contains(&connector.handle()) && !leased {
+                    // This card's lease global, not the session's: the handles
+                    // being offered belong to this device and a client told to
+                    // open the primary's node would find nothing behind them.
+                    if let Some(lease) = device.lease_state.as_mut() {
+                        tracing::info!("{name}: non-desktop, offered for lease");
+                        lease.add_connector::<ViewportState>(
+                            connector.handle(),
+                            name.clone(),
+                            format!("{name} (non-desktop)"),
+                        );
+                        device.lease_offered.insert(connector.handle());
+                    }
                 }
                 continue;
             }
@@ -4328,6 +4373,37 @@ mod tests {
         assert!(
             source.contains("last_vblank_by_output.insert(id, now)"),
             "the vblank record must be written under the OutputId"
+        );
+    }
+
+    /// A non-desktop connector was re-offered for lease on every rescan — udev
+    /// Changed, install, reopen, settle. smithay's `add_connector` dedupes by
+    /// handle, so nothing doubled on the wire, but the compositor kept no
+    /// record of what it had offered and so reached past connectors a client
+    /// was already driving under lease. Checked against the source: the path
+    /// needs a `DrmLeaseState` and a non-desktop head, neither of which a unit
+    /// test has.
+    #[test]
+    fn a_connector_is_offered_for_lease_once_and_never_while_leased() {
+        let source = include_str!("udev.rs");
+        let source = source.split("#[cfg(test)]").next().unwrap_or(source);
+        let start = source
+            .find("if leasable.contains(&connector.handle())")
+            .expect("the lease offer site in udev.rs");
+        let rest = &source[start..];
+        let end = rest.find("continue;").unwrap_or(rest.len());
+        let body = &rest[..end];
+        assert!(
+            body.contains("lease_offered"),
+            "the offer must consult the record of what this card already offered"
+        );
+        assert!(
+            body.contains("lease.connectors()"),
+            "the offer must stand back from connectors an active lease holds"
+        );
+        assert!(
+            body.contains("lease_offered.insert(connector.handle())"),
+            "a successful offer has to be recorded per card"
         );
     }
 }
