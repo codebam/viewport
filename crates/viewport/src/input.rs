@@ -794,6 +794,78 @@ fn uses_the_pointer<I: InputBackend>(event: &InputEvent<I>) -> bool {
     )
 }
 
+/// What a device's scroll events are multiplied by, and whether its touchpad
+/// scroll is dressed up as wheel steps.
+///
+/// The two settings libinput cannot carry on the device itself: a scroll
+/// factor is applied to the events as they arrive rather than programmed into
+/// the device, so the merged config is consulted on the axis path. Only these
+/// two fields leave the cache, and both are `Copy` — a lookup clones nothing.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ScrollSettings {
+    scroll_factor: Option<f64>,
+    emulate_discrete_scroll: Option<bool>,
+}
+
+/// A device's resolved [`ScrollSettings`], and what they were resolved from.
+struct CachedScrollSettings {
+    /// The config contents behind `settings`, as [`input_config_hash`] sees
+    /// them — so a reload that changes a field this cache serves is felt on
+    /// the next tick, while one that does not churns nothing.
+    config_hash: u64,
+    /// The device's config identifier, built once and kept for its life.
+    identifier: String,
+    settings: ScrollSettings,
+}
+
+// One entry per device, keyed by `Device::id`, built on first sight (and on
+// `DeviceAdded`, so the first tick after a hotplug is not the one paying for
+// it) and dropped when the device goes.
+//
+// A thread local for the same reason `SUPPRESSED_BUTTONS` is: input is
+// dispatched on the compositor's own thread and nowhere else, and this is the
+// axis handler's private bookkeeping.
+thread_local! {
+    static SCROLL_SETTINGS: std::cell::RefCell<
+        std::collections::HashMap<String, CachedScrollSettings>,
+    > = std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// The config identifier a device is known by.
+///
+/// Built the same way the backend builds it — `usb_id` hands back
+/// (product, vendor), while the config spells vendor first — because the
+/// `input` entries this looks up are keyed by that spelling.
+fn device_identifier<D: smithay::backend::input::Device>(device: &D) -> String {
+    match device.usb_id() {
+        Some((product, vendor)) => format!("{vendor:04x}:{product:04x}:{}", device.name()),
+        None => device.name(),
+    }
+}
+
+/// What [`CachedScrollSettings`] was resolved against.
+///
+/// Hashed without allocating and folded order-independently, because a
+/// `HashMap` iterates in no fixed order and the same config must always hash
+/// the same. Only the fields the cache serves are hashed: the fingerprint has
+/// to notice exactly the changes that would change what is cached, and
+/// widening it would drop the cache on edits of fields nobody here reads.
+fn input_config_hash(
+    configs: &std::collections::HashMap<String, crate::config::InputConfig>,
+) -> u64 {
+    use std::hash::{Hash, Hasher};
+
+    let mut mixed = configs.len() as u64;
+    for (key, config) in configs {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        key.hash(&mut hasher);
+        config.scroll_factor.map(f64::to_bits).hash(&mut hasher);
+        config.emulate_discrete_scroll.hash(&mut hasher);
+        mixed ^= hasher.finish();
+    }
+    mixed
+}
+
 impl ViewportState {
     /// A key from the control socket rather than from libinput.
     ///
@@ -1548,6 +1620,58 @@ impl ViewportState {
         // business to decide but is its business to report.
         let seat = self.seat.clone();
         self.idle_notifier_state.notify_activity(&seat);
+    }
+
+    /// The scroll settings that apply to a device, cached per device id.
+    ///
+    /// A high-resolution wheel delivers hundreds of axis events a second, and
+    /// resolving these used to allocate the device's name, a `format!`
+    /// identifier and the merged config's strings on every one. The identifier
+    /// is the device's to build once and keep; the merge is the config's to
+    /// redo only when the config actually changes, which the fingerprint of
+    /// the fields these settings come from says.
+    fn scroll_settings<D: smithay::backend::input::Device>(
+        &self,
+        device: &D,
+    ) -> ScrollSettings {
+        let id = device.id();
+        let hash = input_config_hash(&self.input_config);
+        SCROLL_SETTINGS.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            if let Some(entry) = cache.get_mut(&id) {
+                if entry.config_hash == hash {
+                    return entry.settings;
+                }
+                // The config changed under this device: the identifier is the
+                // device's to keep for its life, only the resolution is the
+                // config's to redo.
+                let settings = self.merged_scroll_settings(&entry.identifier);
+                entry.settings = settings;
+                entry.config_hash = hash;
+                return settings;
+            }
+            // First sight of the device.
+            let identifier = device_identifier(device);
+            let settings = self.merged_scroll_settings(&identifier);
+            cache.insert(
+                id,
+                CachedScrollSettings {
+                    config_hash: hash,
+                    identifier,
+                    settings,
+                },
+            );
+            settings
+        })
+    }
+
+    /// The merged config's axis fields, for one identifier.
+    fn merged_scroll_settings(&self, identifier: &str) -> ScrollSettings {
+        let merged = self.input_config_for(identifier);
+        ScrollSettings {
+            scroll_factor: merged.scroll_factor,
+            emulate_discrete_scroll: merged.emulate_discrete_scroll,
+        }
     }
 
     pub fn process_input_event<I: InputBackend>(&mut self, event: InputEvent<I>) {
@@ -2416,22 +2540,17 @@ impl ViewportState {
                 let source = event.source();
                 // The two settings libinput cannot carry on the device itself.
                 // A scroll factor is applied to the events as they arrive, so
-                // the merged config is read here. The identifier is built the
-                // same way the backend builds it — `usb_id` hands back
-                // (product, vendor), while the config spells vendor first.
+                // the merged config is consulted here — cached per device,
+                // because a high-resolution wheel must not rebuild the config
+                // identifier and re-merge the config per tick. See
+                // `scroll_settings`.
                 let device = event.device();
-                let identifier = match device.usb_id() {
-                    Some((product, vendor)) => {
-                        format!("{vendor:04x}:{product:04x}:{}", device.name())
-                    }
-                    None => device.name(),
-                };
-                let input = self.input_config_for(&identifier);
-                let factor = input
+                let settings = self.scroll_settings(&device);
+                let factor = settings
                     .scroll_factor
                     .filter(|factor| factor.is_finite() && *factor != 0.0)
                     .unwrap_or(1.0);
-                let emulate = input.emulate_discrete_scroll.unwrap_or(false);
+                let emulate = settings.emulate_discrete_scroll.unwrap_or(false);
                 let horizontal = event.amount(Axis::Horizontal).unwrap_or_else(|| {
                     event.amount_v120(Axis::Horizontal).unwrap_or(0.0) * 15.0 / 120.0
                 }) * factor;
@@ -2571,10 +2690,21 @@ impl ViewportState {
                     // next thing focused after it.
                     self.sync_osk_wanted();
                 }
+                // The axis settings are cached per device id — warm them here,
+                // so the first scroll after a hotplug is not the one paying
+                // for the identifier and the merge. See `scroll_settings`.
+                self.scroll_settings(&device);
             }
             InputEvent::DeviceRemoved { device } => {
                 self.cancel_gesture();
                 use smithay::backend::input::Device as _;
+                // The cached axis settings were this device's, and the id the
+                // next device is handed may be one this one had: dropped now,
+                // so a future device resolves by its own name rather than
+                // inheriting this one's scroll factor.
+                SCROLL_SETTINGS.with(|cache| {
+                    cache.borrow_mut().remove(&device.id());
+                });
                 // A keyboard that dies mid-chord sends no releases, and no
                 // other path ends a hold: the repeat timer would run its
                 // binding for ever and a held push-to-talk shortcut would
