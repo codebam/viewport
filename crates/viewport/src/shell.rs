@@ -90,12 +90,14 @@ const MAX_MAILBOX_MESSAGES: usize = 8192;
 /// handful of the largest ones.
 const MAX_QUEUE_BYTES: usize = 4 << 20;
 
-/// The most commands of any kind the queue may hold.
+/// The most droppable commands the queue may hold.
 ///
 /// The byte budget covers posts; key and button events are fixed-size structs
 /// and an unbounded run of them (a stuck web thread plus a key repeat, or an
 /// IPC client pumping `input.*`) would otherwise grow the deque at a few dozen
-/// bytes per event. This is several seconds of the most frantic input.
+/// bytes per event. This is several seconds of the most frantic input. The
+/// ceiling governs only what the overflow valve may drop — see
+/// [`Command::droppable`]; lifecycle and frame commands are queued past it.
 const MAX_QUEUE_ENTRIES: usize = 4096;
 
 /// How often a full queue logs. The drop count still accumulates; only the
@@ -189,6 +191,33 @@ enum Command {
     Quit,
 }
 
+impl Command {
+    /// Whether the overflow valve may drop this command.
+    ///
+    /// Only what the web thread can stand to lose: an input event from a path
+    /// the user has already left, or a page event a queue this far behind has
+    /// already made moot. Everything else is lifecycle or buffer accounting
+    /// whose loss is permanent — a dropped `Restart` is a shell page that
+    /// never comes back (`take_termination` has already consumed the crash it
+    /// answers, and nothing retries), a dropped `Done` or `Release` is a
+    /// buffer gone from WebKit's pool and a frame clock that never advances
+    /// again (the engine paints no frame until `frame_done`), a dropped `Quit`
+    /// is a web thread left detached with WebKit still running, and a dropped
+    /// `Load`, `Reload` or `Resize` is a page never told what to show or how
+    /// big it is. Those queue past the ceiling; the ceiling exists for these,
+    /// not for them.
+    fn droppable(&self) -> bool {
+        matches!(
+            self,
+            Command::Post(_)
+                | Command::PointerMotion { .. }
+                | Command::PointerAxis { .. }
+                | Command::PointerButton { .. }
+                | Command::KeyboardKey { .. }
+        )
+    }
+}
+
 /// A `GMainContext` pointer, sendable because the two calls made on it from
 /// another thread — `wakeup` and `unref` — are the two GLib documents as
 /// thread-safe.
@@ -251,7 +280,10 @@ impl Queue {
             command @ Command::PointerAxis { .. } => self.coalesce(command, false),
             command => {
                 self.seal();
-                if !self.has_room(&command) {
+                // Lifecycle and frame commands go in whatever the queue
+                // holds; the budget below is for what can be lost. See
+                // `Command::droppable`.
+                if command.droppable() && !self.has_room(&command) {
                     self.note_drop();
                     return;
                 }
@@ -289,9 +321,10 @@ impl Queue {
     /// Whether `command` fits both budgets.
     ///
     /// Checked after sealing, so the pending pointer events it would join are
-    /// part of the entry count. Dropping the newest command is deliberate: the
-    /// web thread is already behind, and the oldest queued work is the work
-    /// most likely to be obsolete.
+    /// part of the entry count. Only droppable commands ever ask (see
+    /// [`Command::droppable`]), and for those dropping the newest is
+    /// deliberate: the web thread is already behind, and the oldest queued
+    /// work is the work most likely to be obsolete.
     fn has_room(&self, command: &Command) -> bool {
         if self.entries() >= MAX_QUEUE_ENTRIES {
             return false;
@@ -1217,6 +1250,17 @@ mod tests {
         }
     }
 
+    /// A droppable fixed-size command, for filling the queue past its ceiling.
+    fn key(keycode: u32) -> Command {
+        Command::KeyboardKey {
+            time: 0,
+            keycode,
+            keysym: 0,
+            pressed: true,
+            modifiers: 0,
+        }
+    }
+
     #[test]
     fn pointer_motion_coalesces_to_the_newest() {
         // A stalled web process must not accumulate one entry per motion
@@ -1312,14 +1356,15 @@ mod tests {
         assert_eq!(queue.post_bytes, 0, "draining releases the budget");
     }
 
-    /// The byte budget only knows about posts, so the fixed-size commands
-    /// have their own entry ceiling. A stuck web thread cannot be made to
-    /// hold input or lifecycle commands without bound either.
+    /// The byte budget only knows about posts, so the droppable fixed-size
+    /// commands have their own entry ceiling. A stuck web thread cannot be
+    /// made to hold input without bound either; the lifecycle commands whose
+    /// loss is permanent are exempt from the ceiling and have their own test.
     #[test]
     fn the_command_queue_has_an_entry_ceiling() {
         let mut queue = Queue::default();
         for _ in 0..MAX_QUEUE_ENTRIES + 10 {
-            queue.push(Command::Reload);
+            queue.push(key(0));
         }
         assert!(queue.entries() <= MAX_QUEUE_ENTRIES);
         assert_eq!(queue.dropped, 10);
@@ -1328,13 +1373,13 @@ mod tests {
 
     /// A coalesced pointer motion is sealed -- pushed in order -- by whatever
     /// command follows it. The seal is a push like any other and has to pay
-    /// the same budget: without the check each motion/reload pair grew the
+    /// the same budget: without the check each motion/key pair grew the
     /// queue by one entry for as long as the web thread stayed behind.
     #[test]
     fn sealing_a_coalesced_motion_cannot_outgrow_the_entry_ceiling() {
         let mut queue = Queue::default();
         for _ in 0..MAX_QUEUE_ENTRIES {
-            queue.push(Command::Reload);
+            queue.push(key(0));
         }
         assert_eq!(queue.commands.len(), MAX_QUEUE_ENTRIES);
 
@@ -1345,7 +1390,7 @@ mod tests {
                 y: 0.0,
                 modifiers: 0,
             });
-            queue.push(Command::Reload);
+            queue.push(key(1));
             assert!(
                 queue.entries() <= MAX_QUEUE_ENTRIES,
                 "{} entries",
@@ -1357,6 +1402,43 @@ mod tests {
                 queue.commands.len()
             );
         }
+    }
+
+    /// The overflow valve covers input and page events only. The rest is
+    /// lifecycle and buffer accounting whose loss is permanent: a dropped
+    /// `Restart` is a shell page that never comes back, a dropped
+    /// `Done`/`Release` is a buffer gone from WebKit's pool and a frame clock
+    /// that never advances again, a dropped `Quit` is a web thread left
+    /// detached. So a full queue still takes them — in order — and drops only
+    /// what the web thread can stand to lose.
+    #[test]
+    fn a_full_queue_still_takes_lifecycle_and_frame_commands() {
+        let token = || unsafe { FrameToken::from_ptr(std::ptr::null_mut(), 0) };
+        let mut queue = Queue::default();
+        for _ in 0..MAX_QUEUE_ENTRIES {
+            queue.push(key(0));
+        }
+        queue.push(Command::Quit);
+        queue.push(Command::Restart);
+        queue.push(Command::Load("file:///new".to_owned()));
+        queue.push(Command::Reload);
+        queue.push(Command::Resize(800, 600));
+        queue.push(Command::Done(token()));
+        queue.push(Command::Release(token()));
+        // …and one droppable command past the ceiling is still dropped.
+        queue.push(key(2));
+        assert_eq!(queue.dropped, 1);
+
+        let drained = queue.drain();
+        assert_eq!(drained.len(), MAX_QUEUE_ENTRIES + 7);
+        let tail = &drained[MAX_QUEUE_ENTRIES..];
+        assert!(matches!(tail[0], Command::Quit));
+        assert!(matches!(tail[1], Command::Restart));
+        assert!(matches!(tail[2], Command::Load(ref url) if url == "file:///new"));
+        assert!(matches!(tail[3], Command::Reload));
+        assert!(matches!(tail[4], Command::Resize(800, 600)));
+        assert!(matches!(tail[5], Command::Done(_)));
+        assert!(matches!(tail[6], Command::Release(_)));
     }
 
     /// The compositor cannot wait for a fence it never received. A frame's
