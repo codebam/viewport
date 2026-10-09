@@ -382,47 +382,61 @@ unsafe extern "C" fn converse(
     responses: *mut *mut PamResponse,
     appdata: *mut c_void,
 ) -> c_int {
-    if count <= 0 || messages.is_null() || responses.is_null() || appdata.is_null() {
-        return PAM_CONV_ERR;
-    }
-    // SAFETY: the contract above.
-    unsafe {
-        let password = &*(appdata as *const CString);
-
-        // calloc rather than a Rust allocation: PAM frees this array with
-        // `free`, and every string in it with `free`, whatever happens next.
-        // Handing it something Rust allocated is a heap corruption that shows
-        // up somewhere else entirely.
-        let array =
-            libc::calloc(count as usize, std::mem::size_of::<PamResponse>()) as *mut PamResponse;
-        if array.is_null() {
-            return PAM_BUF_ERR;
+    // A panic must not unwind into libpam: unwinding through a C frame is
+    // undefined behaviour, and this is the one extern "C" callback in the
+    // process without the barrier the three engine callbacks all have. The
+    // response array is only handed to PAM on the success path, so a panic
+    // before that leaks it at worst and fails the conversation cleanly.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if count <= 0 || messages.is_null() || responses.is_null() || appdata.is_null() {
+            return PAM_CONV_ERR;
         }
+        // SAFETY: the contract above.
+        unsafe {
+            let password = &*(appdata as *const CString);
 
-        for at in 0..count as isize {
-            let message = *messages.offset(at);
-            if message.is_null() {
-                continue;
+            // calloc rather than a Rust allocation: PAM frees this array with
+            // `free`, and every string in it with `free`, whatever happens next.
+            // Handing it something Rust allocated is a heap corruption that shows
+            // up somewhere else entirely.
+            let array = libc::calloc(count as usize, std::mem::size_of::<PamResponse>())
+                as *mut PamResponse;
+            if array.is_null() {
+                return PAM_BUF_ERR;
             }
-            let slot = array.offset(at);
-            match (*message).style {
-                PAM_PROMPT_ECHO_OFF | PAM_PROMPT_ECHO_ON => {
-                    let copy = libc::strdup(password.as_ptr());
-                    if copy.is_null() {
-                        libc::free(array.cast());
-                        return PAM_BUF_ERR;
-                    }
-                    (*slot).resp = copy;
+
+            for at in 0..count as isize {
+                let message = *messages.offset(at);
+                if message.is_null() {
+                    continue;
                 }
-                // An error or a notice. PAM wants the slot left empty; the
-                // text is picked up from `pam_strerror` on the way out if the
-                // attempt fails, so nothing is lost by not reading it here.
-                _ => (*slot).resp = std::ptr::null_mut(),
+                let slot = array.offset(at);
+                match (*message).style {
+                    PAM_PROMPT_ECHO_OFF | PAM_PROMPT_ECHO_ON => {
+                        let copy = libc::strdup(password.as_ptr());
+                        if copy.is_null() {
+                            libc::free(array.cast());
+                            return PAM_BUF_ERR;
+                        }
+                        (*slot).resp = copy;
+                    }
+                    // An error or a notice. PAM wants the slot left empty; the
+                    // text is picked up from `pam_strerror` on the way out if the
+                    // attempt fails, so nothing is lost by not reading it here.
+                    _ => (*slot).resp = std::ptr::null_mut(),
+                }
+                (*slot).retcode = 0;
             }
-            (*slot).retcode = 0;
+            *responses = array;
+            PAM_SUCCESS
         }
-        *responses = array;
-        PAM_SUCCESS
+    }));
+    match result {
+        Ok(code) => code,
+        Err(_) => {
+            tracing::error!("the PAM conversation panicked");
+            PAM_CONV_ERR
+        }
     }
 }
 
@@ -566,5 +580,55 @@ mod tests {
         let printed = format!("{request:?}");
         assert!(!printed.contains("hunter2"), "{printed}");
         assert!(printed.contains("<secret>"), "{printed}");
+    }
+
+    /// The PAM conversation answers every prompt with the one password, and
+    /// refuses to talk through a null hand. Called directly rather than
+    /// through libpam so the response array's ownership can be checked: it is
+    /// calloc'd because PAM frees it with `free`, whatever happens next.
+    #[test]
+    fn the_pam_conversation_answers_with_the_one_password() {
+        let password = CString::new("hunter2").unwrap();
+        let prompt = PamMessage {
+            style: PAM_PROMPT_ECHO_OFF,
+            msg: c"Password:".as_ptr(),
+        };
+        let messages: [*const PamMessage; 1] = [&prompt];
+        let mut responses: *mut PamResponse = std::ptr::null_mut();
+        // SAFETY: `prompt` outlives the call, `responses` points at writable
+        // space, and `password` is a real `CString` — exactly the contract
+        // libpam calls this under.
+        let outcome = unsafe {
+            converse(
+                1,
+                messages.as_ptr(),
+                &mut responses,
+                &password as *const CString as *mut c_void,
+            )
+        };
+        assert_eq!(outcome, PAM_SUCCESS);
+        assert!(!responses.is_null());
+        // SAFETY: `converse` filled the array and its strings with calloc and
+        // strdup, so `free` is what frees them — the same as PAM would.
+        unsafe {
+            assert_eq!((*responses).retcode, 0);
+            assert_eq!(CStr::from_ptr((*responses).resp), c"hunter2");
+            libc::free((*responses).resp.cast());
+            libc::free(responses.cast());
+        }
+
+        // A null hand is refused before anything is allocated or answered.
+        // SAFETY: null pointers are exactly what this path checks.
+        assert_eq!(
+            unsafe {
+                converse(
+                    0,
+                    std::ptr::null(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                )
+            },
+            PAM_CONV_ERR
+        );
     }
 }
