@@ -9,6 +9,8 @@
 
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 
@@ -107,20 +109,63 @@ pub trait FrameSink: Send {
     fn frame(&mut self, frame: Frame, token: FrameToken) -> bool;
 }
 
+/// Which web process a [`FrameToken`] belongs to.
+///
+/// A token names a `WPEBuffer` minted by one web process; when that process
+/// dies the pool behind the buffer is gone, and passing the token back to the
+/// shim would release into freed memory. The counter is bumped exactly then —
+/// on the web thread, when WebKit reports the process terminated — so anything
+/// still holding a token minted earlier can tell it is dead weight and drop it
+/// rather than hand it back. This is the same verdict the crash handler gives
+/// the frames still in the mailbox, extended to the ones the compositor had
+/// already taken before the crash ran.
+#[derive(Clone, Default)]
+pub struct FrameGeneration(Arc<AtomicU64>);
+
+impl FrameGeneration {
+    /// The generation frames are minted under now.
+    pub fn current(&self) -> u64 {
+        self.0.load(Ordering::Relaxed)
+    }
+
+    /// Retire every frame minted until now, because the web process that
+    /// minted them is gone.
+    pub fn bump(&self) {
+        self.0.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
 /// A frame that has been handed over but not yet presented.
 ///
 /// WebKit will not paint the next frame until this is returned, which is what
 /// keeps the shell's paint rate on vblank instead of free-running. Dropping it
 /// without acknowledging stalls the engine permanently, so it is not `Drop`:
-/// it has to be passed back explicitly.
+/// it has to be passed back explicitly — while the web process that minted it
+/// is still alive. Its [`FrameToken::generation`] says which process that was;
+/// once that generation has been bumped the pool behind the token is gone and
+/// passing it back would be a call into freed memory, so the web thread drops
+/// those instead (`crates/viewport/src/shell.rs`, `Crashes::terminated`). What
+/// is dropped there is a leak of a handle whose owner is already gone, which
+/// costs nothing — a dead engine has no frame clock left to stall.
 #[derive(Debug)]
-pub struct FrameToken(*mut c_void);
+pub struct FrameToken {
+    ptr: *mut c_void,
+    /// The [`FrameGeneration`] the buffer was minted under. Compared, never
+    /// dereferenced.
+    generation: u64,
+}
 
 impl FrameToken {
     /// The underlying `WPEBuffer`, for the release call in
     /// [`crate::webkit::WebView::frame_release`].
     pub fn as_ptr(&self) -> *mut c_void {
-        self.0
+        self.ptr
+    }
+
+    /// Which web process minted this buffer. A token is only good for the
+    /// generation it names; see [`FrameGeneration`].
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
     /// Wrap a handle again, for an acknowledgement that does not own it.
@@ -137,8 +182,8 @@ impl FrameToken {
     /// The pointer must be one this type handed out, and the buffer must not
     /// have been released. Two tokens for one buffer must not both be passed
     /// to `frame_release`.
-    pub unsafe fn from_ptr(ptr: *mut c_void) -> Self {
-        Self(ptr)
+    pub unsafe fn from_ptr(ptr: *mut c_void, generation: u64) -> Self {
+        Self { ptr, generation }
     }
 }
 
@@ -146,11 +191,20 @@ impl FrameToken {
 // back to the shim on the same thread that produced it.
 unsafe impl Send for FrameToken {}
 
+/// What `render_frame` is handed through `ShimCallbacks::user`: the sink, and
+/// the generation every token it produces is stamped with.
+struct SinkUser {
+    // Double-boxed so the trait object is one thin pointer that survives
+    // being cast through `void *`.
+    sink: Box<Box<dyn FrameSink>>,
+    generation: FrameGeneration,
+}
+
 /// A WPE display, subclassed in C, driving one web view.
 pub struct Display {
     inner: *mut ShimDisplay,
     // Kept alive for as long as the display can call into it.
-    _sink: Box<Box<dyn FrameSink>>,
+    _user: Box<SinkUser>,
 }
 
 impl Display {
@@ -182,10 +236,15 @@ impl Display {
         let codes: Vec<u32> = formats.iter().map(|(code, _)| *code).collect();
         let modifiers: Vec<u64> = formats.iter().map(|(_, modifier)| *modifier).collect();
 
-        // Double-boxed so the trait object is one thin pointer that survives
-        // being cast through `void *`.
-        let mut sink = Box::new(sink);
-        let user = &mut *sink as *mut Box<dyn FrameSink> as *mut c_void;
+        // The sink is double-boxed inside `SinkUser`, so the trait object is
+        // one thin pointer that survives being cast through `void *`, and the
+        // generation rides along where the callback can stamp it on the tokens
+        // it mints.
+        let mut user_data = Box::new(SinkUser {
+            sink: Box::new(sink),
+            generation: FrameGeneration::default(),
+        });
+        let user = &mut *user_data as *mut SinkUser as *mut c_void;
 
         let config = ShimDisplayConfig {
             primary_node: primary.as_ptr(),
@@ -219,7 +278,19 @@ impl Display {
             return Err(anyhow!(message));
         }
 
-        Ok(Self { inner, _sink: sink })
+        Ok(Self {
+            inner,
+            _user: user_data,
+        })
+    }
+
+    /// A handle to the generation its frame tokens are stamped with.
+    ///
+    /// Two halves of the shell keep one each: the crash sink bumps it when the
+    /// web process dies, and the command loop drops frame commands whose token
+    /// was minted before then. See [`FrameGeneration`].
+    pub fn generation(&self) -> FrameGeneration {
+        self._user.generation.clone()
     }
 
     /// The `WPEDisplay` pointer, for handing to `webkit_web_view_new`.
@@ -235,7 +306,7 @@ impl Display {
     /// texture sampling it is usually still on screen at this point.
     pub fn frame_done(&self, token: &FrameToken) {
         // SAFETY: the token came from this display's own callback.
-        unsafe { viewport_shim_frame_done(self.inner, token.0) };
+        unsafe { viewport_shim_frame_done(self.inner, token.ptr) };
     }
 
     pub fn resize(&self, width: u32, height: u32) {
@@ -334,7 +405,7 @@ unsafe extern "C" fn render_frame(user: *mut c_void, frame: *const ShimFrame) ->
 
     // A panic must not cross back into C, where unwinding is undefined.
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let sink = &mut *(user as *mut Box<dyn FrameSink>);
+        let user = &mut *(user as *mut SinkUser);
         let raw = &*frame;
 
         let planes: Vec<Plane> = (0..raw.n_planes.min(4) as usize)
@@ -374,7 +445,7 @@ unsafe extern "C" fn render_frame(user: *mut c_void, frame: *const ShimFrame) ->
             None
         };
 
-        sink.frame(
+        user.sink.frame(
             Frame {
                 planes,
                 format: raw.format,
@@ -383,7 +454,13 @@ unsafe extern "C" fn render_frame(user: *mut c_void, frame: *const ShimFrame) ->
                 height: raw.height,
                 fence,
             },
-            FrameToken(raw.token),
+            FrameToken {
+                ptr: raw.token,
+                // Stamped here, at minting: the buffer belongs to the web
+                // process running now, and the token has to say so for a later
+                // crash to be able to retire it. See `FrameGeneration`.
+                generation: user.generation.current(),
+            },
         )
     }));
 

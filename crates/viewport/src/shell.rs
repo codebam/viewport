@@ -24,6 +24,9 @@
 // `FrameDone` or `FrameRelease` — so it crosses threads twice. That is sound
 // because nothing outside the web thread ever dereferences it: the compositor
 // holds it and hands it back, and only the web thread passes it to the shim.
+// It is stamped with the web process that minted it, so the way back can tell
+// a token whose process has died — those are dropped rather than handed to the
+// shim, exactly as `Crashes::terminated` drops the ones still in the mailbox.
 //
 // And a command is asynchronous where the call it replaced was not. Nothing
 // here returns a value from WebKit, which is what makes that safe; `restart`
@@ -41,7 +44,7 @@ use smithay::backend::allocator::{Fourcc, Modifier};
 
 use viewport_ipc::Event;
 use viewport_web::webkit::{CrashSink, MessageSink, Termination, WebView};
-use viewport_web::wpe::{Display, FrameSink, FrameToken};
+use viewport_web::wpe::{Display, FrameGeneration, FrameSink, FrameToken};
 use viewport_web::Frame;
 
 // The numbers live in `shell_client`, which is compiled whether or not this
@@ -449,19 +452,35 @@ impl MessageSink for Messages {
     }
 }
 
-struct Crashes(Arc<Mutex<Mailbox>>);
+/// What the crash signal is dropped into, and the generation it retires.
+///
+/// The second field is the same counter the frame tokens are stamped with at
+/// minting: `terminated` bumps it, which retires the frames the compositor had
+/// already taken out of the mailbox and is about to hand back. See
+/// [`FrameGeneration`].
+struct Crashes(Arc<Mutex<Mailbox>>, FrameGeneration);
 
 impl CrashSink for Crashes {
     fn terminated(&mut self, reason: Termination) {
         tracing::error!("the shell died: {reason}");
+        // Every frame this process minted dies with it. The bump retires the
+        // ones the compositor already took — `Done`/`Release` commands still
+        // on their way here name buffers of a pool that no longer exists, and
+        // the web thread drops them when they arrive (`token_is_live`). The
+        // sweep below is the same verdict for the ones still in the mailbox.
+        // Between them, no token outlives its process to be handed back into
+        // freed memory.
+        self.1.bump();
         // Blocking for the same reason as `Messages`: a termination dropped
         // here is a web process that is never recovered.
         if let Ok(mut mailbox) = self.0.lock() {
             // The frames in flight belonged to the process that just died.
             // Handing their tokens back would release buffers into a pool
-            // that no longer exists, so they are dropped instead — `FrameToken`
-            // is deliberately not `Drop`, which makes that a leak of a handle
-            // whose owner is already gone rather than a call into freed memory.
+            // that no longer exists, so they are dropped instead — a leak of
+            // a handle whose owner is already gone rather than a call into
+            // freed memory. Not a stalled engine: `FrameToken` is not `Drop`
+            // because a *live* engine stalls without its token back, and this
+            // one has no frame clock left to stall.
             mailbox.frame = None;
             mailbox.stale.clear();
             mailbox.terminated = Some(reason);
@@ -800,8 +819,10 @@ impl Shell {
     pub fn frame_done(&self, token: &FrameToken) {
         // SAFETY: a second handle to a buffer the caller still owns, for a
         // message that only acknowledges it. The caller's token is what gets
-        // released later; this one is dropped by the web thread.
-        let token = unsafe { FrameToken::from_ptr(token.as_ptr()) };
+        // released later; this one is dropped by the web thread. The
+        // generation is copied along, so both handles are retired together if
+        // the web process dies before either comes back.
+        let token = unsafe { FrameToken::from_ptr(token.as_ptr(), token.generation()) };
         self.commands.send(Command::Done(token));
     }
 
@@ -857,6 +878,20 @@ impl Drop for Shell {
     }
 }
 
+/// Whether a frame command still names a buffer of the web process now running.
+///
+/// A `FrameToken` names a buffer minted by one web process; when that process
+/// dies the pool behind it is gone and passing the token to the shim would be
+/// a call into freed memory. Tokens still in the mailbox are dropped by
+/// [`Crashes::terminated`] itself — but a frame the compositor had already
+/// taken (`take_frame`, `take_stale`) is invisible to that sweep, and its
+/// `Done`/`Release` arrive afterwards. The stamp taken when the frame was
+/// minted is what retires those here, on the web thread, at the last moment
+/// before the shim could be called.
+fn token_is_live(token: &FrameToken, generation: &FrameGeneration) -> bool {
+    token.generation() == generation.current()
+}
+
 /// The web thread: WebKit, its context, and nothing else.
 #[allow(clippy::too_many_arguments)]
 fn web_thread(
@@ -885,7 +920,7 @@ fn web_thread(
         let view = WebView::new(
             display.clone(),
             Box::new(Messages(mailbox.clone())),
-            Box::new(Crashes(mailbox.clone())),
+            Box::new(Crashes(mailbox.clone(), display.generation())),
             console,
         )?;
         // Size, map, focus, then load — the order the C build settled on.
@@ -908,6 +943,7 @@ fn web_thread(
             return;
         }
     };
+    let generation = display.generation();
 
     loop {
         // Blocks until GLib has something, or until `Commands::send` wakes it.
@@ -924,8 +960,26 @@ fn web_thread(
                         tracing::warn!("could not post to the shell: {e:#}");
                     }
                 }
-                Command::Done(token) => display.frame_done(&token),
-                Command::Release(token) => view.frame_release(&token),
+                Command::Done(token) => {
+                    if token_is_live(&token, &generation) {
+                        display.frame_done(&token);
+                    } else {
+                        // Minted by a web process that has since died: its
+                        // pool is gone, so the acknowledgement is dropped.
+                        // Nothing is stalled by that — the engine it would
+                        // have unparked no longer exists.
+                        tracing::trace!(
+                            "dropped a frame acknowledgement from before the shell died"
+                        );
+                    }
+                }
+                Command::Release(token) => {
+                    if token_is_live(&token, &generation) {
+                        view.frame_release(&token);
+                    } else {
+                        tracing::trace!("dropped a buffer release from before the shell died");
+                    }
+                }
                 Command::Resize(width, height) => display.resize(width, height),
                 Command::Load(url) => {
                     if let Err(e) = view.load(&url) {
@@ -1330,7 +1384,9 @@ mod tests {
             fence: Some(fence),
         };
 
-        assert!(frames.frame(frame, unsafe { FrameToken::from_ptr(std::ptr::null_mut()) }));
+        assert!(frames.frame(frame, unsafe {
+            FrameToken::from_ptr(std::ptr::null_mut(), 0)
+        }));
 
         let mailbox = mailbox.lock().unwrap();
         assert!(
@@ -1341,5 +1397,92 @@ mod tests {
                 .is_some(),
             "the fence did not survive into the mailbox"
         );
+    }
+
+    /// The race the generation stamps: the compositor takes a frame out of the
+    /// mailbox, the web process dies, and only then do the frame's `Done` and
+    /// `Release` reach the web thread. `Crashes::terminated` has already run
+    /// and found the mailbox empty of this frame, so without the stamp the web
+    /// thread would hand the dead process's buffer back to the shim. With one,
+    /// the generation the token was minted under no longer matches and the
+    /// commands are dropped — the same verdict the crash handler gives the
+    /// frames it can still see.
+    #[test]
+    fn a_frame_taken_before_the_crash_is_not_released_after_it() {
+        let generation = FrameGeneration::default();
+        let token = unsafe { FrameToken::from_ptr(std::ptr::null_mut(), generation.current()) };
+        assert!(token_is_live(&token, &generation));
+
+        generation.bump(); // what `Crashes::terminated` does
+        assert!(
+            !token_is_live(&token, &generation),
+            "a pre-crash token must not be handed to the shim"
+        );
+
+        // A frame minted by the replacement process is fine — the stamp
+        // retires the dead process's buffers, not every buffer ever.
+        let fresh = unsafe { FrameToken::from_ptr(std::ptr::null_mut(), generation.current()) };
+        assert!(token_is_live(&fresh, &generation));
+    }
+
+    /// The crash handler's own sweep: frames still in the mailbox go without
+    /// being handed back, and the generation moves on so the ones already
+    /// taken go with them.
+    #[test]
+    fn the_crash_retires_the_frames_it_cannot_hand_back() {
+        use viewport_web::Plane;
+
+        let mailbox = Arc::new(Mutex::new(Mailbox::default()));
+        let generation = FrameGeneration::default();
+        let minted = generation.current();
+        let mut frames = Frames(mailbox.clone());
+
+        let plane: OwnedFd = std::fs::File::open("/dev/null").unwrap().into();
+        let frame = Frame {
+            planes: vec![Plane {
+                fd: plane,
+                offset: 0,
+                stride: 4,
+            }],
+            format: Fourcc::Argb8888 as u32,
+            modifier: 0,
+            width: 1,
+            height: 1,
+            fence: None,
+        };
+        // A second frame supersedes the first, so one token is current and one
+        // is stale — both belong to the dying process.
+        assert!(frames.frame(frame, unsafe {
+            FrameToken::from_ptr(std::ptr::null_mut(), minted)
+        }));
+        let plane: OwnedFd = std::fs::File::open("/dev/null").unwrap().into();
+        let frame = Frame {
+            planes: vec![Plane {
+                fd: plane,
+                offset: 0,
+                stride: 4,
+            }],
+            format: Fourcc::Argb8888 as u32,
+            modifier: 0,
+            width: 1,
+            height: 1,
+            fence: None,
+        };
+        assert!(frames.frame(frame, unsafe {
+            FrameToken::from_ptr(std::ptr::null_mut(), minted)
+        }));
+
+        let mut crashes = Crashes(mailbox.clone(), generation.clone());
+        crashes.terminated(Termination::Crashed);
+
+        assert_ne!(
+            generation.current(),
+            minted,
+            "the crash must retire the tokens already taken"
+        );
+        let held = mailbox.lock().unwrap();
+        assert!(held.frame.is_none(), "the undrawn frame was dropped");
+        assert!(held.stale.is_empty(), "the stale frames were dropped");
+        assert!(held.terminated.is_some());
     }
 }

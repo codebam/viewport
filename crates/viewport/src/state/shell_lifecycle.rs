@@ -551,6 +551,14 @@ impl ViewportState {
                 // copied into a buffer of the compositor's own just above. A
                 // dup'd fd would not have been enough: it is the same memory,
                 // so WebKit would paint into the picture on screen.
+                //
+                // Unconditionally, and yet safe across a crash: the token
+                // says which web process minted it, so if that process dies
+                // before these two arrive, the web thread drops them rather
+                // than hand a dead pool's buffer to the shim. That is the same
+                // verdict `Crashes::terminated` gives the frames still in the
+                // mailbox — back to the pool while the process lives, dropped
+                // once it is gone.
                 shell.frame_done(&pending.token);
                 shell.frame_release(pending.token);
             }
