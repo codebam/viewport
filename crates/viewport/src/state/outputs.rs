@@ -234,6 +234,16 @@ impl ViewportState {
         // rule is concerned; its old name must not make the first request a
         // no-op.
         self.output_configure_applied.remove(name);
+        // The dead head's client controls go with it. A long-lived client — a
+        // settings panel, wlsunset — holds its output-power and gamma controls
+        // for the life of the session, and both maps used to be keyed by name
+        // and reaped only on the client's own destroy: after unplug plus
+        // replug the stale entries owned the name, and the output-power one
+        // refused every new client for the new monitor while `changed` fed it
+        // events about a screen it did not own. Reaped here, the head that
+        // takes the name over starts clean.
+        self.output_power_state.output_gone(name);
+        self.gamma_state.output_gone(name);
         let old_position = self.output_memory.get(name).map(|m| (m.x, m.y));
         let enabled: std::collections::HashSet<String> = self
             .physical_outputs()
@@ -1066,6 +1076,30 @@ mod output_mode_tests {
         assert!(
             body.contains("\n        programmed\n    }"),
             "apply_output_configuration must return the programming result, not unconditional success"
+        );
+    }
+
+    /// The other half of the stale-control bug: `output_removed` cleaned the
+    /// vrr and configure maps but not the client controls, and both control
+    /// maps used to be keyed by name. Reaped here is what makes a replugged
+    /// head a fresh one as far as output-power and gamma clients are concerned.
+    #[test]
+    fn head_removal_reaps_the_dead_heads_client_controls() {
+        let source = include_str!("outputs.rs");
+        let source = source.split("#[cfg(test)]").next().unwrap_or(source);
+        let start = source
+            .find("pub fn output_removed(")
+            .expect("output_removed in outputs.rs");
+        let rest = &source[start..];
+        let end = rest.find("\n    pub fn ").unwrap_or(rest.len());
+        let body = &rest[..end];
+        assert!(
+            body.contains("output_power_state.output_gone(name)"),
+            "output_removed must drop the head's output-power control"
+        );
+        assert!(
+            body.contains("gamma_state.output_gone(name)"),
+            "output_removed must drop the head's gamma control"
         );
     }
 }

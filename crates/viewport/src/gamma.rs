@@ -180,7 +180,18 @@ pub trait GammaControlHandler {
 pub struct GammaControlState {
     /// One client at a time per output. A second wlsunset started by mistake
     /// would otherwise fight the first, one ramp per second.
-    controls: HashMap<String, ZwlrGammaControlV1>,
+    ///
+    /// Keyed by [`Output`] identity rather than by name. A name outlives the
+    /// monitor that wore it — unplug a DP-1, plug in another, and the new head
+    /// is DP-1 again — and a name-keyed entry left behind by the old one would
+    /// either own the new monitor or fight whoever claimed it. Identity keys
+    /// make a replugged head a new output, [`Self::output_gone`] reaps the
+    /// entry of the one that went, and a new `Output` that reuses a name takes
+    /// over with the replace-and-fail-the-old this protocol has always had.
+    // Hashing `Output` hashes the `Arc` behind it, which never moves: the
+    // interior mutability clippy sees in there cannot change a key.
+    #[allow(clippy::mutable_key_type)]
+    controls: HashMap<Output, ZwlrGammaControlV1>,
 }
 
 impl GammaControlState {
@@ -190,6 +201,46 @@ impl GammaControlState {
     {
         display.create_global::<D, ZwlrGammaControlManagerV1, _>(1, ());
         Self::default()
+    }
+
+    /// A head went away: fail and drop the control still held for its name.
+    ///
+    /// Called from `output_removed`. Left behind, a night-light client's
+    /// control would keep writing ramps for a monitor it no longer owns and
+    /// hold the name against the head that takes it over. `failed` is the
+    /// protocol's answer to "this control is finished", and the `failed` flag
+    /// keeps its later destroy from clearing a ramp that now belongs to
+    /// someone else.
+    ///
+    /// By name, because `output_removed` is handed the name. That is safe
+    /// here: it runs for the head that is going, names are unique among live
+    /// heads, and the pass that creates a replacement names it after this one
+    /// has been reaped — so no live control can be caught by it.
+    pub fn output_gone(&mut self, name: &str) {
+        self.forget(name, None);
+    }
+
+    /// Fail and drop every control of `name`'s except one held against `keep`.
+    ///
+    /// `keep` is the head taking the name over: a genuinely new `Output`
+    /// reusing a name a dead head left behind replaces the stale control and
+    /// fails it — the same answer this protocol already gives a second client
+    /// claiming a live output.
+    fn forget(&mut self, name: &str, keep: Option<&Output>) {
+        let stale: Vec<Output> = self
+            .controls
+            .keys()
+            .filter(|held| Some(*held) != keep && held.name() == name)
+            .cloned()
+            .collect();
+        for held in stale {
+            if let Some(previous) = self.controls.remove(&held) {
+                if let Some(data) = previous.data::<ControlData>() {
+                    data.failed.store(true, Ordering::Relaxed);
+                }
+                previous.failed();
+            }
+        }
     }
 }
 
@@ -304,7 +355,7 @@ where
         let control = data_init.init(
             id,
             ControlData {
-                output,
+                output: output.clone(),
                 failed: Arc::new(AtomicBool::new(size.is_none())),
             },
         );
@@ -321,12 +372,17 @@ where
         // depends on this number, so it goes out before anything else can.
         control.gamma_size(size);
 
+        // A head that took this name over from one that went without being
+        // reaped: its stale control is failed and dropped, exactly as the
+        // takeover below fails the previous claimant.
+        state.gamma_control_state().forget(&name, Some(&output));
+
         // The new client takes over, and the old one is told rather than left
         // writing ramps that go nowhere.
         if let Some(previous) = state
             .gamma_control_state()
             .controls
-            .insert(name, control.clone())
+            .insert(output, control.clone())
         {
             if let Some(data) = previous.data::<ControlData>() {
                 data.failed.store(true, Ordering::Relaxed);
@@ -403,10 +459,9 @@ where
             // clearing it here would undo their work.
             return;
         }
-        let name = data.output.name();
         let managed = state.gamma_control_state();
-        if managed.controls.get(&name) == Some(control) {
-            managed.controls.remove(&name);
+        if managed.controls.get(&data.output) == Some(control) {
+            managed.controls.remove(&data.output);
             // Back to the identity ramp. A night-light client that was killed
             // must not leave the screen orange until the next reboot.
             state.set_gamma(&data.output, None);
@@ -666,5 +721,28 @@ mod tests {
     #[test]
     fn no_ramp_at_all_is_the_identity_at_the_lut_size() {
         assert_eq!(effective_ramp(None, None, 256), identity(256));
+    }
+
+    /// The bug this guards needs two plugs of the same connector to reach: a
+    /// control keyed by name and reaped only on the client's own destroy held
+    /// the name across unplug and replug. The wayland objects cannot be built
+    /// in a unit test, so — as the frame-barrier guards do — the wiring is
+    /// checked against this source.
+    #[test]
+    fn a_replugged_head_does_not_keep_a_stale_gamma_control() {
+        let source = include_str!("gamma.rs");
+        let source = source.split("#[cfg(test)]").next().unwrap_or(source);
+        assert!(
+            source.contains("controls: HashMap<Output, ZwlrGammaControlV1>"),
+            "controls must be keyed by Output identity, not by name"
+        );
+        assert!(
+            source.contains("pub fn output_gone(&mut self, name: &str)"),
+            "head removal has to fail and drop the control left behind for the name"
+        );
+        assert!(
+            source.contains("controls.get(&data.output) == Some(control)"),
+            "a destroy may only clear the entry it still owns, tested by Output identity"
+        );
     }
 }

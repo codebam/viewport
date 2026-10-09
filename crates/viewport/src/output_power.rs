@@ -22,7 +22,7 @@ use smithay::reexports::wayland_protocols_wlr::output_power_management::v1::serv
     zwlr_output_power_v1::{self, Mode, ZwlrOutputPowerV1},
 };
 use smithay::reexports::wayland_server::{
-    Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New,
+    Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource,
 };
 
 use crate::state::trusted_native;
@@ -55,7 +55,19 @@ pub trait OutputPowerHandler {
 pub struct OutputPowerState {
     /// One client at a time per output, as the protocol requires: two clients
     /// disagreeing about whether a monitor is on has no answer.
-    controls: HashMap<String, ZwlrOutputPowerV1>,
+    ///
+    /// Keyed by [`Output`] identity rather than by name. A name outlives the
+    /// monitor that wore it — unplug a DP-1, plug in another, and the new head
+    /// is DP-1 again — and a name-keyed entry left behind by the old one kept
+    /// the name: every new client for the new monitor was refused for ever,
+    /// and `changed` matched by name so the stale control received mode events
+    /// about a screen it did not own. Identity keys make a replugged head a
+    /// new output, and [`Self::output_gone`] reaps the entry of the one that
+    /// went.
+    // Hashing `Output` hashes the `Arc` behind it, which never moves: the
+    // interior mutability clippy sees in there cannot change a key.
+    #[allow(clippy::mutable_key_type)]
+    controls: HashMap<Output, ZwlrOutputPowerV1>,
 }
 
 impl OutputPowerState {
@@ -72,10 +84,50 @@ impl OutputPowerState {
     /// The idle timer turns screens off on its own, and a client holding a
     /// control is entitled to know without asking.
     pub fn changed(&self, output: &Output, on: bool) {
-        let Some(control) = self.controls.get(&output.name()) else {
+        let Some(control) = self.controls.get(output) else {
             return;
         };
         control.mode(if on { Mode::On } else { Mode::Off });
+    }
+
+    /// A head went away: drop the control still held for its name and tell
+    /// whoever held it.
+    ///
+    /// Called from `output_removed`. Entries used to leave this map only when
+    /// the client destroyed its control object, so a long-lived client — a
+    /// settings panel keeps its control for the life of the session — held a
+    /// name across unplug and replug. `failed` is what the protocol has for
+    /// "this control is finished", and dropping the entry means its `set_mode`
+    /// requests stop answering for hardware that is no longer there.
+    ///
+    /// By name, because `output_removed` is handed the name. That is safe
+    /// here: it runs for the head that is going, names are unique among live
+    /// heads, and the pass that creates a replacement names it after this one
+    /// has been reaped — so no live control can be caught by it.
+    pub fn output_gone(&mut self, name: &str) {
+        self.forget(name, None);
+    }
+
+    /// Fail and drop every control of `name`'s except one held against `keep`.
+    ///
+    /// `keep` is the head taking the name over when a genuinely new `Output`
+    /// reuses one a dead head left behind: the stale control is told and
+    /// dropped rather than left failing every future client, which is the
+    /// replace-and-fail-the-old answer `gamma` has always had to a second
+    /// claimant. The same-Output case is not this — it is refused in the
+    /// request handler, as the protocol says.
+    fn forget(&mut self, name: &str, keep: Option<&Output>) {
+        let stale: Vec<Output> = self
+            .controls
+            .keys()
+            .filter(|held| Some(*held) != keep && held.name() == name)
+            .cloned()
+            .collect();
+        for held in stale {
+            if let Some(control) = self.controls.remove(&held) {
+                control.failed();
+            }
+        }
     }
 }
 
@@ -186,11 +238,24 @@ where
 
         let name = output.name();
         let on = state.output_power(&output);
-        let control = data_init.init(id, ControlData { output });
+        let control = data_init.init(
+            id,
+            ControlData {
+                output: output.clone(),
+            },
+        );
+
+        // A head that took this name over from one that went without being
+        // reaped: the stale control is failed and dropped — gamma's
+        // replace-and-fail-the-old — so its holder knows to ask again and the
+        // name is free for the monitor that now wears it.
+        state.output_power_state().forget(&name, Some(&output));
 
         // Someone already has this monitor. The newcomer is told rather than
-        // left waiting for a mode event that will go to the other client.
-        if state.output_power_state().controls.contains_key(&name) {
+        // left waiting for a mode event that will go to the other client. The
+        // test is Output identity, so a control left over from a dead head of
+        // the same name cannot reach across and refuse this one.
+        if state.output_power_state().controls.contains_key(&output) {
             control.failed();
             return;
         }
@@ -200,7 +265,7 @@ where
         state
             .output_power_state()
             .controls
-            .insert(name, control.clone());
+            .insert(output, control.clone());
     }
 }
 
@@ -229,7 +294,7 @@ where
         };
 
         // Not from a client that lost the output to someone else.
-        if state.output_power_state().controls.get(&data.output.name()) != Some(control) {
+        if state.output_power_state().controls.get(&data.output) != Some(control) {
             return;
         }
 
@@ -249,9 +314,8 @@ where
         data: &ControlData,
     ) {
         let managed = state.output_power_state();
-        let name = data.output.name();
-        if managed.controls.get(&name) == Some(control) {
-            managed.controls.remove(&name);
+        if managed.controls.get(&data.output) == Some(control) {
+            managed.controls.remove(&data.output);
         }
         // The monitor is left as it is. A client that turned a screen off and
         // exited meant it — this is not a lease, and turning it back on would
@@ -288,5 +352,35 @@ mod tests {
         assert!(!effective_output_power(true, true));
         assert!(!effective_output_power(false, false));
         assert!(!effective_output_power(false, true));
+    }
+
+    /// The bug this guards is not reachable without two plugs of the same
+    /// connector: controls keyed by name and reaped only when the client
+    /// destroyed its object. A settings panel holds its control for the
+    /// session, so after unplug plus replug the stale entry refused every new
+    /// client for the new monitor and `changed` matched it by name, sending it
+    /// events about a screen it did not own. The wayland objects cannot be
+    /// built in a unit test, so — like the blank-path guard in
+    /// `output_control_tests` — the wiring is checked against this source.
+    #[test]
+    fn a_replugged_head_is_not_held_again_by_the_old_control() {
+        let source = include_str!("output_power.rs");
+        let source = source.split("#[cfg(test)]").next().unwrap_or(source);
+        assert!(
+            source.contains("controls: HashMap<Output, ZwlrOutputPowerV1>"),
+            "controls must be keyed by Output identity, not by name"
+        );
+        assert!(
+            source.contains("pub fn output_gone(&mut self, name: &str)"),
+            "head removal has to drop the control left behind for the name"
+        );
+        assert!(
+            source.contains("state.output_power_state().forget(&name, Some(&output))"),
+            "a new Output reusing a name must fail the stale control, gamma-style"
+        );
+        assert!(
+            source.contains("controls.get(&data.output) != Some(control)"),
+            "ownership has to be tested by Output identity, not by name"
+        );
     }
 }
