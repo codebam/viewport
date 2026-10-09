@@ -1109,6 +1109,21 @@ pub fn bind_specs(binds: &std::collections::HashMap<String, BindValue>) -> Vec<B
     specs
 }
 
+/// The `@RATE` half of a mode string, in Hz, validated.
+///
+/// Shared by [`parse_mode`] and [`pick_mode`] so the two cannot disagree about
+/// what a rate is. Finite as well as positive: `"NaN"` and `"inf"` parse as
+/// `f64`, `NaN <= 0.0` is false, and `NaN as u32` is 0 — which reads
+/// downstream as "any rate" or matches nothing instead of being the typo it
+/// is. Bounded so the millihertz conversion cannot overflow an `i32`.
+fn parse_rate(rate: &str) -> Option<f64> {
+    let hz: f64 = rate.trim().parse().ok()?;
+    if !hz.is_finite() || hz <= 0.0 || hz > i32::MAX as f64 / 1000.0 {
+        return None;
+    }
+    Some(hz)
+}
+
 /// Parse a mode string: `WIDTHxHEIGHT` or `WIDTHxHEIGHT@RATE`.
 ///
 /// The refresh rate is in Hz with optional decimals and comes back in mHz,
@@ -1128,13 +1143,7 @@ pub fn parse_mode(text: &str) -> Option<(i32, i32, Option<i32>)> {
     }
     let rate = match rate {
         Some(rate) => {
-            let hz: f64 = rate.trim().parse().ok()?;
-            // Finite as well as positive: `NaN <= 0.0` is false, and `NaN as
-            // i32` is 0, which reads downstream as "any rate" rather than as
-            // the typo it is.
-            if !hz.is_finite() || hz <= 0.0 || hz > i32::MAX as f64 / 1000.0 {
-                return None;
-            }
+            let hz = parse_rate(rate)?;
             Some((hz * 1000.0).round() as i32)
         }
         None => None,
@@ -1162,8 +1171,23 @@ pub fn pick_mode(
 
     if let Some(spec) = config.mode.as_deref() {
         let (size, rate) = match spec.split_once('@') {
-            Some((size, rate)) => (size, rate.trim().parse::<f64>().ok()),
+            Some((size, rate)) => (size, Some(rate)),
             None => (spec, None),
+        };
+        // The rate goes through the same parser `parse_mode` uses, so a typo
+        // like `@NaN` — which parses as f64 and rounds to 0 — is refused as a
+        // typo instead of silently matching no mode and warning about a rate
+        // nobody asked for. A rate that was named and cannot be read refuses
+        // the whole spec, exactly as `parse_mode` refuses the whole string.
+        let rate = match rate {
+            Some(rate) => match parse_rate(rate) {
+                Some(hz) => Some(hz),
+                None => {
+                    tracing::warn!("ignoring mode {spec:?}: not a valid refresh rate");
+                    return None;
+                }
+            },
+            None => None,
         };
         let (width, height) = size.trim().split_once('x')?;
         let width: u16 = width.trim().parse().ok()?;
@@ -2248,6 +2272,22 @@ mod tests {
         ] {
             assert_eq!(parse_mode(bad), None, "{bad:?} should not parse");
         }
+    }
+
+    #[test]
+    fn a_nan_or_infinite_rate_is_the_typo_it_looks_like() {
+        // "NaN" and "inf" parse as f64, `NaN as i32` is 0 and `inf` saturates
+        // — a rate like that used to reach the mode search as 0 or u32::MAX,
+        // match nothing, and fall back behind a warning naming a mode nobody
+        // asked for. `parse_mode` and `pick_mode` (what `outputs.<name>.mode`
+        // goes through) share this parser now, so both refuse it outright.
+        for bad in ["NaN", "inf", "-inf", "1e400", "0", "-60", "junk"] {
+            assert_eq!(parse_rate(bad), None, "{bad:?} should not parse");
+        }
+        assert_eq!(parse_rate("239.760"), Some(239.760));
+        assert_eq!(parse_mode("2560x1440@NaN"), None);
+        assert_eq!(parse_mode("2560x1440@inf"), None);
+        assert_eq!(parse_mode("2560x1440@1e400"), None);
     }
 
     #[test]
