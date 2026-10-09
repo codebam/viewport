@@ -1135,6 +1135,23 @@ fn to_dmabuf(frame: &mut Frame) -> Result<Dmabuf> {
     let code = Fourcc::try_from(frame.format)
         .map_err(|_| anyhow::anyhow!("unknown fourcc {:#x}", frame.format))?;
 
+    // A WebKit-chosen dimension of zero, or one past `i32::MAX`, describes no
+    // buffer the compositor can hold: the cast below would wrap it negative
+    // and the damage and geometry built from it would describe rectangles that
+    // cannot exist. Refuse the frame — WebKit answers a failed frame by
+    // painting again — rather than import a size that is not one. Same class
+    // as the shell client's own guard in `shell_client_commit`.
+    anyhow::ensure!(
+        frame.width > 0 && frame.width <= i32::MAX as u32,
+        "the frame's width {} is not a size the compositor can import",
+        frame.width
+    );
+    anyhow::ensure!(
+        frame.height > 0 && frame.height <= i32::MAX as u32,
+        "the frame's height {} is not a size the compositor can import",
+        frame.height
+    );
+
     let mut builder = Dmabuf::builder(
         (frame.width as i32, frame.height as i32),
         code,
@@ -1612,5 +1629,32 @@ mod tests {
             frame.fence.is_some(),
             "the fence is still the frame's to move"
         );
+    }
+
+    /// A frame whose size cannot exist is refused instead of wrapped: the
+    /// `u32 as i32` cast would go negative, and the damage and geometry built
+    /// from it would describe rectangles that are not there. Same class as the
+    /// shell-supplied dimensions FIXES 5/6 fixed, on the engine's own path.
+    #[test]
+    fn a_frame_of_impossible_size_is_refused() {
+        use viewport_web::Plane;
+
+        let build = |width: u32, height: u32| Frame {
+            planes: vec![Plane {
+                fd: std::fs::File::open("/dev/null").unwrap().into(),
+                offset: 0,
+                stride: 4,
+            }],
+            format: Fourcc::Argb8888 as u32,
+            modifier: 0,
+            width,
+            height,
+            fence: None,
+        };
+        assert!(to_dmabuf(&mut build(0, 1)).is_err());
+        assert!(to_dmabuf(&mut build(1, 0)).is_err());
+        assert!(to_dmabuf(&mut build(i32::MAX as u32 + 1, 1)).is_err());
+        assert!(to_dmabuf(&mut build(1, i32::MAX as u32 + 1)).is_err());
+        assert!(to_dmabuf(&mut build(1, 1)).is_ok());
     }
 }
