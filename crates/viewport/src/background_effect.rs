@@ -582,28 +582,37 @@ impl BackgroundEffectRenderElement {
         ));
         let source_size = frame.transformation().transform_size(source_size);
         let cache = cache.get_or_insert::<RefCell<GlesEffectCache>, _>(Default::default);
-        let mut cache = cache.borrow_mut();
-        let Some((size, _)) = blur_texture_size(source_size.w, source_size.h) else {
-            cache.texture = None;
-            cache.captured = None;
-            return Ok(());
+        let size = {
+            let mut cache = cache.borrow_mut();
+            let Some((size, _)) = blur_texture_size(source_size.w, source_size.h) else {
+                cache.texture = None;
+                cache.captured = None;
+                return Ok(());
+            };
+            if cache
+                .texture
+                .as_ref()
+                .is_some_and(|texture| texture.size() != size)
+            {
+                cache.texture = None;
+                cache.captured = None;
+            }
+            if cache.texture.is_none() {
+                let mut renderer = frame.renderer();
+                cache.texture = Some(renderer.as_mut().create_buffer(Fourcc::Abgr8888, size)?);
+            }
+            size
         };
-        if cache
-            .texture
-            .as_ref()
-            .is_some_and(|texture| texture.size() != size)
-        {
-            cache.texture = None;
-            cache.captured = None;
-        }
-        if cache.texture.is_none() {
-            let mut renderer = frame.renderer();
-            cache.texture = Some(renderer.as_mut().create_buffer(Fourcc::Abgr8888, size)?);
-        }
-
-        let texture = cache.texture.as_mut().expect("created above");
+        // A cloned handle and no borrow of the cache: `blit_to` and the wait
+        // below draw through the frame, and a re-entrant draw or capture of
+        // this element while the cache is borrowed is a `BorrowMutError`
+        // panic on the render thread. The Vulkan twin drops its borrow before
+        // the GPU work for exactly this reason. (`frame.wait` can also block
+        // the CPU when the fence fallback runs, which must not happen with
+        // anything borrowed either.)
+        let mut texture = cache.borrow().texture.clone().expect("created above");
         let mut renderer = frame.renderer();
-        let mut target = renderer.as_mut().bind(texture)?;
+        let mut target = renderer.as_mut().bind(&mut texture)?;
         drop(renderer);
         let sync = frame.blit_to(
             &mut target,
@@ -613,7 +622,7 @@ impl BackgroundEffectRenderElement {
         )?;
         frame.wait(&sync)?;
         drop(target);
-        cache.captured = Some(CapturedFramebuffer {
+        cache.borrow_mut().captured = Some(CapturedFramebuffer {
             dst: clamped,
             transform: frame.transformation(),
         });
@@ -628,12 +637,28 @@ impl BackgroundEffectRenderElement {
         damage: &[Rectangle<i32, Physical>],
         cache: Option<&UserDataMap>,
     ) -> Result<(), GlesError> {
-        let Some(cache) = cache.and_then(|cache| cache.get::<RefCell<GlesEffectCache>>()) else {
+        let Some(cell) = cache.and_then(|cache| cache.get::<RefCell<GlesEffectCache>>()) else {
             return Ok(());
         };
         let output = Rectangle::from_size(frame.output_size());
 
-        let mut cache = cache.borrow_mut();
+        // Before the cache is borrowed at all: the lookup draws nothing but
+        // does take the renderer, and no borrow of the cache survives any
+        // touch of the frame below.
+        let program = {
+            let renderer = frame.renderer();
+            renderer
+                .as_ref()
+                .egl_context()
+                .user_data()
+                .get::<BlurProgram>()
+                .cloned()
+        };
+        let Some(program) = program else {
+            return Ok(());
+        };
+
+        let mut cache = cell.borrow_mut();
         let Some(texture) = cache.texture.clone() else {
             return Ok(());
         };
@@ -666,36 +691,33 @@ impl BackgroundEffectRenderElement {
         if cache.damage.is_empty() {
             return Ok(());
         }
+        // Taken rather than borrowed, as the Vulkan twin does: the frame
+        // draws through itself here, and a re-entrant draw or capture of this
+        // element would borrow the cache again while this one is alive — a
+        // `BorrowMutError` panic on the render thread. The buffer goes back
+        // to the cache afterwards so the next draw reuses its allocation.
+        let damage = std::mem::take(&mut cache.damage);
+        drop(cache);
 
-        let program = {
-            let renderer = frame.renderer();
-            renderer
-                .as_ref()
-                .egl_context()
-                .user_data()
-                .get::<BlurProgram>()
-                .cloned()
-        };
-        let Some(program) = program else {
-            return Ok(());
-        };
         let size = texture.size();
         let uniforms = [Uniform::new(
             "texel_size",
             [1.0 / size.w.max(1) as f32, 1.0 / size.h.max(1) as f32],
         )];
         let texture_src = captured_source(captured, clamped, texture.size());
-        frame.render_texture_from_to(
+        let drawn = frame.render_texture_from_to(
             &texture,
             texture_src,
             clamped,
-            &cache.damage,
+            &damage,
             &[],
             captured.transform.invert(),
             self.alpha,
             Some(&program.0),
             &uniforms,
-        )
+        );
+        cell.borrow_mut().damage = damage;
+        drawn
     }
 
     /// Capture the framebuffer behind the surface into a quarter-resolution
