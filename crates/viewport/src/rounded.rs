@@ -836,7 +836,8 @@ thread_local! {
     /// The pieces one draw is split into, reused across draws. See
     /// [`RoundedRenderElement::draw`] for why it is taken out of this slot
     /// rather than borrowed while the wrapped element draws.
-    static PIECES: std::cell::RefCell<Vec<Piece>> = std::cell::RefCell::new(Vec::new());
+    static PIECES: std::cell::RefCell<Vec<Piece>> =
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 
 impl<E: Element> RoundedRenderElement<E> {
