@@ -614,15 +614,19 @@ pub struct Udev {
     /// compositor shows one of them. Measured on a 60Hz screen, a client
     /// drawing 120 frames a second and half of them thrown away.
     pub last_vblank: Option<std::time::Instant>,
-    /// The last vblank on each output, by name, rather than the newest on any
-    /// of them.
+    /// The last vblank on each output, rather than the newest on any of them.
     ///
     /// `last_vblank` above is one timestamp for the whole device, and the
     /// barrier tick used to defer to it — but the release it defers to is
     /// per-output. One screen flipping kept the global stamp fresh and so
     /// silenced the tick for every other screen, whose windows that flip never
     /// walks. See `release_barriers`.
-    pub last_vblank_by_output: HashMap<String, std::time::Instant>,
+    ///
+    /// Keyed by [`OutputId`] rather than by name. A name cost a `String` per
+    /// vblank to build and a string hash per vblank to look up — and worse,
+    /// it outlives the head that wore it: a replugged monitor would read the
+    /// flip record of its predecessor. [`Udev::last_vblank_of`] is the lookup.
+    pub last_vblank_by_output: HashMap<OutputId, std::time::Instant>,
     /// Whether a client commit has been applied since the last flip reached
     /// the screen. Measurement only, for `empty_after_commit`.
     pub committed_since_flip: bool,
@@ -1060,6 +1064,16 @@ impl Udev {
         self.outputs()
             .find(|(_, surface)| surface.output == *output)
             .map(|(id, _)| id)
+    }
+
+    /// When this output last flipped, by identity.
+    ///
+    /// The lookup `last_vblank_by_output` is keyed for: matching on the
+    /// `OutputId` costs no allocation and cannot read a dead head's record
+    /// through a name a replugged monitor has taken over.
+    pub fn last_vblank_of(&self, output: &Output) -> Option<std::time::Instant> {
+        self.id_of(output)
+            .and_then(|id| self.last_vblank_by_output.get(&id).copied())
     }
 }
 
@@ -2984,7 +2998,14 @@ impl ViewportState {
         use smithay::backend::renderer::element::default_primary_scanout_output_compare;
         use smithay::desktop::utils::update_surface_primary_scanout_output;
 
-        for window in self.space.elements() {
+        // This output's own windows, not the whole desktop. `presentation_feedback`
+        // made the same change for the same reason: walking `space.elements()`
+        // touches every window on every screen — surface trees locked and all
+        // — once per output per submitted frame, for surfaces that cannot be
+        // in this frame's states at all. A window spanning both screens is in
+        // both outputs' lists, so its scanout record is still kept from
+        // whichever screen draws it.
+        for window in self.space.elements_for_output(output) {
             window.with_surfaces(|surface, surface_states| {
                 update_surface_primary_scanout_output(
                     surface,
@@ -3091,14 +3112,15 @@ impl ViewportState {
             .current_mode()
             .map(|mode| std::time::Duration::from_secs_f64(1_000.0 / mode.refresh.max(1) as f64))
             .unwrap_or_default();
-        // Which screen this was, before the borrow on the surface is given up.
-        let flipped = surface.output.name();
-        // The chain is alive; the frame clock can stay out of the way.
-        udev.last_vblank = Some(std::time::Instant::now());
+        // The chain is alive; the frame clock can stay out of the way. One read
+        // of the clock for both stamps, and the per-output one keyed by
+        // `OutputId`: a name here cost a `String` and a string hash per
+        // vblank, and named a head rather than identifying one.
+        let now = std::time::Instant::now();
+        udev.last_vblank = Some(now);
         // And the same for this screen alone, which is what the barrier tick
         // asks. See `last_vblank_by_output`.
-        udev.last_vblank_by_output
-            .insert(flipped, std::time::Instant::now());
+        udev.last_vblank_by_output.insert(id, now);
         // Whatever had committed has now been shown. An empty pass after this
         // point is a still desk until a client paints again.
         udev.committed_since_flip = false;
@@ -3232,6 +3254,10 @@ impl ViewportState {
             .map(|surface| surface.output.clone());
         if let Some(output) = output {
             let at = self.start_time.elapsed();
+            // Once for this pass, before the borrows below: `output_mirrors`
+            // is keyed by name, so each `contains_key(&output.name())` asks
+            // allocates a String, and this is the per-vblank path.
+            let mirrored = self.output_mirrors.contains_key(&output.name());
             // Counted by the change in the barrier tally rather than by what
             // the call returns: it returns true for a commit-timing deadline
             // as well, and with one of those signalled on most frames this
@@ -3272,7 +3298,7 @@ impl ViewportState {
             // The clock stays, because it is what restarts a desktop where
             // nothing is committing and so no vblank is coming. It is the
             // fallback now rather than the pacer.
-            if !self.output_mirrors.contains_key(&output.name()) {
+            if !mirrored {
                 self.send_frame_callbacks(&output, at);
             }
         }
@@ -3591,6 +3617,11 @@ impl ViewportState {
 
         // Whether this call put a frame in the air, which decides whether the
         // clients on this output are invited to draw another one.
+        //
+        // The mirror test is read once for the pass as well: `output_mirrors`
+        // is keyed by name, so each `contains_key(&output.name())` below would
+        // allocate a String per submitted frame on top of the hash lookup.
+        let mirrored = self.output_mirrors.contains_key(&output.name());
         let mut submitted = false;
         // Whether the device refused it. See the error arms below.
         let mut failed = false;
@@ -3623,7 +3654,7 @@ impl ViewportState {
                 // `self.udev` here finds nothing — which cost the flip once
                 // already, and silenced per-output dmabuf feedback every
                 // frame.
-                let feedback = if self.output_mirrors.contains_key(&output.name()) {
+                let feedback = if mirrored {
                     smithay::desktop::utils::OutputPresentationFeedback::new(output)
                 } else {
                     self.presentation_feedback(udev, output, &rendered.states)
@@ -3845,10 +3876,17 @@ impl ViewportState {
         // A mirror is a second physical scanout of one logical desktop, not a
         // second clock for its clients. Its capture work above still runs, but
         // only the source vblank may consume frame callbacks.
-        if self.output_mirrors.contains_key(&output.name()) {
+        if mirrored {
             return;
         }
-        for window in self.space.elements() {
+        // This output's own windows, in one pass — the same walk
+        // `presentation_feedback` took above and for the same reason: a window
+        // that cannot appear in this output's frame still got walked and its
+        // surface tree locked, once per output per submitted frame. A window
+        // spanning both screens is in both outputs' lists — the space keeps
+        // each element against every output it intersects — so the straddler
+        // is still invited by the vblank of whichever screen it is on.
+        for window in self.space.elements_for_output(output) {
             window.send_frame(output, start, throttle, |_, _| Some(output.clone()));
         }
         for layer in smithay::desktop::layer_map_for_output(output).layers() {
@@ -4251,6 +4289,45 @@ mod tests {
         assert!(
             source.matches("live_lock_surfaces()").count() >= 2,
             "both udev lock-surface walks must go through live_lock_surfaces()"
+        );
+    }
+
+    /// The per-frame cost of the flip path, guarded against the source: the
+    /// walks need a real space full of windows to measure, but their shape is
+    /// checkable. `update_scanout_outputs` and the frame-callback walk used to
+    /// iterate `space.elements()` — every window on the desktop, with surface
+    /// tree locks, per output per submitted frame — and the vblank bookkeeping
+    /// built a `String` name and hashed it into a name-keyed map every vblank.
+    #[test]
+    fn the_per_frame_walks_cover_only_their_own_output() {
+        let source = include_str!("udev.rs");
+        let source = source.split("#[cfg(test)]").next().unwrap_or(source);
+        let start = source
+            .find("fn update_scanout_outputs(")
+            .expect("update_scanout_outputs in udev.rs");
+        let rest = &source[start..];
+        let end = rest
+            .find("\n    /// A frame finished scanning out")
+            .unwrap_or(rest.len());
+        let body = &rest[..end];
+        assert!(
+            body.contains("self.space.elements_for_output(output)"),
+            "update_scanout_outputs must walk only the output being drawn"
+        );
+        assert!(
+            !body.contains("self.space.elements()"),
+            "update_scanout_outputs must not walk the whole desktop"
+        );
+        // And the vblank record is keyed by id: a name here cost a String per
+        // vblank and named a head rather than identifying one — a replugged
+        // monitor would read its predecessor's flip record.
+        assert!(
+            source.contains("pub last_vblank_by_output: HashMap<OutputId, std::time::Instant>"),
+            "the per-output vblank map must be keyed by OutputId, not by name"
+        );
+        assert!(
+            source.contains("last_vblank_by_output.insert(id, now)"),
+            "the vblank record must be written under the OutputId"
         );
     }
 }
