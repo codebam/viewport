@@ -483,6 +483,9 @@ global.gsap = {
 const EXPORTS = ';globalThis.__shell = { views, workspaces, outputs, scrollOffsets, overviewThumbs, workspaceCatalog,'
   + ' workspaceOfForTest: workspaceOf,'
   + ' overviewStateForTest: (id) => views.get(id)?.overview ?? {},'
+  /* What the last relayout put on screen — the tree a drag's relayouts
+     actually rebuild, which some layouts cap well below the windows open. */
+  + ' get renderedIdsForTest() { return renderedIds; },'
   + ' get overviewActiveForTest() { return overviewActive; },'
   + ' floatingForTest: (id) => views.get(id)?.floating ?? null,'
   /* The motion config: whether the reduced-motion switch is thrown, and the
@@ -9118,6 +9121,9 @@ if (mode === 'scrolling') {
   global.requestAnimationFrame = (fn) => { frames.push(fn); };
   global.setTimeout = (fn, ms) => { if (ms === 120) idle = fn; return 1; };
   global.clearTimeout = () => {};
+  /* The windows this test opens, tracked outside the try so the finally that
+     sweeps them up can see them. */
+  const busy = [];
   try {
     const frame = () => frames.splice(0).forEach((fn) => fn(fakeClock));
 
@@ -9130,20 +9136,27 @@ if (mode === 'scrolling') {
     check('a drag over a small tree lays out every frame', relayouts === 3);
     idle();
 
-    /* Fill the workspace well past the batching threshold — the pacing is
-       what is checked here, not the exact number. */
-    for (let id = 931; id < 941; id++) {
+    /* Fill the workspace until the rendered tree is well past the batching
+       threshold — the pacing is what is checked here, not the exact number.
+       Some layouts cap what they put on screen (the matrix shows a fixed
+       grid's worth no matter how many windows are open), and a tree a layout
+       keeps small is a tree that keeps the full rate by design. */
+    for (let id = 931; id < 961 && sh.renderedIdsForTest.size < 10; id++) {
+      busy.push(id);
       emit({ type: 'view.added', id, title: `busy ${id}`, app_id: 'busy',
         tag: null, output: 'DP-1', min_width: 0, min_height: 0,
         floating: false, width: 400, height: 300 });
     }
+    const big = sh.renderedIdsForTest.size >= 10;
     relayouts = 0;
     for (let i = 0; i < 4; i++) {
       gestureRelayout();
       frame();
     }
-    check('a drag over a big tree lays out every other frame',
-      relayouts === 2 && relayouts < 4);
+    check(big
+      ? 'a drag over a big tree lays out every other frame'
+      : 'a layout that keeps the tree small keeps the full drag rate',
+      relayouts === (big ? 2 : 4));
 
     relayouts = 0;
     idle();
@@ -9153,7 +9166,7 @@ if (mode === 'scrolling') {
     global.setTimeout = realTimeout;
     global.clearTimeout = realClearTimeout;
     delete out.windowsEl.replaceChildren;
-    for (let id = 931; id < 941; id++) emit({ type: 'view.removed', id });
+    for (const id of busy) emit({ type: 'view.removed', id });
   }
 }
 
