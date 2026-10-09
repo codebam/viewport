@@ -9046,6 +9046,51 @@ if (mode === 'scrolling') {
   emit({ type: 'view.removed', id: 922 });
 }
 
+/* U10: an image the bar draws for another application goes through the
+ * scheme allowlist first. Tray icons, menu-row icons and MPRIS cover art all
+ * name something a session-bus application chose; the compositor normalises
+ * them today (tray icons resolve to `data:`, art is `data:` or the player's
+ * own `https://`), but the page must hold the line itself — a scheme outside
+ * the allowlist is drawn as no image at all rather than fetched. */
+{
+  const sh = globalThis.__shell;
+
+  emit({ type: 'config', layout: mode, bar_widgets: [{ type: 'mpris' }] });
+  const el = sh.outputs.get('DP-1').widgetsEls[0];
+  const cover = () => el.children.find((n) => n._classes.has('mpris-art'));
+  const playing = (art) => ({ id: 'mpv', title: 'Rhubarb', artist: 'Aphex',
+    album: '', status: 'playing', art, can_go_next: false,
+    can_go_previous: false, can_pause: true, can_play: true });
+
+  emit({ type: 'mpris.update', player: playing('file:///etc/passwd') });
+  check('cover art with a refused scheme is drawn as no art',
+    cover().hidden === true && !cover().src);
+  emit({ type: 'mpris.update', player: playing('https://cdn.example/x.jpg') });
+  check("the player's own https URL is drawn",
+    cover().hidden === false && cover().src === 'https://cdn.example/x.jpg');
+  emit({ type: 'mpris.update', player: playing('data:image/png;base64,AA==') });
+  check('and a data: URL the compositor built is drawn too',
+    cover().hidden === false && cover().src === 'data:image/png;base64,AA==');
+  emit({ type: 'mpris.update', player: null });
+  emit({ type: 'config', layout: mode });
+
+  /* The same line for the tray: a refused icon is no icon, so the item draws
+     its letter rather than an element with nothing to show. */
+  emit({ type: 'tray.update', items: [
+    { id: 'refused', title: 'Evil', status: 'active',
+      icon: 'file:///etc/passwd', tooltip: '', is_menu: false },
+    { id: 'allowed', title: 'Fine', status: 'active',
+      icon: 'data:image/png;base64,AA==', tooltip: '', is_menu: false },
+  ] });
+  const tray = sh.outputs.get('DP-1').modules.tray;
+  check('a tray icon with a refused scheme draws the item\'s letter instead',
+    tray.children[0]._img === undefined
+    && tray.children[0].dataset.fallback === 'E');
+  check('a tray icon the compositor resolved is drawn',
+    tray.children[1]._img?.src === 'data:image/png;base64,AA==');
+  emit({ type: 'tray.update', items: [] });
+}
+
 emit({ type: 'view.removed', id: 1 });
 emit({ type: 'view.removed', id: 2 });
 emit({ type: 'view.removed', id: 3 });

@@ -283,6 +283,27 @@ function networkTitle() {
  * The system tray
  * --------------------------------------------------------------------- */
 
+/* What this bar is willing to put in an `<img>` `src`, or null for "no image".
+ *
+ * Tray icons, menu-row icons and MPRIS cover art all originate with arbitrary
+ * session-bus applications, and the page must never fetch whatever string one
+ * of them names. What arrives is already narrow — the compositor resolves tray
+ * icons against the icon theme or encodes the item's own pixmap into a
+ * `data:` URL (tray.rs icon_by_name / pixmap_url), menu rows the same way,
+ * and cover art is `data:` for a local file or the player's own `https://`
+ * URL with every other scheme dropped (mpris.rs art_url refuses `file://`
+ * precisely so art cannot be a window onto the filesystem) — but that is a
+ * contract kept on the far side of an IPC channel. This is the page's half of
+ * it: a scheme outside `data:` and `https:` is treated as no icon at all, so
+ * a backend that ever passed a raw app-supplied URL through could not make
+ * the shell page issue requests on an application's behalf. Mirrors the
+ * scheme check the wallpaper path does in commands.js (wallpaperVideoUrl). */
+function safeImageUrl(value) {
+  if (typeof value !== 'string') return null;
+  const url = value.trim();
+  return /^data:/i.test(url) || /^https:\/\//i.test(url) ? url : null;
+}
+
 /* The tray, replaced whole whenever the compositor sends one.
  *
  * The compositor holds the StatusNotifierWatcher name and does every D-Bus
@@ -326,8 +347,10 @@ function syncTray(output) {
     /* The image element exists only while there is an icon to put in it. An
        <img> with no source is a broken image in some engines and a request for
        the page's own URL in others, and neither is a thing to leave on the
-       bar. */
-    if (item.icon) {
+       bar. A string that is not a scheme this page fetches is no icon, and
+       falls through to the letter below. */
+    const icon = safeImageUrl(item.icon);
+    if (icon) {
       let img = el._img;
       if (img === undefined) {
         img = el._img = document.createElement('img');
@@ -336,14 +359,14 @@ function syncTray(output) {
       /* Guarded like every other write in this file: assigning a src the
          element already has is a fetch, a decode and a repaint of the whole
          desktop. */
-      if (img.src !== item.icon) img.src = item.icon;
+      if (img.src !== icon) img.src = icon;
     } else if (el._img) {
       el._img.remove();
       el._img = undefined;
     }
     /* An item with no icon draws its own first letter, so a program that
        publishes nothing this shell can show is still something to click. */
-    const fallback = item.icon ? '' : (item.title || '?').slice(0, 1).toUpperCase();
+    const fallback = icon ? '' : (item.title || '?').slice(0, 1).toUpperCase();
     if (el.dataset.fallback !== fallback) el.dataset.fallback = fallback;
 
     const title = item.tooltip || item.title || '';
@@ -455,9 +478,12 @@ function buildTrayMenuRows(list, items, depth) {
     if (item.children?.length) row.classList.add('parent');
     if (depth > 0) row.style.paddingLeft = `${8 + depth * 14}px`;
 
-    if (item.icon) {
+    /* The icon is fetched through the same allowlist the tray's own icons
+       are: see safeImageUrl. */
+    const icon = safeImageUrl(item.icon);
+    if (icon) {
       const img = document.createElement('img');
-      img.src = item.icon;
+      img.src = icon;
       row.append(img);
     }
 
@@ -1288,8 +1314,12 @@ function syncMprisWidget(el) {
      cover is created even with no art, and hidden, so that art arriving on a
      later update is drawn in front of the text rather than after it. */
   const cover = need('cover', 'img', 'mpris-art');
-  if (player.art && cover.src !== player.art) cover.src = player.art;
-  if (cover.hidden !== !player.art) cover.hidden = !player.art;
+  /* Through the same allowlist as the tray's icons — see safeImageUrl. The
+     player's art is its own `https://` URL or a `data:` one the compositor
+     built; anything else is no cover, hidden exactly as an absent one is. */
+  const art = safeImageUrl(player.art);
+  if (art && cover.src !== art) cover.src = art;
+  if (cover.hidden !== !art) cover.hidden = !art;
 
   const previous = need('previous', 'button', 'mpris-button');
   setModule(previous, '󰒮');
