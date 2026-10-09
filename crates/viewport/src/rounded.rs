@@ -845,10 +845,13 @@ impl<E: Element> RoundedRenderElement<E> {
     /// Separate from `draw` so it can be tested without a renderer: the
     /// arithmetic is the whole of what can go wrong here, and getting it wrong
     /// shows up as a window drawn at the wrong magnification or a seam of
-    /// wallpaper across it — neither of which a type checks.
+    /// wallpaper across it — neither of which a type checks. `draw` fills a
+    /// reusable scratch list through [`Self::pieces_into`] instead, so this
+    /// allocating answer is the tests' alone.
     ///
     /// A band with nothing damaged in it is left out: drawing it would repaint
     /// pixels nobody said had changed.
+    #[cfg(test)]
     pub fn pieces(
         &self,
         src: Rectangle<f64, BufferCoord>,
