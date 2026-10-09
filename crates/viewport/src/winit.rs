@@ -32,10 +32,19 @@ pub fn init(
         refresh: 60_000,
     };
 
+    // A nested window has no physical size of its own — the host owns the
+    // panel — so report the size the mode implies at 96 dpi, X11's canonical
+    // density (the same number `start_xwayland` names). Zero is worse than a
+    // guess: Xwayland hands the size to every X client, and Wine's
+    // `monitor_get_dpi` asserts on a zero-millimetre monitor, which kills
+    // every Wine app on its first display enumeration in a nested session.
+    // Rounded up to a whole millimetre so the DPI math never divides by zero.
+    let mm = |px: i32| ((px as f64) * 25.4 / 96.0).round().max(1.0) as i32;
+
     let output = Output::new(
         "winit".to_owned(),
         PhysicalProperties {
-            size: (0, 0).into(),
+            size: (mm(mode.size.w), mm(mode.size.h)).into(),
             subpixel: Subpixel::Unknown,
             make: "Viewport".into(),
             model: "Winit".into(),
