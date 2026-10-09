@@ -37,6 +37,18 @@ const RESPONSE_SUCCESS: u32 = 0;
 const RESPONSE_CANCELLED: u32 = 1;
 const RESPONSE_FAILED: u32 = 2;
 
+/// The most barriers one `SetPointerBarriers` may install.
+///
+/// Every accepted barrier is tested against every pointer motion of every
+/// enabled session — `crosses`, per barrier, on the compositor thread — and
+/// admitting one costs `valid_barrier`'s scan of the zone list twice over.
+/// The list was uncapped, so a granted session (any app the user once
+/// approved at the picker) could install tens of thousands of barriers and
+/// burn a core per motion. The protocol has a channel for what does not make
+/// it — `failed_barriers` — and 64 is the ceiling `crate::shortcuts` already
+/// puts on one picker's request.
+const MAX_BARRIERS_PER_REQUEST: usize = 64;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Zone {
     pub width: u32,
@@ -495,11 +507,22 @@ impl InputCapture {
         let mut accepted = Vec::new();
         let mut failed = Vec::new();
         let mut ids = HashSet::new();
+        let mut dropped = 0usize;
         for barrier in barriers {
             let id = barrier
                 .get("barrier_id")
                 .and_then(|v| u32::try_from(v).ok())
                 .unwrap_or(0);
+            // The cap is tested first, so an oversized request stops costing
+            // validation scans the moment it is over instead of paying for
+            // every entry it carried. Extras go back by id in
+            // `failed_barriers`, the interface's own channel for a barrier
+            // that did not make it.
+            if accepted.len() >= MAX_BARRIERS_PER_REQUEST {
+                dropped += 1;
+                failed.push(id);
+                continue;
+            }
             let position = barrier
                 .get("position")
                 .and_then(|value| value.try_clone().ok())
@@ -513,6 +536,11 @@ impl InputCapture {
             } else if let Some(candidate) = candidate {
                 accepted.push(candidate);
             }
+        }
+        if dropped > 0 {
+            tracing::warn!(
+                "input capture: {app_id:?} set more than {MAX_BARRIERS_PER_REQUEST} barriers at once; {dropped} rejected"
+            );
         }
         session.barriers = accepted;
         let mut results = HashMap::new();
