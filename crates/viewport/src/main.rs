@@ -254,6 +254,11 @@ fn run() -> Result<()> {
     // deliberate of the two, and the flag's value is the one already in the
     // environment here.
     //
+    // Every entry has been validated by `config::load`: `set_var` panics on an
+    // empty key, a key carrying `=` or a NUL, or a value carrying a NUL, and
+    // a panic here is a session that never starts, with nothing running to
+    // fix the file from. The file cannot write such an entry any more.
+    //
     // SAFETY: still single-threaded. No backend is up, no worker has been
     // spawned, and this is the same window `--renderer` and `--pixel-format`
     // use below.
@@ -308,6 +313,8 @@ fn run() -> Result<()> {
     // enumerates them, and the backend already says so out loud when the value
     // matches nothing — naming what there was to choose from, which is the
     // message that is actually useful. See `gpu_named` in `udev.rs`.
+    // (The one thing that *is* checked first: `config::load` refuses a NUL in
+    // the config value, the one shape that would panic `set_var` below.)
     {
         let asked = flag(&args, "--gpu")
             .map(str::to_owned)

@@ -933,6 +933,46 @@ pub fn load(path: &Path) -> anyhow::Result<Option<File>> {
             );
         }
     }
+    // `env` entries reach `std::env::set_var` at startup, before the event
+    // loop exists, and `set_var` panics outright on a key that is empty or
+    // carries an `=` or a NUL, or a value that carries a NUL. Every one of
+    // those is writable by hand in the JSON, and a panic there would end the
+    // session before it began, on a TTY-launched machine with nothing running
+    // to fix the file from. Refused here instead, with the file named, the
+    // same way every other mistake a hand-written config can make is.
+    if let Some(env) = file.env.as_ref() {
+        for (key, value) in env {
+            anyhow::ensure!(!key.is_empty(), "{}: env key is empty", path.display());
+            anyhow::ensure!(
+                !key.contains('='),
+                "{}: env key {key:?} contains '='",
+                path.display()
+            );
+            anyhow::ensure!(
+                !key.contains('\0'),
+                "{}: env key {key:?} contains a NUL byte",
+                path.display()
+            );
+            anyhow::ensure!(
+                !value.contains('\0'),
+                "{}: env value for {key:?} contains a NUL byte",
+                path.display()
+            );
+        }
+    }
+    // `gpu` reaches the same API (`VIEWPORT_GPU` at startup) and is the one
+    // value that gets there without a closed set of accepted spellings to
+    // filter it first — `pixel_format` and `cross_gpu` both run through their
+    // parsers before they are set, and a parser that only accepts `"8"` or
+    // `"10"` cannot accept a NUL. A JSON string may carry one; refusing it
+    // here is the same panic avoided.
+    if let Some(gpu) = file.gpu.as_ref() {
+        anyhow::ensure!(
+            !gpu.contains('\0'),
+            "{}: gpu value contains a NUL byte",
+            path.display()
+        );
+    }
     for output in file.outputs.values_mut() {
         let Some(icc) = output.icc.as_mut() else {
             continue;
@@ -1965,6 +2005,57 @@ mod tests {
         let env = file.env.expect("the block is present");
         assert_eq!(env.get("MOZ_ENABLE_WAYLAND").map(String::as_str), Some("1"));
         assert_eq!(env.get("EDITOR").map(String::as_str), Some("hx"));
+    }
+
+    #[test]
+    fn an_env_entry_that_would_panic_set_var_is_refused() {
+        // `std::env::set_var` panics at startup on an empty key, a key
+        // carrying `=` or a NUL, or a value carrying a NUL — every one
+        // writable by hand here — and at startup that panic is the whole
+        // session: no event loop, no shell, nothing to fix config.json from.
+        // The parse layer refuses the entry instead, naming the file, so the
+        // mistake is a message rather than a dead TTY session.
+        let dir = std::env::temp_dir().join(format!("viewport-env-check-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let path = dir.join("config.json");
+        for (json, expected) in [
+            (r#"{"env": {"": "x"}}"#, "env key is empty"),
+            (r#"{"env": {"FOO=BAR": "x"}}"#, "contains '='"),
+            (r#"{"env": {"FOO\u0000BAR": "x"}}"#, "NUL"),
+            (r#"{"env": {"FOO": "a\u0000b"}}"#, "NUL"),
+        ] {
+            std::fs::write(&path, json).expect("config");
+            let error = load(&path).expect_err("must be refused").to_string();
+            assert!(error.contains(expected), "{json}: {error}");
+            assert!(error.contains("config.json"), "{error}");
+        }
+        // A well-formed entry still loads: refusing the bad ones must not
+        // have made `env` itself suspect.
+        std::fs::write(&path, r#"{"env": {"MOZ_ENABLE_WAYLAND": "1"}}"#).expect("config");
+        let file = load(&path).expect("valid config").expect("present");
+        let env = file.env.expect("env block");
+        assert_eq!(env.get("MOZ_ENABLE_WAYLAND").map(String::as_str), Some("1"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_gpu_value_with_a_nul_is_refused() {
+        // `gpu` reaches `set_var` (`VIEWPORT_GPU`) at startup like the env
+        // block does, and unlike `pixel_format` and `cross_gpu` there is no
+        // closed set of accepted spellings to filter it first. A JSON string
+        // may carry a NUL; that is the exact value `set_var` panics on.
+        let dir = std::env::temp_dir().join(format!("viewport-gpu-check-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let path = dir.join("config.json");
+        std::fs::write(&path, r#"{"gpu": "a\u0000b"}"#).expect("config");
+        let error = load(&path).expect_err("must be refused").to_string();
+        assert!(error.contains("gpu value"), "{error}");
+        assert!(error.contains("NUL"), "{error}");
+        assert!(error.contains("config.json"), "{error}");
+        std::fs::write(&path, r#"{"gpu": "card1"}"#).expect("config");
+        let file = load(&path).expect("valid config").expect("present");
+        assert_eq!(file.gpu.as_deref(), Some("card1"));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
