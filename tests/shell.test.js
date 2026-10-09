@@ -8915,6 +8915,68 @@ if (mode === 'scrolling') {
   }
 }
 
+/* U8: a window-rule regex cannot be turned into a hang by a window's own
+ * title. The pattern is config, the title is anything a client says, and the
+ * match runs on every title change — so a catastrophic-backtracking pattern
+ * and a crafted title were a way to freeze the whole shell page. */
+{
+  const sh = globalThis.__shell;
+
+  /* The `g` flag made `.test` stateful through `lastIndex`: with the compiled
+     regex now cached and reused, that would have matched every other window
+     and missed the ones in between. */
+  emit({ type: 'config', layout: mode, rules: [
+    { match: { title: { regex: 'pip', flags: 'gi' } }, pinned: true,
+      width: 320, height: 180 },
+  ] });
+  emit({ type: 'view.added', id: 911, title: 'PiP one', app_id: 'video',
+    tag: null, output: 'DP-1', min_width: 0, min_height: 0,
+    floating: false, width: 800, height: 600 });
+  emit({ type: 'view.added', id: 912, title: 'PiP two', app_id: 'video',
+    tag: null, output: 'DP-1', min_width: 0, min_height: 0,
+    floating: false, width: 800, height: 600 });
+  check('a g-flagged rule matches the second window as reliably as the first',
+    sh.views.get(911)?.special === 'pinned'
+    && sh.views.get(912)?.special === 'pinned');
+  emit({ type: 'view.removed', id: 911 });
+  emit({ type: 'view.removed', id: 912 });
+
+  /* A nested quantifier is refused outright rather than run: `(a+)+$` over a
+     few thousand `a`s and a non-match is exponential in the title's length,
+     which is a page that stops drawing for as long as the backtracking lasts.
+     The crafted title below is the shape of the attack; without the lint this
+     check would never finish rather than fail. */
+  emit({ type: 'config', layout: mode, rules: [
+    { match: { title: { regex: '(a+)+$' } }, pinned: true,
+      width: 320, height: 180 },
+  ] });
+  emit({ type: 'view.added', id: 913, title: `${'a'.repeat(3000)}!`,
+    app_id: 'crafted', tag: null, output: 'DP-1',
+    min_width: 0, min_height: 0, floating: false, width: 800, height: 600 });
+  check('a catastrophic rule pattern is refused, not run',
+    sh.views.get(913)?.special !== 'pinned');
+  emit({ type: 'view.removed', id: 913 });
+
+  /* And the haystack is capped: the match runs against the first few KB of
+     the title, never against a string whose length a client decides. */
+  emit({ type: 'config', layout: mode, rules: [
+    { match: { title: { regex: 'needle' } }, pinned: true,
+      width: 320, height: 180 },
+  ] });
+  emit({ type: 'view.added', id: 914, title: `needle${'x'.repeat(8000)}`,
+    app_id: 'capped', tag: null, output: 'DP-1',
+    min_width: 0, min_height: 0, floating: false, width: 800, height: 600 });
+  emit({ type: 'view.added', id: 915, title: `${'x'.repeat(8000)}needle`,
+    app_id: 'capped', tag: null, output: 'DP-1',
+    min_width: 0, min_height: 0, floating: false, width: 800, height: 600 });
+  check('a rule matches within the capped title',
+    sh.views.get(914)?.special === 'pinned');
+  check('and a title whose tail is past the cap is not matched against',
+    sh.views.get(915)?.special !== 'pinned');
+  emit({ type: 'view.removed', id: 914 });
+  emit({ type: 'view.removed', id: 915 });
+}
+
 emit({ type: 'view.removed', id: 1 });
 emit({ type: 'view.removed', id: 2 });
 emit({ type: 'view.removed', id: 3 });
