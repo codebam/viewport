@@ -1424,9 +1424,21 @@ fn authenticate_peer(stream: &UnixStream) -> Result<(), String> {
             &mut length,
         )
     } == 0;
-    let theirs = known
-        .then(|| std::fs::read_link(format!("/proc/{}/exe", cred.pid)))
-        .and_then(Result::ok);
+    if !known || cred.pid <= 0 {
+        return Err(unidentified_peer());
+    }
+    peer_is_this_executable(cred.pid)
+}
+
+/// The comparison itself: the kernel's `/proc/<pid>/exe` link for the peer
+/// must read exactly what `/proc/self/exe` does.
+///
+/// Split out from [`authenticate_peer`] because a socket pair's `SO_PEERCRED`
+/// is captured when the pair is created and can only ever name this process —
+/// so the rule is tested against real pids of real helper processes, and the
+/// socket round trip has its own test.
+fn peer_is_this_executable(pid: libc::pid_t) -> Result<(), String> {
+    let theirs = std::fs::read_link(format!("/proc/{pid}/exe")).ok();
     let mine = std::fs::read_link("/proc/self/exe").ok();
     match (theirs, mine) {
         (Some(theirs), Some(mine)) if theirs == mine => Ok(()),
@@ -1436,12 +1448,17 @@ fn authenticate_peer(stream: &UnixStream) -> Result<(), String> {
              {NAMED_ON_PURPOSE}",
             theirs.display()
         )),
-        _ => Err(format!(
-            "refusing to send to it: the process on the other end could not \
-             be identified, so it cannot be proved to be the compositor. \
-             {NAMED_ON_PURPOSE}"
-        )),
+        _ => Err(unidentified_peer()),
     }
+}
+
+/// The refusal for a peer that cannot be identified at all.
+fn unidentified_peer() -> String {
+    format!(
+        "refusing to send to it: the process on the other end could not be \
+         identified, so it cannot be proved to be the compositor. \
+         {NAMED_ON_PURPOSE}"
+    )
 }
 
 #[cfg(test)]
@@ -1975,26 +1992,22 @@ mod tests {
 
     #[test]
     fn a_peer_of_another_executable_is_refused() {
-        // `sh` stands in for the impostor: same uid, holding a socket this
-        // process is connected to, running anything but this executable. The
-        // refusal must name the way out, because the user's only way past the
+        // `sh` stands in for the impostor: same uid, running anything but
+        // this executable. A socket pair's `SO_PEERCRED` is captured when the
+        // pair is created and can only ever name this process, so the rule is
+        // checked against the helper's own pid — which is exactly what a real
+        // connection to a socket the helper bound would report. The refusal
+        // must name the way out, because the user's only way past the
         // ambiguity is to say which compositor they meant.
-        let (mine, theirs) = UnixStream::pair().expect("a socket pair");
         let mut child = std::process::Command::new("sh")
             .arg("-c")
-            .arg("echo ready; read line")
-            .stdin(std::process::Stdio::from(theirs))
-            .stdout(std::process::Stdio::piped())
+            .arg("sleep 30")
             .spawn()
             .expect("a helper process");
-        // Wait until the helper is speaking from its own image: before the
-        // exec, `/proc/<pid>/exe` still points here and the check would pass
-        // for the wrong reason.
-        let mut ready = String::new();
-        BufReader::new(child.stdout.take().expect("a piped stdout"))
-            .read_line(&mut ready)
-            .expect("the helper is running");
-        let complaint = authenticate_peer(&mine).expect_err("a foreign executable");
+        // `spawn` returns after the helper's exec, so its `/proc` link is
+        // already its own.
+        let complaint =
+            peer_is_this_executable(child.id() as libc::pid_t).expect_err("a foreign executable");
         assert!(complaint.contains("--socket"), "{complaint}");
         let _ = child.kill();
         let _ = child.wait();
@@ -2005,15 +2018,14 @@ mod tests {
         // Verification being impossible is not verification: a helper that is
         // gone before the check leaves no `/proc/<pid>/exe` to read, and an
         // unprovable peer is refused exactly like a disproved one.
-        let (mine, theirs) = UnixStream::pair().expect("a socket pair");
         let mut child = std::process::Command::new("sh")
             .arg("-c")
             .arg("true")
-            .stdin(std::process::Stdio::from(theirs))
             .spawn()
             .expect("a helper process");
         child.wait().expect("the helper exits at once");
-        let complaint = authenticate_peer(&mine).expect_err("an unidentifiable peer");
+        let complaint =
+            peer_is_this_executable(child.id() as libc::pid_t).expect_err("an unidentifiable peer");
         assert!(complaint.contains("--socket"), "{complaint}");
     }
 }
