@@ -515,6 +515,14 @@ impl ViewportState {
             return true;
         }
 
+        // Whether every mode asked for reached its CRTC. Positions,
+        // transforms and scales cannot be refused once they have passed
+        // validation; a mode can — the display or the driver always has the
+        // last word — and a configuration half of which landed must not be
+        // reported as landed. The changes that can apply still do, so the desk
+        // is left as close to what was asked as the hardware allowed, and the
+        // re-advertisement below tells the client where everything ended up.
+        let mut programmed = true;
         for change in changes {
             let Some(output) = self.any_output_by_name(&change.name) else {
                 continue;
@@ -526,7 +534,9 @@ impl ViewportState {
             self.set_output_enabled(&output, true);
 
             if let Some(mode) = change.mode {
-                self.set_output_mode(&output, mode);
+                if !self.set_output_mode(&output, mode) {
+                    programmed = false;
+                }
             }
             if change.transform.is_some() || change.scale.is_some() {
                 let scale = change.scale.map(smithay::output::Scale::Fractional);
@@ -566,7 +576,7 @@ impl ViewportState {
         self.notify_output_layout();
         self.advertise_outputs();
         self.needs_render = true;
-        true
+        programmed
     }
 
     /// Every view the shell has placed and not hidden belongs in the space.
@@ -637,40 +647,52 @@ impl ViewportState {
     /// `apply_output_configuration` and the shell's `output.configure` go
     /// through it; a second copy of this body is how the shell mode dropdown
     /// became a silent no-op on udev while `wlr-randr` worked.
-    pub(crate) fn set_output_mode(&mut self, output: &Output, mode: smithay::output::Mode) {
+    ///
+    /// Whether the display took it. A refused modeset changes nothing on this
+    /// side: the description is only moved once the CRTC is scanning the new
+    /// mode, so what clients are told stays what the hardware is doing — and
+    /// the caller can answer `failed` instead of telling a client a change
+    /// landed while the panel scans the old mode.
+    pub(crate) fn set_output_mode(&mut self, output: &Output, mode: smithay::output::Mode) -> bool {
         self.output_vrr_wanted.remove(&output.name());
+        if !self.program_output_mode(output, mode) {
+            return false;
+        }
         output.change_current_state(Some(mode), None, None, None);
 
-        self.program_output_mode(output, mode);
-
         // A different mode is a different screen, so the layer map and the
-        // damage history are as stale as they are after a rotation. This runs
-        // whichever way the programming went: a nested host decides the mode
-        // itself, and a refused modeset still leaves the description changed,
-        // so both still owe the re-arrange. Leaving it inside the success
-        // branch is how a mode-only `output.configure` on a backend whose early
-        // return fired would have moved what clients were told and never
-        // re-arranged the layers over it.
-        self.output_reshaped(output)
+        // damage history are as stale as they are after a rotation. Reached on
+        // success only — which includes the nested backend, whose "programming"
+        // is the host deciding the mode and still owes the re-arrange. A
+        // refused modeset left the description untouched and so owes nothing;
+        // running this on the failure path used to matter only because the
+        // description had already been moved ahead of the hardware.
+        self.output_reshaped(output);
+        true
     }
 
     /// Program `mode` on the CRTC, or leave it to a nested host.
     ///
-    /// Split out of [`Self::set_output_mode`] so the re-arrange that every
-    /// mode change owes runs on the paths that cannot reach a CRTC as well.
-    /// Failure and absence are not errors here: the mode is already in the
-    /// output description, and each branch says why it could not go further.
-    fn program_output_mode(&mut self, output: &Output, mode: smithay::output::Mode) {
+    /// Split out of [`Self::set_output_mode`] so the description is moved only
+    /// after the hardware has answered. The return is that answer: `false`
+    /// means the CRTC is still scanning what it was, and it travels up to
+    /// whoever asked — a `configuration.succeeded()` sent while the display
+    /// refused left wlr-randr and kanshi believing a mode that was never on
+    /// screen. Each early return below is a way nothing could be programmed,
+    /// and says so rather than swallowing the difference.
+    fn program_output_mode(&mut self, output: &Output, mode: smithay::output::Mode) -> bool {
         let Some(udev) = self.udev.as_mut() else {
-            // Nested, where the mode is the host window's to decide.
-            return;
+            // Nested, where the mode is the host window's to decide: there is
+            // nothing here that could refuse, so adopting it is the success it
+            // is.
+            return true;
         };
         let Some((id, connector)) = udev
             .outputs()
             .find(|(_, surface)| surface.output == *output)
             .map(|(crtc, surface)| (crtc, surface.connector))
         else {
-            return;
+            return false;
         };
 
         // The kernel takes a modeline from the connector's own list rather
@@ -685,11 +707,11 @@ impl ViewportState {
         // there too and describes a different monitor entirely.
         use smithay::reexports::drm::control::Device as _;
         let Some(gpu) = udev.devices.get_mut(id.device) else {
-            return;
+            return false;
         };
         let device = gpu.manager.device();
         let Ok(info) = device.get_connector(connector, false) else {
-            return;
+            return false;
         };
         let Some(drm_mode) = info
             .modes()
@@ -698,14 +720,14 @@ impl ViewportState {
             .find(|candidate| smithay::output::Mode::from(*candidate) == mode)
         else {
             tracing::warn!("{}: the display no longer offers that mode", output.name());
-            return;
+            return false;
         };
 
         let Some(device) = udev.devices.get_mut(id.device) else {
-            return;
+            return false;
         };
         let Some(surface) = device.surfaces.get_mut(&id.crtc) else {
-            return;
+            return false;
         };
         // No render elements: this is a modeset, and the frame after it is
         // drawn by the ordinary loop. Passing the current ones would only
@@ -722,7 +744,7 @@ impl ViewportState {
                 >::new(),
             )
             .map_err(|e| e.to_string()));
-        match result {
+        let programmed = match result {
             Ok(()) => {
                 tracing::info!(
                     "{}: {}x{}@{}",
@@ -734,11 +756,18 @@ impl ViewportState {
                 // The mode is half of what a tearing refusal was measured
                 // under, so the answer may have changed with it.
                 surface.clear_tearing_refusal();
+                true
             }
-            Err(e) => tracing::warn!("{}: the display refused the mode: {e}", output.name()),
-        }
-        // A modeset invalidates what was queued for this output.
+            Err(e) => {
+                tracing::warn!("{}: the display refused the mode: {e}", output.name());
+                false
+            }
+        };
+        // A modeset invalidates what was queued for this output — the attempt
+        // either landed or left the queued flip describing a state the
+        // compositor no longer agrees with, and `pending` is cleared both ways.
         surface.pending = false;
+        programmed
     }
 
     /// Turn one output on or off.
@@ -990,5 +1019,53 @@ impl ViewportState {
             };
             self.apply_effective_gamma(&output);
         }
+    }
+}
+
+#[cfg(test)]
+mod output_mode_tests {
+    /// The promise a refused modeset used to break: a client must never be
+    /// told a change landed while the CRTC refused it. Programming cannot run
+    /// without a DRM rig in a unit test, so — as the blank-path guard in
+    /// `output_control_tests` and the one in `apply.rs` do — the wiring is
+    /// checked against the source it is written in.
+    #[test]
+    fn a_refused_modeset_fails_the_configuration_instead_of_reporting_success() {
+        let source = include_str!("outputs.rs");
+        let source = source.split("#[cfg(test)]").next().unwrap_or(source);
+
+        // The description moves only after the hardware has answered, and the
+        // answer travels up out of `set_output_mode`.
+        let start = source
+            .find("pub(crate) fn set_output_mode(")
+            .expect("set_output_mode in outputs.rs");
+        let rest = &source[start..];
+        let end = rest.find("\n    /// Program").unwrap_or(rest.len());
+        let body = &rest[..end];
+        assert!(
+            body.contains("-> bool"),
+            "set_output_mode has to report whether the display took the mode"
+        );
+        assert!(
+            body.contains("if !self.program_output_mode(output, mode)"),
+            "the description must not move before the CRTC has answered"
+        );
+
+        // And `apply_output_configuration` hands that answer to
+        // `configuration.failed()` instead of succeeding unconditionally.
+        let start = source
+            .find("pub fn apply_output_configuration(")
+            .expect("apply_output_configuration in outputs.rs");
+        let rest = &source[start..];
+        let end = rest.find("\n    pub fn ").unwrap_or(rest.len());
+        let body = &rest[..end];
+        assert!(
+            body.contains("programmed = false"),
+            "a refused mode has to fail the configuration the client is answered about"
+        );
+        assert!(
+            body.contains("\n        programmed\n    }"),
+            "apply_output_configuration must return the programming result, not unconditional success"
+        );
     }
 }
