@@ -392,9 +392,16 @@ impl Queue {
 
 impl Commands {
     fn send(&self, command: Command) {
-        if let Ok(mut queue) = self.queue.lock() {
-            queue.push(command);
-        }
+        // Recovered rather than refused: a poisoned lock would otherwise make
+        // every later command vanish in silence — `Quit` and `Restart` along
+        // with them — and the poison is only ever a panic inside `Queue::push`,
+        // after which the queue's data is intact. Recovered the way the rest
+        // of the codebase recovers a poisoned lock (see `shell_client` and
+        // `background`: `unwrap_or_else(PoisonError::into_inner)`).
+        self.queue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(command);
         // Wakes a `g_main_context_iteration` that is blocked in poll. This is
         // the whole reason no GSource is needed for the command channel:
         // `g_main_context_wakeup` is thread-safe by contract.
@@ -982,10 +989,15 @@ fn web_thread(
         // Blocks until GLib has something, or until `Commands::send` wakes it.
         unsafe { g_main_context_iteration(context, 1) };
 
-        let drained: Vec<Command> = match commands.queue.lock() {
-            Ok(mut queue) => queue.drain(),
-            Err(_) => break,
-        };
+        // Poison-recovered like `Commands::send`, and for the same reason:
+        // breaking the loop here would leave the commands being queued on the
+        // other side of the recovery stranded forever. A panic in `Queue::push`
+        // is not a reason for the web thread to quietly retire.
+        let drained: Vec<Command> = commands
+            .queue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .drain();
         for command in drained {
             match command {
                 Command::Post(json) => {
