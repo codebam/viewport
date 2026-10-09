@@ -432,7 +432,7 @@ pub struct Shell {
 struct Frames(Arc<Mutex<Mailbox>>);
 
 impl FrameSink for Frames {
-    fn frame(&mut self, frame: Frame, token: FrameToken) -> bool {
+    fn frame(&mut self, mut frame: Frame, token: FrameToken) -> bool {
         // `try_lock`, not a blocking one, and left that way on purpose: a
         // refused frame is one WebKit repaints, while the messages and
         // termination below are state nobody else ever sends again.
@@ -441,7 +441,7 @@ impl FrameSink for Frames {
             return false;
         };
 
-        let buffer = match to_dmabuf(&frame) {
+        let buffer = match to_dmabuf(&mut frame) {
             Ok(buffer) => buffer,
             Err(e) => {
                 tracing::error!("could not describe the shell's frame: {e:#}");
@@ -1125,7 +1125,13 @@ pub fn budget(
 }
 
 /// Describe a WebKit frame as a Smithay `Dmabuf`.
-fn to_dmabuf(frame: &Frame) -> Result<Dmabuf> {
+///
+/// Consumes the frame's planes: the fds were already duplicated when the frame
+/// crossed the FFI boundary (`render_frame` clones the borrowed ones), so they
+/// are owned here and moved into the dmabuf rather than duplicated again. Only
+/// the planes go — the fence stays with the frame, which the caller moves out
+/// afterwards.
+fn to_dmabuf(frame: &mut Frame) -> Result<Dmabuf> {
     let code = Fourcc::try_from(frame.format)
         .map_err(|_| anyhow::anyhow!("unknown fourcc {:#x}", frame.format))?;
 
@@ -1135,11 +1141,8 @@ fn to_dmabuf(frame: &Frame) -> Result<Dmabuf> {
         Modifier::from(frame.modifier),
         DmabufFlags::empty(),
     );
-    for plane in &frame.planes {
-        // The fds were already duplicated when the frame crossed the FFI
-        // boundary, so this hands over ownership rather than borrowing again.
-        let fd = plane.fd.try_clone()?;
-        if !builder.add_plane(fd, plane.offset, plane.stride) {
+    for plane in std::mem::take(&mut frame.planes) {
+        if !builder.add_plane(plane.fd, plane.offset, plane.stride) {
             anyhow::bail!("too many planes for a dmabuf");
         }
     }
@@ -1578,5 +1581,36 @@ mod tests {
         assert!(held.frame.is_none(), "the undrawn frame was dropped");
         assert!(held.stale.is_empty(), "the stale frames were dropped");
         assert!(held.terminated.is_some());
+    }
+
+    /// The frame's plane fds are moved into the dmabuf, not duplicated again —
+    /// `render_frame` already owned them — and the fence stays with the frame
+    /// for the caller to move out afterwards.
+    #[test]
+    fn the_frames_plane_fds_move_into_the_dmabuf() {
+        use smithay::backend::allocator::Buffer as _;
+        use viewport_web::Plane;
+
+        let plane: OwnedFd = std::fs::File::open("/dev/null").unwrap().into();
+        let fence: OwnedFd = std::fs::File::open("/dev/null").unwrap().into();
+        let mut frame = Frame {
+            planes: vec![Plane {
+                fd: plane,
+                offset: 0,
+                stride: 4,
+            }],
+            format: Fourcc::Argb8888 as u32,
+            modifier: 0,
+            width: 1,
+            height: 1,
+            fence: Some(fence),
+        };
+        let dmabuf = to_dmabuf(&mut frame).expect("the frame describes a buffer");
+        assert_eq!(dmabuf.width(), 1);
+        assert!(frame.planes.is_empty(), "the planes were moved, not copied");
+        assert!(
+            frame.fence.is_some(),
+            "the fence is still the frame's to move"
+        );
     }
 }
