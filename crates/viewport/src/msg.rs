@@ -1534,12 +1534,13 @@ mod tests {
 
     #[test]
     fn a_negative_number_is_a_value_and_not_an_option() {
-        // The shell sends -1 for "no view", and so does anyone unfocusing by
-        // hand.
-        assert_eq!(
-            value(&["-t", "view.focus", "--id", "-1"]),
-            serde_json::json!({"type": "view.focus", "id": -1})
-        );
+        // The complaint is the observation: it names the number as a bad id,
+        // where a parse that mistook it for a flag would have complained
+        // about the flag. `-1` is taken as `--id`'s value — which is what
+        // this test is about — and refused as the out-of-range id the wire no
+        // longer truncates.
+        let complaint = build(&["-t", "view.focus", "--id", "-1"]).unwrap_err();
+        assert!(complaint.contains("view id -1 is outside"), "{complaint}");
     }
 
     #[test]
