@@ -329,6 +329,16 @@ global.document = {
 };
 
 const windowListeners = {};
+/* What the shell re-dispatches queued messages with: the replay in
+ * finishLayoutConfig hands each pending one back to the window as a
+ * CustomEvent, so the stub needs both halves of that or the replay path is
+ * untestable — and it is the path a wedged desktop is wedged behind. */
+global.CustomEvent = class {
+  constructor(type, init = {}) {
+    this.type = type;
+    this.detail = init?.detail;
+  }
+};
 global.window = {
   webkit: { messageHandlers: { viewport: { postMessage: (m) => {
     const msg = JSON.parse(m);
@@ -338,6 +348,10 @@ global.window = {
   addEventListener: (type, fn) => { (windowListeners[type] ??= []).push(fn); },
   removeEventListener: (type, fn) => {
     windowListeners[type] = (windowListeners[type] ?? []).filter((f) => f !== fn);
+  },
+  dispatchEvent: (event) => {
+    for (const fn of windowListeners[event.type] ?? []) fn(event);
+    return true;
   },
 };
 global.ResizeObserver = class { observe() {} unobserve() {} };
@@ -592,6 +606,13 @@ const EXPORTS = ';globalThis.__shell = { views, workspaces, outputs, scrollOffse
   + ' registerWidget: typeof registerWidget !== "undefined" ? registerWidget : undefined,'
   + ' widgetRegistry: typeof widgetRegistry !== "undefined" ? widgetRegistry : undefined,'
   + ' widgetSources: typeof widgetSources !== "undefined" ? widgetSources : undefined,'
+  /* The initial-config gate and the queue behind it, so a test can put the
+     page back in the state a fresh load starts in — before the first config —
+     and watch what opens the gate again. That gate is what a throwing
+     extension used to keep shut for ever. */
+  + ' get initialConfigReadyForTest() { return initialConfigReady; },'
+  + ' set initialConfigReadyForTest(v) { initialConfigReady = v; },'
+  + ' pendingViewReplayForTest: pendingViewReplay,'
   + ' get activeOutput() { return activeOutput; } };';
 /* The shell is a set of ordered classic scripts sharing one global scope, so
  * concatenating them in load order and evaluating the result is exactly what
@@ -8787,6 +8808,110 @@ if (mode === 'scrolling') {
 
   for (let i = 12; i < 20; i++) {
     emit({ type: 'notification.close', id: 1000 + i });
+  }
+}
+
+/* U7: one throwing extension cannot wedge the desktop.
+ *
+ * The single 'viewport' listener runs third-party widget code inline on the
+ * config path, and the initial-config gate sits at the end of that path: a
+ * throw in a widget's mount used to abort the config message before the gate
+ * opened, so every later view message queued in pendingViewReplay for ever —
+ * the desktop came up with no windows and stayed that way, because the next
+ * config threw at the same place. These are the layers that stop that: the
+ * extension calls are contained, the dispatch is contained, and the gate opens
+ * in a finally however the config's own pass went. */
+{
+  const sh = globalThis.__shell;
+  let quietUpdates = 0;
+  sh.registerWidget('boom', {
+    mount() { throw new Error('boom mount'); },
+    update() { throw new Error('boom update'); },
+    destroy() { throw new Error('boom destroy'); },
+  });
+  sh.registerWidget('quiet', {
+    mount() {},
+    update() { quietUpdates += 1; },
+    destroy() { quietUpdates += 100; },
+  });
+
+  /* Back to the state a fresh page starts in: no config has been applied, so
+     view messages wait for the one that is coming. */
+  sh.initialConfigReadyForTest = false;
+  emit({ type: 'view.added', id: 901, title: 'held', app_id: 'held',
+    tag: null, output: 'DP-1', min_width: 0, min_height: 0,
+    floating: false, width: 800, height: 600 });
+  check('a view arriving before the first config waits for it',
+    !sh.views.has(901) && sh.pendingViewReplayForTest.length === 1);
+
+  emit({ type: 'config', layout: mode, bar_widgets: [
+    { type: 'custom', name: 'boom', options: {} },
+    { type: 'custom', name: 'quiet', options: {} },
+  ] });
+  check('a throwing widget mount cannot keep the config gate shut',
+    sh.initialConfigReadyForTest === true);
+  check('and the held window is replayed onto the desktop',
+    sh.views.has(901) && sh.pendingViewReplayForTest.length === 0);
+  check('the widget after the throwing one still mounted',
+    quietUpdates >= 1);
+
+  /* The per-tick update: one throw must not take the rest of the list down
+     with it, since the list is drawn on every status sample. */
+  const before = quietUpdates;
+  emit({ type: 'status.update', cpu: -1, memory: -1, load: 0,
+    net_rx: 0, net_tx: 0, disk_free: 0, disk_total: 0,
+    mounts: [], volume: 0.45, muted: false });
+  check('a throwing update does not stop the widgets after it',
+    quietUpdates > before);
+
+  /* Re-syncing the bar tears the dropped widget down; a throwing destroy is
+     contained the same way, and the sync must complete. */
+  let threw = null;
+  try {
+    emit({ type: 'config', layout: mode, bar_widgets: [
+      { type: 'custom', name: 'quiet', options: {} },
+    ] });
+  } catch (error) {
+    threw = error;
+  }
+  check('a throwing destroy cannot break a re-synced bar', !threw);
+
+  /* A malformed message is data, not a script: no `type` to dispatch on is a
+     message to drop, not a TypeError to raise into the page. */
+  threw = null;
+  try {
+    for (const fn of windowListeners.viewport ?? []) fn({ detail: { nope: 1 } });
+    for (const fn of windowListeners.viewport ?? []) fn({ detail: null });
+    for (const fn of windowListeners.viewport ?? []) fn({});
+    for (const fn of windowListeners.viewport ?? []) fn({ detail: { type: 42 } });
+  } catch (error) {
+    threw = error;
+  }
+  check('a message with no string type is dropped, not thrown', !threw);
+
+  /* And the gate itself: a throw out of the config's own pass — here made by
+     failing the rule re-apply, which is one of the places extension code runs
+     — must still leave the desktop with its windows. */
+  const realReapply = globalThis.reapplyWindowRules;
+  globalThis.reapplyWindowRules = () => { throw new Error('pass exploded'); };
+  try {
+    sh.initialConfigReadyForTest = false;
+    emit({ type: 'view.added', id: 902, title: 'held too', app_id: 'held',
+      tag: null, output: 'DP-1', min_width: 0, min_height: 0,
+      floating: false, width: 800, height: 600 });
+    threw = null;
+    try {
+      emit({ type: 'config', layout: mode });
+    } catch (error) {
+      threw = error;
+    }
+    check('a config that throws mid-pass still opens the gate',
+      !threw && sh.initialConfigReadyForTest === true);
+    check('and replays the window it was holding', sh.views.has(902));
+  } finally {
+    globalThis.reapplyWindowRules = realReapply;
+    emit({ type: 'view.removed', id: 901 });
+    emit({ type: 'view.removed', id: 902 });
   }
 }
 

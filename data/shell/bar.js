@@ -656,11 +656,34 @@ function customWidgetKey(w) {
   return `custom:${w.name}:${JSON.stringify(w.options ?? null)}`;
 }
 
+/* Run one phase of a custom widget's code — mount, update or destroy —
+ * containing whatever it throws.
+ *
+ * A widget extension is user-installed JavaScript running inline in the shell
+ * page, and every call into it is on a path the desktop depends on: `mount`
+ * runs inside the `config` message that opens the initial-config gate, and an
+ * uncaught throw there aborts the message before finishLayoutConfig ever runs,
+ * so every later view message queues in pendingViewReplay forever — the
+ * desktop comes up with no windows and stays that way, because the next config
+ * throws at the same place. `update` runs on every status sample, where a
+ * throw would take the rest of the bar's widgets down with it, and `destroy`
+ * runs while the bar is being re-synced. The extension's error is logged and
+ * its widget left undrawn; an extension must not be able to take the shell
+ * down with it. */
+function runCustomWidgetPhase(name, descriptor, phase, el, ctx) {
+  const fn = descriptor[phase];
+  if (typeof fn !== 'function') return;
+  try {
+    fn.call(descriptor, el, ctx);
+  } catch (error) {
+    console.error(`custom widget "${name}" ${phase}: ${error?.message ?? error}`);
+  }
+}
+
 /* Run a mounted custom widget's teardown, if it has one. */
 function destroyCustomWidget(el, mounted) {
-  if (typeof mounted.descriptor.destroy === 'function') {
-    mounted.descriptor.destroy(el, mounted.ctx);
-  }
+  runCustomWidgetPhase(mounted.name, mounted.descriptor, 'destroy',
+    el, mounted.ctx);
 }
 
 /* Take any custom widget off an element and forget it — when its position is
@@ -700,9 +723,10 @@ function syncCustomWidget(el, w) {
       el._custom = { name: w.name, descriptor };
       el._customCtx = ctx;
       /* mount once, then update right after, so a widget that draws only in
-         `update` still shows something the first time. */
-      descriptor.mount(el, ctx);
-      if (typeof descriptor.update === 'function') descriptor.update(el, ctx);
+         `update` still shows something the first time. Both contained: see
+         runCustomWidgetPhase for why an extension throw is never fatal. */
+      runCustomWidgetPhase(w.name, descriptor, 'mount', el, ctx);
+      runCustomWidgetPhase(w.name, descriptor, 'update', el, ctx);
     }
   }
   /* A widget with no script yet leaves its element empty and says so once per
@@ -1099,8 +1123,11 @@ function renderBarWidgets(output) {
        children the widget built away. */
     if (w.type === 'custom') {
       const mounted = el._custom;
-      if (mounted && typeof mounted.descriptor.update === 'function') {
-        mounted.descriptor.update(el, el._customCtx);
+      if (mounted) {
+        /* Contained: one throwing widget must not stop the tick from
+           updating every widget after it. See runCustomWidgetPhase. */
+        runCustomWidgetPhase(mounted.name, mounted.descriptor, 'update',
+          el, el._customCtx);
       }
       return;
     }
