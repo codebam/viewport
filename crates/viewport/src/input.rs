@@ -3750,13 +3750,84 @@ impl ViewportState {
     }
 }
 
+/// How many rectangles [`ConfineRects`] keeps inline before spilling to the
+/// heap. A confinement region names one rectangle per area it draws — one for
+/// the windowed game, two for a map widget beside its legend — so four covers
+/// what regions actually are and leaves the spill for whatever else a client
+/// dreams up.
+const CONFINE_RECTS_INLINE: usize = 4;
+
+/// A confinement's rectangles, kept off the heap in the shapes regions
+/// actually have.
+///
+/// `pointer_constraint` resolves the region on every pointer motion while a
+/// constraint is active, and this code treats that path as what it is: a
+/// gaming mouse sends thousands of events a second, so a freshly collected
+/// `Vec` per event — two, counting the `vec![bbox]` of the regionless path —
+/// is a steady stream of allocations for data that almost always holds one
+/// rectangle. Inline until it does not, and the per-motion cost is nothing.
+/// A cache keyed by surface was the other option and needs invalidating on
+/// every region commit and constraint change from handlers this file does not
+/// own; this cannot go stale.
+#[derive(Debug, PartialEq)]
+struct ConfineRects {
+    inline: [Rectangle<i32, Logical>; CONFINE_RECTS_INLINE],
+    len: usize,
+    /// Once the inline buffer overflows, every rectangle lives here instead.
+    spill: Vec<Rectangle<i32, Logical>>,
+}
+
+impl ConfineRects {
+    fn new() -> Self {
+        Self {
+            inline: [Rectangle::new((0, 0).into(), (0, 0).into()); CONFINE_RECTS_INLINE],
+            len: 0,
+            spill: Vec::new(),
+        }
+    }
+
+    fn push(&mut self, rect: Rectangle<i32, Logical>) {
+        if self.spill.is_empty() && self.len < CONFINE_RECTS_INLINE {
+            self.inline[self.len] = rect;
+        } else {
+            if self.spill.is_empty() {
+                // One spill, not one per rectangle: the inline buffer is
+                // copied across once and only the heap sees the rest.
+                self.spill.extend_from_slice(&self.inline[..self.len]);
+            }
+            self.spill.push(rect);
+        }
+        self.len += 1;
+    }
+
+    fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    fn as_slice(&self) -> &[Rectangle<i32, Logical>] {
+        if self.spill.is_empty() {
+            &self.inline[..self.len]
+        } else {
+            &self.spill
+        }
+    }
+}
+
+impl std::ops::Deref for ConfineRects {
+    type Target = [Rectangle<i32, Logical>];
+
+    fn deref(&self) -> &Self::Target {
+        self.as_slice()
+    }
+}
+
 /// The region a confined pointer is held inside, and the surface's origin in
 /// layout coordinates.
 ///
 /// Both are needed together because the region is surface-local and the
 /// pointer is not.
 type Confinement = (
-    Vec<smithay::utils::Rectangle<i32, smithay::utils::Logical>>,
+    ConfineRects,
     smithay::utils::Point<i32, smithay::utils::Logical>,
 );
 
@@ -4034,7 +4105,7 @@ impl ViewportState {
         let mut locked = false;
         // `None`: no active confinement. `Some(None)`: confined to the whole
         // surface. `Some(Some(rects))`: confined to those rectangles.
-        let mut confined: Option<Option<Vec<Rectangle<i32, Logical>>>> = None;
+        let mut confined: Option<Option<ConfineRects>> = None;
         with_pointer_constraint(surface, pointer, |constraint| {
             let Some(constraint) = constraint else {
                 return;
@@ -4075,11 +4146,11 @@ impl ViewportState {
                 // A surface with nothing committed to it has no area, and
                 // confining to that would pin the cursor to a corner. Leave
                 // it free instead.
-                if bbox.is_empty() {
-                    Vec::new()
-                } else {
-                    vec![bbox]
+                let mut rects = ConfineRects::new();
+                if !bbox.is_empty() {
+                    rects.push(bbox);
                 }
+                rects
             });
             (region, origin)
         });
@@ -4107,14 +4178,13 @@ use smithay::wayland::compositor::RectangleKind;
 /// asked for a hole in its confinement got no confinement and the pointer
 /// left the surface entirely, the opposite of both the request and the safe
 /// direction above.
-fn confinement_rects(
-    rects: &[(RectangleKind, Rectangle<i32, Logical>)],
-) -> Option<Vec<Rectangle<i32, Logical>>> {
-    let additive: Vec<Rectangle<i32, Logical>> = rects
-        .iter()
-        .filter(|(kind, _)| matches!(kind, RectangleKind::Add))
-        .map(|(_, rect)| *rect)
-        .collect();
+fn confinement_rects(rects: &[(RectangleKind, Rectangle<i32, Logical>)]) -> Option<ConfineRects> {
+    let mut additive = ConfineRects::new();
+    for (kind, rect) in rects {
+        if matches!(kind, RectangleKind::Add) {
+            additive.push(*rect);
+        }
+    }
     (!additive.is_empty()).then_some(additive)
 }
 
