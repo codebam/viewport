@@ -156,6 +156,11 @@ pub fn apply(state: &mut ViewportState, request: Request) {
                     // Mapping stacks on top, which is wrong for a tiled window
                     // coming back to a desktop that has a float over it.
                     state.restack();
+                    // The renderer draws from the space and no client commits
+                    // for being shown again: the exact mirror of the unmap
+                    // below, and needing the same mark or the reopened
+                    // window stays invisible until something else redraws.
+                    state.needs_render = true;
                 }
             } else {
                 state.space.unmap_elem(&window);
@@ -199,7 +204,15 @@ pub fn apply(state: &mut ViewportState, request: Request) {
 
         Request::ViewOpacity { id, opacity } => {
             if let Some(view) = state.views.get_mut(id) {
-                view.opacity = opacity.clamp(0.0, 1.0) as f32;
+                let opacity = opacity.clamp(0.0, 1.0) as f32;
+                if view.opacity != opacity {
+                    view.opacity = opacity;
+                    // The drawn alpha of the window changes and nothing
+                    // commits with it — no client knows its window faded — so
+                    // this is the only mark the change gets. Without it the
+                    // fade lands whenever something else next draws.
+                    state.needs_render = true;
+                }
             }
         }
 
@@ -1325,6 +1338,19 @@ fn view_layout(state: &mut ViewportState, mut layout: viewport_ipc::request::Vie
 
     state.last_layout = Some(std::time::Instant::now());
     let view = state.views.get_mut(layout.id).expect("just looked it up");
+    // Everything the renderer draws from this window, before this layout is
+    // applied. The question the end of this function answers is whether any
+    // of it is about to change; see the note there.
+    let was = (
+        view.box_,
+        view.scale,
+        view.clip,
+        view.frame,
+        view.floating,
+        view.square,
+        view.visible,
+        view.placed,
+    );
     view.box_ = resolved.box_;
     view.scale = resolved.scale;
     view.clip = resolved.clip;
@@ -1349,6 +1375,19 @@ fn view_layout(state: &mut ViewportState, mut layout: viewport_ipc::request::Vie
     if resize {
         view.configured = Some((width, height));
     }
+    // Whether anything the renderer draws from just moved, spent at the end
+    // where the rest of what this layout owes is recorded.
+    let redraw = was
+        != (
+            view.box_,
+            view.scale,
+            view.clip,
+            view.frame,
+            view.floating,
+            view.square,
+            view.visible,
+            view.placed,
+        );
 
     // And say so when that is not the size the shell asked for.
     //
@@ -1453,6 +1492,19 @@ fn view_layout(state: &mut ViewportState, mut layout: viewport_ipc::request::Vie
     // window sends nothing. See `foreign_outputs_dirty`.
     if !state.foreign_outputs_dirty.contains(&layout.id) {
         state.foreign_outputs_dirty.push(layout.id);
+    }
+
+    // And pixels, where they changed. A window moved, re-clipped, re-framed
+    // or shown back up is drawn somewhere it was not, and no commit follows
+    // to mark that — the client did nothing. `render_if_needed` draws for
+    // `needs_render` and nothing else, so a script's one `view.layout` on a
+    // still desk, or the watchdog's rescue columns with the shell dead, left
+    // the change on the floor until something unrelated drew. A layout
+    // that changed none of it — the shell resending the same rectangle on
+    // every frame of some other window's animation — needs no redraw and
+    // gets no mark.
+    if redraw {
+        state.needs_render = true;
     }
 }
 
