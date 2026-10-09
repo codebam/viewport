@@ -107,7 +107,18 @@ function reportGeometry(id) {
   };
 
   if (box.width <= 0 || box.height <= 0) {
-    send({ type: 'view.visible', id, visible: false });
+    /* Only on the visible-to-invisible edge, exactly as the hide path in
+       relayoutAll guards: `view.box` is the last state reported to the
+       compositor, so a window that has never been visible has nothing to
+       retract and one already retracted must not say it again. Without this
+       the early return re-sent the same message on every pump frame — an
+       unhidden view measuring zero emits up to sixty identical messages per
+       pump bout — and it is the edge, not the state, the compositor needs to
+       hear about. */
+    if (view.box !== null) {
+      view.box = null;
+      send({ type: 'view.visible', id, visible: false });
+    }
     return false;
   }
 

@@ -8977,6 +8977,75 @@ if (mode === 'scrolling') {
   emit({ type: 'view.removed', id: 915 });
 }
 
+/* U9: a zero-size window retracts its visibility once, not on every pump
+ * frame. The early path in reportGeometry used to send `view.visible false`
+ * unconditionally, so a window measuring zero while still mapped — an
+ * animation, an edge-case layout — re-sent the identical message up to sixty
+ * times per pump bout. It is the edge the compositor needs, and the guard is
+ * the same one the hide path in relayoutAll already uses: `view.box` is the
+ * last state that was reported. */
+{
+  const sh = globalThis.__shell;
+  emit({ type: 'view.added', id: 921, title: 'tiny', app_id: 'tiny',
+    tag: null, output: 'DP-1', min_width: 0, min_height: 0,
+    floating: false, width: 800, height: 600 });
+  const view = sh.views.get(921);
+  const measured = view.viewport.getBoundingClientRect;
+  const zero = () => ({ left: 0, top: 0, width: 0, height: 0, x: 0, y: 0 });
+
+  /* Driven through reportGeometry directly, the way the pump's step drives
+     it — this section is about the message edge, and an earlier section's
+     queued frames leave the harness's own pump unrun. The window is first
+     reported where it is, which is the state the edge starts from. */
+  sh.reportGeometryForTest(921);
+
+  view.viewport.getBoundingClientRect = zero;
+  let at = sent.length;
+  sh.reportGeometryForTest(921);
+  sh.reportGeometryForTest(921);
+  sh.reportGeometryForTest(921);
+  const hides = () => sent.slice(at).filter(
+    (m) => m.type === 'view.visible' && m.id === 921);
+  check('a visible window going zero-size retracts once', hides().length === 1);
+
+  at = sent.length;
+  sh.reportGeometryForTest(921);
+  sh.reportGeometryForTest(921);
+  check('and is not retracted again while it stays measured zero',
+    hides().length === 0);
+
+  /* Becoming measurable again is a view.layout, which is also what makes a
+     window visible to the compositor — so the next trip to zero is a fresh
+     edge and must be reported again. */
+  view.viewport.getBoundingClientRect = measured;
+  sh.reportGeometryForTest(921);
+  at = sent.length;
+  view.viewport.getBoundingClientRect = zero;
+  sh.reportGeometryForTest(921);
+  sh.reportGeometryForTest(921);
+  check('the edge fires again for a window that came back',
+    hides().length === 1);
+  view.viewport.getBoundingClientRect = measured;
+
+  /* A window that has never been reported visible has nothing to retract at
+     all — a minimized one measures zero and the compositor was never told it
+     was on screen. */
+  emit({ type: 'view.added', id: 922, title: 'hidden', app_id: 'hidden',
+    tag: null, output: 'DP-1', min_width: 0, min_height: 0,
+    floating: false, minimized: true, width: 800, height: 600 });
+  const never = sh.views.get(922);
+  never.viewport.getBoundingClientRect = zero;
+  at = sent.length;
+  sh.reportGeometryForTest(922);
+  sh.reportGeometryForTest(922);
+  check('a window never reported visible is never retracted',
+    sent.slice(at).every((m) => !(m.type === 'view.visible' && m.id === 922)));
+  never.viewport.getBoundingClientRect = measured;
+
+  emit({ type: 'view.removed', id: 921 });
+  emit({ type: 'view.removed', id: 922 });
+}
+
 emit({ type: 'view.removed', id: 1 });
 emit({ type: 'view.removed', id: 2 });
 emit({ type: 'view.removed', id: 3 });
