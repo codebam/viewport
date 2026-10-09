@@ -407,6 +407,12 @@ function handleShellCommand(command, args) {
         const workspace = workspaceOf(id);
         if (on) {
           if (workspace !== null) fullscreens.set(workspace, id);
+          /* The window may still be mid-flip — a moment-old window sliding to
+           * its place. Its transform would keep the pump feeding the client a
+           * moving rectangle while the fullscreen handshake is in progress,
+           * which wine reads as the request being refused. Land it now: a
+           * window about to cover the output has nowhere left to travel. */
+          cancelFlip(id);
         } else {
           /* By id rather than by the workspace asked for here: a player that
            * exits fullscreen after moving is recorded against the workspace it

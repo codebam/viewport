@@ -316,6 +316,14 @@ function flipFrom(before) {
   const offsets = [];
   for (const [id, view] of views) {
     if (view.el.hidden) continue;
+    /* A fullscreen window is laid out at the output's rectangle and is not on
+     * the plane, so there is no journey for it to make — and animating one is
+     * worse than idle. The pump below feeds the compositor the frame's rect
+     * every frame, so a window sliding in from a tile is resized and moved
+     * under the client while its fullscreen handshake is still in progress;
+     * wine reads any rectangle that is not the fullscreen one as the request
+     * having been refused and takes itself back out of fullscreen. */
+    if (fullscreenOn(workspaceOf(id)) === id) continue;
     const from = before.get(id);
     /* Was hidden, or is new: nothing to animate from. A window joins `views`
        before its element leaves the template's fragment, and a detached
@@ -350,6 +358,26 @@ function flipFrom(before) {
     el.style.transform = '';
   }
   releaseStrips();
+}
+
+/* Land a window's in-flight flip immediately.
+ *
+ * A flip is a CSS transition on the transform, and until it finishes the pump
+ * samples the window's moving rectangle and sends it to the compositor, which
+ * resizes and moves the client to match. For a window whose fullscreen
+ * handshake is in progress that is fatal — wine reads a rectangle that is not
+ * the fullscreen one as the request having been refused — so a window that
+ * goes fullscreen mid-slide has to arrive at once. Stopped the same way it is
+ * started: the `flipping` class turns the transition off, the offset is
+ * cleared, one forced reflow commits the position, and the class comes back
+ * off. See flipFrom for the same trick in the other direction. */
+function cancelFlip(id) {
+  const view = views.get(id);
+  if (!view || !view.el) return;
+  view.el.classList.add('flipping');
+  view.el.style.transform = '';
+  void document.documentElement?.offsetWidth;
+  view.el.classList.remove('flipping');
 }
 
 /* Strips that were rendered at their previous scroll position and still need
