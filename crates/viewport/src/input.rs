@@ -4048,21 +4048,14 @@ impl ViewportState {
             match &*constraint {
                 PointerConstraint::Locked(_) => locked = true,
                 PointerConstraint::Confined(confined_constraint) => {
-                    // The additive rectangles only. A region may also
-                    // subtract, but a hole in a confinement region has no
-                    // sensible edge to snap a cursor to — and no client asks
-                    // for one. Ignoring the subtractions confines to slightly
-                    // more than was asked, which is the safe direction: the
-                    // cursor stays inside the surface either way.
-                    use smithay::wayland::compositor::RectangleKind;
-                    confined = Some(confined_constraint.region().map(|region| {
-                        region
-                            .rects
-                            .iter()
-                            .filter(|(kind, _)| matches!(kind, RectangleKind::Add))
-                            .map(|(_, rect)| *rect)
-                            .collect()
-                    }));
+                    // The additive rectangles, or nothing — which below means
+                    // the whole surface, not "no confinement". See
+                    // `confinement_rects` for both halves of that.
+                    confined = Some(
+                        confined_constraint
+                            .region()
+                            .and_then(|region| confinement_rects(&region.rects)),
+                    );
                 }
             }
         });
@@ -4092,6 +4085,37 @@ impl ViewportState {
         });
         (locked, confine)
     }
+}
+
+use smithay::wayland::compositor::RectangleKind;
+
+/// The rectangles a confinement region holds, or `None` when it holds none
+/// and the whole surface is meant.
+///
+/// The additive rectangles only. A region may also subtract, but a hole in a
+/// confinement region has no sensible edge to snap a cursor to — and no client
+/// asks for one. Ignoring the subtractions confines to slightly more than was
+/// asked, which is the safe direction: the cursor stays inside the surface
+/// either way.
+///
+/// `None` is not "confine to nothing": a region whose rectangles are all
+/// subtractions — "this surface, minus this hole" — legally means the whole
+/// surface minus the holes, and an additive set of nothing has to fall back
+/// to the surface's bounding box. Returning an empty list instead (what this
+/// replaced) wrapped it in `Some`, skipped that fallback, and left
+/// `pointer::confine` with nothing to confine to at all — so the client that
+/// asked for a hole in its confinement got no confinement and the pointer
+/// left the surface entirely, the opposite of both the request and the safe
+/// direction above.
+fn confinement_rects(
+    rects: &[(RectangleKind, Rectangle<i32, Logical>)],
+) -> Option<Vec<Rectangle<i32, Logical>>> {
+    let additive: Vec<Rectangle<i32, Logical>> = rects
+        .iter()
+        .filter(|(kind, _)| matches!(kind, RectangleKind::Add))
+        .map(|(_, rect)| *rect)
+        .collect();
+    (!additive.is_empty()).then_some(additive)
 }
 
 /// What a tablet event says about the pen, for the axes that changed.
@@ -4459,6 +4483,48 @@ mod tests {
         // No arithmetic, no overflow at the top of the range.
         let top = web_key(u32::MAX, 0, false, 0, 0);
         assert_eq!(top.keycode, u32::MAX);
+    }
+
+    fn rect(x: i32, y: i32, w: i32, h: i32) -> Rectangle<i32, Logical> {
+        Rectangle::new((x, y).into(), (w, h).into())
+    }
+
+    /// "This surface, minus this hole" is a legal confinement region, and it
+    /// confines to the surface.
+    ///
+    /// Only subtractive rectangles leave nothing additive to name, and that
+    /// used to resolve to an empty list wrapped in `Some` — which skipped the
+    /// whole-surface fallback and handed `pointer::confine` nothing to confine
+    /// to, so the pointer left the surface entirely: no confinement at all,
+    /// the opposite of what the client asked for.
+    #[test]
+    fn a_subtract_only_region_falls_back_to_the_whole_surface() {
+        use smithay::wayland::compositor::RectangleKind;
+        let hole = (RectangleKind::Subtract, rect(10, 10, 50, 50));
+        assert_eq!(
+            confinement_rects(&[hole]),
+            None,
+            "no additive rectangle means the surface, not nothing"
+        );
+        assert_eq!(
+            confinement_rects(&[]),
+            None,
+            "a committed region with no rectangles is the surface too"
+        );
+    }
+
+    #[test]
+    fn a_confinement_keeps_its_additive_rectangles_and_ignores_holes() {
+        use smithay::wayland::compositor::RectangleKind;
+        let rects = confinement_rects(&[
+            (RectangleKind::Add, rect(0, 0, 100, 100)),
+            (RectangleKind::Subtract, rect(10, 10, 50, 50)),
+        ])
+        .expect("the additive rectangle");
+        // Ignoring the subtraction confines to slightly more than was asked —
+        // the safe direction, and the only one with an edge to snap a cursor
+        // to.
+        assert_eq!(rects.as_slice(), &[rect(0, 0, 100, 100)]);
     }
 
     /// A shifted key pairs by the symbol on the key, not by what the
