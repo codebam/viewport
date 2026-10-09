@@ -408,6 +408,29 @@ pub struct WebKey {
     pub time: u32,
 }
 
+/// A key on its way to the shell, from the terms the key handle speaks.
+///
+/// `keycode` is `handle.raw_code().raw()` **verbatim** at every construction
+/// site: smithay's `KeysymHandle::raw_code()` is already in the X keycode
+/// system — its own doc says "shifted by 8", and the libinput backend builds
+/// it as `key() + 8` from evdev's number, which is the offset
+/// [`WebKey::keycode`] documents. Adding it again here (what this replaced)
+/// handed the page evdev plus *sixteen*: every key named the wrong physical
+/// key, and the keysym beside it being right hid that. It was also an
+/// unchecked `+ 8` on a `u32`, which overflowed — panicking a debug build,
+/// wrapping to keycode 7 in a release one — for the `u32::MAX` keycode the
+/// control socket's `input.key` carries through `inject_key`'s deliberate
+/// `saturating_add(8)`.
+fn web_key(keycode: u32, keysym: u32, pressed: bool, modifiers: u32, time: u32) -> WebKey {
+    WebKey {
+        keycode,
+        keysym,
+        pressed,
+        modifiers,
+        time,
+    }
+}
+
 /// What a key does while the chooser is up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pick {
@@ -876,13 +899,13 @@ impl ViewportState {
                 // press says whether it was the page's; where focus is now
                 // does not.
                 if release_web_key(unmodified_sym) {
-                    FilterResult::Intercept(Some(Action::Web(WebKey {
-                        keycode: handle.raw_code().raw() + 8,
-                        keysym: keysym.raw(),
-                        pressed: false,
-                        modifiers: modifiers_now,
-                        time: time.millis(),
-                    })))
+                    FilterResult::Intercept(Some(Action::Web(web_key(
+                        handle.raw_code().raw(),
+                        keysym.raw(),
+                        false,
+                        modifiers_now,
+                        time.millis(),
+                    ))))
                 } else {
                     FilterResult::Intercept(Some(Action::Swallow))
                 }
@@ -1662,13 +1685,13 @@ impl ViewportState {
                                     // release goes there even if a click moves
                                     // focus to a window before it comes up.
                                     remember_web_key(unmodified_sym);
-                                    FilterResult::Intercept(Some(Action::Web(WebKey {
-                                        keycode: handle.raw_code().raw() + 8,
-                                        keysym: keysym.raw(),
-                                        pressed: true,
-                                        modifiers: modifiers_now,
-                                        time: time.millis(),
-                                    })))
+                                    FilterResult::Intercept(Some(Action::Web(web_key(
+                                        handle.raw_code().raw(),
+                                        keysym.raw(),
+                                        true,
+                                        modifiers_now,
+                                        time.millis(),
+                                    ))))
                                 }
                                 None => FilterResult::Forward,
                             }
@@ -1697,13 +1720,13 @@ impl ViewportState {
                             let web = release_web_key(unmodified_sym);
                             if take_suppressed(&mut state.suppressed_keys, unmodified_sym) {
                                 result = if web {
-                                    FilterResult::Intercept(Some(Action::Web(WebKey {
-                                        keycode: handle.raw_code().raw() + 8,
-                                        keysym: keysym.raw(),
-                                        pressed: false,
-                                        modifiers: modifiers_now,
-                                        time: time.millis(),
-                                    })))
+                                    FilterResult::Intercept(Some(Action::Web(web_key(
+                                        handle.raw_code().raw(),
+                                        keysym.raw(),
+                                        false,
+                                        modifiers_now,
+                                        time.millis(),
+                                    ))))
                                 } else {
                                     FilterResult::Intercept(Some(Action::Swallow))
                                 };
@@ -1712,13 +1735,13 @@ impl ViewportState {
                                 // was released through `release_injected_key`,
                                 // say — but the page saw it go down and still
                                 // has to see it come up.
-                                result = FilterResult::Intercept(Some(Action::Web(WebKey {
-                                    keycode: handle.raw_code().raw() + 8,
-                                    keysym: keysym.raw(),
-                                    pressed: false,
-                                    modifiers: modifiers_now,
-                                    time: time.millis(),
-                                })));
+                                result = FilterResult::Intercept(Some(Action::Web(web_key(
+                                    handle.raw_code().raw(),
+                                    keysym.raw(),
+                                    false,
+                                    modifiers_now,
+                                    time.millis(),
+                                ))));
                             }
 
                             // The unmodified symbol, as on the press half.
@@ -4282,6 +4305,31 @@ mod tests {
 
         // And an ordinary click on a window is not the page's either.
         assert!(!shell_gets_button(false, false, true));
+    }
+
+    /// The shell is handed the keycode the key handle reports, exactly.
+    ///
+    /// `KeysymHandle::raw_code()` is already an X11-style keycode — smithay's
+    /// libinput backend builds it as `key() + 8` from evdev's number, and the
+    /// file's own `inject_keysym` undoes the same offset on the way back — so
+    /// the construction sites pass it verbatim. Adding eight there (the
+    /// mistake this replaces) sent the page evdev plus *sixteen*: every key
+    /// named the wrong physical key, with the keysym beside it right to hide
+    /// it. `u32::MAX` is `inject_key`'s deliberate `saturating_add(8)`
+    /// passthrough from `Request::InputKey`, and the second offset overflowed
+    /// on it — a debug-build panic in the user's desktop session.
+    #[test]
+    fn the_shell_gets_the_raw_keycode_verbatim() {
+        let evdev = 30u32; // KEY_A's number in evdev's table.
+        let x11 = evdev + 8;
+        let key = web_key(x11, keysyms::KEY_a, true, 0, 0);
+        assert_eq!(key.keycode, x11, "X keycode in, X keycode out");
+        // The round trip `inject_keysym` relies on: what arrives is what
+        // `saturating_sub(8)` turns back into evdev's number.
+        assert_eq!(key.keycode.saturating_sub(8), evdev);
+        // No arithmetic, no overflow at the top of the range.
+        let top = web_key(u32::MAX, 0, false, 0, 0);
+        assert_eq!(top.keycode, u32::MAX);
     }
 
     /// A shifted key pairs by the symbol on the key, not by what the
