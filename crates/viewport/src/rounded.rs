@@ -668,17 +668,32 @@ impl<R: Renderer, E: RenderElement<R>> RenderElement<R> for RoundedRenderElement
         opaque_regions: &[Rectangle<i32, Physical>],
         cache: Option<&UserDataMap>,
     ) -> Result<(), R::Error> {
-        for piece in self.pieces(src, dst, damage, opaque_regions) {
-            self.element.draw(
-                frame,
-                piece.src,
-                piece.dst,
-                &piece.damage,
-                &piece.opaque,
-                cache,
-            )?;
-        }
-        Ok(())
+        // The pieces go in a scratch list reused across draws, and it is
+        // *taken out* of its slot while the wrapped element draws: `draw` is
+        // a call into foreign code, and a rounded element drawing another one
+        // during it would borrow the same scratch again — a `BorrowMutError`
+        // panic on the render thread. The allocation goes back afterwards,
+        // so the steady state is no allocation per band per frame at all.
+        PIECES.with(|slot| {
+            let mut pieces = std::mem::take(&mut *slot.borrow_mut());
+            pieces.clear();
+            self.pieces_into(&mut pieces, src, dst, damage, opaque_regions);
+            let drawn: Result<(), R::Error> = (|| {
+                for piece in &pieces {
+                    self.element.draw(
+                        frame,
+                        piece.src,
+                        piece.dst,
+                        piece.damage.as_slice(),
+                        piece.opaque.as_slice(),
+                        cache,
+                    )?;
+                }
+                Ok(())
+            })();
+            *slot.borrow_mut() = pieces;
+            drawn
+        })
     }
 
     /// The buffer behind this element — but only when this element is not
@@ -722,6 +737,87 @@ impl<R: Renderer, E: RenderElement<R>> RenderElement<R> for RoundedRenderElement
     }
 }
 
+/// How many damage or opaque rectangles a band piece holds without the heap.
+/// The inputs to a draw are almost always one damage rect and none opaque.
+const PIECE_RECTS: usize = 4;
+
+/// A few rectangles inline, more on the heap — and never both at once.
+///
+/// `draw` splits into one piece per band, and what a band carries is almost
+/// always the one damage rectangle the draw was handed and no opaque ones: a
+/// `Vec` per list was two heap allocations per band per rounded element per
+/// frame, on the GPU-submission path. The inline slots hold the common band
+/// without touching the allocator; past them the contents spill to a heap
+/// `Vec` *wholesale*, so the rectangles stay contiguous and hand out the
+/// plain slice `RenderElement::draw` takes.
+#[derive(Debug)]
+pub struct InlineRects<const N: usize> {
+    inline: [Rectangle<i32, Physical>; N],
+    len: usize,
+    spilled: Vec<Rectangle<i32, Physical>>,
+}
+
+impl<const N: usize> Default for InlineRects<N> {
+    fn default() -> Self {
+        Self {
+            inline: std::array::from_fn(|_| Rectangle::default()),
+            len: 0,
+            spilled: Vec::new(),
+        }
+    }
+}
+
+impl<const N: usize> InlineRects<N> {
+    fn push(&mut self, rect: Rectangle<i32, Physical>) {
+        if !self.spilled.is_empty() {
+            self.spilled.push(rect);
+        } else if self.len < N {
+            self.inline[self.len] = rect;
+            self.len += 1;
+        } else {
+            // Spilled whole rather than in part: one list, one slice.
+            self.spilled = self.inline[..self.len].to_vec();
+            self.spilled.push(rect);
+        }
+    }
+
+    pub fn as_slice(&self) -> &[Rectangle<i32, Physical>] {
+        if self.spilled.is_empty() {
+            &self.inline[..self.len]
+        } else {
+            &self.spilled
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.as_slice().is_empty()
+    }
+}
+
+impl<const N: usize> std::iter::FromIterator<Rectangle<i32, Physical>> for InlineRects<N> {
+    fn from_iter<T: IntoIterator<Item = Rectangle<i32, Physical>>>(iter: T) -> Self {
+        let mut rects = Self::default();
+        for rect in iter {
+            rects.push(rect);
+        }
+        rects
+    }
+}
+
+impl<const N: usize> PartialEq for InlineRects<N> {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_slice() == other.as_slice()
+    }
+}
+
+/// By contents, so a piece is asserted against the plain `Vec` of rectangles
+/// it stands for.
+impl<const N: usize> PartialEq<Vec<Rectangle<i32, Physical>>> for InlineRects<N> {
+    fn eq(&self, other: &Vec<Rectangle<i32, Physical>>) -> bool {
+        self.as_slice() == other.as_slice()
+    }
+}
+
 /// One band as the renderer is asked to draw it.
 ///
 /// A band is handed to the wrapped element as though it were the whole of a
@@ -732,8 +828,15 @@ impl<R: Renderer, E: RenderElement<R>> RenderElement<R> for RoundedRenderElement
 pub struct Piece {
     pub src: Rectangle<f64, BufferCoord>,
     pub dst: Rectangle<i32, Physical>,
-    pub damage: Vec<Rectangle<i32, Physical>>,
-    pub opaque: Vec<Rectangle<i32, Physical>>,
+    pub damage: InlineRects<PIECE_RECTS>,
+    pub opaque: InlineRects<PIECE_RECTS>,
+}
+
+thread_local! {
+    /// The pieces one draw is split into, reused across draws. See
+    /// [`RoundedRenderElement::draw`] for why it is taken out of this slot
+    /// rather than borrowed while the wrapped element draws.
+    static PIECES: std::cell::RefCell<Vec<Piece>> = std::cell::RefCell::new(Vec::new());
 }
 
 impl<E: Element> RoundedRenderElement<E> {
@@ -753,6 +856,23 @@ impl<E: Element> RoundedRenderElement<E> {
         damage: &[Rectangle<i32, Physical>],
         opaque_regions: &[Rectangle<i32, Physical>],
     ) -> Vec<Piece> {
+        let mut pieces = Vec::with_capacity(self.bands.len());
+        self.pieces_into(&mut pieces, src, dst, damage, opaque_regions);
+        pieces
+    }
+
+    /// The same split into a caller's list, cleared first — the allocating
+    /// answer above is this with a fresh `Vec`, and `draw` fills a reusable
+    /// scratch list through here instead.
+    fn pieces_into(
+        &self,
+        pieces: &mut Vec<Piece>,
+        src: Rectangle<f64, BufferCoord>,
+        dst: Rectangle<i32, Physical>,
+        damage: &[Rectangle<i32, Physical>],
+        opaque_regions: &[Rectangle<i32, Physical>],
+    ) {
+        pieces.clear();
         let transform = self.element.transform();
         // Damage and opaque regions arrive relative to `dst`; the bands are
         // absolute. One of the two has to move, and moving the two lists once
@@ -768,10 +888,9 @@ impl<E: Element> RoundedRenderElement<E> {
                         hit
                     })
                 })
-                .collect::<Vec<_>>()
+                .collect::<InlineRects<PIECE_RECTS>>()
         };
 
-        let mut pieces = Vec::with_capacity(self.bands.len());
         for band in self.bands.iter() {
             let Some(band) = self.to_dst(*band, dst).intersection(dst) else {
                 continue;
@@ -790,7 +909,6 @@ impl<E: Element> RoundedRenderElement<E> {
                 opaque: relative_to(opaque_regions, band),
             });
         }
-        pieces
     }
 }
 
@@ -1192,6 +1310,33 @@ mod tests {
         assert_eq!(
             pieces[0].damage,
             vec![rect(0, 50 - pieces[0].dst.loc.y, 100, 1)]
+        );
+    }
+
+    /// A band's rectangles live inside the piece itself until there are too
+    /// many of them, and then they spill to one heap list — contiguous either
+    /// way, because the contiguous slice is what the wrapped element's `draw`
+    /// takes. The inline case is the common one: a draw is handed one damage
+    /// rectangle and no opaque ones.
+    #[test]
+    fn piece_rects_stay_inline_until_they_cannot() {
+        let mut rects = InlineRects::<2>::default();
+        assert!(rects.is_empty());
+        rects.push(rect(0, 0, 1, 1));
+        rects.push(rect(1, 0, 1, 1));
+        assert_eq!(
+            rects.as_slice(),
+            [rect(0, 0, 1, 1), rect(1, 0, 1, 1)].as_slice()
+        );
+        rects.push(rect(2, 0, 1, 1));
+        assert_eq!(
+            rects.as_slice(),
+            [rect(0, 0, 1, 1), rect(1, 0, 1, 1), rect(2, 0, 1, 1)].as_slice(),
+            "past the inline slots the whole list spills to the heap, contiguous"
+        );
+        assert_eq!(
+            rects,
+            vec![rect(0, 0, 1, 1), rect(1, 0, 1, 1), rect(2, 0, 1, 1)]
         );
     }
 
