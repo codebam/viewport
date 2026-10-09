@@ -9091,6 +9091,72 @@ if (mode === 'scrolling') {
   emit({ type: 'tray.update', items: [] });
 }
 
+/* U11: a drag over a big tree relayouts below the frame rate, a drag over a
+ * small one does not. A relayout rebuilds the whole wrapper tree, so the
+ * per-frame cost of a gesture scales with the windows on screen; past the
+ * batch threshold the drag takes every other frame instead of eating the
+ * frame on a rebuild. The first frame of a gesture always lays out, and its
+ * end always lays out once more — what is batched is the middle. */
+{
+  const sh = globalThis.__shell;
+  emit({ type: 'shell.command', command: 'workspace.switch', args: ['391'] });
+  const out = sh.outputs.get(sh.activeOutput);
+  let relayouts = 0;
+  const realReplace = out.windowsEl.replaceChildren.bind(out.windowsEl);
+  out.windowsEl.replaceChildren = (...nodes) => {
+    relayouts++;
+    return realReplace(...nodes);
+  };
+  /* Frames and timers held, so the gap between asking for a frame and getting
+     one is a thing this test can stand in — the same shape as the pacing
+     test above. */
+  const frames = [];
+  let idle = null;
+  const realFrame = global.requestAnimationFrame;
+  const realTimeout = global.setTimeout;
+  const realClearTimeout = global.clearTimeout;
+  global.requestAnimationFrame = (fn) => { frames.push(fn); };
+  global.setTimeout = (fn, ms) => { if (ms === 120) idle = fn; return 1; };
+  global.clearTimeout = () => {};
+  try {
+    const frame = () => frames.splice(0).forEach((fn) => fn(fakeClock));
+
+    endGesture();
+    relayouts = 0;
+    for (let i = 0; i < 3; i++) {
+      gestureRelayout();
+      frame();
+    }
+    check('a drag over a small tree lays out every frame', relayouts === 3);
+    idle();
+
+    /* Fill the workspace well past the batching threshold — the pacing is
+       what is checked here, not the exact number. */
+    for (let id = 931; id < 941; id++) {
+      emit({ type: 'view.added', id, title: `busy ${id}`, app_id: 'busy',
+        tag: null, output: 'DP-1', min_width: 0, min_height: 0,
+        floating: false, width: 400, height: 300 });
+    }
+    relayouts = 0;
+    for (let i = 0; i < 4; i++) {
+      gestureRelayout();
+      frame();
+    }
+    check('a drag over a big tree lays out every other frame',
+      relayouts === 2 && relayouts < 4);
+
+    relayouts = 0;
+    idle();
+    check('and the gesture ending lays out once more', relayouts === 1);
+  } finally {
+    global.requestAnimationFrame = realFrame;
+    global.setTimeout = realTimeout;
+    global.clearTimeout = realClearTimeout;
+    delete out.windowsEl.replaceChildren;
+    for (let id = 931; id < 941; id++) emit({ type: 'view.removed', id });
+  }
+}
+
 emit({ type: 'view.removed', id: 1 });
 emit({ type: 'view.removed', id: 2 });
 emit({ type: 'view.removed', id: 3 });
