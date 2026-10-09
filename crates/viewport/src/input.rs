@@ -1630,10 +1630,7 @@ impl ViewportState {
     /// is the device's to build once and keep; the merge is the config's to
     /// redo only when the config actually changes, which the fingerprint of
     /// the fields these settings come from says.
-    fn scroll_settings<D: smithay::backend::input::Device>(
-        &self,
-        device: &D,
-    ) -> ScrollSettings {
+    fn scroll_settings<D: smithay::backend::input::Device>(&self, device: &D) -> ScrollSettings {
         let id = device.id();
         let hash = input_config_hash(&self.input_config);
         SCROLL_SETTINGS.with(|cache| {
@@ -4768,7 +4765,10 @@ mod tests {
         remember_web_key(Keysym::new(keysyms::KEY_b), 56);
         let held = drain_web_keys();
         assert_eq!(held, vec![(keysyms::KEY_a, 38), (keysyms::KEY_b, 56)]);
-        assert!(drain_web_keys().is_empty(), "the sweep leaves nothing behind");
+        assert!(
+            drain_web_keys().is_empty(),
+            "the sweep leaves nothing behind"
+        );
     }
 
     /// The release half of a hold runs whichever path the release arrives on.
