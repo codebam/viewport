@@ -122,7 +122,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # three patches — the new `_NET_WM_STATE` read-back included — applied with
 # `git range-diff` showing `=` for each.
 git = "https://github.com/codebam/smithay.git"
-rev = "71269b8a9f1c6c7693cd076157e9cac6e067dd16"
+rev = "fdb4a8606af042557d014b578c99cff52af6e3f3"
 default-features = false
 
 # The other half of moving the renderer out of this workspace.
@@ -147,7 +147,7 @@ default-features = false
 # is what makes this a redirect and not a downgrade — rebase the fork before
 # bumping either pin, not after.
 [patch."https://github.com/Smithay/smithay"]
-smithay = { git = "https://github.com/codebam/smithay.git", rev = "71269b8a9f1c6c7693cd076157e9cac6e067dd16" }
+smithay = { git = "https://github.com/codebam/smithay.git", rev = "fdb4a8606af042557d014b578c99cff52af6e3f3" }
 
 [profile.release]
 debug = 1
