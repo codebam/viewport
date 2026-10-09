@@ -11,7 +11,7 @@
 // and cannot go stale mid-animation.
 
 use smithay::backend::input::{
-    AbsolutePositionEvent, Axis, AxisSource, ButtonState, Device as _, Event, GestureBeginEvent,
+    AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, GestureBeginEvent,
     GestureEndEvent, GesturePinchUpdateEvent as _, GestureSwipeUpdateEvent as _, InputBackend,
     InputEvent, InputTime, KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent,
     PointerMotionEvent, TouchEvent,
