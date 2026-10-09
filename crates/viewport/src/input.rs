@@ -562,6 +562,18 @@ fn release_suppressed(button: u32) -> bool {
     })
 }
 
+/// Forget every press a binding took, for a pointer that vanished before its
+/// release.
+///
+/// The records are opened by the press and closed by the release
+/// (`discard_button_records`), and a device that is unplugged mid-click never
+/// sends one: left behind, an entry swallows the release of some later,
+/// unrelated press of the same button, which is a client told a button came up
+/// that never went down.
+fn clear_suppressed_buttons() {
+    SUPPRESSED_BUTTONS.with(|buttons| buttons.borrow_mut().clear());
+}
+
 // Keys whose press was handed to the shell page, so the matching release goes
 // there even if a click moved focus to a window in between.
 //
@@ -570,21 +582,27 @@ fn release_suppressed(button: u32) -> bool {
 // at release time cannot tell the two apart. This is the page's half of that
 // record.
 //
+// Each entry is the unmodified symbol the press and its release are paired
+// by, and the keycode the press carried: a device that vanishes mid-chord
+// never sends the release that would name it (`release_held_keys`), and the
+// page's own pairing is by keycode.
+//
 // A thread local for the same reason `SUPPRESSED_BUTTONS` is: input is
 // dispatched on the compositor's own thread and nowhere else, and this is the
 // key handler's private bookkeeping.
 thread_local! {
-    static WEB_KEYS: std::cell::RefCell<Vec<u32>> =
+    static WEB_KEYS: std::cell::RefCell<Vec<(u32, u32)>> =
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// Remember that this key's press went to the page. The unmodified symbol is
-/// the one the press and its release are paired by.
-fn remember_web_key(sym: Keysym) {
+/// the one the press and its release are paired by; `keycode` is the one the
+/// press sent, verbatim, so a release can name it later.
+fn remember_web_key(sym: Keysym, keycode: u32) {
     WEB_KEYS.with(|keys| {
         let mut keys = keys.borrow_mut();
-        if !keys.contains(&sym.raw()) {
-            keys.push(sym.raw());
+        if !keys.iter().any(|(held, _)| *held == sym.raw()) {
+            keys.push((sym.raw(), keycode));
         }
     });
 }
@@ -593,7 +611,7 @@ fn remember_web_key(sym: Keysym) {
 fn release_web_key(sym: Keysym) -> bool {
     WEB_KEYS.with(|keys| {
         let mut keys = keys.borrow_mut();
-        match keys.iter().position(|held| *held == sym.raw()) {
+        match keys.iter().position(|(held, _)| *held == sym.raw()) {
             Some(at) => {
                 keys.remove(at);
                 true
@@ -601,6 +619,14 @@ fn release_web_key(sym: Keysym) -> bool {
             None => false,
         }
     })
+}
+
+/// Every key the page is still holding, taken out of the record.
+///
+/// For a sweep that cannot name keys by their handle — a keyboard that is
+/// gone — and must pair by what was recorded at the press instead.
+fn drain_web_keys() -> Vec<(u32, u32)> {
+    WEB_KEYS.with(|keys| std::mem::take(&mut *keys.borrow_mut()))
 }
 
 /// Whether a press starts one of the compositor's own pointer gestures —
@@ -928,6 +954,86 @@ impl ViewportState {
         if intercepted && keyboard.modifier_state() != mods_before {
             keyboard.advertise_modifier_state(self);
         }
+    }
+
+    /// Let go of every key the compositor is holding for a device that is gone.
+    ///
+    /// A keyboard that disconnects mid-chord — a Bluetooth one that dies with
+    /// a `repeating+` volume key held — never sends the releases that end its
+    /// holds, and nothing else does either: `finish_key_hold` only ever ran
+    /// from a release, so the repeat timer ran its binding for ever, a held
+    /// push-to-talk shortcut was never announced deactivated, and the orphaned
+    /// `suppressed_keys`/`WEB_KEYS` records later swallowed the release of
+    /// some unrelated press of the same symbol — a client left with a stuck
+    /// key, the FIXES #11/#26 symptom class arriving by device removal.
+    ///
+    /// Every key still down goes through `release_injected_key`, the release
+    /// half the libei path already runs when a remote client vanishes
+    /// mid-chord: the holds finish and announce, the page is told about keys
+    /// it was given, a client that saw the press gets the release instead of
+    /// an orphan, and the seat's xkb state lets go — a modifier held at the
+    /// moment the device died would otherwise stay depressed for the rest of
+    /// the session. What that half cannot pair — a keymap swapped under a held
+    /// key, so the release looked for a different symbol and found nothing —
+    /// is finished here directly, so no table outlives the device.
+    fn release_held_keys(&mut self) {
+        let pressed: Vec<smithay::input::keyboard::Keycode> = self
+            .seat
+            .get_keyboard()
+            .map(|keyboard| keyboard.pressed_keys().into_iter().collect())
+            .unwrap_or_default();
+        for code in pressed {
+            self.release_injected_key(code);
+        }
+
+        // The hold tables are keyed by the symbol a press paired with, not by
+        // keycode; a release that could not find its key still owes them the
+        // end of the hold — and the timer that looked like it was repeating
+        // the volume down for ever.
+        let mut codes: Vec<u32> = self
+            .long_press_pending
+            .keys()
+            .chain(self.repeating_held.keys())
+            .chain(self.shortcuts_held.iter().map(|(code, _)| code))
+            .copied()
+            .collect();
+        codes.sort_unstable();
+        codes.dedup();
+        for code in codes {
+            finish_key_hold(
+                code,
+                &mut self.long_press_pending,
+                &mut self.repeating_held,
+                &mut self.shortcuts_held,
+                &mut self.shortcuts_to_announce,
+            );
+        }
+
+        // What the page was given is released to it by the keycode the press
+        // sent: the pairing the page does is by keycode, and there is no key
+        // handle left to ask.
+        #[cfg(feature = "wpe")]
+        let modifiers_now = self.shell_modifiers();
+        #[cfg(not(feature = "wpe"))]
+        let modifiers_now = 0;
+        for (sym, keycode) in drain_web_keys() {
+            self.handle_action(Action::Web(web_key(
+                keycode,
+                sym,
+                false,
+                modifiers_now,
+                InputTime::now().millis(),
+            )));
+        }
+        // The suppression records exist only to pair the releases that are
+        // never coming. Keeping them would swallow a later, unrelated release
+        // of the same symbol — a client told a key came up that never went
+        // down.
+        self.suppressed_keys.clear();
+
+        // The deactivations the sweep queued are announced now, as
+        // `release_injected_key` announces its own per key.
+        self.flush_shortcuts();
     }
 
     /// A pointer motion from the control socket rather than from libinput.
@@ -1683,8 +1789,10 @@ impl ViewportState {
                                     state.suppressed_keys.push(unmodified_sym);
                                     // Remember that it was the page's, so the
                                     // release goes there even if a click moves
-                                    // focus to a window before it comes up.
-                                    remember_web_key(unmodified_sym);
+                                    // focus to a window before it comes up —
+                                    // with the keycode the press sent, for the
+                                    // release no device will ever send.
+                                    remember_web_key(unmodified_sym, handle.raw_code().raw());
                                     FilterResult::Intercept(Some(Action::Web(web_key(
                                         handle.raw_code().raw(),
                                         keysym.raw(),
@@ -2467,6 +2575,27 @@ impl ViewportState {
             InputEvent::DeviceRemoved { device } => {
                 self.cancel_gesture();
                 use smithay::backend::input::Device as _;
+                // A keyboard that dies mid-chord sends no releases, and no
+                // other path ends a hold: the repeat timer would run its
+                // binding for ever and a held push-to-talk shortcut would
+                // never be announced deactivated. See `release_held_keys`.
+                if device.has_capability(smithay::backend::input::DeviceCapability::Keyboard) {
+                    self.release_held_keys();
+                }
+                // The pointer's half of the same problem: a press opens
+                // records — the `click+`/`drag+` decision, the shell's
+                // implicit grab, the binding suppression — that only a
+                // release closes, and this device is not sending one. They are
+                // dropped rather than paired off: unlike a key handed to the
+                // page, a grabbed button is not proof the page saw the press
+                // (the grab is taken even where no page covers the point), so
+                // synthesizing a release could hand it an up it has no down
+                // for.
+                if device.has_capability(smithay::backend::input::DeviceCapability::Pointer) {
+                    self.pending_click.clear();
+                    self.shell_grabbed_buttons.clear();
+                    clear_suppressed_buttons();
+                }
                 if device.has_capability(smithay::backend::input::DeviceCapability::TabletTool) {
                     let seat = self.seat.tablet_seat();
                     seat.remove_tablet(&TabletDescriptor::from(&device));
@@ -4351,14 +4480,29 @@ mod tests {
         let sym = Keysym::new(keysyms::KEY_a);
         assert!(!release_web_key(sym), "nothing was handed to the page yet");
 
-        remember_web_key(sym);
+        remember_web_key(sym, 38);
         // A duplicate record must not make one release count for two.
-        remember_web_key(sym);
+        remember_web_key(sym, 38);
         assert!(
             release_web_key(sym),
             "the release must go to the page that saw the press"
         );
         assert!(!release_web_key(sym), "one release per press");
+    }
+
+    /// The record a vanished keyboard's sweep pairs by.
+    ///
+    /// No handle survives the device, so the page's release has to come from
+    /// what the press recorded: the symbol it paired by and the keycode it
+    /// sent. Draining takes everything, so no table entry outlives the device
+    /// to swallow somebody else's release later.
+    #[test]
+    fn a_page_keys_record_names_the_keycode_the_press_sent() {
+        remember_web_key(Keysym::new(keysyms::KEY_a), 38);
+        remember_web_key(Keysym::new(keysyms::KEY_b), 56);
+        let held = drain_web_keys();
+        assert_eq!(held, vec![(keysyms::KEY_a, 38), (keysyms::KEY_b, 56)]);
+        assert!(drain_web_keys().is_empty(), "the sweep leaves nothing behind");
     }
 
     /// The release half of a hold runs whichever path the release arrives on.
