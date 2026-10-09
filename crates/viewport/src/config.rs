@@ -1015,6 +1015,20 @@ pub fn load(path: &Path) -> anyhow::Result<Option<File>> {
             }
         }
     }
+    // An empty terminal is not a terminal. It is formatted straight into the
+    // command line behind every `Terminal=true` entry, and an empty one leaves
+    // ` -e …`, which `/bin/sh` then runs as the command `-e` — every such
+    // entry silently does nothing. Unlike `wallpaper`, where the empty string
+    // is how a file takes a picture away, "" cannot mean anything here but
+    // "not set", so it is read as absent and the default terminal stands —
+    // the same shape as `icc` above.
+    if file
+        .terminal
+        .as_deref()
+        .is_some_and(|terminal| terminal.trim().is_empty())
+    {
+        file.terminal = None;
+    }
     if let Some(rules) = file.layer_rules.as_ref() {
         crate::layer::Rules::compile(rules.clone())
             .map_err(|error| anyhow::anyhow!("{}: {error}", path.display()))?;
@@ -2055,6 +2069,29 @@ mod tests {
         std::fs::write(&path, r#"{"gpu": "card1"}"#).expect("config");
         let file = load(&path).expect("valid config").expect("present");
         assert_eq!(file.gpu.as_deref(), Some("card1"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn an_empty_terminal_is_absent() {
+        // An empty terminal formatted into the `Terminal=true` command line
+        // leaves ` -e …`, which `/bin/sh` runs as the command `-e` — every
+        // such entry silently doing nothing. "" cannot mean anything here
+        // but "not set", so it reads as absent and the default terminal
+        // stands.
+        let dir =
+            std::env::temp_dir().join(format!("viewport-terminal-check-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let path = dir.join("config.json");
+        for empty in [r#"{"terminal": ""}"#, r#"{"terminal": "   "}"#] {
+            std::fs::write(&path, empty).expect("config");
+            let file = load(&path).expect("valid config").expect("present");
+            assert_eq!(file.terminal, None, "{empty} should read as absent");
+        }
+        // A terminal that names something is kept as written.
+        std::fs::write(&path, r#"{"terminal": "foot"}"#).expect("config");
+        let file = load(&path).expect("valid config").expect("present");
+        assert_eq!(file.terminal.as_deref(), Some("foot"));
         let _ = std::fs::remove_dir_all(dir);
     }
 
