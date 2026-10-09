@@ -386,13 +386,9 @@ impl ViewportState {
                 // four sides and nothing else.
                 //
                 // The wedges the border's curve occupies inside the hole, and
-                // not the corner squares that hold them: the rest of each
-                // square is the hole itself, which in the shell's buffer is
-                // the desktop's own background. Drawing that over the window a
-                // floating one is lifted above puts four triangles of
-                // wallpaper through it — and a client that does not fill its
-                // hole to the pixel, which is every terminal, leaves room for
-                // exactly that.
+                // not the corner squares that hold them — see
+                // `rounded::corner_wedges`, which computes and caches them and
+                // holds why the two differ.
                 let corners = view
                     .filter(|_| drawn_on_this_output && radius > width)
                     .and_then(|view| {
@@ -403,19 +399,18 @@ impl ViewportState {
                         let hole = crate::render::drawn_hole_of(hole, drawn_at);
                         let hole = crate::render::overlay_side(hole, output_geometry)?;
                         let hole = hole.to_f64().to_physical(scale).to_i32_round();
-                        let wedges = crate::rounded::cutaway(hole, physical(radius - width));
-                        // Held inside the frame's own outer arc. The wedge is
-                        // a copy of the shell's buffer, and with a radius much
-                        // past the border's width the hole's square corner
-                        // pokes *outside* the rounded frame — where the buffer
-                        // is not border but whatever the page drew behind the
-                        // frame, which over another window is the wallpaper.
-                        // That was three or four pixels of it at each corner.
                         let frame = crate::render::overlay_side(frame, output_geometry)?;
                         let frame = frame.to_f64().to_physical(scale).to_i32_round();
-                        let wedges = crate::rounded::clip_to(
-                            wedges,
-                            &crate::rounded::bands_within(frame, physical(radius)),
+                        // Once per distinct geometry, not per frame: the
+                        // inputs are constant for a window nobody is dragging,
+                        // and this runs per floating rounded window per output
+                        // per frame. The returned list is shared, so nothing
+                        // downstream has to clone it.
+                        let wedges = crate::rounded::corner_wedges(
+                            hole,
+                            physical(radius - width),
+                            frame,
+                            physical(radius),
                         );
                         (!wedges.is_empty()).then(|| (corner_id.clone(), wedges))
                     });
