@@ -45,6 +45,16 @@ fn moves_focus(request: &Request) -> bool {
 /// `bind.add` installs a chord that the key path will refuse while locked but
 /// that survives past the unlock; and quitting takes the lock screen down with
 /// the compositor — a frozen session is logind's to recover, not the socket's.
+///
+/// `power.action`'s suspend, reboot and poweroff are deliberately *not* here,
+/// though they end the session further than `quit` does. A lock screen must
+/// offer the user those: the machine is theirs to walk away from or switch
+/// off, and a locker that traps them on it is worse than one that lets a
+/// trusted sender reach logind — the same authority the lid switch uses, and
+/// the same three actions it takes. Quitting is refused not because ending
+/// the session is forbidden but because this compositor owns its own
+/// lifetime: pulling it down takes the lock screen with it and leaves the
+/// machine unlocked and half-dead, which is exactly what the lock is for.
 fn acts_while_locked(request: &Request) -> bool {
     matches!(
         request,
