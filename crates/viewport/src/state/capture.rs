@@ -15,6 +15,47 @@ fn monotonic_now() -> std::time::Duration {
     std::time::Duration::new(now.tv_sec as u64, now.tv_nsec as u32)
 }
 
+/// How many screenshot encoders may be live at once.
+///
+/// Each one holds a full screen of pixels and PNG-encodes it — tens of
+/// megabytes and tens of milliseconds apiece — and they are started from a
+/// client's request with nothing else to slow one down: an application
+/// driving the Screenshot portal in a loop would otherwise leave one thread
+/// and one whole frame per call on the heap, and the portal's promises never
+/// expire. Four is far more than a desktop serves at once, and a request
+/// past the budget is refused outright rather than queued behind them: the
+/// portal hears a failure instead of holding a request nothing would answer.
+const MAX_SCREENSHOT_ENCODERS: usize = 4;
+
+/// The live screenshot encoders, counted against [`MAX_SCREENSHOT_ENCODERS`].
+static LIVE_ENCODERS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// A slot in the [`LIVE_ENCODERS`] budget, released when the encoder thread
+/// that holds it ends.
+///
+/// Held by the thread rather than by the request, as the clipboard's readers
+/// and writers hold theirs: a slow encoder then refuses its successors
+/// instead of queueing work behind a thread nobody is waiting on.
+struct EncoderSlot;
+
+impl EncoderSlot {
+    fn acquire() -> Option<Self> {
+        if LIVE_ENCODERS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1
+            > MAX_SCREENSHOT_ENCODERS
+        {
+            LIVE_ENCODERS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+            return None;
+        }
+        Some(Self)
+    }
+}
+
+impl Drop for EncoderSlot {
+    fn drop(&mut self) {
+        LIVE_ENCODERS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 impl ViewportState {
     /// Whether a capture is waiting for pixels this compositor still has to
     /// composite and read back.
@@ -615,6 +656,17 @@ impl ViewportState {
         });
 
         for reply in mine {
+            // The budget is taken before the pixels are read, not after: a
+            // request past the cap must not cost a full-screen read-back only
+            // to be dropped at the spawn. Refused rather than queued — the
+            // portal hears the failure now instead of waiting on a backlog
+            // that drains at encode speed. See `EncoderSlot`.
+            let Some(slot) = EncoderSlot::acquire() else {
+                let _ = reply.try_send(Err(format!(
+                    "the compositor is already encoding {MAX_SCREENSHOT_ENCODERS} screenshots"
+                )));
+                continue;
+            };
             let mode = output
                 .current_mode()
                 .unwrap_or_else(|| smithay::output::Mode {
@@ -650,6 +702,10 @@ impl ViewportState {
                     let spawned = std::thread::Builder::new()
                         .name("viewport-screenshot".to_owned())
                         .spawn(move || {
+                            // Held, not used: the slot is the budget, and it
+                            // goes back when this thread does. A spawn that
+                            // fails drops the closure and with it the slot.
+                            let _slot = slot;
                             let png_bytes =
                                 crate::icon::encode_png(size.w as u32, size.h as u32, &pixels);
                             // `create_new`, not write: a name somebody else
@@ -1613,5 +1669,25 @@ impl ViewportState {
             },
         )?;
         Ok(pixels)
+    }
+}
+
+#[cfg(test)]
+mod screenshot_encoder_budget_tests {
+    use super::*;
+
+    /// The budget is a budget: the slots go out at the cap and come back when
+    /// the threads holding them end. Without the cap an application driving
+    /// the Screenshot portal in a loop left one thread and one full frame per
+    /// call on the heap; past it, a request is refused rather than queued.
+    #[test]
+    fn the_screenshot_encoder_budget_refuses_past_the_cap() {
+        let slots: Vec<EncoderSlot> = (0..MAX_SCREENSHOT_ENCODERS)
+            .map(|_| EncoderSlot::acquire().expect("the budget has room"))
+            .collect();
+        assert!(EncoderSlot::acquire().is_none());
+        // A slot released by a thread that finished lets the next request in.
+        drop(slots);
+        assert!(EncoderSlot::acquire().is_some());
     }
 }
