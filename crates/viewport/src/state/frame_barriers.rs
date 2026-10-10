@@ -3,6 +3,22 @@
 // Frame barriers, shell overlays, damage and frame intervals.
 // Included by `state.rs` to share the state module's imports and privacy.
 
+/// The client surfaces that still exist, for the walks over the shell's pages
+/// and the wallpaper terminal.
+///
+/// The destroy handlers drop these as they die (`shell_toplevel_destroyed`,
+/// `background_toplevel_destroyed`), but that is bookkeeping rather than the
+/// direct check [`ViewportState::live_lock_surfaces`] makes — any path that
+/// leaves a stale surface behind walks a destroyed `WlSurface` and panics in
+/// Smithay exactly as a dead lock surface does. The per-frame and per-vblank
+/// passes filter here instead of trusting the bookkeeping. See
+/// `live_lock_walk_tests`, which holds every walk to it.
+fn live_surfaces(surfaces: Vec<WlSurface>) -> impl Iterator<Item = WlSurface> {
+    surfaces
+        .into_iter()
+        .filter(smithay::utils::IsAlive::alive)
+}
+
 impl ViewportState {
     /// The lock surfaces that still exist, for the per-frame and per-vblank
     /// walks.
@@ -211,7 +227,7 @@ impl ViewportState {
         {
             with_surfaces_surface_tree(lock.wl_surface(), &release);
         }
-        for surface in self.shell_client_surfaces() {
+        for surface in live_surfaces(self.shell_client_surfaces()) {
             with_surfaces_surface_tree(&surface, &release);
         }
         // And the wallpaper terminal, which is in none of the four collections
@@ -225,7 +241,7 @@ impl ViewportState {
         // precisely like the wallpaper not being drawn at all — which is what
         // it was reported as — and foot hid it, because foot paints into
         // shared memory and asks for no pacing.
-        for surface in self.background_surfaces() {
+        for surface in live_surfaces(self.background_surfaces()) {
             with_surfaces_surface_tree(&surface, &release);
         }
         // After the walks, so the closure's borrows are done with.
@@ -332,7 +348,7 @@ impl ViewportState {
                     layer.with_surfaces(&mut look);
                 }
             }
-            for surface in self.shell_client_surfaces() {
+            for surface in live_surfaces(self.shell_client_surfaces()) {
                 smithay::desktop::utils::with_surfaces_surface_tree(&surface, &mut look);
             }
             for lock in self.live_lock_surfaces() {
@@ -344,7 +360,7 @@ impl ViewportState {
             // else on an otherwise empty desktop is waiting, so the tick
             // decides there is nothing to keep running for and the one client
             // that needed the next round never gets it.
-            for surface in self.background_surfaces() {
+            for surface in live_surfaces(self.background_surfaces()) {
                 smithay::desktop::utils::with_surfaces_surface_tree(&surface, &mut look);
             }
         }
@@ -814,6 +830,34 @@ mod live_lock_walk_tests {
             winit.matches("live_lock_surfaces()").count() >= 2,
             "winit's two lock-screen walks must both use live_lock_surfaces()"
         );
+    }
+
+    /// The shell's pages and the wallpaper terminal are walked by the same
+    /// passes as the lock surfaces, and a destroyed `WlSurface` panics the
+    /// walk the same way. Their destroy handlers drop them as they die, but
+    /// that is bookkeeping rather than the direct check above: every walk
+    /// over one of these lists keeps only the live ones too, through
+    /// `live_surfaces`.
+    #[test]
+    fn every_client_surface_walk_keeps_the_live_ones() {
+        for (name, whole) in [
+            ("state/frame_barriers.rs", include_str!("frame_barriers.rs")),
+            ("state/frame_clock.rs", include_str!("frame_clock.rs")),
+        ] {
+            let source = whole.split("#[cfg(test)]").next().unwrap_or(whole);
+            for (at, line) in source.lines().enumerate() {
+                if !line.contains("shell_client_surfaces()")
+                    && !line.contains("background_surfaces()")
+                {
+                    continue;
+                }
+                assert!(
+                    line.contains("live_surfaces("),
+                    "{name}:{} walks a client surface list without keeping only the live ones",
+                    at + 1
+                );
+            }
+        }
     }
 }
 
