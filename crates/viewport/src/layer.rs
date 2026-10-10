@@ -32,8 +32,14 @@ const MAX_COMPILED_REGEX_BYTES: usize = 256 * 1024;
 const MAX_HIT_TEST_REGION_OPERATIONS: usize = 1024;
 
 /// One entry in `layer_rules`.
+///
+/// Unknown keys are ignored, as everywhere else in the config file: a config
+/// written for a later version has to keep working, and a per-rule key this
+/// build does not know is no reason to refuse the whole file — fatal at
+/// startup and at every reload. See the contract at the top of
+/// [`crate::config`].
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 pub struct RuleConfig {
     #[serde(rename = "match")]
     pub matcher: MatchConfig,
@@ -48,7 +54,7 @@ pub struct RuleConfig {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 pub struct MatchConfig {
     pub namespace: Option<NamespaceMatchConfig>,
 }
@@ -63,7 +69,7 @@ pub enum NamespaceMatchConfig {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 pub struct NamespaceMatch {
     pub contains: Option<String>,
     pub equals: Option<String>,
@@ -628,12 +634,25 @@ mod tests {
     }
 
     #[test]
-    fn invalid_or_ambiguous_matchers_are_rejected() {
-        let misspelled = serde_json::json!([
-            {"match": {"namespace": "bar"}, "caputre": false}
+    fn a_rule_key_from_a_later_version_is_ignored() {
+        // The forward-compatibility contract the rest of the config file
+        // follows: a `shadow` the shell learns next release must not take the
+        // session down over a key this build does not need. The cost is a typo
+        // like `caputre` being ignored too — the same cost every other config
+        // block pays, and one the writer can see in the effect not appearing.
+        let later = serde_json::json!([
+            {"match": {"namespace": "bar"}, "caputre": false, "shadow": true}
         ]);
-        assert!(serde_json::from_value::<Vec<RuleConfig>>(misspelled).is_err());
+        let parsed: Vec<RuleConfig> =
+            serde_json::from_value(later).expect("unknown rule keys are ignored");
+        assert_eq!(parsed[0].capture, None);
+        assert_eq!(parsed[0].blur, None);
+        // And the rule it did describe still compiles.
+        assert!(Rules::compile(parsed).is_ok());
+    }
 
+    #[test]
+    fn invalid_or_ambiguous_matchers_are_rejected() {
         let invalid: Vec<RuleConfig> = serde_json::from_value(serde_json::json!([
             {"match": {"namespace": {"regex": "("}}, "capture": false}
         ]))

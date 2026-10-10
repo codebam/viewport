@@ -933,6 +933,46 @@ pub fn load(path: &Path) -> anyhow::Result<Option<File>> {
             );
         }
     }
+    // `env` entries reach `std::env::set_var` at startup, before the event
+    // loop exists, and `set_var` panics outright on a key that is empty or
+    // carries an `=` or a NUL, or a value that carries a NUL. Every one of
+    // those is writable by hand in the JSON, and a panic there would end the
+    // session before it began, on a TTY-launched machine with nothing running
+    // to fix the file from. Refused here instead, with the file named, the
+    // same way every other mistake a hand-written config can make is.
+    if let Some(env) = file.env.as_ref() {
+        for (key, value) in env {
+            anyhow::ensure!(!key.is_empty(), "{}: env key is empty", path.display());
+            anyhow::ensure!(
+                !key.contains('='),
+                "{}: env key {key:?} contains '='",
+                path.display()
+            );
+            anyhow::ensure!(
+                !key.contains('\0'),
+                "{}: env key {key:?} contains a NUL byte",
+                path.display()
+            );
+            anyhow::ensure!(
+                !value.contains('\0'),
+                "{}: env value for {key:?} contains a NUL byte",
+                path.display()
+            );
+        }
+    }
+    // `gpu` reaches the same API (`VIEWPORT_GPU` at startup) and is the one
+    // value that gets there without a closed set of accepted spellings to
+    // filter it first — `pixel_format` and `cross_gpu` both run through their
+    // parsers before they are set, and a parser that only accepts `"8"` or
+    // `"10"` cannot accept a NUL. A JSON string may carry one; refusing it
+    // here is the same panic avoided.
+    if let Some(gpu) = file.gpu.as_ref() {
+        anyhow::ensure!(
+            !gpu.contains('\0'),
+            "{}: gpu value contains a NUL byte",
+            path.display()
+        );
+    }
     for output in file.outputs.values_mut() {
         let Some(icc) = output.icc.as_mut() else {
             continue;
@@ -974,6 +1014,20 @@ pub fn load(path: &Path) -> anyhow::Result<Option<File>> {
                 *wallpaper = parent.join(trimmed).to_string_lossy().into_owned();
             }
         }
+    }
+    // An empty terminal is not a terminal. It is formatted straight into the
+    // command line behind every `Terminal=true` entry, and an empty one leaves
+    // ` -e …`, which `/bin/sh` then runs as the command `-e` — every such
+    // entry silently does nothing. Unlike `wallpaper`, where the empty string
+    // is how a file takes a picture away, "" cannot mean anything here but
+    // "not set", so it is read as absent and the default terminal stands —
+    // the same shape as `icc` above.
+    if file
+        .terminal
+        .as_deref()
+        .is_some_and(|terminal| terminal.trim().is_empty())
+    {
+        file.terminal = None;
     }
     if let Some(rules) = file.layer_rules.as_ref() {
         crate::layer::Rules::compile(rules.clone())
@@ -1055,6 +1109,21 @@ pub fn bind_specs(binds: &std::collections::HashMap<String, BindValue>) -> Vec<B
     specs
 }
 
+/// The `@RATE` half of a mode string, in Hz, validated.
+///
+/// Shared by [`parse_mode`] and [`pick_mode`] so the two cannot disagree about
+/// what a rate is. Finite as well as positive: `"NaN"` and `"inf"` parse as
+/// `f64`, `NaN <= 0.0` is false, and `NaN as u32` is 0 — which reads
+/// downstream as "any rate" or matches nothing instead of being the typo it
+/// is. Bounded so the millihertz conversion cannot overflow an `i32`.
+fn parse_rate(rate: &str) -> Option<f64> {
+    let hz: f64 = rate.trim().parse().ok()?;
+    if !hz.is_finite() || hz <= 0.0 || hz > i32::MAX as f64 / 1000.0 {
+        return None;
+    }
+    Some(hz)
+}
+
 /// Parse a mode string: `WIDTHxHEIGHT` or `WIDTHxHEIGHT@RATE`.
 ///
 /// The refresh rate is in Hz with optional decimals and comes back in mHz,
@@ -1074,13 +1143,7 @@ pub fn parse_mode(text: &str) -> Option<(i32, i32, Option<i32>)> {
     }
     let rate = match rate {
         Some(rate) => {
-            let hz: f64 = rate.trim().parse().ok()?;
-            // Finite as well as positive: `NaN <= 0.0` is false, and `NaN as
-            // i32` is 0, which reads downstream as "any rate" rather than as
-            // the typo it is.
-            if !hz.is_finite() || hz <= 0.0 || hz > i32::MAX as f64 / 1000.0 {
-                return None;
-            }
+            let hz = parse_rate(rate)?;
             Some((hz * 1000.0).round() as i32)
         }
         None => None,
@@ -1108,8 +1171,23 @@ pub fn pick_mode(
 
     if let Some(spec) = config.mode.as_deref() {
         let (size, rate) = match spec.split_once('@') {
-            Some((size, rate)) => (size, rate.trim().parse::<f64>().ok()),
+            Some((size, rate)) => (size, Some(rate)),
             None => (spec, None),
+        };
+        // The rate goes through the same parser `parse_mode` uses, so a typo
+        // like `@NaN` — which parses as f64 and rounds to 0 — is refused as a
+        // typo instead of silently matching no mode and warning about a rate
+        // nobody asked for. A rate that was named and cannot be read refuses
+        // the whole spec, exactly as `parse_mode` refuses the whole string.
+        let rate = match rate {
+            Some(rate) => match parse_rate(rate) {
+                Some(hz) => Some(hz),
+                None => {
+                    tracing::warn!("ignoring mode {spec:?}: not a valid refresh rate");
+                    return None;
+                }
+            },
+            None => None,
         };
         let (width, height) = size.trim().split_once('x')?;
         let width: u16 = width.trim().parse().ok()?;
@@ -1968,6 +2046,80 @@ mod tests {
     }
 
     #[test]
+    fn an_env_entry_that_would_panic_set_var_is_refused() {
+        // `std::env::set_var` panics at startup on an empty key, a key
+        // carrying `=` or a NUL, or a value carrying a NUL — every one
+        // writable by hand here — and at startup that panic is the whole
+        // session: no event loop, no shell, nothing to fix config.json from.
+        // The parse layer refuses the entry instead, naming the file, so the
+        // mistake is a message rather than a dead TTY session.
+        let dir = std::env::temp_dir().join(format!("viewport-env-check-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let path = dir.join("config.json");
+        for (json, expected) in [
+            (r#"{"env": {"": "x"}}"#, "env key is empty"),
+            (r#"{"env": {"FOO=BAR": "x"}}"#, "contains '='"),
+            (r#"{"env": {"FOO\u0000BAR": "x"}}"#, "NUL"),
+            (r#"{"env": {"FOO": "a\u0000b"}}"#, "NUL"),
+        ] {
+            std::fs::write(&path, json).expect("config");
+            let error = load(&path).expect_err("must be refused").to_string();
+            assert!(error.contains(expected), "{json}: {error}");
+            assert!(error.contains("config.json"), "{error}");
+        }
+        // A well-formed entry still loads: refusing the bad ones must not
+        // have made `env` itself suspect.
+        std::fs::write(&path, r#"{"env": {"MOZ_ENABLE_WAYLAND": "1"}}"#).expect("config");
+        let file = load(&path).expect("valid config").expect("present");
+        let env = file.env.expect("env block");
+        assert_eq!(env.get("MOZ_ENABLE_WAYLAND").map(String::as_str), Some("1"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_gpu_value_with_a_nul_is_refused() {
+        // `gpu` reaches `set_var` (`VIEWPORT_GPU`) at startup like the env
+        // block does, and unlike `pixel_format` and `cross_gpu` there is no
+        // closed set of accepted spellings to filter it first. A JSON string
+        // may carry a NUL; that is the exact value `set_var` panics on.
+        let dir = std::env::temp_dir().join(format!("viewport-gpu-check-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let path = dir.join("config.json");
+        std::fs::write(&path, r#"{"gpu": "a\u0000b"}"#).expect("config");
+        let error = load(&path).expect_err("must be refused").to_string();
+        assert!(error.contains("gpu value"), "{error}");
+        assert!(error.contains("NUL"), "{error}");
+        assert!(error.contains("config.json"), "{error}");
+        std::fs::write(&path, r#"{"gpu": "card1"}"#).expect("config");
+        let file = load(&path).expect("valid config").expect("present");
+        assert_eq!(file.gpu.as_deref(), Some("card1"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn an_empty_terminal_is_absent() {
+        // An empty terminal formatted into the `Terminal=true` command line
+        // leaves ` -e …`, which `/bin/sh` runs as the command `-e` — every
+        // such entry silently doing nothing. "" cannot mean anything here
+        // but "not set", so it reads as absent and the default terminal
+        // stands.
+        let dir =
+            std::env::temp_dir().join(format!("viewport-terminal-check-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let path = dir.join("config.json");
+        for empty in [r#"{"terminal": ""}"#, r#"{"terminal": "   "}"#] {
+            std::fs::write(&path, empty).expect("config");
+            let file = load(&path).expect("valid config").expect("present");
+            assert_eq!(file.terminal, None, "{empty} should read as absent");
+        }
+        // A terminal that names something is kept as written.
+        std::fs::write(&path, r#"{"terminal": "foot"}"#).expect("config");
+        let file = load(&path).expect("valid config").expect("present");
+        assert_eq!(file.terminal.as_deref(), Some("foot"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn the_motion_block_names_a_pace_and_a_curve() {
         // Absent is the shell's own stylesheet values, which is what makes the
         // block additive: a desk that names only a duration keeps the default
@@ -2120,6 +2272,22 @@ mod tests {
         ] {
             assert_eq!(parse_mode(bad), None, "{bad:?} should not parse");
         }
+    }
+
+    #[test]
+    fn a_nan_or_infinite_rate_is_the_typo_it_looks_like() {
+        // "NaN" and "inf" parse as f64, `NaN as i32` is 0 and `inf` saturates
+        // — a rate like that used to reach the mode search as 0 or u32::MAX,
+        // match nothing, and fall back behind a warning naming a mode nobody
+        // asked for. `parse_mode` and `pick_mode` (what `outputs.<name>.mode`
+        // goes through) share this parser now, so both refuse it outright.
+        for bad in ["NaN", "inf", "-inf", "1e400", "0", "-60", "junk"] {
+            assert_eq!(parse_rate(bad), None, "{bad:?} should not parse");
+        }
+        assert_eq!(parse_rate("239.760"), Some(239.760));
+        assert_eq!(parse_mode("2560x1440@NaN"), None);
+        assert_eq!(parse_mode("2560x1440@inf"), None);
+        assert_eq!(parse_mode("2560x1440@1e400"), None);
     }
 
     #[test]
