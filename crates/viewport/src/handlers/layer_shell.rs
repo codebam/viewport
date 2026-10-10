@@ -192,7 +192,16 @@ impl ViewportState {
                 states
                     .data_map
                     .get::<smithay::wayland::shell::wlr_layer::LayerSurfaceData>()
-                    .map(|data| data.lock().unwrap().initial_configure_sent)
+                    // Read, not obeyed: a panic in whichever thread held this
+                    // last says nothing about the configure, and a poisoned
+                    // lock here would leave a layer surface unpainted. The
+                    // same pattern `render_frame` uses for the same kind of
+                    // lock.
+                    .map(|data| {
+                        data.lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .initial_configure_sent
+                    })
                     .unwrap_or(true)
             });
 
