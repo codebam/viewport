@@ -7,7 +7,7 @@
 // session, but only one is discoverable by a script that already has
 // WAYLAND_DISPLAY.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::{ErrorKind, Read, Write};
 use std::os::fd::{AsFd, BorrowedFd};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
@@ -71,6 +71,20 @@ const STUCK: std::time::Duration = std::time::Duration::from_secs(5);
 /// with it before its five seconds were up.
 const HARD_BACKLOG: usize = 64 << 20;
 
+/// How many messages one read callback dispatches before giving the loop
+/// back.
+///
+/// A client can pipeline megabytes of cheap `reads_only` requests — each one
+/// fans a whole config-plus-views broadcast out to every subscriber — and
+/// dispatching them back-to-back in one callback pinned the event loop for
+/// the whole pipeline: no vblank, no input and no other client was reached,
+/// and every innocent subscriber's backlog grew toward [`HARD_BACKLOG`] (at
+/// which point they are the ones dropped) while they waited. The budget
+/// trades one long turn for many short ones: whatever is framed but
+/// undispatched stays in the client's queue, in arrival order, for the next
+/// loop iteration.
+const MAX_DISPATCH_PER_READ: usize = 32;
+
 struct Client {
     stream: Rc<UnixStream>,
     /// The process on the other end, when the kernel will say.
@@ -99,6 +113,14 @@ struct Client {
     /// msg` working without a token. See docs/ipc.md § Control-socket trust.
     trusted: bool,
     framer: Framer,
+    /// Messages already framed but not yet dispatched.
+    ///
+    /// A read can frame hundreds of messages in one chunk, and the budget in
+    /// [`ViewportState::ipc_read`] leaves the rest here, in arrival order,
+    /// for the next loop iteration. Never more than one 4 KiB read's worth of
+    /// complete messages: the queue is emptied before the framer is fed
+    /// again.
+    deferred: VecDeque<Vec<u8>>,
     /// What a short write left behind. Nothing else will send it, so the
     /// writable half of the source has to.
     ///
@@ -875,6 +897,7 @@ impl ViewportState {
                 exe,
                 trusted,
                 framer: Framer::new(),
+                deferred: VecDeque::new(),
                 pending: Vec::new(),
                 stalled_since: None,
                 token,
@@ -893,43 +916,95 @@ impl ViewportState {
         }
     }
 
+    /// Read and dispatch from one client, up to [`MAX_DISPATCH_PER_READ`]
+    /// messages.
+    ///
+    /// The budget is what keeps one pipelining client from owning the loop:
+    /// see the constant. Messages are taken in arrival order — whatever a
+    /// read framed and the budget did not reach waits in the client's
+    /// `deferred` queue rather than being read past or dropped — and when the
+    /// budget runs out with that queue still holding messages, the next loop
+    /// iteration is asked for outright: the read source is level-triggered
+    /// and would call back while the socket holds more, but the rest may
+    /// already be off the socket and only a write would wake it again.
     fn ipc_read(&mut self, id: u64, stream: &UnixStream) {
         let mut chunk = [0u8; 4096];
-        loop {
-            let n = match (&*stream).read(&mut chunk) {
-                Ok(0) => {
-                    self.ipc_kill(id);
-                    return;
-                }
-                Ok(n) => n,
-                Err(e) if e.kind() == ErrorKind::WouldBlock => return,
-                Err(e) if e.kind() == ErrorKind::Interrupted => continue,
-                Err(_) => {
-                    self.ipc_kill(id);
-                    return;
+        let mut dispatched = 0;
+        while dispatched < MAX_DISPATCH_PER_READ {
+            // What to dispatch next: the queue first, then a fresh read. The
+            // borrow ends before dispatch, which needs `self` whole — and
+            // handling a message can drop this very client.
+            let queued = self
+                .ipc
+                .clients
+                .get_mut(&id)
+                .and_then(|client| client.deferred.pop_front());
+            let message = match queued {
+                Some(message) => message,
+                None => {
+                    let n = match (&*stream).read(&mut chunk) {
+                        Ok(0) => {
+                            self.ipc_kill(id);
+                            return;
+                        }
+                        Ok(n) => n,
+                        Err(e) if e.kind() == ErrorKind::WouldBlock => return,
+                        Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+                        Err(_) => {
+                            self.ipc_kill(id);
+                            return;
+                        }
+                    };
+                    // Only ever fed while the queue is empty, so a big read
+                    // defers rather than grows: one chunk's worth of complete
+                    // messages is all this can ever hold.
+                    let Some(client) = self.ipc.clients.get_mut(&id) else {
+                        return;
+                    };
+                    match client.framer.push(&chunk[..n]) {
+                        Framed::Messages(messages) => client.deferred.extend(messages),
+                        Framed::Overrun => {
+                            tracing::warn!("control client {id} overran the accumulator");
+                            self.ipc_kill(id);
+                            return;
+                        }
+                    }
+                    continue;
                 }
             };
-
-            let Some(client) = self.ipc.clients.get_mut(&id) else {
+            self.ipc_dispatch(id, &message);
+            if !self.ipc.clients.contains_key(&id) {
                 return;
-            };
-            let messages = match client.framer.push(&chunk[..n]) {
-                Framed::Messages(messages) => messages,
-                Framed::Overrun => {
-                    tracing::warn!("control client {id} overran the accumulator");
-                    self.ipc_kill(id);
-                    return;
-                }
-            };
-
-            for message in messages {
-                self.ipc_dispatch(id, &message);
-                // Handling a message can drop this very client.
-                if !self.ipc.clients.contains_key(&id) {
-                    return;
-                }
             }
+            dispatched += 1;
         }
+        let owed = self
+            .ipc
+            .clients
+            .get(&id)
+            .is_some_and(|client| !client.deferred.is_empty());
+        if owed {
+            self.loop_handle
+                .insert_idle(move |state| state.ipc_resume(id));
+        }
+    }
+
+    /// Carry on with what a budgeted [`Self::ipc_read`] left queued.
+    fn ipc_resume(&mut self, id: u64) {
+        let Some(stream) = self
+            .ipc
+            .clients
+            .get(&id)
+            .map(|client| client.stream.clone())
+        else {
+            return;
+        };
+        self.ipc_read(id, &stream);
+        // The same promise the read source's own callback makes: nothing
+        // outside this turn may observe a stack that is owed a restack,
+        // whichever turn of the loop the messages were dispatched in.
+        self.settle();
+        self.ipc.reap(&self.loop_handle.clone());
     }
 
     fn ipc_kill(&mut self, id: u64) {

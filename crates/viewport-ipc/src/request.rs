@@ -1271,21 +1271,30 @@ where
     deserializer.deserialize_seq(Bounded)
 }
 
-/// A view id the way C reads one: `(uint32_t)object_int(object, "id", 0)`.
+/// A view id, in the range the wire type can hold.
 ///
-/// The shell sends -1 for "no view" — `session.js` passes on whatever
-/// `firstOf` returned for an empty column. C cast that to `0xffffffff`, found
-/// no window with it, and did nothing. Refusing the message instead rejects
-/// the whole request, so an unfocus turns into a parse error and the shell
-/// logs a console error for a message the C build accepted every day.
+/// This used to be C's `(uint32_t)object_int(object, "id", 0)` copied in
+/// Rust — a truncating cast — and that is the defect: `4294967297` addressed
+/// view 1, so any two ids a multiple of 2^32 apart were the same window. The
+/// wire type is a `u32`, so every id the compositor could ever have handed
+/// out is in `0..=u32::MAX`; a number outside it cannot name a view, and
+/// wrapping it onto one is an alias rather than a shorthand. It is refused
+/// as the malformed message it is.
+///
+/// The old comment here warned that the shell sends -1 for "no view" and
+/// must not be made to see a parse error. It no longer sends one: the
+/// empty-column and focus-restore paths in `session.js` and `keys.js` check
+/// for a real id before sending. A `-1` that does arrive is a client bug,
+/// and answering it with "no such id" beats aliasing it onto `u32::MAX`.
 fn view_id<'de, D>(deserializer: D) -> Result<u32, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    // Widest signed type first so both -1 and 0xffffffff land here, then the
-    // same truncating cast C performs.
+    // Widest signed type first, so a JSON number of any width lands here.
     let raw = i64::deserialize(deserializer)?;
-    Ok(raw as u32)
+    u32::try_from(raw).map_err(|_| {
+        <D::Error as serde::de::Error>::custom(format!("view id {raw} is outside 0..={}", u32::MAX))
+    })
 }
 
 fn yes() -> bool {
@@ -1311,23 +1320,33 @@ mod tests {
     }
 
     #[test]
-    fn a_negative_view_id_parses_the_way_c_cast_it() {
-        // The shell sends -1 for "no view". C cast it to 0xffffffff, matched
-        // no window and did nothing; rejecting the message instead turns an
-        // unfocus into a parse error the shell reports on its console.
+    fn a_view_id_outside_the_wire_type_is_refused() {
+        // C truncated and this used to copy it, so 4294967297 addressed view
+        // 1 and any two ids a multiple of 2^32 apart were the same window.
+        // The wire type is a u32; an id outside it cannot name a view, and
+        // wrapping it onto one is an alias, not a shorthand. This replaces
+        // `a_negative_view_id_parses_the_way_c_cast_it`, which pinned the
+        // truncation this refuses.
+        assert!(
+            serde_json::from_str::<Request>(r#"{"type":"view.focus","id":4294967297}"#).is_err()
+        );
+        assert!(serde_json::from_str::<Request>(r#"{"type":"view.focus","id":-1}"#).is_err());
+        // Every id field read through the same helper, the same refusal.
+        assert!(serde_json::from_str::<Request>(r#"{"type":"view.close","id":-1}"#).is_err());
+        assert!(serde_json::from_str::<Request>(
+            r#"{"type":"view.layout","id":-1,"x":0,"y":0,"width":1,"height":1}"#
+        )
+        .is_err());
+        // The extremes are real ids and keep working: 0 is NO_VIEW, and
+        // u32::MAX is the "matches nothing" slot the C cast produced.
         assert_eq!(
-            parse(r#"{"type":"view.focus","id":-1}"#),
+            parse(r#"{"type":"view.focus","id":0}"#),
+            Request::ViewFocus { id: 0 }
+        );
+        assert_eq!(
+            parse(r#"{"type":"view.focus","id":4294967295}"#),
             Request::ViewFocus { id: u32::MAX }
         );
-        // Every id field C read through the same cast.
-        assert_eq!(
-            parse(r#"{"type":"view.close","id":-1}"#),
-            Request::ViewClose { id: u32::MAX }
-        );
-        assert!(matches!(
-            parse(r#"{"type":"view.layout","id":-1,"x":0,"y":0,"width":1,"height":1}"#),
-            Request::ViewLayout(layout) if layout.id == u32::MAX
-        ));
     }
 
     #[test]

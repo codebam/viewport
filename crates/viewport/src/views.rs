@@ -70,6 +70,39 @@ impl ProcessIdentity {
 /// client (`src/input.c:163`), so real ids start at 1.
 pub const NO_VIEW: u32 = 0;
 
+/// The rectangle a client was last configured with: size and position.
+///
+/// The size is in front, in numbered fields rather than named ones, because
+/// one reader predates the position: `trace_size_mismatch` compares a painted
+/// `(w, h)` against this and prints `.0`×`.1`, and it should — a window that
+/// moved without resizing painted exactly what it was asked for. That is what
+/// the `PartialEq<(i32, i32)>` below says in types.
+///
+/// The position is here for X. An X client is configured with its whole
+/// rectangle, position included, while a toplevel is moved without ever being
+/// told; the record has to carry the position for the one and be readable as
+/// the size alone for the other, so one field serves both gates in
+/// `view_layout` without the toplevel path paying for a move.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Configured(pub i32, pub i32, pub i32, pub i32);
+
+impl Configured {
+    /// The width and height alone: a move is not a resize, and everything
+    /// that predates the position asks only this.
+    pub fn size(self) -> (i32, i32) {
+        (self.0, self.1)
+    }
+}
+
+/// A painted size equal to a whole rectangle when the size is equal: where
+/// this is compared, a window that moved without resizing painted exactly
+/// what it was asked for.
+impl PartialEq<Configured> for (i32, i32) {
+    fn eq(&self, other: &Configured) -> bool {
+        *self == other.size()
+    }
+}
+
 pub struct View {
     pub id: u32,
     pub window: Window,
@@ -194,13 +227,17 @@ pub struct View {
     /// window with no title and no app id is not worth listing.
     pub foreign: Option<smithay::wayland::foreign_toplevel_list::ForeignToplevelHandle>,
 
-    /// The size the client was last configured with, clamped.
+    /// The rectangle the last `view.layout` resolved for this window: the
+    /// client's size, clamped, and where the shell put it.
     ///
-    /// Kept so a move does not cost a resize. Every configure is a round trip,
-    /// and the shell resends the whole rectangle on every frame of an
+    /// Kept so a move does not cost a resize. Every configure is a round
+    /// trip, and the shell resends the whole rectangle on every frame of an
     /// animation — a window sliding across the screen changes position sixty
-    /// times a second and its size not at all (`src/xdg_shell.c:877`).
-    pub configured: Option<(i32, i32)>,
+    /// times a second and its size not at all (`src/xdg_shell.c:877`). A
+    /// toplevel is configured when the size half changes; an X client, which
+    /// is told its whole rectangle, when the rectangle does — and then only
+    /// when it does not already hold it. See the two gates in `view_layout`.
+    pub configured: Option<Configured>,
 }
 
 impl View {

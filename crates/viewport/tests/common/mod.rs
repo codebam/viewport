@@ -75,6 +75,7 @@ impl Compositor {
             env: Vec::new(),
             directory: None,
             awaited: None,
+            trusted: true,
         }
     }
 
@@ -183,6 +184,7 @@ pub struct Builder {
     env: Vec<(OsString, OsString)>,
     directory: Option<PathBuf>,
     awaited: Option<(String, Duration)>,
+    trusted: bool,
 }
 
 impl Builder {
@@ -214,6 +216,19 @@ impl Builder {
         self
     }
 
+    /// Start it without `VIEWPORT_IPC_TRUST_EXE`, so every connection this
+    /// harness makes is an untrusted same-uid client.
+    ///
+    /// The compositor classifies by executable, and the harness is normally
+    /// named the extra trusted one so a test can act for the shell's page. A
+    /// test of the refusal and filtering paths needs the opposite — and the
+    /// difference has to be the compositor's own decision at accept, not a
+    /// message asking for different treatment.
+    pub fn untrusted(mut self) -> Self {
+        self.trusted = false;
+        self
+    }
+
     /// A directory this compositor is to be given, and that goes when it does.
     pub fn owning(mut self, directory: PathBuf) -> Self {
         self.directory = Some(directory);
@@ -240,6 +255,7 @@ impl Builder {
             env,
             directory,
             awaited,
+            trusted,
         } = self;
         let pid = std::process::id();
 
@@ -264,9 +280,12 @@ impl Builder {
         // untrusted same-UID process. This harness *is* the compositor's own
         // test build talking to it, so name the test binary explicitly; the
         // compositor honours this variable only in debug builds. See
-        // VIEWPORT_IPC_TRUST_EXE in src/ipc.rs.
-        if let Ok(exe) = std::env::current_exe() {
-            command.env("VIEWPORT_IPC_TRUST_EXE", exe);
+        // VIEWPORT_IPC_TRUST_EXE in src/ipc.rs. A test of the refusal path
+        // opts out through `Builder::untrusted`.
+        if trusted {
+            if let Ok(exe) = std::env::current_exe() {
+                command.env("VIEWPORT_IPC_TRUST_EXE", exe);
+            }
         }
         // Otherwise a config file in the developer's own home decides what
         // these tests see.
@@ -393,6 +412,29 @@ impl Client {
             .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
             .find(|message| message["type"] == kind)
             .unwrap_or_else(|| panic!("no {kind} message arrived within {PATIENCE:?}"))
+    }
+
+    /// Everything read along the way to the first message of this `type`,
+    /// including that message — up to [`PATIENCE`].
+    ///
+    /// `expect` throws the road away to keep its assertions short; an
+    /// ordering or a count needs it kept. Panics when the message that would
+    /// have stopped it never came.
+    pub fn until(&mut self, kind: &str) -> Vec<serde_json::Value> {
+        let lines = self.read_lines(PATIENCE, |line| {
+            serde_json::from_str::<serde_json::Value>(line)
+                .map(|value| value["type"] == kind)
+                .unwrap_or(false)
+        });
+        let messages: Vec<serde_json::Value> = lines
+            .iter()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .collect();
+        assert!(
+            messages.iter().any(|message| message["type"] == kind),
+            "no {kind} message arrived within {PATIENCE:?}"
+        );
+        messages
     }
 
     /// The same, as parsed JSON, dropping anything that is not.

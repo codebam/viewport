@@ -541,6 +541,111 @@ fn an_error_goes_only_to_the_client_that_caused_it() {
 }
 
 #[test]
+fn an_untrusted_client_is_refused_and_never_sees_private_events() {
+    // The security model classifies the *connection*, at accept, from the
+    // peer's executable — never from anything the client says. This test
+    // speaks through a harness that was not named `VIEWPORT_IPC_TRUST_EXE`,
+    // so it stands as an ordinary same-uid process for every purpose, which
+    // is exactly the attacker the model is built around.
+    //
+    // First the positive half, on a trusted connection: `clipboard.query`
+    // and `notification.list` really do broadcast the private history
+    // events. Without this, "nothing arrived" below would hold just as well
+    // for a compositor that simply never answers either request.
+    let compositor = Compositor::start("private-events");
+    let mut shell = compositor.connect();
+    shell.send(r#"{"type":"clipboard.query"}"#);
+    assert_eq!(
+        shell.wait_for("clipboard.history")["type"],
+        "clipboard.history"
+    );
+    shell.send(r#"{"type":"notification.list"}"#);
+    assert_eq!(
+        shell.wait_for("notification.history")["type"],
+        "notification.history"
+    );
+
+    let compositor = Compositor::builder("untrusted-events").untrusted().start();
+    let mut client = compositor.connect();
+
+    // A privileged request is refused, by name, to this connection only. The
+    // id is well inside the wire's range — out-of-range ids are refused at
+    // parse — so the only thing that can stop this is the gate itself.
+    client.send(r#"{"type":"view.focus","id":4294967294}"#);
+    let error = client.expect("error");
+    assert_eq!(error["context"], "ipc");
+    assert_eq!(
+        error["message"], "this client is not allowed to send that request",
+        "{error}"
+    );
+
+    // The same, flowing the other way: the private events must never reach
+    // this connection even though it asks for them. The pipelined
+    // `view.query` is the liveness proof on the same connection and the same
+    // drain — its config is public and must arrive, and it is dispatched
+    // after the two private answers — so "nothing private arrived" can only
+    // mean "the private events were filtered", not "the connection is dead".
+    client.drain_lines(Duration::from_millis(100));
+    client.send(r#"{"type":"clipboard.query"}"#);
+    client.send(r#"{"type":"notification.list"}"#);
+    client.send(r#"{"type":"view.query"}"#);
+    let seen = client.until("config");
+    for message in &seen {
+        let kind = message["type"].as_str().unwrap_or_default();
+        assert!(
+            !matches!(
+                kind,
+                "clipboard.history"
+                    | "notification.add"
+                    | "notification.history"
+                    | "session.restore"
+                    | "ai.usage"
+                    | "ai.auth"
+            ),
+            "a private {kind} reached an untrusted client"
+        );
+    }
+}
+
+#[test]
+fn a_pipelined_flood_is_still_answered_in_order() {
+    // The read side dispatches a bounded number of messages per loop turn
+    // and leaves the rest queued: the budget is what keeps one pipelining
+    // client from pinning the event loop while every innocent subscriber's
+    // backlog fills with its broadcasts. It must not cost the pipeline a
+    // single message or reorder one — the queue is a scheduling decision,
+    // not a reason to drop.
+    //
+    // 200 `view.query` asks, each answered with one config broadcast, and
+    // one unknown type whose error can only be answered after all of them:
+    // the config count before that error is the whole assertion.
+    let compositor = Compositor::start("flood");
+    let mut client = compositor.connect();
+
+    const FLOOD: usize = 200;
+    let mut pipeline = String::new();
+    for _ in 0..FLOOD {
+        pipeline.push_str(r#"{"type":"view.query"}"#);
+        pipeline.push('\n');
+    }
+    pipeline.push_str(r#"{"type":"view.teleport"}"#);
+    pipeline.push('\n');
+    client.writer.write_all(pipeline.as_bytes()).unwrap();
+    client.writer.flush().unwrap();
+
+    let seen = client.until("error");
+    let configs = seen
+        .iter()
+        .filter(|message| message["type"] == "config")
+        .count();
+    assert_eq!(
+        configs, FLOOD,
+        "the flood came out of the budget short: {seen:?}"
+    );
+    assert_eq!(seen.last().unwrap()["context"], "view.teleport");
+}
+
+#[test]
 fn empty_lines_are_ignored_rather_than_rejected() {
     let compositor = Compositor::start("blank");
     let mut client = compositor.connect();

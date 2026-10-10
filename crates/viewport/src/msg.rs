@@ -970,7 +970,7 @@ fn print_help() {
 }
 
 fn run(invocation: Invocation) -> Result<(), String> {
-    let path = match invocation.socket {
+    let (path, peer_unproven) = match invocation.socket {
         Some(path) => {
             // `--socket` stays the explicit override, but it names a socket
             // the same way discovery does; an override is not a reason to
@@ -980,13 +980,24 @@ fn run(invocation: Invocation) -> Result<(), String> {
             // complaint.
             validate_socket(&path)
                 .map_err(|detail| format!("could not connect to {}: {detail}", path.display()))?;
-            path
+            (path, false)
         }
-        None => discover()?,
+        None => match discover()? {
+            Discovered::Named(path) => (path, false),
+            Discovered::Newest(path) => (path, true),
+        },
     };
 
     let stream = UnixStream::connect(&path)
         .map_err(|e| format!("could not connect to {}: {e}", path.display()))?;
+    // Before the first byte, and only for the fallback: `$VIEWPORT_SOCKET`
+    // and the display name name the compositor the session chose, but the
+    // newest socket is only the newest by mtime — an impostor's would be
+    // fresher — and what would flow to it is plaintext, a `session.unlock`
+    // password included. See [`authenticate_peer`].
+    if peer_unproven {
+        authenticate_peer(&stream)?;
+    }
     let mut reader = BufReader::new(
         stream
             .try_clone()
@@ -1225,6 +1236,21 @@ fn print_event(event: &Value, pretty: bool) {
     }
 }
 
+/// Which compositor to talk to, when nobody said, and how much that answer
+/// can be trusted.
+enum Discovered {
+    /// Named by `$VIEWPORT_SOCKET` or by the Wayland display: the session
+    /// itself vouches for the path, which is the same authority that
+    /// exported the variable.
+    Named(PathBuf),
+    /// The newest socket in the runtime directory. "Newest" is only the
+    /// mtime on the name, and any same-uid process can bind a
+    /// `viewport-*.sock` with a fresh one — so the peer has to prove itself
+    /// before the first byte of a message is written to it. See
+    /// [`authenticate_peer`].
+    Newest(PathBuf),
+}
+
 /// Which compositor to talk to, when nobody said.
 ///
 /// `$VIEWPORT_SOCKET` first: a compositor exports it, so anything started from
@@ -1232,8 +1258,11 @@ fn print_event(event: &Value, pretty: bool) {
 /// Wayland display, which is what a terminal in the session has. Then the
 /// newest socket in the runtime directory, which is what a second TTY has —
 /// the same last resort scripts/quit.sh takes, and for the same reason: the
-/// session being escaped from is the one that was started last.
-fn discover() -> Result<PathBuf, String> {
+/// session being escaped from is the one that was started last. That last
+/// answer alone is chosen by a name anybody can bind, so it comes back as
+/// [`Discovered::Newest`] and `run` authenticates the peer behind it before
+/// sending anything.
+fn discover() -> Result<Discovered, String> {
     if let Some(path) = std::env::var_os("VIEWPORT_SOCKET") {
         let path = PathBuf::from(path);
         validate_socket(&path).map_err(|detail| {
@@ -1242,7 +1271,7 @@ fn discover() -> Result<PathBuf, String> {
                 path.display()
             )
         })?;
-        return Ok(path);
+        return Ok(Discovered::Named(path));
     }
 
     // No `/tmp` fallback. `/tmp` is shared, world-writable and walkable, so a
@@ -1262,12 +1291,12 @@ fn discover() -> Result<PathBuf, String> {
     if let Ok(display) = std::env::var("WAYLAND_DISPLAY") {
         let path = runtime.join(format!("viewport-{display}.sock"));
         if validate_socket(&path).is_ok() {
-            return Ok(path);
+            return Ok(Discovered::Named(path));
         }
     }
 
     if let Some(path) = newest_socket(&runtime) {
-        return Ok(path);
+        return Ok(Discovered::Newest(path));
     }
 
     Err(format!(
@@ -1346,6 +1375,90 @@ fn newest_socket(runtime: &Path) -> Option<PathBuf> {
         }
     }
     best.map(|(_, path)| path)
+}
+
+/// The advice every refusal ends with: the two ways to name the compositor
+/// that do not depend on guessing which socket is newest.
+const NAMED_ON_PURPOSE: &str =
+    "set $VIEWPORT_SOCKET or pass --socket to name the compositor deliberately";
+
+/// Prove the process on the other end of `stream` is this same executable,
+/// before the first byte of a message is written to it.
+///
+/// Discovery's fallback picks the newest socket in the runtime directory, and
+/// "newest" is only the mtime on a name any same-uid process can bind with a
+/// fresh one — the checks in [`socket_is_private`] keep other users out but
+/// say nothing about this one. An impostor sitting there would receive every
+/// payload in plaintext, including the `session.unlock` password typed at a
+/// prompt, which is why the fallback's answer alone gets this treatment and
+/// `$VIEWPORT_SOCKET` — the session's own choice — does not.
+///
+/// The proof is the compositor's own sender rule run in the other direction:
+/// `SO_PEERCRED` names the peer's pid (the kernel's answer, not the peer's
+/// claim), and the kernel's `/proc/<pid>/exe` link for that pid must read
+/// exactly what `/proc/self/exe` does. The compositor is this same binary by
+/// construction — `viewport msg` is a subcommand of it rather than a separate
+/// tool precisely so the two are one build — so a genuine peer and this
+/// process resolve to the same link, and anything else is refused.
+///
+/// Every failure is a refusal: no `SO_PEERCRED`, a peer that exited, a
+/// `/proc` that will not say. An unreadable peer is not a proved one.
+fn authenticate_peer(stream: &UnixStream) -> Result<(), String> {
+    use std::os::fd::AsRawFd;
+
+    // Through `getsockopt` rather than `UnixStream::peer_cred`, which is
+    // still unstable — and this is the same `SO_PEERCRED` the compositor
+    // reads its own clients' pids from.
+    let mut cred = libc::ucred {
+        pid: 0,
+        uid: 0,
+        gid: 0,
+    };
+    let mut length = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    let known = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            &mut cred as *mut libc::ucred as *mut libc::c_void,
+            &mut length,
+        )
+    } == 0;
+    if !known || cred.pid <= 0 {
+        return Err(unidentified_peer());
+    }
+    peer_is_this_executable(cred.pid)
+}
+
+/// The comparison itself: the kernel's `/proc/<pid>/exe` link for the peer
+/// must read exactly what `/proc/self/exe` does.
+///
+/// Split out from [`authenticate_peer`] because a socket pair's `SO_PEERCRED`
+/// is captured when the pair is created and can only ever name this process —
+/// so the rule is tested against real pids of real helper processes, and the
+/// socket round trip has its own test.
+fn peer_is_this_executable(pid: libc::pid_t) -> Result<(), String> {
+    let theirs = std::fs::read_link(format!("/proc/{pid}/exe")).ok();
+    let mine = std::fs::read_link("/proc/self/exe").ok();
+    match (theirs, mine) {
+        (Some(theirs), Some(mine)) if theirs == mine => Ok(()),
+        (Some(theirs), _) => Err(format!(
+            "refusing to send to it: the process on the other end is {}, not \
+             this executable, and the newest socket is only newest by mtime. \
+             {NAMED_ON_PURPOSE}",
+            theirs.display()
+        )),
+        _ => Err(unidentified_peer()),
+    }
+}
+
+/// The refusal for a peer that cannot be identified at all.
+fn unidentified_peer() -> String {
+    format!(
+        "refusing to send to it: the process on the other end could not be \
+         identified, so it cannot be proved to be the compositor. \
+         {NAMED_ON_PURPOSE}"
+    )
 }
 
 #[cfg(test)]
@@ -1438,12 +1551,13 @@ mod tests {
 
     #[test]
     fn a_negative_number_is_a_value_and_not_an_option() {
-        // The shell sends -1 for "no view", and so does anyone unfocusing by
-        // hand.
-        assert_eq!(
-            value(&["-t", "view.focus", "--id", "-1"]),
-            serde_json::json!({"type": "view.focus", "id": -1})
-        );
+        // The complaint is the observation: it names the number as a bad id,
+        // where a parse that mistook it for a flag would have complained
+        // about the flag. `-1` is taken as `--id`'s value — which is what
+        // this test is about — and refused as the out-of-range id the wire no
+        // longer truncates.
+        let complaint = build(&["-t", "view.focus", "--id", "-1"]).unwrap_err();
+        assert!(complaint.contains("view id -1 is outside"), "{complaint}");
     }
 
     #[test]
@@ -1864,5 +1978,54 @@ mod tests {
         assert_eq!(newest_socket(&dir).as_deref(), Some(private.as_path()));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_peer_of_this_executable_authenticates() {
+        // A socket pair's peer is this very process, which is what the
+        // compositor end of a real connection looks like to the check: the
+        // compositor is this same binary, so both `/proc` links resolve to
+        // one path. This is the case `viewport msg` relies on every day.
+        let (mine, _theirs) = UnixStream::pair().expect("a socket pair");
+        assert!(authenticate_peer(&mine).is_ok());
+    }
+
+    #[test]
+    fn a_peer_of_another_executable_is_refused() {
+        // `sh` stands in for the impostor: same uid, running anything but
+        // this executable. A socket pair's `SO_PEERCRED` is captured when the
+        // pair is created and can only ever name this process, so the rule is
+        // checked against the helper's own pid — which is exactly what a real
+        // connection to a socket the helper bound would report. The refusal
+        // must name the way out, because the user's only way past the
+        // ambiguity is to say which compositor they meant.
+        let mut child = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("sleep 30")
+            .spawn()
+            .expect("a helper process");
+        // `spawn` returns after the helper's exec, so its `/proc` link is
+        // already its own.
+        let complaint =
+            peer_is_this_executable(child.id() as libc::pid_t).expect_err("a foreign executable");
+        assert!(complaint.contains("--socket"), "{complaint}");
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    #[test]
+    fn a_peer_that_disappeared_is_refused_rather_than_believed() {
+        // Verification being impossible is not verification: a helper that is
+        // gone before the check leaves no `/proc/<pid>/exe` to read, and an
+        // unprovable peer is refused exactly like a disproved one.
+        let mut child = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("true")
+            .spawn()
+            .expect("a helper process");
+        child.wait().expect("the helper exits at once");
+        let complaint =
+            peer_is_this_executable(child.id() as libc::pid_t).expect_err("an unidentifiable peer");
+        assert!(complaint.contains("--socket"), "{complaint}");
     }
 }
