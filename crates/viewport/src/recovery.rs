@@ -208,6 +208,43 @@ pub fn add_due(attempts: u32, since: Duration) -> bool {
     since >= backoff(attempts)
 }
 
+/// How long until a card that has never opened is due another attempt.
+///
+/// What [`add_due`] judges, left as a wait: the watchdog arms its next look at
+/// this rather than at [`TICK`], so a card in a long backoff sleeps its whole
+/// backoff instead of being examined two and a half times a second.
+pub fn add_wait(attempts: u32, since: Duration) -> Duration {
+    backoff(attempts).saturating_sub(since)
+}
+
+/// The shortest the watchdog will sleep between two looks.
+///
+/// The retry pacing [`next_tick`] works from can come out at zero — an entry
+/// that is due but was not tried, because the session is switched away — and
+/// a timerfd armed at zero is a spin. One look every fifty milliseconds is
+/// nothing and bounds that case.
+pub const TICK_FLOOR: Duration = Duration::from_millis(50);
+
+/// When the watchdog should next look at the GPUs; `None` when it stands down.
+///
+/// `again` is its ordinary business — a flip in the air, a device offline, a
+/// step being dwelt on — which wants the [`TICK`] pace. `retry_in` is a card
+/// waiting out its reopen backoff, which needs nothing until it comes due.
+/// The next look is the sooner of the two: never later than TICK while there
+/// is real work, never earlier than the retry that is actually pending. The
+/// unconditional TICK re-arm this replaces meant one card that had failed to
+/// open — and, before `on_gpu_removed` pruned it, one card that had been
+/// unplugged while waiting — kept the session waking two and a half times a
+/// second for ever.
+pub fn next_tick(again: bool, retry_in: Option<Duration>) -> Option<Duration> {
+    let retry = retry_in.map(|wait| wait.max(TICK_FLOOR));
+    match (again, retry) {
+        (true, Some(wait)) => Some(wait.min(TICK)),
+        (true, None) => Some(TICK),
+        (false, wait) => wait,
+    }
+}
+
 /// How long to leave a step in place before acting again.
 ///
 /// [`DWELL`] for the rungs that are tried once and move on. The bottom rung is
@@ -232,13 +269,25 @@ impl ViewportState {
     /// happened to wake the loop — which on a frozen desktop is never, and a
     /// frozen desktop is precisely the case this exists for.
     pub fn watch_gpus(&mut self) {
+        self.watch_gpus_in(TICK);
+    }
+
+    /// Watch the GPUs, waking next in `delay`.
+    ///
+    /// `watch_gpus` arms at [`TICK`], the watchdog's own pace, which is right
+    /// wherever something may just have been queued or broken. The tick
+    /// re-arms through here at the pace its work actually needs — see
+    /// [`next_tick`] — because a card waiting out its thirty-second reopen
+    /// backoff is no reason to wake a still desktop two and a half times a
+    /// second for the rest of the session.
+    fn watch_gpus_in(&mut self, delay: Duration) {
         if self.gpu_watch {
             return;
         }
         if self.gpu_timer.is_none() {
             self.gpu_timer = self.create_tick("gpu watchdog", Self::gpu_tick);
         }
-        if Self::arm_tick("gpu watchdog", self.gpu_timer.as_ref(), TICK) {
+        if Self::arm_tick("gpu watchdog", self.gpu_timer.as_ref(), delay) {
             self.gpu_watch = true;
             return;
         }
@@ -246,7 +295,7 @@ impl ViewportState {
         // No timerfd. calloop's timer still works whenever calloop is the one
         // waiting, which is every backend but the web engine's.
         self.gpu_watch = true;
-        let timer = smithay::reexports::calloop::timer::Timer::from_duration(TICK);
+        let timer = smithay::reexports::calloop::timer::Timer::from_duration(delay);
         if let Err(e) = self.loop_handle.insert_source(timer, move |_, _, state| {
             state.gpu_tick();
             smithay::reexports::calloop::timer::TimeoutAction::Drop
@@ -376,19 +425,42 @@ impl ViewportState {
                     .collect()
             })
             .unwrap_or_default();
+        // When the next of them comes due, for the re-arm below. The watchdog
+        // used to re-arm at TICK for as long as any entry was here — a card
+        // refusing to open at the thirty-second end of the backoff still cost
+        // two and a half wakeups a second until the session ended — so the
+        // next look takes the sooner of this and TICK instead.
+        let mut retry_in = None;
         if !pending.is_empty() {
-            again = true;
-            if !switched_away {
+            if switched_away {
+                // Retries wait for the session to come back, like every other
+                // recovery step; there is no date to wake for.
+                again = true;
+            } else {
                 for (card, due) in pending {
                     if due {
                         self.install_device(None, card);
                     }
                 }
+                // Read after the attempts above: an entry that was just tried
+                // has been given a fresh backoff and is no longer due.
+                retry_in = self.udev.as_ref().and_then(|udev| {
+                    udev.pending_adds
+                        .iter()
+                        .map(|add| add_wait(add.attempts, add.tried_at.elapsed()))
+                        .min()
+                });
             }
         }
 
-        if again {
-            self.watch_gpus();
+        if let Some(delay) = next_tick(again, retry_in) {
+            // Re-armed at the pace this turn's work justifies. Cleared first
+            // because a retry that just failed has already armed the watchdog
+            // at TICK through `install_device`, and the delay just computed is
+            // the better answer — `arm_tick` moves the same timer rather than
+            // making another.
+            self.gpu_watch = false;
+            self.watch_gpus_in(delay);
         }
     }
 
@@ -705,6 +777,7 @@ impl ViewportState {
             // the field.
             settle: 5,
             lease_state,
+            lease_offered: std::collections::HashSet::new(),
         };
         match slot {
             // Assigning over the slot is what drops the old device — its
@@ -857,6 +930,15 @@ impl ViewportState {
 
     /// udev says a DRM device has gone.
     pub fn on_gpu_removed(&mut self, device_id: u64) {
+        // A card that failed its first open lives only in `pending_adds` — the
+        // slot lookup below finds nothing for it — and its entry used to
+        // survive this: unplugged while waiting to be retried, the watchdog
+        // went on opening a device that was not there, at the backoff, for the
+        // rest of the session. Dropped here, whatever waited on it stops.
+        if let Some(udev) = self.udev.as_mut() {
+            udev.pending_adds
+                .retain(|pending| pending.card.dev_id() != device_id);
+        }
         let found = self.udev.as_ref().and_then(|udev| {
             udev.devices
                 .iter()
@@ -1072,5 +1154,67 @@ mod tests {
             Some("fe004000.v3d")
         );
         assert_eq!(bus_id_of(Path::new("")), None);
+    }
+
+    #[test]
+    fn the_watchdog_wakes_for_the_next_retry_not_for_ever() {
+        // Nothing to look at at all: stand down rather than ticking the rest
+        // of the session away.
+        assert_eq!(next_tick(false, None), None);
+        // Only a card waiting out its backoff: wake when it comes due — and
+        // never sooner than the floor, so an overdue one cannot spin the loop.
+        assert_eq!(
+            next_tick(false, Some(Duration::from_secs(30))),
+            Some(Duration::from_secs(30))
+        );
+        assert_eq!(next_tick(false, Some(Duration::ZERO)), Some(TICK_FLOOR));
+        // Ordinary watchdog business at TICK, but never sleeping past a retry
+        // that lands sooner, and never past TICK on behalf of one that lands
+        // much later.
+        assert_eq!(next_tick(true, None), Some(TICK));
+        assert_eq!(
+            next_tick(true, Some(Duration::from_millis(100))),
+            Some(Duration::from_millis(100))
+        );
+        assert_eq!(next_tick(true, Some(Duration::from_secs(30))), Some(TICK));
+    }
+
+    #[test]
+    fn a_retry_wait_counts_the_backoff_down_from_the_last_try() {
+        assert_eq!(add_wait(0, Duration::ZERO), backoff(0));
+        assert_eq!(add_wait(2, backoff(1)), backoff(2) - backoff(1));
+        // Overdue is zero, not a negative panic and not a spin: the floor in
+        // `next_tick` is what keeps a due-and-suppressed retry from re-arming
+        // at zero.
+        assert_eq!(add_wait(0, backoff(0)), Duration::ZERO);
+        assert_eq!(
+            add_wait(0, backoff(0) + Duration::from_secs(1)),
+            Duration::ZERO
+        );
+    }
+
+    /// The stateful path has no test harness here — a card that never opened
+    /// has no slot for `on_gpu_removed` to find, so the prune has to happen
+    /// against `pending_adds` itself — and is checked against the source, as
+    /// the frame-barrier guards are.
+    #[test]
+    fn a_card_removed_while_waiting_to_open_is_not_retried() {
+        let source = include_str!("recovery.rs");
+        let start = source
+            .find("pub fn on_gpu_removed")
+            .expect("on_gpu_removed in recovery.rs");
+        let rest = &source[start..];
+        let end = rest
+            .find("\n    /// udev says a DRM device has appeared")
+            .unwrap_or(rest.len());
+        let body = &rest[..end];
+        assert!(
+            body.contains("pending_adds"),
+            "on_gpu_removed must drop the removed card's pending_adds entry"
+        );
+        assert!(
+            body.contains("retain("),
+            "the drop has to prune every entry for the device that went"
+        );
     }
 }

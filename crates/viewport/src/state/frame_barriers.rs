@@ -478,8 +478,7 @@ impl ViewportState {
             // This screen's own last flip, not the newest anywhere. A screen
             // whose vblank is doing the releasing does not need this pass.
             let own_vblank = self.udev.as_ref().is_some_and(|udev| {
-                udev.last_vblank_by_output
-                    .get(&output.name())
+                udev.last_vblank_of(output)
                     .is_some_and(|at| at.elapsed() < interval * 2)
             });
             if own_vblank {
@@ -520,8 +519,7 @@ impl ViewportState {
         if walked == 0 {
             let starved = self.udev.as_ref().is_some_and(|udev| {
                 self.space.outputs().any(|output| {
-                    udev.last_vblank_by_output
-                        .get(&output.name())
+                    udev.last_vblank_of(output)
                         .is_none_or(|at| at.elapsed() >= interval * 2)
                 })
             });
