@@ -4324,19 +4324,33 @@ fn blit_shm(
                 data.width, data.height, size.w, size.h
             ));
         }
+        // The destination is the client's own — `offset` and `stride` are its
+        // `create_buffer` arguments and are not trusted here. The check above
+        // bounds the pixels being read, not the buffer being written to: the
+        // writes below run to `offset + (rows - 1) * stride + row`, and
+        // `offset` and `stride` are signed on the wire, so one that is
+        // negative would wrap through `as usize` into a pointer far past the
+        // mapping. Smithay's `create_buffer` validation refuses exactly those
+        // today, and only 4-bytes-per-pixel formats are registered — but the
+        // safety of these writes rests on neither fact, so the far edge is
+        // computed and checked here before the first byte is written.
+        let (offset, stride) = shm_blit_dest(data.offset, data.stride, len, row, size.h as usize)?;
         // Row by row, because the client's stride need not be the packed
         // width — and writing as though it were shears the image.
-        let stride = data.stride as usize;
         for y in 0..size.h as usize {
             let from = &pixels[y * row..(y + 1) * row];
-            // SAFETY: the length was checked above, and shm guarantees the
-            // mapping is valid for the duration of this closure.
+            // SAFETY: `ptr` points at the pool's mapping of `len` bytes and
+            // stays valid for this closure (`with_buffer_contents_mut`).
+            // Every write lands inside it: `shm_blit_dest` established that
+            // `offset` and `stride` are non-negative, that `stride >= row`,
+            // and that the last byte the last row touches — `offset +
+            // (rows - 1) * stride + row` — is within `len`, all in checked
+            // arithmetic; row `y` writes `row` bytes at `offset + y * stride`
+            // and so ends no later than the last row does. The source is
+            // `pixels`, whose `row * rows` bytes `shm_blit_layout` checked
+            // before anything ran, and the two are distinct allocations.
             unsafe {
-                std::ptr::copy_nonoverlapping(
-                    from.as_ptr(),
-                    ptr.add(data.offset as usize + y * stride),
-                    row,
-                );
+                std::ptr::copy_nonoverlapping(from.as_ptr(), ptr.add(offset + y * stride), row);
             }
         }
         Ok(())
@@ -4380,6 +4394,54 @@ fn shm_blit_layout(
         ));
     }
     Ok((want as usize, row as usize))
+}
+
+/// Where a blit may write in the client's buffer: the byte offset of the
+/// first row and the row pitch, checked against the mapping's length.
+///
+/// `data.offset` and `data.stride` are the client's own `create_buffer`
+/// arguments, both signed `i32` on the wire, and the copy writes `rows` rows
+/// of `row` bytes at `stride` spacing starting at `offset` — so it reaches
+/// byte `offset + (rows - 1) * stride + row` of the mapping. Everything
+/// about that is validated here rather than taken on trust from Smithay's
+/// `create_buffer` checks: a negative `offset` or `stride` would wrap through
+/// `as usize` into a pointer far past the mapping, a `stride` tighter than
+/// one row makes later rows overwrite earlier ones and the last row land
+/// past a legal offset, and a large-but-legal geometry can still end beyond
+/// `len` once padding is counted. All the arithmetic is checked; nothing
+/// here may overflow into a passing answer.
+fn shm_blit_dest(
+    data_offset: i32,
+    data_stride: i32,
+    len: usize,
+    row: usize,
+    rows: usize,
+) -> Result<(usize, usize), String> {
+    let offset = usize::try_from(data_offset)
+        .map_err(|_| format!("the client's buffer offset is {data_offset}"))?;
+    let stride = usize::try_from(data_stride)
+        .map_err(|_| format!("the client's buffer stride is {data_stride}"))?;
+    if stride < row {
+        return Err(format!(
+            "the client's buffer stride is {stride} and one row of the copy is {row} bytes"
+        ));
+    }
+    let Some(end) = rows
+        .saturating_sub(1)
+        .checked_mul(stride)
+        .and_then(|into| offset.checked_add(into))
+        .and_then(|end| end.checked_add(row))
+    else {
+        return Err(format!(
+            "the client's buffer geometry overflows: offset {data_offset}, stride {data_stride}"
+        ));
+    };
+    if end > len {
+        return Err(format!(
+            "the copy would end at byte {end} of the client's {len}-byte buffer"
+        ));
+    }
+    Ok((offset, stride))
 }
 
 /// How much of a window sits on one screen, in square logical pixels.
@@ -5007,6 +5069,35 @@ mod tests {
         // Exactly enough passes, a byte short does not.
         assert!(shm_blit_layout(size(4, 2), 32, "the copy").is_ok());
         assert!(shm_blit_layout(size(4, 2), 31, "the copy").is_err());
+    }
+
+    /// The destination side of the same check: the writes land at the
+    /// client's offset and stride, not at the packed ones the pixels use, and
+    /// the geometry the client asked for has to fit its own mapping.
+    #[test]
+    fn a_blit_lands_inside_the_clients_buffer() {
+        // Packed rows, exactly the mapping's length.
+        assert_eq!(shm_blit_dest(0, 16, 32, 16, 2), Ok((0, 16)));
+        // Padding in the stride and a non-zero offset, the far edge of the
+        // last row still inside.
+        assert_eq!(shm_blit_dest(8, 32, 72, 16, 2), Ok((8, 32)));
+        // One byte short of the last row's end is refused.
+        assert!(shm_blit_dest(8, 32, 55, 16, 2).is_err());
+    }
+
+    /// And the geometry a hostile client can name: signed arguments that
+    /// would wrap, a stride tighter than one row, and products that overflow.
+    #[test]
+    fn a_hostile_buffer_geometry_is_refused() {
+        assert!(shm_blit_dest(-1, 16, 1 << 20, 16, 2).is_err());
+        assert!(shm_blit_dest(0, -16, 1 << 20, 16, 2).is_err());
+        assert!(shm_blit_dest(0, -1, 1 << 20, 16, 2).is_err());
+        // A stride that cannot hold one full row would drop the last rows
+        // past a legal offset even where Smithay's own checks pass.
+        assert!(shm_blit_dest(0, 8, 1 << 20, 16, 2).is_err());
+        // The largest signed values cannot overflow `usize`, but a mapping
+        // that claims to hold them is refused all the same.
+        assert!(shm_blit_dest(i32::MAX, i32::MAX, 1 << 20, 16, 2).is_err());
     }
 
     /// Screenshot files are created fail-if-exists, so their names have to be
