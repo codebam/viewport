@@ -151,7 +151,7 @@ impl ViewportState {
         // Every page, not only the desktop: a `--url` page on the first monitor
         // is as much a client waiting to be told to draw as the desktop on the
         // second.
-        for surface in self.shell_client_surfaces() {
+        for surface in live_surfaces(self.shell_client_surfaces()) {
             smithay::desktop::utils::send_frames_surface_tree(
                 &surface,
                 output,

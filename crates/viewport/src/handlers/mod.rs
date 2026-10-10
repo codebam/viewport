@@ -1477,6 +1477,79 @@ impl crate::workspace::WorkspaceOutputs for ViewportState {
     }
 }
 
+/// The nodes an empty drm-lease fallback state may be built from, in the
+/// order they should be tried.
+///
+/// The registered cards come first, the ones still online ahead of the ones
+/// that are not: an online card is one whose node the kernel still has, while
+/// an offline entry is a GPU the kernel has already unregistered and whose
+/// node `open` will fail on. The node the request itself names is last —
+/// that is the node the request has just told us is gone.
+///
+/// Generic in the node so the order can be tested on labels: `DrmNode`
+/// validates a device number against `/sys/dev` and cannot be made up in a
+/// unit test.
+fn lease_fallback_candidates<T>(requesting: T, devices: impl Iterator<Item = (T, bool)>) -> Vec<T> {
+    let mut online = Vec::new();
+    let mut offline = Vec::new();
+    for (node, is_online) in devices {
+        if is_online {
+            online.push(node);
+        } else {
+            offline.push(node);
+        }
+    }
+    online.append(&mut offline);
+    online.push(requesting);
+    online
+}
+
+impl ViewportState {
+    /// Build, once, the empty [`smithay::wayland::drm_lease::DrmLeaseState`]
+    /// that answers a request whose card is gone — and keep it.
+    ///
+    /// [`smithay::wayland::drm_lease::DrmLeaseState::new_with_filter`] can
+    /// only make a state from a node that still opens, and the request that
+    /// needs the answer is the one whose node has stopped opening, so the
+    /// state has to exist *before* the request arrives. Every candidate is
+    /// tried in turn until one opens (see [`lease_fallback_candidates`]); the
+    /// filter matches no client, so the state built is hidden from binds and
+    /// offers nothing to lease — it must not look like a second device.
+    ///
+    /// Kept for the life of the session once built. A lease global cannot be
+    /// withdrawn (`DrmLeaseState::drop` never removes one), so requests for a
+    /// dead node keep arriving for as long as the client that bound its
+    /// global stays connected, and there may be no node left to build a
+    /// second answer from when they do.
+    fn ensure_lease_fallback(&mut self, node: smithay::backend::drm::DrmNode) {
+        // Prefer the empty state that exists to building a new one — and
+        // never from a node that has already failed to open.
+        if self.lease_fallback.is_some() {
+            return;
+        }
+        // Captured before the loop: the loop borrows `self` to store what it
+        // builds.
+        let candidates = lease_fallback_candidates(
+            node,
+            self.udev
+                .as_ref()
+                .into_iter()
+                .flat_map(|udev| udev.devices.iter())
+                .map(|device| (device.node, device.online)),
+        );
+        for card in candidates {
+            if let Ok(state) = smithay::wayland::drm_lease::DrmLeaseState::new_with_filter::<
+                ViewportState,
+                _,
+            >(&self.display_handle, &card, |_| false)
+            {
+                self.lease_fallback = Some(Box::new(state));
+                return;
+            }
+        }
+    }
+}
+
 /// Handing a connector to a client whole, with `wp-drm-lease-v1`.
 ///
 /// The client is a VR runtime: it knows the headset's timing and its lens
@@ -1495,29 +1568,49 @@ impl smithay::wayland::drm_lease::DrmLeaseHandler for ViewportState {
         &mut self,
         node: smithay::backend::drm::DrmNode,
     ) -> &mut smithay::wayland::drm_lease::DrmLeaseState {
-        // A card that is still registered, captured before the lookup below.
-        // The lookup can return its borrow from this function, so `self.udev`
-        // cannot be touched again after it.
-        let some_card = self
-            .udev
-            .as_ref()
-            .and_then(|udev| udev.devices.first().map(|device| device.node));
+        // The empty answer, built before anything needs it and kept for the
+        // rest of the session. `DrmLeaseState::new_with_filter` can only make
+        // a state from a node that still opens, and the request that will
+        // need the fallback is the one whose node has stopped opening — so
+        // this runs on every call, the ones answered by a registered card
+        // below included, and arms the fallback while a card is still there
+        // to arm it from.
+        self.ensure_lease_fallback(node);
 
-        // The card this node names, because there is one global per card and
-        // the request arrived through one of them. Matched on the node rather
-        // than answered with the primary's: handing back the wrong card's
-        // state would offer a client connectors that are not on the device it
-        // is about to open.
-        //
+        // Which kept state answers is decided before any borrow is taken,
+        // because the borrow that answers has to be taken exactly once: a
+        // request for a registered card's node is answered by that card's own
+        // state — matched on the node rather than answered with the
+        // primary's, since handing back the wrong card's state would offer a
+        // client connectors that are not on the device it is about to open.
         // By `dev_id` rather than by equality, because the node the protocol
         // carries is the one the global was made with and the one stored is
-        // the card as udev named it — the same device, and not necessarily the
-        // same `DrmNode` value.
-        if let Some(index) = self.udev.as_ref().and_then(|udev| {
-            udev.devices
-                .iter()
-                .position(|device| device.node.dev_id() == node.dev_id())
-        }) {
+        // the card as udev named it — the same device, and not necessarily
+        // the same `DrmNode` value. A card that is gone keeps its own state
+        // (`recovery::on_gpu_removed` keeps it on purpose), so a request that
+        // outlives its card still resolves here; only a node whose slot was
+        // replaced while a client held its global does not.
+        //
+        // Beyond that the empty fallback built above answers, and only with
+        // no fallback at all does some other card's state stand in — a wrong
+        // card is the last resort, not an answer of equal standing.
+        let (by_node, any_card) = match self.udev.as_ref() {
+            Some(udev) => (
+                udev.devices.iter().position(|device| {
+                    device.node.dev_id() == node.dev_id() && device.lease_state.is_some()
+                }),
+                udev.devices
+                    .iter()
+                    .position(|device| device.lease_state.is_some()),
+            ),
+            None => (None, None),
+        };
+        let any_card = if self.lease_fallback.is_some() {
+            None
+        } else {
+            any_card
+        };
+        if let Some(index) = by_node.or(any_card) {
             if let Some(lease_state) = self
                 .udev
                 .as_mut()
@@ -1533,40 +1626,27 @@ impl smithay::wayland::drm_lease::DrmLeaseHandler for ViewportState {
         // arriving. Aborting here would let one of them take down the whole
         // session. An empty state answers instead — nothing in it to lease,
         // and a submit falls through to `lease_request`, which refuses what
-        // it cannot hand out.
+        // it cannot hand out. That empty state is the one built and kept
+        // above: an existing one, returned rather than a fresh one built
+        // from the node this request has just reported missing.
         //
-        // A card that has gone keeps its own state, so the lookup above
-        // answers for it and this is reached only for a node no registered
-        // card owns. No global was ever made for such a node, so nothing can
-        // be holding one and asking; build the answer once and keep it, and
-        // never abort a dispatch.
-        if self.lease_fallback.is_none() {
-            if let Ok(state) =
-                smithay::wayland::drm_lease::DrmLeaseState::new_with_filter::<ViewportState, _>(
-                    &self.display_handle,
-                    &node,
-                    // Hidden from binds: it offers nothing, and must not look
-                    // like a second device.
-                    |_| false,
-                )
-            {
-                self.lease_fallback = Some(Box::new(state));
-            }
-        }
-        if self.lease_fallback.is_none() {
-            // Even the node's path is gone. Build the empty state from a card
-            // that is still registered; a lease global only exists where one
-            // was.
-            if let Some(card) = some_card {
-                if let Ok(state) = smithay::wayland::drm_lease::DrmLeaseState::new_with_filter::<
-                    ViewportState,
-                    _,
-                >(&self.display_handle, &card, |_| false)
-                {
-                    self.lease_fallback = Some(Box::new(state));
-                }
-            }
-        }
+        // The invariant that keeps the expect below from ever firing. A
+        // `wp_drm_lease_device_v1` global only exists where a
+        // `DrmLeaseState::new_with_filter` succeeded once — that call is what
+        // makes one — and every state such a call returns is kept: one per
+        // card in `Device::lease_state` (which `recovery::on_gpu_removed`
+        // keeps on purpose, so a request that outlives its card still
+        // resolves by `dev_id` above), and one for the whole session in
+        // `lease_fallback`, which `ensure_lease_fallback` fills from the
+        // first node that opens and nothing clears. A slot that is replaced
+        // loses its state only to the one `install_device` builds for the
+        // card that took its place, from the node it has just opened. So
+        // every state that can answer is above; reaching here would take
+        // every node on the machine failing to open and every card losing its
+        // state at once, which no request can arrange. Smithay's handler
+        // trait leaves no way to refuse a request — only to hand over a
+        // state — so this documents the invariant rather than replacing it
+        // with a fallible one.
         self.lease_fallback.as_mut().expect(
             "a lease state exists for every registered card, and a node with none has no global",
         )
@@ -1672,5 +1752,41 @@ impl smithay::wayland::drm_lease::DrmLeaseHandler for ViewportState {
         if let Some(udev) = self.udev.as_mut() {
             udev.leases.retain(|lease| lease.id() != lease_id);
         }
+    }
+}
+
+#[cfg(test)]
+mod lease_fallback_tests {
+    use super::*;
+
+    /// The cards that are still online are tried before the ones the kernel
+    /// has already unregistered — those are the opens most likely to fail —
+    /// and the node the request names is tried last: it is the one the request
+    /// has just reported gone. Stands in for the nodes, which `DrmNode`
+    /// refuses to make up; see the helper.
+    #[test]
+    fn the_fallback_prefers_the_cards_that_are_still_there() {
+        assert_eq!(
+            lease_fallback_candidates(
+                "requesting",
+                [("offline", false), ("online", true)].into_iter()
+            ),
+            vec!["online", "offline", "requesting"]
+        );
+    }
+
+    /// Nothing registered still leaves the request's own node to try, and
+    /// several dead cards are all tried rather than giving up after the first
+    /// failure.
+    #[test]
+    fn every_candidate_is_tried_before_the_requests_own_node() {
+        assert_eq!(
+            lease_fallback_candidates("requesting", std::iter::empty()),
+            vec!["requesting"]
+        );
+        assert_eq!(
+            lease_fallback_candidates("requesting", [("one", false), ("two", false)].into_iter()),
+            vec!["one", "two", "requesting"]
+        );
     }
 }

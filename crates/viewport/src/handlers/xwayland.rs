@@ -75,6 +75,20 @@ impl smithay::wayland::xwayland_shell::XWaylandShellHandler for ViewportState {
 
 impl XwmHandler for ViewportState {
     fn xwm_state(&mut self, _xwm: XwmId) -> &mut X11Wm {
+        // Smithay takes the window manager from here as the first act of
+        // every X11 dispatch, and the type leaves no way to decline one: this
+        // must return a live `X11Wm`, and one cannot be made except by
+        // `X11Wm::start_wm` over Xwayland's socket — so `None` cannot be
+        // answered with a no-op even if it could arrive. What keeps it from
+        // arriving is upstream of here: `X11Wm::start_wm` registers the only
+        // event source these calls come from and returns the `X11Wm`, which
+        // the XWayland `Ready` handler stores in `self.xwm` in the same
+        // event-loop turn (a source inserted mid-turn is first dispatched on
+        // the next one), and nothing ever clears the field afterwards — every
+        // dispatch is served by the very window manager whose source is
+        // delivering it. Every other reader of `self.xwm` — the clipboard
+        // paths in `handlers/mod.rs` and `clipboard_launcher.rs` — treats
+        // `None` as a no-op, and `xwm` is the only accessor that cannot.
         self.xwm.as_mut().expect("the window manager is running")
     }
 

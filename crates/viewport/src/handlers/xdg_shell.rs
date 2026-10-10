@@ -990,7 +990,16 @@ pub fn handle_commit(state: &mut ViewportState, surface: &WlSurface) {
                 states
                     .data_map
                     .get::<XdgToplevelSurfaceData>()
-                    .map(|data| data.lock().unwrap().initial_configure_sent)
+                    // Read, not obeyed: a panic in whichever thread held this
+                    // last says nothing about the configure, and this runs on
+                    // every commit — a poisoned lock here would leave a client
+                    // unpainted, not hand anybody a diagnosis. The same
+                    // pattern `render_frame` uses for the same kind of lock.
+                    .map(|data| {
+                        data.lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .initial_configure_sent
+                    })
                     .unwrap_or(true)
             });
             if !sent {
