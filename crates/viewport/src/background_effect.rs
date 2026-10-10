@@ -133,6 +133,17 @@ struct BlurProgram(GlesTexProgram);
 #[derive(Debug)]
 struct SurfaceEffectData(Mutex<SurfaceEffect>);
 
+/// What one commit drew, kept for the last few commits: the commit and the
+/// region list as it was then. `None` regions is a commit that requested
+/// nothing.
+type RegionHistory = Arc<Vec<(CommitCounter, Option<Arc<Vec<Rectangle<i32, Logical>>>>)>>;
+
+/// How many committed region sets to keep. A damage tracker asks about the
+/// commit it last drew, which is one step back on an output that is drawing;
+/// past this many changes between two draws of one output the answer comes
+/// from the geometry fallback instead.
+const REGION_HISTORY: usize = 8;
+
 #[derive(Debug)]
 struct SurfaceEffect {
     id: Id,
@@ -140,6 +151,21 @@ struct SurfaceEffect {
     hook_registered: bool,
     forced: bool,
     rects: Option<Arc<Vec<Rectangle<i32, Logical>>>>,
+    /// The region list at the last few commits, oldest first.
+    ///
+    /// `damage_since` is asked "what changed since the commit the caller last
+    /// drew", and the pixels a region change *removed* are named only by the
+    /// regions of the earlier commits — the current list no longer contains
+    /// them. The history lets the answer name them exactly; when the
+    /// asked-for commit has aged out of it, damage falls back to the whole
+    /// geometry, which is what it always did.
+    ///
+    /// Copy-on-write, so carrying it into a frame's element is one atomic
+    /// increment and no copying — the element is rebuilt per output per frame.
+    /// `forced` clears it: a forced effect draws the whole surface whatever
+    /// the region list says, so no entry made around a force can name what
+    /// was drawn.
+    history: RegionHistory,
 }
 
 impl SurfaceEffect {
@@ -156,8 +182,17 @@ impl SurfaceEffect {
         if self.rects == rects {
             return false;
         }
-        self.rects = rects;
+        self.rects = rects.clone();
         self.commit.increment();
+        let history = Arc::make_mut(&mut self.history);
+        if self.forced {
+            history.clear();
+        } else {
+            history.push((self.commit, rects));
+            if history.len() > REGION_HISTORY {
+                history.remove(0);
+            }
+        }
         true
     }
 
@@ -165,6 +200,8 @@ impl SurfaceEffect {
         if self.forced != forced {
             self.forced = forced;
             self.commit.increment();
+            // What the effect draws changes wholesale — see `history`.
+            Arc::make_mut(&mut self.history).clear();
         }
     }
 }
@@ -177,6 +214,7 @@ impl Default for SurfaceEffectData {
             hook_registered: false,
             forced: false,
             rects: None,
+            history: RegionHistory::default(),
         }))
     }
 }
@@ -190,6 +228,17 @@ pub struct BackgroundEffectRenderElement {
     alpha: f32,
     /// Requested pixels, relative to `geometry` and numerically in pixels.
     regions: Vec<Rectangle<i32, Buffer>>,
+    /// The region lists at and since the commit a caller may last have drawn,
+    /// in the surface's own logical pixels — mapped through `surface_size`
+    /// and `surface_geometry`, exactly as `regions` was, only when
+    /// `damage_since` is asked. Empty when nothing can name the old regions
+    /// (a shell overlay, a forced effect), which is when the whole geometry
+    /// is damaged instead.
+    history: RegionHistory,
+    /// What the history's rectangles are measured against, as `render_element`
+    /// mapped `regions`. Meaningless without a non-empty `history`.
+    surface_size: Size<i32, Logical>,
+    surface_geometry: Rectangle<i32, Physical>,
 }
 
 impl Element for BackgroundEffectRenderElement {
@@ -217,9 +266,50 @@ impl Element for BackgroundEffectRenderElement {
         if commit == Some(self.commit) {
             return DamageSet::default();
         }
-        // The previous region is not available here. Damage the bounding box
-        // so pixels removed by a subtraction are repainted from the backdrop.
-        DamageSet::from_slice(&[Rectangle::from_size(self.geometry.size)])
+        // What has to be repainted is every pixel drawn at or after the
+        // caller's commit — including the ones a region change has since
+        // *removed*, which only the older entries of the history name. The
+        // regions are mapped through `src` exactly as the draw paths map the
+        // ones they paint, and no more than those: `geometry` is the regions
+        // padded by `BLUR_SOURCE_PADDING` for the kernel's source samples,
+        // the padding is source-only and painted by nothing, and reporting it
+        // as damage cost a repaint and a backdrop re-capture of a box up to
+        // 32 px wider per axis than the effect ever puts pixels in.
+        let from = commit.and_then(|commit| self.history.iter().position(|(at, _)| *at == commit));
+        let Some(from) = from else {
+            // Never drawn before, or the commit asked about has aged out of
+            // the history — or was never in it, for an effect whose old
+            // regions nothing keeps (a shell overlay). What was removed
+            // cannot be named, so the whole geometry is damaged as it always
+            // was: over-painting is wasteful, under-painting leaves the last
+            // blur on screen.
+            return DamageSet::from_slice(&[Rectangle::from_size(self.geometry.size)]);
+        };
+        let mut damage = Vec::new();
+        for (_, rects) in &self.history[from..] {
+            let Some(rects) = rects else {
+                continue;
+            };
+            for region in rects.iter() {
+                let Some(absolute) =
+                    map_surface_region(*region, self.surface_size, self.surface_geometry)
+                else {
+                    continue;
+                };
+                let relative = Rectangle::<i32, Buffer>::new(
+                    (
+                        absolute.loc.x - self.geometry.loc.x,
+                        absolute.loc.y - self.geometry.loc.y,
+                    )
+                        .into(),
+                    (absolute.size.w, absolute.size.h).into(),
+                );
+                if let Some(mapped) = map_region(relative, self.src(), self.geometry.size) {
+                    damage.push(mapped);
+                }
+            }
+        }
+        DamageSet::from_slice(&damage)
     }
 
     fn alpha(&self) -> f32 {
@@ -416,6 +506,12 @@ impl BackgroundEffectRenderElement {
                     .into(),
                 (requested.size.w, requested.size.h).into(),
             )],
+            // No history: the shell's overlay counter is shared across
+            // overlays and nothing keeps what one of them drew at each of its
+            // values, so a commit change falls back to the whole geometry.
+            history: RegionHistory::default(),
+            surface_size: Size::from((0, 0)),
+            surface_geometry: Rectangle::default(),
         })
     }
 
@@ -435,6 +531,9 @@ impl BackgroundEffectRenderElement {
                     .into(),
                 (requested.size.w, requested.size.h).into(),
             )],
+            history: RegionHistory::default(),
+            surface_size: Size::from((0, 0)),
+            surface_geometry: Rectangle::default(),
         }
     }
 
@@ -486,28 +585,37 @@ impl BackgroundEffectRenderElement {
         ));
         let source_size = frame.transformation().transform_size(source_size);
         let cache = cache.get_or_insert::<RefCell<GlesEffectCache>, _>(Default::default);
-        let mut cache = cache.borrow_mut();
-        let Some((size, _)) = blur_texture_size(source_size.w, source_size.h) else {
-            cache.texture = None;
-            cache.captured = None;
-            return Ok(());
+        let size = {
+            let mut cache = cache.borrow_mut();
+            let Some((size, _)) = blur_texture_size(source_size.w, source_size.h) else {
+                cache.texture = None;
+                cache.captured = None;
+                return Ok(());
+            };
+            if cache
+                .texture
+                .as_ref()
+                .is_some_and(|texture| texture.size() != size)
+            {
+                cache.texture = None;
+                cache.captured = None;
+            }
+            if cache.texture.is_none() {
+                let mut renderer = frame.renderer();
+                cache.texture = Some(renderer.as_mut().create_buffer(Fourcc::Abgr8888, size)?);
+            }
+            size
         };
-        if cache
-            .texture
-            .as_ref()
-            .is_some_and(|texture| texture.size() != size)
-        {
-            cache.texture = None;
-            cache.captured = None;
-        }
-        if cache.texture.is_none() {
-            let mut renderer = frame.renderer();
-            cache.texture = Some(renderer.as_mut().create_buffer(Fourcc::Abgr8888, size)?);
-        }
-
-        let texture = cache.texture.as_mut().expect("created above");
+        // A cloned handle and no borrow of the cache: `blit_to` and the wait
+        // below draw through the frame, and a re-entrant draw or capture of
+        // this element while the cache is borrowed is a `BorrowMutError`
+        // panic on the render thread. The Vulkan twin drops its borrow before
+        // the GPU work for exactly this reason. (`frame.wait` can also block
+        // the CPU when the fence fallback runs, which must not happen with
+        // anything borrowed either.)
+        let mut texture = cache.borrow().texture.clone().expect("created above");
         let mut renderer = frame.renderer();
-        let mut target = renderer.as_mut().bind(texture)?;
+        let mut target = renderer.as_mut().bind(&mut texture)?;
         drop(renderer);
         let sync = frame.blit_to(
             &mut target,
@@ -517,7 +625,7 @@ impl BackgroundEffectRenderElement {
         )?;
         frame.wait(&sync)?;
         drop(target);
-        cache.captured = Some(CapturedFramebuffer {
+        cache.borrow_mut().captured = Some(CapturedFramebuffer {
             dst: clamped,
             transform: frame.transformation(),
         });
@@ -532,12 +640,28 @@ impl BackgroundEffectRenderElement {
         damage: &[Rectangle<i32, Physical>],
         cache: Option<&UserDataMap>,
     ) -> Result<(), GlesError> {
-        let Some(cache) = cache.and_then(|cache| cache.get::<RefCell<GlesEffectCache>>()) else {
+        let Some(cell) = cache.and_then(|cache| cache.get::<RefCell<GlesEffectCache>>()) else {
             return Ok(());
         };
         let output = Rectangle::from_size(frame.output_size());
 
-        let mut cache = cache.borrow_mut();
+        // Before the cache is borrowed at all: the lookup draws nothing but
+        // does take the renderer, and no borrow of the cache survives any
+        // touch of the frame below.
+        let program = {
+            let renderer = frame.renderer();
+            renderer
+                .as_ref()
+                .egl_context()
+                .user_data()
+                .get::<BlurProgram>()
+                .cloned()
+        };
+        let Some(program) = program else {
+            return Ok(());
+        };
+
+        let mut cache = cell.borrow_mut();
         let Some(texture) = cache.texture.clone() else {
             return Ok(());
         };
@@ -570,36 +694,33 @@ impl BackgroundEffectRenderElement {
         if cache.damage.is_empty() {
             return Ok(());
         }
+        // Taken rather than borrowed, as the Vulkan twin does: the frame
+        // draws through itself here, and a re-entrant draw or capture of this
+        // element would borrow the cache again while this one is alive — a
+        // `BorrowMutError` panic on the render thread. The buffer goes back
+        // to the cache afterwards so the next draw reuses its allocation.
+        let damage = std::mem::take(&mut cache.damage);
+        drop(cache);
 
-        let program = {
-            let renderer = frame.renderer();
-            renderer
-                .as_ref()
-                .egl_context()
-                .user_data()
-                .get::<BlurProgram>()
-                .cloned()
-        };
-        let Some(program) = program else {
-            return Ok(());
-        };
         let size = texture.size();
         let uniforms = [Uniform::new(
             "texel_size",
             [1.0 / size.w.max(1) as f32, 1.0 / size.h.max(1) as f32],
         )];
         let texture_src = captured_source(captured, clamped, texture.size());
-        frame.render_texture_from_to(
+        let drawn = frame.render_texture_from_to(
             &texture,
             texture_src,
             clamped,
-            &cache.damage,
+            &damage,
             &[],
             captured.transform.invert(),
             self.alpha,
             Some(&program.0),
             &uniforms,
-        )
+        );
+        cell.borrow_mut().damage = damage;
+        drawn
     }
 
     /// Capture the framebuffer behind the surface into a quarter-resolution
@@ -793,10 +914,17 @@ where
     } else {
         states.data_map.get::<SurfaceEffectData>()?
     };
-    let (id, commit, rects) = {
+    let (id, commit, rects, history) = {
         let mut data = data.0.lock().unwrap_or_else(|e| e.into_inner());
         data.set_forced(force_blur);
-        (data.id.clone(), data.commit, data.rects.clone())
+        // A forced effect draws the whole surface, which its region history
+        // cannot name — carry no history and let the damage fall back.
+        let history = if force_blur {
+            RegionHistory::default()
+        } else {
+            data.history.clone()
+        };
+        (data.id.clone(), data.commit, data.rects.clone(), history)
     };
 
     let view = surface.view();
@@ -837,6 +965,9 @@ where
         geometry,
         alpha: surface.alpha(),
         regions,
+        history,
+        surface_size: view.dst,
+        surface_geometry,
     })
 }
 
@@ -1205,6 +1336,9 @@ mod tests {
             geometry: Rectangle::new((4, 14).into(), (132, 112).into()),
             alpha: 1.0,
             regions: vec![Rectangle::new((16, 16).into(), (100, 80).into())],
+            history: RegionHistory::default(),
+            surface_size: Size::from((0, 0)),
+            surface_geometry: Rectangle::default(),
         };
         assert!(effect.clip_regions(Rectangle::new((20, 30).into(), (50, 80).into())));
         assert_eq!(
@@ -1246,6 +1380,13 @@ mod tests {
         assert!(rejected.take((1, 1).into()));
     }
 
+    /// A region change with nothing to name the old regions repaints the
+    /// removed pixels anyway: the whole geometry is damaged, so the strip a
+    /// subtraction took away is repainted from the backdrop. This is the
+    /// fallback `damage_since` answers with when the commit asked about is
+    /// not in the region history — see
+    /// `damage_names_the_regions_of_every_commit_since_the_last_draw` for the
+    /// case where it is.
     #[test]
     fn a_region_change_repaints_removed_pixels() {
         let old_commit = CommitCounter::default();
@@ -1257,6 +1398,9 @@ mod tests {
             geometry: Rectangle::new((20, 30).into(), (100, 80).into()),
             alpha: 1.0,
             regions: vec![Rectangle::new((0, 0).into(), (10, 10).into())],
+            history: RegionHistory::default(),
+            surface_size: Size::from((0, 0)),
+            surface_geometry: Rectangle::default(),
         };
 
         let damage: Vec<_> = effect
@@ -1264,6 +1408,77 @@ mod tests {
             .into_iter()
             .collect();
         assert_eq!(damage, vec![Rectangle::from_size((100, 80).into())]);
+    }
+
+    /// With the old regions in hand, damage is what the effect drew at and
+    /// since the caller's commit — which names the pixels a change *removed*,
+    /// known only from the older entries — and never the blur padding, which
+    /// is source-only and painted by nothing.
+    #[test]
+    fn damage_names_the_regions_of_every_commit_since_the_last_draw() {
+        let old_commit = CommitCounter::default();
+        let mut commit = old_commit;
+        commit.increment();
+        // One surface of 100x80 landing at (20, 30), so its geometry is the
+        // requested box padded by 16: ((4, 14), (132, 112)). It drew its
+        // whole self at `old_commit` and only its top-left corner since.
+        let history = Arc::new(vec![
+            (old_commit, Some(Arc::new(vec![rect(0, 0, 100, 80)]))),
+            (commit, Some(Arc::new(vec![rect(0, 0, 10, 10)]))),
+        ]);
+        let effect = BackgroundEffectRenderElement {
+            id: Id::new(),
+            commit,
+            geometry: Rectangle::new((4, 14).into(), (132, 112).into()),
+            alpha: 1.0,
+            regions: vec![Rectangle::new((16, 16).into(), (10, 10).into())],
+            history,
+            surface_size: Size::from((100, 80)),
+            surface_geometry: Rectangle::new((20, 30).into(), (100, 80).into()),
+        };
+
+        let damage: Vec<_> = effect
+            .damage_since(Scale::from(1.0), Some(old_commit))
+            .into_iter()
+            .collect();
+        assert_eq!(
+            damage,
+            vec![
+                Rectangle::new((16, 16).into(), (100, 80).into()),
+                Rectangle::new((16, 16).into(), (10, 10).into()),
+            ],
+            "the removed pixels are named by the older commit; the padding is not damage"
+        );
+        // Drawn again unchanged, nothing at all is damaged.
+        assert!(effect
+            .damage_since(Scale::from(1.0), Some(commit))
+            .is_empty());
+    }
+
+    /// When the commit asked about is not in the history — too many changes
+    /// since, or an effect that never kept one — the whole geometry is
+    /// damaged, because it is the only superset of the removed pixels left.
+    #[test]
+    fn damage_falls_back_to_the_geometry_when_the_drawn_commit_is_gone() {
+        let old_commit = CommitCounter::default();
+        let mut commit = old_commit;
+        commit.increment();
+        let effect = BackgroundEffectRenderElement {
+            id: Id::new(),
+            commit,
+            geometry: Rectangle::new((4, 14).into(), (132, 112).into()),
+            alpha: 1.0,
+            regions: vec![Rectangle::new((16, 16).into(), (10, 10).into())],
+            history: Arc::new(vec![(commit, Some(Arc::new(vec![rect(0, 0, 10, 10)])))]),
+            surface_size: Size::from((100, 80)),
+            surface_geometry: Rectangle::new((20, 30).into(), (100, 80).into()),
+        };
+
+        let damage: Vec<_> = effect
+            .damage_since(Scale::from(1.0), Some(old_commit))
+            .into_iter()
+            .collect();
+        assert_eq!(damage, vec![Rectangle::from_size((132, 112).into())]);
     }
 
     #[test]

@@ -283,7 +283,7 @@ pub struct RoundedRenderElement<E> {
 
 /// One of the two rectangle lists a rounded element is built from, shared
 /// between every element built from the same inputs.
-type Shape = std::rc::Rc<Vec<Rectangle<i32, Physical>>>;
+pub type Shape = std::rc::Rc<Vec<Rectangle<i32, Physical>>>;
 
 thread_local! {
     /// The bands and the solid parts, by what they were computed from.
@@ -388,6 +388,74 @@ fn shape(
     })
 }
 
+thread_local! {
+    /// The corner wedges of a border ring, by what they were computed from.
+    /// See [`corner_wedges`].
+    static WEDGES: std::cell::RefCell<std::collections::HashMap<ShapeKey, Shape>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// The wedges a border's curve cuts into its hole, held inside the frame's own
+/// outer arc — computed once per distinct geometry.
+///
+/// The wedge is the part of the shell's buffer the border's curve occupies
+/// inside the hole it drew, and not the corner square that holds it: the rest
+/// of that square is the hole, which in the shell's buffer is the desktop's
+/// own background, and drawing that over the window a floating one is lifted
+/// above is four triangles of wallpaper punched through it — a client that
+/// does not fill its hole to the pixel, which is every terminal, leaves room
+/// for exactly that.
+///
+/// Held to the frame's own rounded shape ([`bands_within`]) because with a
+/// radius much past the border's width the hole's square corner pokes
+/// *outside* the rounded frame — where the buffer is not border but whatever
+/// the page drew behind the frame, which over another window is the
+/// wallpaper. That was three or four pixels of it at each corner.
+///
+/// Cached like [`shape`], for the same reason and on the same terms: this
+/// runs per floating rounded window per output per frame, and a still desktop
+/// was recomputing three rectangle lists and cloning the answer at the
+/// refresh rate. The key *is* the invalidation — it holds every input the
+/// wedges are a function of (the hole and its radius, the frame and its
+/// radius), so a hit is the same answer by construction, and a window that
+/// moved, resized, or was reconfigured by a border change misses and
+/// recomputes. Stale entries are unreachable by the same argument and the
+/// map is dropped whole at the limit, like [`SHAPES`].
+pub fn corner_wedges(
+    hole: Rectangle<i32, Physical>,
+    hole_radius: i32,
+    frame: Rectangle<i32, Physical>,
+    frame_radius: i32,
+) -> Shape {
+    let key: ShapeKey = [
+        hole.loc.x,
+        hole.loc.y,
+        hole.size.w,
+        hole.size.h,
+        hole_radius,
+        frame.loc.x,
+        frame.loc.y,
+        frame.size.w,
+        frame.size.h,
+        frame_radius,
+    ];
+    WEDGES.with(|wedges| {
+        let mut wedges = wedges.borrow_mut();
+        if let Some(found) = wedges.get(&key) {
+            return found.clone();
+        }
+        let computed = std::rc::Rc::new(clip_to(
+            cutaway(hole, hole_radius),
+            &bands_within(frame, frame_radius),
+        ));
+        if wedges.len() >= SHAPE_LIMIT {
+            wedges.clear();
+        }
+        wedges.insert(key, computed.clone());
+        computed
+    })
+}
+
 impl<E: Element> RoundedRenderElement<E> {
     /// Round `element` to `radius` inside `rect`.
     ///
@@ -446,7 +514,9 @@ impl<E: Element> RoundedRenderElement<E> {
     /// The other constructor is handed a shape and cuts corners out of it;
     /// this one is handed the pieces directly, for the caller that already
     /// knows exactly which slivers it wants — see [`cutaway`], which is the
-    /// only one.
+    /// only one. Borrowed rather than taken: the pieces come from the shared
+    /// [`corner_wedges`] cache and are only read here, and cloning them per
+    /// frame per output is exactly the allocation that cache exists to avoid.
     ///
     /// Nothing is claimed as opaque. The pieces this is used for are the
     /// antialiased edge of the shell's own border, which is translucent at the
@@ -455,11 +525,12 @@ impl<E: Element> RoundedRenderElement<E> {
     pub fn from_bands(
         element: E,
         scale: impl Into<Scale<f64>>,
-        bands: Vec<Rectangle<i32, Physical>>,
+        bands: &[Rectangle<i32, Physical>],
     ) -> Option<Self> {
         let geometry = element.geometry(scale.into());
         let bands: Vec<_> = bands
-            .into_iter()
+            .iter()
+            .copied()
             .filter_map(|band| band.intersection(geometry))
             .filter(|band| !band.is_empty())
             .collect();
@@ -597,17 +668,32 @@ impl<R: Renderer, E: RenderElement<R>> RenderElement<R> for RoundedRenderElement
         opaque_regions: &[Rectangle<i32, Physical>],
         cache: Option<&UserDataMap>,
     ) -> Result<(), R::Error> {
-        for piece in self.pieces(src, dst, damage, opaque_regions) {
-            self.element.draw(
-                frame,
-                piece.src,
-                piece.dst,
-                &piece.damage,
-                &piece.opaque,
-                cache,
-            )?;
-        }
-        Ok(())
+        // The pieces go in a scratch list reused across draws, and it is
+        // *taken out* of its slot while the wrapped element draws: `draw` is
+        // a call into foreign code, and a rounded element drawing another one
+        // during it would borrow the same scratch again — a `BorrowMutError`
+        // panic on the render thread. The allocation goes back afterwards,
+        // so the steady state is no allocation per band per frame at all.
+        PIECES.with(|slot| {
+            let mut pieces = std::mem::take(&mut *slot.borrow_mut());
+            pieces.clear();
+            self.pieces_into(&mut pieces, src, dst, damage, opaque_regions);
+            let drawn: Result<(), R::Error> = (|| {
+                for piece in &pieces {
+                    self.element.draw(
+                        frame,
+                        piece.src,
+                        piece.dst,
+                        piece.damage.as_slice(),
+                        piece.opaque.as_slice(),
+                        cache,
+                    )?;
+                }
+                Ok(())
+            })();
+            *slot.borrow_mut() = pieces;
+            drawn
+        })
     }
 
     /// The buffer behind this element — but only when this element is not
@@ -651,6 +737,87 @@ impl<R: Renderer, E: RenderElement<R>> RenderElement<R> for RoundedRenderElement
     }
 }
 
+/// How many damage or opaque rectangles a band piece holds without the heap.
+/// The inputs to a draw are almost always one damage rect and none opaque.
+const PIECE_RECTS: usize = 4;
+
+/// A few rectangles inline, more on the heap — and never both at once.
+///
+/// `draw` splits into one piece per band, and what a band carries is almost
+/// always the one damage rectangle the draw was handed and no opaque ones: a
+/// `Vec` per list was two heap allocations per band per rounded element per
+/// frame, on the GPU-submission path. The inline slots hold the common band
+/// without touching the allocator; past them the contents spill to a heap
+/// `Vec` *wholesale*, so the rectangles stay contiguous and hand out the
+/// plain slice `RenderElement::draw` takes.
+#[derive(Debug)]
+pub struct InlineRects<const N: usize> {
+    inline: [Rectangle<i32, Physical>; N],
+    len: usize,
+    spilled: Vec<Rectangle<i32, Physical>>,
+}
+
+impl<const N: usize> Default for InlineRects<N> {
+    fn default() -> Self {
+        Self {
+            inline: std::array::from_fn(|_| Rectangle::default()),
+            len: 0,
+            spilled: Vec::new(),
+        }
+    }
+}
+
+impl<const N: usize> InlineRects<N> {
+    fn push(&mut self, rect: Rectangle<i32, Physical>) {
+        if !self.spilled.is_empty() {
+            self.spilled.push(rect);
+        } else if self.len < N {
+            self.inline[self.len] = rect;
+            self.len += 1;
+        } else {
+            // Spilled whole rather than in part: one list, one slice.
+            self.spilled = self.inline[..self.len].to_vec();
+            self.spilled.push(rect);
+        }
+    }
+
+    pub fn as_slice(&self) -> &[Rectangle<i32, Physical>] {
+        if self.spilled.is_empty() {
+            &self.inline[..self.len]
+        } else {
+            &self.spilled
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.as_slice().is_empty()
+    }
+}
+
+impl<const N: usize> std::iter::FromIterator<Rectangle<i32, Physical>> for InlineRects<N> {
+    fn from_iter<T: IntoIterator<Item = Rectangle<i32, Physical>>>(iter: T) -> Self {
+        let mut rects = Self::default();
+        for rect in iter {
+            rects.push(rect);
+        }
+        rects
+    }
+}
+
+impl<const N: usize> PartialEq for InlineRects<N> {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_slice() == other.as_slice()
+    }
+}
+
+/// By contents, so a piece is asserted against the plain `Vec` of rectangles
+/// it stands for.
+impl<const N: usize> PartialEq<Vec<Rectangle<i32, Physical>>> for InlineRects<N> {
+    fn eq(&self, other: &Vec<Rectangle<i32, Physical>>) -> bool {
+        self.as_slice() == other.as_slice()
+    }
+}
+
 /// One band as the renderer is asked to draw it.
 ///
 /// A band is handed to the wrapped element as though it were the whole of a
@@ -661,8 +828,16 @@ impl<R: Renderer, E: RenderElement<R>> RenderElement<R> for RoundedRenderElement
 pub struct Piece {
     pub src: Rectangle<f64, BufferCoord>,
     pub dst: Rectangle<i32, Physical>,
-    pub damage: Vec<Rectangle<i32, Physical>>,
-    pub opaque: Vec<Rectangle<i32, Physical>>,
+    pub damage: InlineRects<PIECE_RECTS>,
+    pub opaque: InlineRects<PIECE_RECTS>,
+}
+
+thread_local! {
+    /// The pieces one draw is split into, reused across draws. See
+    /// [`RoundedRenderElement::draw`] for why it is taken out of this slot
+    /// rather than borrowed while the wrapped element draws.
+    static PIECES: std::cell::RefCell<Vec<Piece>> =
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 
 impl<E: Element> RoundedRenderElement<E> {
@@ -671,10 +846,13 @@ impl<E: Element> RoundedRenderElement<E> {
     /// Separate from `draw` so it can be tested without a renderer: the
     /// arithmetic is the whole of what can go wrong here, and getting it wrong
     /// shows up as a window drawn at the wrong magnification or a seam of
-    /// wallpaper across it — neither of which a type checks.
+    /// wallpaper across it — neither of which a type checks. `draw` fills a
+    /// reusable scratch list through [`Self::pieces_into`] instead, so this
+    /// allocating answer is the tests' alone.
     ///
     /// A band with nothing damaged in it is left out: drawing it would repaint
     /// pixels nobody said had changed.
+    #[cfg(test)]
     pub fn pieces(
         &self,
         src: Rectangle<f64, BufferCoord>,
@@ -682,6 +860,23 @@ impl<E: Element> RoundedRenderElement<E> {
         damage: &[Rectangle<i32, Physical>],
         opaque_regions: &[Rectangle<i32, Physical>],
     ) -> Vec<Piece> {
+        let mut pieces = Vec::with_capacity(self.bands.len());
+        self.pieces_into(&mut pieces, src, dst, damage, opaque_regions);
+        pieces
+    }
+
+    /// The same split into a caller's list, cleared first — the allocating
+    /// answer above is this with a fresh `Vec`, and `draw` fills a reusable
+    /// scratch list through here instead.
+    fn pieces_into(
+        &self,
+        pieces: &mut Vec<Piece>,
+        src: Rectangle<f64, BufferCoord>,
+        dst: Rectangle<i32, Physical>,
+        damage: &[Rectangle<i32, Physical>],
+        opaque_regions: &[Rectangle<i32, Physical>],
+    ) {
+        pieces.clear();
         let transform = self.element.transform();
         // Damage and opaque regions arrive relative to `dst`; the bands are
         // absolute. One of the two has to move, and moving the two lists once
@@ -697,10 +892,9 @@ impl<E: Element> RoundedRenderElement<E> {
                         hit
                     })
                 })
-                .collect::<Vec<_>>()
+                .collect::<InlineRects<PIECE_RECTS>>()
         };
 
-        let mut pieces = Vec::with_capacity(self.bands.len());
         for band in self.bands.iter() {
             let Some(band) = self.to_dst(*band, dst).intersection(dst) else {
                 continue;
@@ -719,7 +913,6 @@ impl<E: Element> RoundedRenderElement<E> {
                 opaque: relative_to(opaque_regions, band),
             });
         }
-        pieces
     }
 }
 
@@ -837,7 +1030,7 @@ mod tests {
 
         // And the wedges are never a rectangle.
         let wedges =
-            RoundedRenderElement::from_bands(Fake::new(geometry), 1.0, cutaway(geometry, 12))
+            RoundedRenderElement::from_bands(Fake::new(geometry), 1.0, &cutaway(geometry, 12))
                 .expect("the corners of a border");
         assert!(!wedges.is_rectangular());
     }
@@ -1124,6 +1317,33 @@ mod tests {
         );
     }
 
+    /// A band's rectangles live inside the piece itself until there are too
+    /// many of them, and then they spill to one heap list — contiguous either
+    /// way, because the contiguous slice is what the wrapped element's `draw`
+    /// takes. The inline case is the common one: a draw is handed one damage
+    /// rectangle and no opaque ones.
+    #[test]
+    fn piece_rects_stay_inline_until_they_cannot() {
+        let mut rects = InlineRects::<2>::default();
+        assert!(rects.is_empty());
+        rects.push(rect(0, 0, 1, 1));
+        rects.push(rect(1, 0, 1, 1));
+        assert_eq!(
+            rects.as_slice(),
+            [rect(0, 0, 1, 1), rect(1, 0, 1, 1)].as_slice()
+        );
+        rects.push(rect(2, 0, 1, 1));
+        assert_eq!(
+            rects.as_slice(),
+            [rect(0, 0, 1, 1), rect(1, 0, 1, 1), rect(2, 0, 1, 1)].as_slice(),
+            "past the inline slots the whole list spills to the heap, contiguous"
+        );
+        assert_eq!(
+            rects,
+            vec![rect(0, 0, 1, 1), rect(1, 0, 1, 1), rect(2, 0, 1, 1)]
+        );
+    }
+
     /// The corners are never claimed as opaque. Whatever is behind them has to
     /// be drawn, and the tracker culls anything it is told is covered.
     #[test]
@@ -1171,6 +1391,29 @@ mod tests {
         // A different radius is a different shape, not a stale hit.
         let third = rounded(geometry, 12);
         assert_ne!(*third.bands, *first.bands);
+    }
+
+    /// The corner wedges are cached on the same terms, and the cached answer
+    /// is the same list the direct computation gives.
+    ///
+    /// The wedges run per floating rounded window per output per frame; a
+    /// still desktop was recomputing the cutaway, the frame's own bands and
+    /// the clip between them — three lists — and cloning the result at the
+    /// refresh rate. And because the key holds every input, a window that
+    /// moved is a different key and never a stale hit.
+    #[test]
+    fn the_corner_wedges_are_computed_once() {
+        let (hole, frame) = (rect(4, 4, 292, 192), rect(0, 0, 300, 200));
+        let first = corner_wedges(hole, 16, frame, 20);
+        let second = corner_wedges(hole, 16, frame, 20);
+        assert!(std::rc::Rc::ptr_eq(&first, &second), "shared, not rebuilt");
+        assert_eq!(
+            *first,
+            clip_to(cutaway(hole, 16), &bands_within(frame, 20)),
+            "the cache holds exactly the direct answer"
+        );
+        let moved = corner_wedges(rect(5, 4, 292, 192), 16, frame, 20);
+        assert_ne!(*moved, *first, "a moved window is a different key");
     }
 
     /// Every row of the rectangle is covered exactly once, whatever the

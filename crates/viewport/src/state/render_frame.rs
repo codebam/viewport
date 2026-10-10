@@ -5,6 +5,49 @@
 
 struct X11CaptureRedactionId(smithay::backend::renderer::element::Id);
 
+/// The cached answer to whether an override-redirect X11 popup is related to
+/// one of the desk's private windows, and the view set it was answered for.
+/// Lives on the popup's user data beside [`X11CaptureRedactionId`].
+struct X11PopupRelated(std::cell::Cell<Option<(ViewStamp, bool)>>);
+
+/// A fingerprint of the window list that moves whenever "is this popup
+/// related to a private window?" could change its answer.
+///
+/// Three plain-field reads per view: the highest view id, how many views
+/// there are, and how many of them are private (`capture_allowed` false).
+/// Every insert mints an id above every id before it — `Views::insert` counts
+/// up — so an insert moves the highest id even when it replaces a removed
+/// view; a remove with no insert beside it moves the count; and a
+/// capture-policy flip moves the private count. A matching stamp therefore
+/// means no window has come, gone, or turned private since the answer was
+/// computed, which is every event the answer depends on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ViewStamp {
+    newest: u32,
+    views: usize,
+    private: usize,
+}
+
+impl ViewStamp {
+    /// From `(id, capture_allowed)` per view, as the frame path reads them
+    /// off the list.
+    fn of(views: impl Iterator<Item = (u32, bool)>) -> Self {
+        let mut stamp = Self {
+            newest: 0,
+            views: 0,
+            private: 0,
+        };
+        for (id, capture_allowed) in views {
+            stamp.newest = stamp.newest.max(id);
+            stamp.views += 1;
+            if !capture_allowed {
+                stamp.private += 1;
+            }
+        }
+        stamp
+    }
+}
+
 /// The cursor image that is actually drawable.
 ///
 /// A client may destroy the surface it set as its cursor without setting a new
@@ -173,6 +216,12 @@ impl ViewportState {
             }
         }
 
+        // What the private-popup answer below is cached against: one cheap
+        // pass over the window list per frame, against the per-popup scan it
+        // replaces.
+        let views_stamp =
+            ViewStamp::of(self.views.iter().map(|view| (view.id, view.capture_allowed)));
+
         // Front to back, which is the order the renderer draws in and the
         // order `Frame::windows` is documented to be in. Smithay's space
         // yields the other way round — bottom of the stack first — so taking
@@ -262,19 +311,47 @@ impl ViewportState {
                     if view.is_some() || !child.is_override_redirect() {
                         return None;
                     }
-                    let transient = child.is_transient_for();
-                    let pid = child.pid();
-                    let related = self.views.iter().any(|parent| {
-                        if parent.capture_allowed {
-                            return false;
+                    // Resolved once and cached on the popup beside its
+                    // redaction id, believed only while `views_stamp` still
+                    // matches. This closure runs per override-redirect popup
+                    // per output per frame, and the scan below costs Smithay's
+                    // X11 surface-state mutex per candidate parent per lookup —
+                    // while the answer only changes when the window list does,
+                    // which is exactly what the stamp tracks: a cached answer
+                    // survives every frame nothing was mapped, unmapped, or
+                    // turned private, and is recomputed the frame something
+                    // was. The popup's own transient-for and pid are read at
+                    // resolution: they name the parent that was already there
+                    // when the popup mapped.
+                    let related = {
+                        child
+                            .user_data()
+                            .insert_if_missing(|| X11PopupRelated(std::cell::Cell::new(None)));
+                        let cached = child
+                            .user_data()
+                            .get::<X11PopupRelated>()
+                            .expect("inserted above");
+                        match cached.0.get() {
+                            Some((at, related)) if at == views_stamp => related,
+                            _ => {
+                                let transient = child.is_transient_for();
+                                let pid = child.pid();
+                                let related = self.views.iter().any(|parent| {
+                                    if parent.capture_allowed {
+                                        return false;
+                                    }
+                                    let Some(parent) = parent.window.x11_surface() else {
+                                        return false;
+                                    };
+                                    transient.is_some_and(|id| id == parent.window_id())
+                                        || pid.is_some_and(|pid| parent.pid() == Some(pid))
+                                        || (transient.is_none() && pid.is_none())
+                                });
+                                cached.0.set(Some((views_stamp, related)));
+                                related
+                            }
                         }
-                        let Some(parent) = parent.window.x11_surface() else {
-                            return false;
-                        };
-                        transient.is_some_and(|id| id == parent.window_id())
-                            || pid.is_some_and(|pid| parent.pid() == Some(pid))
-                            || (transient.is_none() && pid.is_none())
-                    });
+                    };
                     related.then(|| {
                         child
                             .user_data()
@@ -386,13 +463,9 @@ impl ViewportState {
                 // four sides and nothing else.
                 //
                 // The wedges the border's curve occupies inside the hole, and
-                // not the corner squares that hold them: the rest of each
-                // square is the hole itself, which in the shell's buffer is
-                // the desktop's own background. Drawing that over the window a
-                // floating one is lifted above puts four triangles of
-                // wallpaper through it — and a client that does not fill its
-                // hole to the pixel, which is every terminal, leaves room for
-                // exactly that.
+                // not the corner squares that hold them — see
+                // `rounded::corner_wedges`, which computes and caches them and
+                // holds why the two differ.
                 let corners = view
                     .filter(|_| drawn_on_this_output && radius > width)
                     .and_then(|view| {
@@ -403,19 +476,18 @@ impl ViewportState {
                         let hole = crate::render::drawn_hole_of(hole, drawn_at);
                         let hole = crate::render::overlay_side(hole, output_geometry)?;
                         let hole = hole.to_f64().to_physical(scale).to_i32_round();
-                        let wedges = crate::rounded::cutaway(hole, physical(radius - width));
-                        // Held inside the frame's own outer arc. The wedge is
-                        // a copy of the shell's buffer, and with a radius much
-                        // past the border's width the hole's square corner
-                        // pokes *outside* the rounded frame — where the buffer
-                        // is not border but whatever the page drew behind the
-                        // frame, which over another window is the wallpaper.
-                        // That was three or four pixels of it at each corner.
                         let frame = crate::render::overlay_side(frame, output_geometry)?;
                         let frame = frame.to_f64().to_physical(scale).to_i32_round();
-                        let wedges = crate::rounded::clip_to(
-                            wedges,
-                            &crate::rounded::bands_within(frame, physical(radius)),
+                        // Once per distinct geometry, not per frame: the
+                        // inputs are constant for a window nobody is dragging,
+                        // and this runs per floating rounded window per output
+                        // per frame. The returned list is shared, so nothing
+                        // downstream has to clone it.
+                        let wedges = crate::rounded::corner_wedges(
+                            hole,
+                            physical(radius - width),
+                            frame,
+                            physical(radius),
                         );
                         (!wedges.is_empty()).then(|| (corner_id.clone(), wedges))
                     });
@@ -839,5 +911,41 @@ mod frame_tests {
             1.5,
         )
         .is_empty());
+    }
+
+    /// The popup-relation cache is believed while the stamp matches, so every
+    /// event that could change the answer has to move the stamp — and does:
+    /// inserts mint an id above every id before them, removes shrink the
+    /// count, and a capture-policy flip moves the private count. The one
+    /// remove with one insert beside it is the case where only the id moves,
+    /// and it moves.
+    #[test]
+    fn any_change_to_the_window_list_moves_the_view_stamp() {
+        let before = ViewStamp::of([(1, true), (2, true)].into_iter());
+        assert_eq!(
+            before,
+            ViewStamp::of([(1, true), (2, true)].into_iter()),
+            "the same list stamps the same"
+        );
+        assert_ne!(
+            before,
+            ViewStamp::of([(1, true), (2, true), (3, true)].into_iter()),
+            "an insert moves the highest id"
+        );
+        assert_ne!(
+            before,
+            ViewStamp::of([(1, true)].into_iter()),
+            "a remove moves the count"
+        );
+        assert_ne!(
+            before,
+            ViewStamp::of([(1, true), (2, false)].into_iter()),
+            "a capture-policy flip moves the private count"
+        );
+        assert_ne!(
+            before,
+            ViewStamp::of([(1, true), (3, true)].into_iter()),
+            "removed one and inserted one in its place: only the id moves, and it does"
+        );
     }
 }

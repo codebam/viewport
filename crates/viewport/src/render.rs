@@ -190,8 +190,11 @@ pub struct WindowFrame {
     /// a square of desktop over the corner of the client it belongs to.
     /// One id and the wedges to draw with it — the parts of the hole the
     /// border's curve crosses into, and nothing else. Empty for a square
-    /// window, or one with nothing lifted above anything.
-    pub corners: Option<(Id, Vec<Rectangle<i32, Physical>>)>,
+    /// window, or one with nothing lifted above anything. Shared rather than
+    /// owned: the wedges are the cached [`crate::rounded::corner_wedges`]
+    /// answer, and a window nobody is dragging hands out the same list every
+    /// frame.
+    pub corners: Option<(Id, crate::rounded::Shape)>,
     /// The box the shell drew for this window, and the corner radius to cut
     /// out of it — both in physical pixels on this output.
     ///
@@ -696,11 +699,9 @@ where
             if let Some(bounds) = bounding(wedges) {
                 if let Some(element) = shell_element(renderer, shell, id.clone()) {
                     if let Some(cropped) = CropRenderElement::from_element(element, scale, bounds) {
-                        if let Some(rounded) = crate::rounded::RoundedRenderElement::from_bands(
-                            cropped,
-                            scale,
-                            wedges.clone(),
-                        ) {
+                        if let Some(rounded) =
+                            crate::rounded::RoundedRenderElement::from_bands(cropped, scale, wedges)
+                        {
                             elements.push(OutputElement::from(rounded));
                         }
                     }
