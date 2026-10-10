@@ -107,11 +107,22 @@ impl Layout {
             modifier: u64::from(target.format().modifier),
             stride,
             offset,
-            // Checked: the driver's stride is whatever it says, and the packed
-            // product overflowed `u32` on a size a client could ask for.
-            size: (stride as u32).checked_mul(target.height())?,
+            size: layout_size(stride, target.height())?,
         })
     }
+}
+
+/// What `stride` rows of `height` rows hold in bytes, checked.
+///
+/// Defensive: the values come from this compositor's own allocator, which
+/// never produces a negative stride — but `stride` is signed here and `as
+/// u32` would wrap a negative one to a huge size that only an overflowing
+/// product would catch, and the packed product itself overflowed `u32` on a
+/// size a client could ask for. A wrong `size`/`stride` pair would be
+/// published to the PipeWire consumer, which then maps the wrong number of
+/// bytes.
+fn layout_size(stride: i32, height: u32) -> Option<u32> {
+    u32::try_from(stride).ok()?.checked_mul(height)
 }
 
 /// Memory the compositor handed to PipeWire for one buffer.
@@ -1579,5 +1590,19 @@ mod tests {
         assert!(buffer_params((i32::MAX, i32::MAX).into(), None).is_err());
         assert!(buffer_params((16384, 16384).into(), None).is_err());
         assert!(buffer_params((1920, 1080).into(), None).is_ok());
+    }
+
+    /// The size published to the consumer is the stride times the height, and
+    /// a stride that would wrap to a huge one — or a product that would
+    /// overflow — is refused instead. Defensive: the allocator never produces
+    /// a negative stride, so this is about the arithmetic, not the driver.
+    #[test]
+    fn a_wrapping_stride_is_refused_not_published() {
+        assert_eq!(layout_size(7680, 1080), Some(7680 * 1080));
+        assert_eq!(layout_size(-1, 1080), None);
+        assert_eq!(layout_size(-7680, 1080), None);
+        // The largest stride times three does overflow `u32`, and is refused
+        // rather than wrapped.
+        assert_eq!(layout_size(i32::MAX, 3), None);
     }
 }
