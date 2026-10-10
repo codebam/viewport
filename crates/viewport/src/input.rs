@@ -11,7 +11,7 @@
 // and cannot go stale mid-animation.
 
 use smithay::backend::input::{
-    AbsolutePositionEvent, Axis, AxisSource, ButtonState, Device as _, Event, GestureBeginEvent,
+    AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, GestureBeginEvent,
     GestureEndEvent, GesturePinchUpdateEvent as _, GestureSwipeUpdateEvent as _, InputBackend,
     InputEvent, InputTime, KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent,
     PointerMotionEvent, TouchEvent,
@@ -408,6 +408,29 @@ pub struct WebKey {
     pub time: u32,
 }
 
+/// A key on its way to the shell, from the terms the key handle speaks.
+///
+/// `keycode` is `handle.raw_code().raw()` **verbatim** at every construction
+/// site: smithay's `KeysymHandle::raw_code()` is already in the X keycode
+/// system — its own doc says "shifted by 8", and the libinput backend builds
+/// it as `key() + 8` from evdev's number, which is the offset
+/// [`WebKey::keycode`] documents. Adding it again here (what this replaced)
+/// handed the page evdev plus *sixteen*: every key named the wrong physical
+/// key, and the keysym beside it being right hid that. It was also an
+/// unchecked `+ 8` on a `u32`, which overflowed — panicking a debug build,
+/// wrapping to keycode 7 in a release one — for the `u32::MAX` keycode the
+/// control socket's `input.key` carries through `inject_key`'s deliberate
+/// `saturating_add(8)`.
+fn web_key(keycode: u32, keysym: u32, pressed: bool, modifiers: u32, time: u32) -> WebKey {
+    WebKey {
+        keycode,
+        keysym,
+        pressed,
+        modifiers,
+        time,
+    }
+}
+
 /// What a key does while the chooser is up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pick {
@@ -539,6 +562,18 @@ fn release_suppressed(button: u32) -> bool {
     })
 }
 
+/// Forget every press a binding took, for a pointer that vanished before its
+/// release.
+///
+/// The records are opened by the press and closed by the release
+/// (`discard_button_records`), and a device that is unplugged mid-click never
+/// sends one: left behind, an entry swallows the release of some later,
+/// unrelated press of the same button, which is a client told a button came up
+/// that never went down.
+fn clear_suppressed_buttons() {
+    SUPPRESSED_BUTTONS.with(|buttons| buttons.borrow_mut().clear());
+}
+
 // Keys whose press was handed to the shell page, so the matching release goes
 // there even if a click moved focus to a window in between.
 //
@@ -547,21 +582,27 @@ fn release_suppressed(button: u32) -> bool {
 // at release time cannot tell the two apart. This is the page's half of that
 // record.
 //
+// Each entry is the unmodified symbol the press and its release are paired
+// by, and the keycode the press carried: a device that vanishes mid-chord
+// never sends the release that would name it (`release_held_keys`), and the
+// page's own pairing is by keycode.
+//
 // A thread local for the same reason `SUPPRESSED_BUTTONS` is: input is
 // dispatched on the compositor's own thread and nowhere else, and this is the
 // key handler's private bookkeeping.
 thread_local! {
-    static WEB_KEYS: std::cell::RefCell<Vec<u32>> =
+    static WEB_KEYS: std::cell::RefCell<Vec<(u32, u32)>> =
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// Remember that this key's press went to the page. The unmodified symbol is
-/// the one the press and its release are paired by.
-fn remember_web_key(sym: Keysym) {
+/// the one the press and its release are paired by; `keycode` is the one the
+/// press sent, verbatim, so a release can name it later.
+fn remember_web_key(sym: Keysym, keycode: u32) {
     WEB_KEYS.with(|keys| {
         let mut keys = keys.borrow_mut();
-        if !keys.contains(&sym.raw()) {
-            keys.push(sym.raw());
+        if !keys.iter().any(|(held, _)| *held == sym.raw()) {
+            keys.push((sym.raw(), keycode));
         }
     });
 }
@@ -570,7 +611,7 @@ fn remember_web_key(sym: Keysym) {
 fn release_web_key(sym: Keysym) -> bool {
     WEB_KEYS.with(|keys| {
         let mut keys = keys.borrow_mut();
-        match keys.iter().position(|held| *held == sym.raw()) {
+        match keys.iter().position(|(held, _)| *held == sym.raw()) {
             Some(at) => {
                 keys.remove(at);
                 true
@@ -578,6 +619,14 @@ fn release_web_key(sym: Keysym) -> bool {
             None => false,
         }
     })
+}
+
+/// Every key the page is still holding, taken out of the record.
+///
+/// For a sweep that cannot name keys by their handle — a keyboard that is
+/// gone — and must pair by what was recorded at the press instead.
+fn drain_web_keys() -> Vec<(u32, u32)> {
+    WEB_KEYS.with(|keys| std::mem::take(&mut *keys.borrow_mut()))
 }
 
 /// Whether a press starts one of the compositor's own pointer gestures —
@@ -745,6 +794,78 @@ fn uses_the_pointer<I: InputBackend>(event: &InputEvent<I>) -> bool {
     )
 }
 
+/// What a device's scroll events are multiplied by, and whether its touchpad
+/// scroll is dressed up as wheel steps.
+///
+/// The two settings libinput cannot carry on the device itself: a scroll
+/// factor is applied to the events as they arrive rather than programmed into
+/// the device, so the merged config is consulted on the axis path. Only these
+/// two fields leave the cache, and both are `Copy` — a lookup clones nothing.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ScrollSettings {
+    scroll_factor: Option<f64>,
+    emulate_discrete_scroll: Option<bool>,
+}
+
+/// A device's resolved [`ScrollSettings`], and what they were resolved from.
+struct CachedScrollSettings {
+    /// The config contents behind `settings`, as [`input_config_hash`] sees
+    /// them — so a reload that changes a field this cache serves is felt on
+    /// the next tick, while one that does not churns nothing.
+    config_hash: u64,
+    /// The device's config identifier, built once and kept for its life.
+    identifier: String,
+    settings: ScrollSettings,
+}
+
+// One entry per device, keyed by `Device::id`, built on first sight (and on
+// `DeviceAdded`, so the first tick after a hotplug is not the one paying for
+// it) and dropped when the device goes.
+//
+// A thread local for the same reason `SUPPRESSED_BUTTONS` is: input is
+// dispatched on the compositor's own thread and nowhere else, and this is the
+// axis handler's private bookkeeping.
+thread_local! {
+    static SCROLL_SETTINGS: std::cell::RefCell<
+        std::collections::HashMap<String, CachedScrollSettings>,
+    > = std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// The config identifier a device is known by.
+///
+/// Built the same way the backend builds it — `usb_id` hands back
+/// (product, vendor), while the config spells vendor first — because the
+/// `input` entries this looks up are keyed by that spelling.
+fn device_identifier<D: smithay::backend::input::Device>(device: &D) -> String {
+    match device.usb_id() {
+        Some((product, vendor)) => format!("{vendor:04x}:{product:04x}:{}", device.name()),
+        None => device.name(),
+    }
+}
+
+/// What [`CachedScrollSettings`] was resolved against.
+///
+/// Hashed without allocating and folded order-independently, because a
+/// `HashMap` iterates in no fixed order and the same config must always hash
+/// the same. Only the fields the cache serves are hashed: the fingerprint has
+/// to notice exactly the changes that would change what is cached, and
+/// widening it would drop the cache on edits of fields nobody here reads.
+fn input_config_hash(
+    configs: &std::collections::HashMap<String, crate::config::InputConfig>,
+) -> u64 {
+    use std::hash::{Hash, Hasher};
+
+    let mut mixed = configs.len() as u64;
+    for (key, config) in configs {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        key.hash(&mut hasher);
+        config.scroll_factor.map(f64::to_bits).hash(&mut hasher);
+        config.emulate_discrete_scroll.hash(&mut hasher);
+        mixed ^= hasher.finish();
+    }
+    mixed
+}
+
 impl ViewportState {
     /// A key from the control socket rather than from libinput.
     ///
@@ -876,13 +997,13 @@ impl ViewportState {
                 // press says whether it was the page's; where focus is now
                 // does not.
                 if release_web_key(unmodified_sym) {
-                    FilterResult::Intercept(Some(Action::Web(WebKey {
-                        keycode: handle.raw_code().raw() + 8,
-                        keysym: keysym.raw(),
-                        pressed: false,
-                        modifiers: modifiers_now,
-                        time: time.millis(),
-                    })))
+                    FilterResult::Intercept(Some(Action::Web(web_key(
+                        handle.raw_code().raw(),
+                        keysym.raw(),
+                        false,
+                        modifiers_now,
+                        time.millis(),
+                    ))))
                 } else {
                     FilterResult::Intercept(Some(Action::Swallow))
                 }
@@ -905,6 +1026,86 @@ impl ViewportState {
         if intercepted && keyboard.modifier_state() != mods_before {
             keyboard.advertise_modifier_state(self);
         }
+    }
+
+    /// Let go of every key the compositor is holding for a device that is gone.
+    ///
+    /// A keyboard that disconnects mid-chord — a Bluetooth one that dies with
+    /// a `repeating+` volume key held — never sends the releases that end its
+    /// holds, and nothing else does either: `finish_key_hold` only ever ran
+    /// from a release, so the repeat timer ran its binding for ever, a held
+    /// push-to-talk shortcut was never announced deactivated, and the orphaned
+    /// `suppressed_keys`/`WEB_KEYS` records later swallowed the release of
+    /// some unrelated press of the same symbol — a client left with a stuck
+    /// key, the FIXES #11/#26 symptom class arriving by device removal.
+    ///
+    /// Every key still down goes through `release_injected_key`, the release
+    /// half the libei path already runs when a remote client vanishes
+    /// mid-chord: the holds finish and announce, the page is told about keys
+    /// it was given, a client that saw the press gets the release instead of
+    /// an orphan, and the seat's xkb state lets go — a modifier held at the
+    /// moment the device died would otherwise stay depressed for the rest of
+    /// the session. What that half cannot pair — a keymap swapped under a held
+    /// key, so the release looked for a different symbol and found nothing —
+    /// is finished here directly, so no table outlives the device.
+    fn release_held_keys(&mut self) {
+        let pressed: Vec<smithay::input::keyboard::Keycode> = self
+            .seat
+            .get_keyboard()
+            .map(|keyboard| keyboard.pressed_keys().into_iter().collect())
+            .unwrap_or_default();
+        for code in pressed {
+            self.release_injected_key(code);
+        }
+
+        // The hold tables are keyed by the symbol a press paired with, not by
+        // keycode; a release that could not find its key still owes them the
+        // end of the hold — and the timer that looked like it was repeating
+        // the volume down for ever.
+        let mut codes: Vec<u32> = self
+            .long_press_pending
+            .keys()
+            .chain(self.repeating_held.keys())
+            .chain(self.shortcuts_held.iter().map(|(code, _)| code))
+            .copied()
+            .collect();
+        codes.sort_unstable();
+        codes.dedup();
+        for code in codes {
+            finish_key_hold(
+                code,
+                &mut self.long_press_pending,
+                &mut self.repeating_held,
+                &mut self.shortcuts_held,
+                &mut self.shortcuts_to_announce,
+            );
+        }
+
+        // What the page was given is released to it by the keycode the press
+        // sent: the pairing the page does is by keycode, and there is no key
+        // handle left to ask.
+        #[cfg(feature = "wpe")]
+        let modifiers_now = self.shell_modifiers();
+        #[cfg(not(feature = "wpe"))]
+        let modifiers_now = 0;
+        for (sym, keycode) in drain_web_keys() {
+            self.handle_action(Action::Web(web_key(
+                keycode,
+                sym,
+                false,
+                modifiers_now,
+                InputTime::now().millis(),
+            )));
+        }
+        // The suppression records exist only to pair the releases that are
+        // never coming. Keeping them would swallow a later, unrelated release
+        // of the same symbol — a client told a key came up that never went
+        // down.
+        self.suppressed_keys.clear();
+
+        // The deactivations the sweep queued are announced now, as
+        // `release_injected_key` announces its own per key.
+        self.flush_shortcuts();
     }
 
     /// A pointer motion from the control socket rather than from libinput.
@@ -1421,6 +1622,55 @@ impl ViewportState {
         self.idle_notifier_state.notify_activity(&seat);
     }
 
+    /// The scroll settings that apply to a device, cached per device id.
+    ///
+    /// A high-resolution wheel delivers hundreds of axis events a second, and
+    /// resolving these used to allocate the device's name, a `format!`
+    /// identifier and the merged config's strings on every one. The identifier
+    /// is the device's to build once and keep; the merge is the config's to
+    /// redo only when the config actually changes, which the fingerprint of
+    /// the fields these settings come from says.
+    fn scroll_settings<D: smithay::backend::input::Device>(&self, device: &D) -> ScrollSettings {
+        let id = device.id();
+        let hash = input_config_hash(&self.input_config);
+        SCROLL_SETTINGS.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            if let Some(entry) = cache.get_mut(&id) {
+                if entry.config_hash == hash {
+                    return entry.settings;
+                }
+                // The config changed under this device: the identifier is the
+                // device's to keep for its life, only the resolution is the
+                // config's to redo.
+                let settings = self.merged_scroll_settings(&entry.identifier);
+                entry.settings = settings;
+                entry.config_hash = hash;
+                return settings;
+            }
+            // First sight of the device.
+            let identifier = device_identifier(device);
+            let settings = self.merged_scroll_settings(&identifier);
+            cache.insert(
+                id,
+                CachedScrollSettings {
+                    config_hash: hash,
+                    identifier,
+                    settings,
+                },
+            );
+            settings
+        })
+    }
+
+    /// The merged config's axis fields, for one identifier.
+    fn merged_scroll_settings(&self, identifier: &str) -> ScrollSettings {
+        let merged = self.input_config_for(identifier);
+        ScrollSettings {
+            scroll_factor: merged.scroll_factor,
+            emulate_discrete_scroll: merged.emulate_discrete_scroll,
+        }
+    }
+
     pub fn process_input_event<I: InputBackend>(&mut self, event: InputEvent<I>) {
         // Anything the shell asked for and has not been given yet, before this
         // event is tested against the desktop.
@@ -1660,15 +1910,17 @@ impl ViewportState {
                                     state.suppressed_keys.push(unmodified_sym);
                                     // Remember that it was the page's, so the
                                     // release goes there even if a click moves
-                                    // focus to a window before it comes up.
-                                    remember_web_key(unmodified_sym);
-                                    FilterResult::Intercept(Some(Action::Web(WebKey {
-                                        keycode: handle.raw_code().raw() + 8,
-                                        keysym: keysym.raw(),
-                                        pressed: true,
-                                        modifiers: modifiers_now,
-                                        time: time.millis(),
-                                    })))
+                                    // focus to a window before it comes up —
+                                    // with the keycode the press sent, for the
+                                    // release no device will ever send.
+                                    remember_web_key(unmodified_sym, handle.raw_code().raw());
+                                    FilterResult::Intercept(Some(Action::Web(web_key(
+                                        handle.raw_code().raw(),
+                                        keysym.raw(),
+                                        true,
+                                        modifiers_now,
+                                        time.millis(),
+                                    ))))
                                 }
                                 None => FilterResult::Forward,
                             }
@@ -1697,13 +1949,13 @@ impl ViewportState {
                             let web = release_web_key(unmodified_sym);
                             if take_suppressed(&mut state.suppressed_keys, unmodified_sym) {
                                 result = if web {
-                                    FilterResult::Intercept(Some(Action::Web(WebKey {
-                                        keycode: handle.raw_code().raw() + 8,
-                                        keysym: keysym.raw(),
-                                        pressed: false,
-                                        modifiers: modifiers_now,
-                                        time: time.millis(),
-                                    })))
+                                    FilterResult::Intercept(Some(Action::Web(web_key(
+                                        handle.raw_code().raw(),
+                                        keysym.raw(),
+                                        false,
+                                        modifiers_now,
+                                        time.millis(),
+                                    ))))
                                 } else {
                                     FilterResult::Intercept(Some(Action::Swallow))
                                 };
@@ -1712,13 +1964,13 @@ impl ViewportState {
                                 // was released through `release_injected_key`,
                                 // say — but the page saw it go down and still
                                 // has to see it come up.
-                                result = FilterResult::Intercept(Some(Action::Web(WebKey {
-                                    keycode: handle.raw_code().raw() + 8,
-                                    keysym: keysym.raw(),
-                                    pressed: false,
-                                    modifiers: modifiers_now,
-                                    time: time.millis(),
-                                })));
+                                result = FilterResult::Intercept(Some(Action::Web(web_key(
+                                    handle.raw_code().raw(),
+                                    keysym.raw(),
+                                    false,
+                                    modifiers_now,
+                                    time.millis(),
+                                ))));
                             }
 
                             // The unmodified symbol, as on the press half.
@@ -2285,22 +2537,17 @@ impl ViewportState {
                 let source = event.source();
                 // The two settings libinput cannot carry on the device itself.
                 // A scroll factor is applied to the events as they arrive, so
-                // the merged config is read here. The identifier is built the
-                // same way the backend builds it — `usb_id` hands back
-                // (product, vendor), while the config spells vendor first.
+                // the merged config is consulted here — cached per device,
+                // because a high-resolution wheel must not rebuild the config
+                // identifier and re-merge the config per tick. See
+                // `scroll_settings`.
                 let device = event.device();
-                let identifier = match device.usb_id() {
-                    Some((product, vendor)) => {
-                        format!("{vendor:04x}:{product:04x}:{}", device.name())
-                    }
-                    None => device.name(),
-                };
-                let input = self.input_config_for(&identifier);
-                let factor = input
+                let settings = self.scroll_settings(&device);
+                let factor = settings
                     .scroll_factor
                     .filter(|factor| factor.is_finite() && *factor != 0.0)
                     .unwrap_or(1.0);
-                let emulate = input.emulate_discrete_scroll.unwrap_or(false);
+                let emulate = settings.emulate_discrete_scroll.unwrap_or(false);
                 let horizontal = event.amount(Axis::Horizontal).unwrap_or_else(|| {
                     event.amount_v120(Axis::Horizontal).unwrap_or(0.0) * 15.0 / 120.0
                 }) * factor;
@@ -2440,10 +2687,42 @@ impl ViewportState {
                     // next thing focused after it.
                     self.sync_osk_wanted();
                 }
+                // The axis settings are cached per device id — warm them here,
+                // so the first scroll after a hotplug is not the one paying
+                // for the identifier and the merge. See `scroll_settings`.
+                self.scroll_settings(&device);
             }
             InputEvent::DeviceRemoved { device } => {
                 self.cancel_gesture();
                 use smithay::backend::input::Device as _;
+                // The cached axis settings were this device's, and the id the
+                // next device is handed may be one this one had: dropped now,
+                // so a future device resolves by its own name rather than
+                // inheriting this one's scroll factor.
+                SCROLL_SETTINGS.with(|cache| {
+                    cache.borrow_mut().remove(&device.id());
+                });
+                // A keyboard that dies mid-chord sends no releases, and no
+                // other path ends a hold: the repeat timer would run its
+                // binding for ever and a held push-to-talk shortcut would
+                // never be announced deactivated. See `release_held_keys`.
+                if device.has_capability(smithay::backend::input::DeviceCapability::Keyboard) {
+                    self.release_held_keys();
+                }
+                // The pointer's half of the same problem: a press opens
+                // records — the `click+`/`drag+` decision, the shell's
+                // implicit grab, the binding suppression — that only a
+                // release closes, and this device is not sending one. They are
+                // dropped rather than paired off: unlike a key handed to the
+                // page, a grabbed button is not proof the page saw the press
+                // (the grab is taken even where no page covers the point), so
+                // synthesizing a release could hand it an up it has no down
+                // for.
+                if device.has_capability(smithay::backend::input::DeviceCapability::Pointer) {
+                    self.pending_click.clear();
+                    self.shell_grabbed_buttons.clear();
+                    clear_suppressed_buttons();
+                }
                 if device.has_capability(smithay::backend::input::DeviceCapability::TabletTool) {
                     let seat = self.seat.tablet_seat();
                     seat.remove_tablet(&TabletDescriptor::from(&device));
@@ -3598,13 +3877,84 @@ impl ViewportState {
     }
 }
 
+/// How many rectangles [`ConfineRects`] keeps inline before spilling to the
+/// heap. A confinement region names one rectangle per area it draws — one for
+/// the windowed game, two for a map widget beside its legend — so four covers
+/// what regions actually are and leaves the spill for whatever else a client
+/// dreams up.
+const CONFINE_RECTS_INLINE: usize = 4;
+
+/// A confinement's rectangles, kept off the heap in the shapes regions
+/// actually have.
+///
+/// `pointer_constraint` resolves the region on every pointer motion while a
+/// constraint is active, and this code treats that path as what it is: a
+/// gaming mouse sends thousands of events a second, so a freshly collected
+/// `Vec` per event — two, counting the `vec![bbox]` of the regionless path —
+/// is a steady stream of allocations for data that almost always holds one
+/// rectangle. Inline until it does not, and the per-motion cost is nothing.
+/// A cache keyed by surface was the other option and needs invalidating on
+/// every region commit and constraint change from handlers this file does not
+/// own; this cannot go stale.
+#[derive(Debug, PartialEq)]
+struct ConfineRects {
+    inline: [Rectangle<i32, Logical>; CONFINE_RECTS_INLINE],
+    len: usize,
+    /// Once the inline buffer overflows, every rectangle lives here instead.
+    spill: Vec<Rectangle<i32, Logical>>,
+}
+
+impl ConfineRects {
+    fn new() -> Self {
+        Self {
+            inline: [Rectangle::new((0, 0).into(), (0, 0).into()); CONFINE_RECTS_INLINE],
+            len: 0,
+            spill: Vec::new(),
+        }
+    }
+
+    fn push(&mut self, rect: Rectangle<i32, Logical>) {
+        if self.spill.is_empty() && self.len < CONFINE_RECTS_INLINE {
+            self.inline[self.len] = rect;
+        } else {
+            if self.spill.is_empty() {
+                // One spill, not one per rectangle: the inline buffer is
+                // copied across once and only the heap sees the rest.
+                self.spill.extend_from_slice(&self.inline[..self.len]);
+            }
+            self.spill.push(rect);
+        }
+        self.len += 1;
+    }
+
+    fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    fn as_slice(&self) -> &[Rectangle<i32, Logical>] {
+        if self.spill.is_empty() {
+            &self.inline[..self.len]
+        } else {
+            &self.spill
+        }
+    }
+}
+
+impl std::ops::Deref for ConfineRects {
+    type Target = [Rectangle<i32, Logical>];
+
+    fn deref(&self) -> &Self::Target {
+        self.as_slice()
+    }
+}
+
 /// The region a confined pointer is held inside, and the surface's origin in
 /// layout coordinates.
 ///
 /// Both are needed together because the region is surface-local and the
 /// pointer is not.
 type Confinement = (
-    Vec<smithay::utils::Rectangle<i32, smithay::utils::Logical>>,
+    ConfineRects,
     smithay::utils::Point<i32, smithay::utils::Logical>,
 );
 
@@ -3882,7 +4232,7 @@ impl ViewportState {
         let mut locked = false;
         // `None`: no active confinement. `Some(None)`: confined to the whole
         // surface. `Some(Some(rects))`: confined to those rectangles.
-        let mut confined: Option<Option<Vec<Rectangle<i32, Logical>>>> = None;
+        let mut confined: Option<Option<ConfineRects>> = None;
         with_pointer_constraint(surface, pointer, |constraint| {
             let Some(constraint) = constraint else {
                 return;
@@ -3896,21 +4246,14 @@ impl ViewportState {
             match &*constraint {
                 PointerConstraint::Locked(_) => locked = true,
                 PointerConstraint::Confined(confined_constraint) => {
-                    // The additive rectangles only. A region may also
-                    // subtract, but a hole in a confinement region has no
-                    // sensible edge to snap a cursor to — and no client asks
-                    // for one. Ignoring the subtractions confines to slightly
-                    // more than was asked, which is the safe direction: the
-                    // cursor stays inside the surface either way.
-                    use smithay::wayland::compositor::RectangleKind;
-                    confined = Some(confined_constraint.region().map(|region| {
-                        region
-                            .rects
-                            .iter()
-                            .filter(|(kind, _)| matches!(kind, RectangleKind::Add))
-                            .map(|(_, rect)| *rect)
-                            .collect()
-                    }));
+                    // The additive rectangles, or nothing — which below means
+                    // the whole surface, not "no confinement". See
+                    // `confinement_rects` for both halves of that.
+                    confined = Some(
+                        confined_constraint
+                            .region()
+                            .and_then(|region| confinement_rects(&region.rects)),
+                    );
                 }
             }
         });
@@ -3930,16 +4273,46 @@ impl ViewportState {
                 // A surface with nothing committed to it has no area, and
                 // confining to that would pin the cursor to a corner. Leave
                 // it free instead.
-                if bbox.is_empty() {
-                    Vec::new()
-                } else {
-                    vec![bbox]
+                let mut rects = ConfineRects::new();
+                if !bbox.is_empty() {
+                    rects.push(bbox);
                 }
+                rects
             });
             (region, origin)
         });
         (locked, confine)
     }
+}
+
+use smithay::wayland::compositor::RectangleKind;
+
+/// The rectangles a confinement region holds, or `None` when it holds none
+/// and the whole surface is meant.
+///
+/// The additive rectangles only. A region may also subtract, but a hole in a
+/// confinement region has no sensible edge to snap a cursor to — and no client
+/// asks for one. Ignoring the subtractions confines to slightly more than was
+/// asked, which is the safe direction: the cursor stays inside the surface
+/// either way.
+///
+/// `None` is not "confine to nothing": a region whose rectangles are all
+/// subtractions — "this surface, minus this hole" — legally means the whole
+/// surface minus the holes, and an additive set of nothing has to fall back
+/// to the surface's bounding box. Returning an empty list instead (what this
+/// replaced) wrapped it in `Some`, skipped that fallback, and left
+/// `pointer::confine` with nothing to confine to at all — so the client that
+/// asked for a hole in its confinement got no confinement and the pointer
+/// left the surface entirely, the opposite of both the request and the safe
+/// direction above.
+fn confinement_rects(rects: &[(RectangleKind, Rectangle<i32, Logical>)]) -> Option<ConfineRects> {
+    let mut additive = ConfineRects::new();
+    for (kind, rect) in rects {
+        if matches!(kind, RectangleKind::Add) {
+            additive.push(*rect);
+        }
+    }
+    (!additive.is_empty()).then_some(additive)
 }
 
 /// What a tablet event says about the pen, for the axes that changed.
@@ -4284,6 +4657,73 @@ mod tests {
         assert!(!shell_gets_button(false, false, true));
     }
 
+    /// The shell is handed the keycode the key handle reports, exactly.
+    ///
+    /// `KeysymHandle::raw_code()` is already an X11-style keycode — smithay's
+    /// libinput backend builds it as `key() + 8` from evdev's number, and the
+    /// file's own `inject_keysym` undoes the same offset on the way back — so
+    /// the construction sites pass it verbatim. Adding eight there (the
+    /// mistake this replaces) sent the page evdev plus *sixteen*: every key
+    /// named the wrong physical key, with the keysym beside it right to hide
+    /// it. `u32::MAX` is `inject_key`'s deliberate `saturating_add(8)`
+    /// passthrough from `Request::InputKey`, and the second offset overflowed
+    /// on it — a debug-build panic in the user's desktop session.
+    #[test]
+    fn the_shell_gets_the_raw_keycode_verbatim() {
+        let evdev = 30u32; // KEY_A's number in evdev's table.
+        let x11 = evdev + 8;
+        let key = web_key(x11, keysyms::KEY_a, true, 0, 0);
+        assert_eq!(key.keycode, x11, "X keycode in, X keycode out");
+        // The round trip `inject_keysym` relies on: what arrives is what
+        // `saturating_sub(8)` turns back into evdev's number.
+        assert_eq!(key.keycode.saturating_sub(8), evdev);
+        // No arithmetic, no overflow at the top of the range.
+        let top = web_key(u32::MAX, 0, false, 0, 0);
+        assert_eq!(top.keycode, u32::MAX);
+    }
+
+    fn rect(x: i32, y: i32, w: i32, h: i32) -> Rectangle<i32, Logical> {
+        Rectangle::new((x, y).into(), (w, h).into())
+    }
+
+    /// "This surface, minus this hole" is a legal confinement region, and it
+    /// confines to the surface.
+    ///
+    /// Only subtractive rectangles leave nothing additive to name, and that
+    /// used to resolve to an empty list wrapped in `Some` — which skipped the
+    /// whole-surface fallback and handed `pointer::confine` nothing to confine
+    /// to, so the pointer left the surface entirely: no confinement at all,
+    /// the opposite of what the client asked for.
+    #[test]
+    fn a_subtract_only_region_falls_back_to_the_whole_surface() {
+        use smithay::wayland::compositor::RectangleKind;
+        let hole = (RectangleKind::Subtract, rect(10, 10, 50, 50));
+        assert_eq!(
+            confinement_rects(&[hole]),
+            None,
+            "no additive rectangle means the surface, not nothing"
+        );
+        assert_eq!(
+            confinement_rects(&[]),
+            None,
+            "a committed region with no rectangles is the surface too"
+        );
+    }
+
+    #[test]
+    fn a_confinement_keeps_its_additive_rectangles_and_ignores_holes() {
+        use smithay::wayland::compositor::RectangleKind;
+        let rects = confinement_rects(&[
+            (RectangleKind::Add, rect(0, 0, 100, 100)),
+            (RectangleKind::Subtract, rect(10, 10, 50, 50)),
+        ])
+        .expect("the additive rectangle");
+        // Ignoring the subtraction confines to slightly more than was asked —
+        // the safe direction, and the only one with an edge to snap a cursor
+        // to.
+        assert_eq!(rects.as_slice(), &[rect(0, 0, 100, 100)]);
+    }
+
     /// A shifted key pairs by the symbol on the key, not by what the
     /// modifiers made of it.
     ///
@@ -4303,14 +4743,32 @@ mod tests {
         let sym = Keysym::new(keysyms::KEY_a);
         assert!(!release_web_key(sym), "nothing was handed to the page yet");
 
-        remember_web_key(sym);
+        remember_web_key(sym, 38);
         // A duplicate record must not make one release count for two.
-        remember_web_key(sym);
+        remember_web_key(sym, 38);
         assert!(
             release_web_key(sym),
             "the release must go to the page that saw the press"
         );
         assert!(!release_web_key(sym), "one release per press");
+    }
+
+    /// The record a vanished keyboard's sweep pairs by.
+    ///
+    /// No handle survives the device, so the page's release has to come from
+    /// what the press recorded: the symbol it paired by and the keycode it
+    /// sent. Draining takes everything, so no table entry outlives the device
+    /// to swallow somebody else's release later.
+    #[test]
+    fn a_page_keys_record_names_the_keycode_the_press_sent() {
+        remember_web_key(Keysym::new(keysyms::KEY_a), 38);
+        remember_web_key(Keysym::new(keysyms::KEY_b), 56);
+        let held = drain_web_keys();
+        assert_eq!(held, vec![(keysyms::KEY_a, 38), (keysyms::KEY_b, 56)]);
+        assert!(
+            drain_web_keys().is_empty(),
+            "the sweep leaves nothing behind"
+        );
     }
 
     /// The release half of a hold runs whichever path the release arrives on.
