@@ -54,8 +54,17 @@ impl TearingControlState {
     }
 
     /// Whether this surface asked to be presented as soon as possible.
+    ///
+    /// Dead entries are filtered out here rather than trusted: Wayland
+    /// recycles object ids, so a `WlSurface` a control object outlived
+    /// compares equal to the next surface its client made from the same id —
+    /// without the filter that surface would inherit a tearing hint it never
+    /// asked for.
     pub fn wants_tearing(&self, surface: &WlSurface) -> bool {
-        self.wants_tearing.iter().any(|other| other == surface)
+        self.wants_tearing
+            .iter()
+            .filter(|other| smithay::utils::IsAlive::alive(*other))
+            .any(|other| other == surface)
     }
 
     /// Whether any surface has asked for asynchronous presentation.
@@ -64,12 +73,25 @@ impl TearingControlState {
     /// output per frame, and the answer is almost always no. This lets it
     /// return before walking the space and locking the output's layer map.
     pub fn any_wants_tearing(&self) -> bool {
-        !self.wants_tearing.is_empty()
+        // The same liveness filter as `wants_tearing`, and for the same
+        // reason: one dead entry would otherwise pin this true, which buys
+        // nothing but the walk this exists to skip — and asserts tearing is
+        // wanted when no client is asking.
+        self.wants_tearing
+            .iter()
+            .any(smithay::utils::IsAlive::alive)
     }
 
     /// Whether a control object for this surface is alive.
+    ///
+    /// Filtered on liveness as the lookups above: a record whose surface is
+    /// gone must not shadow the control object a recycled object id is about
+    /// to make legitimate.
     fn bound(&self, surface: &WlSurface) -> bool {
-        self.bound.iter().any(|other| other == surface)
+        self.bound
+            .iter()
+            .filter(|other| smithay::utils::IsAlive::alive(*other))
+            .any(|other| other == surface)
     }
 
     fn set(&mut self, surface: &WlSurface, wants: bool) {
@@ -231,4 +253,41 @@ macro_rules! delegate_tearing_control {
             smithay::reexports::wayland_protocols::wp::tearing_control::v1::server::wp_tearing_control_v1::WpTearingControlV1: $crate::tearing::ControlData
         ] => $crate::tearing::TearingControlState);
     };
+}
+
+#[cfg(test)]
+mod live_surface_lookups {
+    /// Every lookup in `TearingControlState` must filter its entries on
+    /// `IsAlive`.
+    ///
+    /// A control object outlives the surface it speaks for, and Wayland
+    /// recycles object ids: the record of a destroyed surface compares equal
+    /// to the next surface its client makes from the same id, so an unfiltered
+    /// lookup hands that surface a tearing hint it never asked for, refuses it
+    /// a legitimate control object, or pins `any_wants_tearing` true for the
+    /// rest of the session. `WlSurface` cannot be built in a unit test — a
+    /// live one needs a client connection — so the invariant is checked
+    /// against the source the lookups are written in, as the lock-surface
+    /// walks are in `state/frame_barriers.rs`.
+    #[test]
+    fn every_tearing_lookup_keeps_the_live_surfaces() {
+        let source = include_str!("tearing.rs");
+        let source = source.split("#[cfg(test)]").next().unwrap_or(source);
+        for needle in [
+            "pub fn wants_tearing",
+            "pub fn any_wants_tearing",
+            "fn bound",
+        ] {
+            let start = source
+                .find(needle)
+                .unwrap_or_else(|| panic!("{needle} is in the source"));
+            let rest = &source[start..];
+            let end = rest.find("\n    }").map(|at| at + 6).unwrap_or(rest.len());
+            let body = &rest[..end];
+            assert!(
+                body.contains("IsAlive::alive"),
+                "{needle} does not keep only the live surfaces"
+            );
+        }
+    }
 }
