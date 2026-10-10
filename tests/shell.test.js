@@ -329,6 +329,16 @@ global.document = {
 };
 
 const windowListeners = {};
+/* What the shell re-dispatches queued messages with: the replay in
+ * finishLayoutConfig hands each pending one back to the window as a
+ * CustomEvent, so the stub needs both halves of that or the replay path is
+ * untestable — and it is the path a wedged desktop is wedged behind. */
+global.CustomEvent = class {
+  constructor(type, init = {}) {
+    this.type = type;
+    this.detail = init?.detail;
+  }
+};
 global.window = {
   webkit: { messageHandlers: { viewport: { postMessage: (m) => {
     const msg = JSON.parse(m);
@@ -338,6 +348,10 @@ global.window = {
   addEventListener: (type, fn) => { (windowListeners[type] ??= []).push(fn); },
   removeEventListener: (type, fn) => {
     windowListeners[type] = (windowListeners[type] ?? []).filter((f) => f !== fn);
+  },
+  dispatchEvent: (event) => {
+    for (const fn of windowListeners[event.type] ?? []) fn(event);
+    return true;
   },
 };
 global.ResizeObserver = class { observe() {} unobserve() {} };
@@ -469,6 +483,9 @@ global.gsap = {
 const EXPORTS = ';globalThis.__shell = { views, workspaces, outputs, scrollOffsets, overviewThumbs, workspaceCatalog,'
   + ' workspaceOfForTest: workspaceOf,'
   + ' overviewStateForTest: (id) => views.get(id)?.overview ?? {},'
+  /* What the last relayout put on screen — the tree a drag's relayouts
+     actually rebuild, which some layouts cap well below the windows open. */
+  + ' get renderedIdsForTest() { return renderedIds; },'
   + ' get overviewActiveForTest() { return overviewActive; },'
   + ' floatingForTest: (id) => views.get(id)?.floating ?? null,'
   /* The motion config: whether the reduced-motion switch is thrown, and the
@@ -592,6 +609,13 @@ const EXPORTS = ';globalThis.__shell = { views, workspaces, outputs, scrollOffse
   + ' registerWidget: typeof registerWidget !== "undefined" ? registerWidget : undefined,'
   + ' widgetRegistry: typeof widgetRegistry !== "undefined" ? widgetRegistry : undefined,'
   + ' widgetSources: typeof widgetSources !== "undefined" ? widgetSources : undefined,'
+  /* The initial-config gate and the queue behind it, so a test can put the
+     page back in the state a fresh load starts in — before the first config —
+     and watch what opens the gate again. That gate is what a throwing
+     extension used to keep shut for ever. */
+  + ' get initialConfigReadyForTest() { return initialConfigReady; },'
+  + ' set initialConfigReadyForTest(v) { initialConfigReady = v; },'
+  + ' pendingViewReplayForTest: pendingViewReplay,'
   + ' get activeOutput() { return activeOutput; } };';
 /* The shell is a set of ordered classic scripts sharing one global scope, so
  * concatenating them in load order and evaluating the result is exactly what
@@ -8787,6 +8811,362 @@ if (mode === 'scrolling') {
 
   for (let i = 12; i < 20; i++) {
     emit({ type: 'notification.close', id: 1000 + i });
+  }
+}
+
+/* U7: one throwing extension cannot wedge the desktop.
+ *
+ * The single 'viewport' listener runs third-party widget code inline on the
+ * config path, and the initial-config gate sits at the end of that path: a
+ * throw in a widget's mount used to abort the config message before the gate
+ * opened, so every later view message queued in pendingViewReplay for ever —
+ * the desktop came up with no windows and stayed that way, because the next
+ * config threw at the same place. These are the layers that stop that: the
+ * extension calls are contained, the dispatch is contained, and the gate opens
+ * in a finally however the config's own pass went. */
+{
+  const sh = globalThis.__shell;
+  let quietUpdates = 0;
+  sh.registerWidget('boom', {
+    mount() { throw new Error('boom mount'); },
+    update() { throw new Error('boom update'); },
+    destroy() { throw new Error('boom destroy'); },
+  });
+  sh.registerWidget('quiet', {
+    mount() {},
+    update() { quietUpdates += 1; },
+    destroy() { quietUpdates += 100; },
+  });
+
+  /* Back to the state a fresh page starts in: no config has been applied, so
+     view messages wait for the one that is coming. */
+  sh.initialConfigReadyForTest = false;
+  emit({ type: 'view.added', id: 901, title: 'held', app_id: 'held',
+    tag: null, output: 'DP-1', min_width: 0, min_height: 0,
+    floating: false, width: 800, height: 600 });
+  check('a view arriving before the first config waits for it',
+    !sh.views.has(901) && sh.pendingViewReplayForTest.length === 1);
+
+  emit({ type: 'config', layout: mode, bar_widgets: [
+    { type: 'custom', name: 'boom', options: {} },
+    { type: 'custom', name: 'quiet', options: {} },
+  ] });
+  check('a throwing widget mount cannot keep the config gate shut',
+    sh.initialConfigReadyForTest === true);
+  check('and the held window is replayed onto the desktop',
+    sh.views.has(901) && sh.pendingViewReplayForTest.length === 0);
+  check('the widget after the throwing one still mounted',
+    quietUpdates >= 1);
+
+  /* The per-tick update: one throw must not take the rest of the list down
+     with it, since the list is drawn on every status sample. */
+  const before = quietUpdates;
+  emit({ type: 'status.update', cpu: -1, memory: -1, load: 0,
+    net_rx: 0, net_tx: 0, disk_free: 0, disk_total: 0,
+    mounts: [], volume: 0.45, muted: false });
+  check('a throwing update does not stop the widgets after it',
+    quietUpdates > before);
+
+  /* Re-syncing the bar tears the dropped widget down; a throwing destroy is
+     contained the same way, and the sync must complete. */
+  let threw = null;
+  try {
+    emit({ type: 'config', layout: mode, bar_widgets: [
+      { type: 'custom', name: 'quiet', options: {} },
+    ] });
+  } catch (error) {
+    threw = error;
+  }
+  check('a throwing destroy cannot break a re-synced bar', !threw);
+
+  /* A malformed message is data, not a script: no `type` to dispatch on is a
+     message to drop, not a TypeError to raise into the page. */
+  threw = null;
+  try {
+    for (const fn of windowListeners.viewport ?? []) fn({ detail: { nope: 1 } });
+    for (const fn of windowListeners.viewport ?? []) fn({ detail: null });
+    for (const fn of windowListeners.viewport ?? []) fn({});
+    for (const fn of windowListeners.viewport ?? []) fn({ detail: { type: 42 } });
+  } catch (error) {
+    threw = error;
+  }
+  check('a message with no string type is dropped, not thrown', !threw);
+
+  /* And the gate itself: a throw out of the config's own pass — here made by
+     failing the rule re-apply, which is one of the places extension code runs
+     — must still leave the desktop with its windows. */
+  const realReapply = globalThis.reapplyWindowRules;
+  globalThis.reapplyWindowRules = () => { throw new Error('pass exploded'); };
+  try {
+    sh.initialConfigReadyForTest = false;
+    emit({ type: 'view.added', id: 902, title: 'held too', app_id: 'held',
+      tag: null, output: 'DP-1', min_width: 0, min_height: 0,
+      floating: false, width: 800, height: 600 });
+    threw = null;
+    try {
+      emit({ type: 'config', layout: mode });
+    } catch (error) {
+      threw = error;
+    }
+    check('a config that throws mid-pass still opens the gate',
+      !threw && sh.initialConfigReadyForTest === true);
+    check('and replays the window it was holding', sh.views.has(902));
+  } finally {
+    globalThis.reapplyWindowRules = realReapply;
+    emit({ type: 'view.removed', id: 901 });
+    emit({ type: 'view.removed', id: 902 });
+  }
+}
+
+/* U8: a window-rule regex cannot be turned into a hang by a window's own
+ * title. The pattern is config, the title is anything a client says, and the
+ * match runs on every title change — so a catastrophic-backtracking pattern
+ * and a crafted title were a way to freeze the whole shell page. */
+{
+  const sh = globalThis.__shell;
+
+  /* The `g` flag made `.test` stateful through `lastIndex`: with the compiled
+     regex now cached and reused, that would have matched every other window
+     and missed the ones in between. */
+  emit({ type: 'config', layout: mode, rules: [
+    { match: { title: { regex: 'pip', flags: 'gi' } }, pinned: true,
+      width: 320, height: 180 },
+  ] });
+  emit({ type: 'view.added', id: 911, title: 'PiP one', app_id: 'video',
+    tag: null, output: 'DP-1', min_width: 0, min_height: 0,
+    floating: false, width: 800, height: 600 });
+  emit({ type: 'view.added', id: 912, title: 'PiP two', app_id: 'video',
+    tag: null, output: 'DP-1', min_width: 0, min_height: 0,
+    floating: false, width: 800, height: 600 });
+  check('a g-flagged rule matches the second window as reliably as the first',
+    sh.views.get(911)?.special === 'pinned'
+    && sh.views.get(912)?.special === 'pinned');
+  emit({ type: 'view.removed', id: 911 });
+  emit({ type: 'view.removed', id: 912 });
+
+  /* A nested quantifier is refused outright rather than run: `(a+)+$` over a
+     few thousand `a`s and a non-match is exponential in the title's length,
+     which is a page that stops drawing for as long as the backtracking lasts.
+     The crafted title below is the shape of the attack; without the lint this
+     check would never finish rather than fail. */
+  emit({ type: 'config', layout: mode, rules: [
+    { match: { title: { regex: '(a+)+$' } }, pinned: true,
+      width: 320, height: 180 },
+  ] });
+  emit({ type: 'view.added', id: 913, title: `${'a'.repeat(3000)}!`,
+    app_id: 'crafted', tag: null, output: 'DP-1',
+    min_width: 0, min_height: 0, floating: false, width: 800, height: 600 });
+  check('a catastrophic rule pattern is refused, not run',
+    sh.views.get(913)?.special !== 'pinned');
+  emit({ type: 'view.removed', id: 913 });
+
+  /* And the haystack is capped: the match runs against the first few KB of
+     the title, never against a string whose length a client decides. */
+  emit({ type: 'config', layout: mode, rules: [
+    { match: { title: { regex: 'needle' } }, pinned: true,
+      width: 320, height: 180 },
+  ] });
+  emit({ type: 'view.added', id: 914, title: `needle${'x'.repeat(8000)}`,
+    app_id: 'capped', tag: null, output: 'DP-1',
+    min_width: 0, min_height: 0, floating: false, width: 800, height: 600 });
+  emit({ type: 'view.added', id: 915, title: `${'x'.repeat(8000)}needle`,
+    app_id: 'capped', tag: null, output: 'DP-1',
+    min_width: 0, min_height: 0, floating: false, width: 800, height: 600 });
+  check('a rule matches within the capped title',
+    sh.views.get(914)?.special === 'pinned');
+  check('and a title whose tail is past the cap is not matched against',
+    sh.views.get(915)?.special !== 'pinned');
+  emit({ type: 'view.removed', id: 914 });
+  emit({ type: 'view.removed', id: 915 });
+}
+
+/* U9: a zero-size window retracts its visibility once, not on every pump
+ * frame. The early path in reportGeometry used to send `view.visible false`
+ * unconditionally, so a window measuring zero while still mapped — an
+ * animation, an edge-case layout — re-sent the identical message up to sixty
+ * times per pump bout. It is the edge the compositor needs, and the guard is
+ * the same one the hide path in relayoutAll already uses: `view.box` is the
+ * last state that was reported. */
+{
+  const sh = globalThis.__shell;
+  emit({ type: 'view.added', id: 921, title: 'tiny', app_id: 'tiny',
+    tag: null, output: 'DP-1', min_width: 0, min_height: 0,
+    floating: false, width: 800, height: 600 });
+  const view = sh.views.get(921);
+  const measured = view.viewport.getBoundingClientRect;
+  const zero = () => ({ left: 0, top: 0, width: 0, height: 0, x: 0, y: 0 });
+
+  /* Driven through reportGeometry directly, the way the pump's step drives
+     it — this section is about the message edge, and an earlier section's
+     queued frames leave the harness's own pump unrun. The window is first
+     reported where it is, which is the state the edge starts from. */
+  sh.reportGeometryForTest(921);
+
+  view.viewport.getBoundingClientRect = zero;
+  let at = sent.length;
+  sh.reportGeometryForTest(921);
+  sh.reportGeometryForTest(921);
+  sh.reportGeometryForTest(921);
+  const hides = () => sent.slice(at).filter(
+    (m) => m.type === 'view.visible' && m.id === 921);
+  check('a visible window going zero-size retracts once', hides().length === 1);
+
+  at = sent.length;
+  sh.reportGeometryForTest(921);
+  sh.reportGeometryForTest(921);
+  check('and is not retracted again while it stays measured zero',
+    hides().length === 0);
+
+  /* Becoming measurable again is a view.layout, which is also what makes a
+     window visible to the compositor — so the next trip to zero is a fresh
+     edge and must be reported again. */
+  view.viewport.getBoundingClientRect = measured;
+  sh.reportGeometryForTest(921);
+  at = sent.length;
+  view.viewport.getBoundingClientRect = zero;
+  sh.reportGeometryForTest(921);
+  sh.reportGeometryForTest(921);
+  check('the edge fires again for a window that came back',
+    hides().length === 1);
+  view.viewport.getBoundingClientRect = measured;
+
+  /* A window that has never been reported visible has nothing to retract at
+     all — a minimized one measures zero and the compositor was never told it
+     was on screen. */
+  emit({ type: 'view.added', id: 922, title: 'hidden', app_id: 'hidden',
+    tag: null, output: 'DP-1', min_width: 0, min_height: 0,
+    floating: false, minimized: true, width: 800, height: 600 });
+  const never = sh.views.get(922);
+  never.viewport.getBoundingClientRect = zero;
+  at = sent.length;
+  sh.reportGeometryForTest(922);
+  sh.reportGeometryForTest(922);
+  check('a window never reported visible is never retracted',
+    sent.slice(at).every((m) => !(m.type === 'view.visible' && m.id === 922)));
+  never.viewport.getBoundingClientRect = measured;
+
+  emit({ type: 'view.removed', id: 921 });
+  emit({ type: 'view.removed', id: 922 });
+}
+
+/* U10: an image the bar draws for another application goes through the
+ * scheme allowlist first. Tray icons, menu-row icons and MPRIS cover art all
+ * name something a session-bus application chose; the compositor normalises
+ * them today (tray icons resolve to `data:`, art is `data:` or the player's
+ * own `https://`), but the page must hold the line itself — a scheme outside
+ * the allowlist is drawn as no image at all rather than fetched. */
+{
+  const sh = globalThis.__shell;
+
+  emit({ type: 'config', layout: mode, bar_widgets: [{ type: 'mpris' }] });
+  const el = sh.outputs.get('DP-1').widgetsEls[0];
+  const cover = () => el.children.find((n) => n._classes.has('mpris-art'));
+  const playing = (art) => ({ id: 'mpv', title: 'Rhubarb', artist: 'Aphex',
+    album: '', status: 'playing', art, can_go_next: false,
+    can_go_previous: false, can_pause: true, can_play: true });
+
+  emit({ type: 'mpris.update', player: playing('file:///etc/passwd') });
+  check('cover art with a refused scheme is drawn as no art',
+    cover().hidden === true && !cover().src);
+  emit({ type: 'mpris.update', player: playing('https://cdn.example/x.jpg') });
+  check("the player's own https URL is drawn",
+    cover().hidden === false && cover().src === 'https://cdn.example/x.jpg');
+  emit({ type: 'mpris.update', player: playing('data:image/png;base64,AA==') });
+  check('and a data: URL the compositor built is drawn too',
+    cover().hidden === false && cover().src === 'data:image/png;base64,AA==');
+  emit({ type: 'mpris.update', player: null });
+  emit({ type: 'config', layout: mode });
+
+  /* The same line for the tray: a refused icon is no icon, so the item draws
+     its letter rather than an element with nothing to show. */
+  emit({ type: 'tray.update', items: [
+    { id: 'refused', title: 'Evil', status: 'active',
+      icon: 'file:///etc/passwd', tooltip: '', is_menu: false },
+    { id: 'allowed', title: 'Fine', status: 'active',
+      icon: 'data:image/png;base64,AA==', tooltip: '', is_menu: false },
+  ] });
+  const tray = sh.outputs.get('DP-1').modules.tray;
+  check('a tray icon with a refused scheme draws the item\'s letter instead',
+    tray.children[0]._img === undefined
+    && tray.children[0].dataset.fallback === 'E');
+  check('a tray icon the compositor resolved is drawn',
+    tray.children[1]._img?.src === 'data:image/png;base64,AA==');
+  emit({ type: 'tray.update', items: [] });
+}
+
+/* U11: a drag over a big tree relayouts below the frame rate, a drag over a
+ * small one does not. A relayout rebuilds the whole wrapper tree, so the
+ * per-frame cost of a gesture scales with the windows on screen; past the
+ * batch threshold the drag takes every other frame instead of eating the
+ * frame on a rebuild. The first frame of a gesture always lays out, and its
+ * end always lays out once more — what is batched is the middle. */
+{
+  const sh = globalThis.__shell;
+  emit({ type: 'shell.command', command: 'workspace.switch', args: ['391'] });
+  const out = sh.outputs.get(sh.activeOutput);
+  let relayouts = 0;
+  const realReplace = out.windowsEl.replaceChildren.bind(out.windowsEl);
+  out.windowsEl.replaceChildren = (...nodes) => {
+    relayouts++;
+    return realReplace(...nodes);
+  };
+  /* Frames and timers held, so the gap between asking for a frame and getting
+     one is a thing this test can stand in — the same shape as the pacing
+     test above. */
+  const frames = [];
+  let idle = null;
+  const realFrame = global.requestAnimationFrame;
+  const realTimeout = global.setTimeout;
+  const realClearTimeout = global.clearTimeout;
+  global.requestAnimationFrame = (fn) => { frames.push(fn); };
+  global.setTimeout = (fn, ms) => { if (ms === 120) idle = fn; return 1; };
+  global.clearTimeout = () => {};
+  /* The windows this test opens, tracked outside the try so the finally that
+     sweeps them up can see them. */
+  const busy = [];
+  try {
+    const frame = () => frames.splice(0).forEach((fn) => fn(fakeClock));
+
+    endGesture();
+    relayouts = 0;
+    for (let i = 0; i < 3; i++) {
+      gestureRelayout();
+      frame();
+    }
+    check('a drag over a small tree lays out every frame', relayouts === 3);
+    idle();
+
+    /* Fill the workspace until the rendered tree is well past the batching
+       threshold — the pacing is what is checked here, not the exact number.
+       Some layouts cap what they put on screen (the matrix shows a fixed
+       grid's worth no matter how many windows are open), and a tree a layout
+       keeps small is a tree that keeps the full rate by design. */
+    for (let id = 931; id < 961 && sh.renderedIdsForTest.size < 10; id++) {
+      busy.push(id);
+      emit({ type: 'view.added', id, title: `busy ${id}`, app_id: 'busy',
+        tag: null, output: 'DP-1', min_width: 0, min_height: 0,
+        floating: false, width: 400, height: 300 });
+    }
+    const big = sh.renderedIdsForTest.size >= 10;
+    relayouts = 0;
+    for (let i = 0; i < 4; i++) {
+      gestureRelayout();
+      frame();
+    }
+    check(big
+      ? 'a drag over a big tree lays out every other frame'
+      : 'a layout that keeps the tree small keeps the full drag rate',
+      relayouts === (big ? 2 : 4));
+
+    relayouts = 0;
+    idle();
+    check('and the gesture ending lays out once more', relayouts === 1);
+  } finally {
+    global.requestAnimationFrame = realFrame;
+    global.setTimeout = realTimeout;
+    global.clearTimeout = realClearTimeout;
+    delete out.windowsEl.replaceChildren;
+    for (const id of busy) emit({ type: 'view.removed', id });
   }
 }
 

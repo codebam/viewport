@@ -107,7 +107,18 @@ function reportGeometry(id) {
   };
 
   if (box.width <= 0 || box.height <= 0) {
-    send({ type: 'view.visible', id, visible: false });
+    /* Only on the visible-to-invisible edge, exactly as the hide path in
+       relayoutAll guards: `view.box` is the last state reported to the
+       compositor, so a window that has never been visible has nothing to
+       retract and one already retracted must not say it again. Without this
+       the early return re-sent the same message on every pump frame — an
+       unhidden view measuring zero emits up to sixty identical messages per
+       pump bout — and it is the edge, not the state, the compositor needs to
+       hear about. */
+    if (view.box !== null) {
+      view.box = null;
+      send({ type: 'view.visible', id, visible: false });
+    }
     return false;
   }
 
@@ -471,6 +482,38 @@ let gesturing = false;
 let gestureTimer = null;
 let relayoutFrame = false;
 
+/* How big a tree has to be before a gesture stops laying out every frame.
+ *
+ * A relayout rebuilds the whole wrapper tree — every `.split`, tab button and
+ * divider recreated with fresh listeners — and that is O(windows) work per
+ * frame on top of the measuring the same frame needs. The rebuild is the
+ * documented price of the FLIP (flipFrom below: fresh parents are what make
+ * the slide work) and is nothing anybody notices at a desk's usual size.
+ * Under a hand it is where dropped frames come from, because a drag relayouts
+ * every frame for as long as it lasts: a drag over N windows allocates N
+ * elements and listeners sixty times a second.
+ *
+ * So past this many windows on screen, a gesture lays out every other frame
+ * instead. The deltas accumulate in the layout's own state either way (see
+ * above), the frame draws wherever the pointer has got to, and the only cost
+ * is that a window under a busy hand on a busy desktop follows at half the
+ * frame rate rather than costing the frame a rebuild would have eaten. Small
+ * trees keep the full rate — there the rebuild is cheaper than the skipped
+ * frame would be.
+ *
+ * The real fix is to keep the wrapper elements and diff them instead of
+ * rebuilding — the tab strip's stylesheet already anticipates it (see the
+ * note on .tab in shell.css) — but every wrapper's stylesheet leans on the
+ * rebuild today (.split transitions flex-grow, .strip its transform, .column
+ * its width), so retaining them changes what animates and needs a running
+ * compositor in front of it. Batching is the half that can be proved safe
+ * here; the first frame of a gesture always lays out, and the end of one
+ * always lays out once more (endGesture and the idle timer above). */
+const GESTURE_BATCH_MIN_WINDOWS = 8;
+/* Whether the next gesture frame is one to skip — armed by a frame that laid
+   out, spent by the one after it. Reset at the start of every gesture. */
+let gestureSkipFrame = false;
+
 /* Whether a drag, a resize or a pan is under way. Read by relayoutAll, which
  * neither animates nor waits a frame to report geometry while one is. */
 function isGesturing() {
@@ -491,8 +534,13 @@ function endGesture(redraw = false) {
   if (redraw) relayoutAll();
 }
 
-/* One relayout for this frame, however many deltas arrive before it. */
+/* One relayout for this frame, however many deltas arrive before it — and on
+ * a large tree, one relayout for every other frame. See
+ * GESTURE_BATCH_MIN_WINDOWS for why the rate drops and why it is safe. */
 function gestureRelayout() {
+  /* A new gesture's first frame always lays out: the skip below is pacing
+     within a gesture, never a delay before one starts. */
+  if (!gesturing) gestureSkipFrame = false;
   gesturing = true;
   clearTimeout(gestureTimer);
   gestureTimer = setTimeout(() => {
@@ -507,6 +555,14 @@ function gestureRelayout() {
   relayoutFrame = true;
   requestAnimationFrame(() => {
     relayoutFrame = false;
+    if (renderedIds.size >= GESTURE_BATCH_MIN_WINDOWS && gestureSkipFrame) {
+      /* Skip this frame; whatever this gesture's next delta asks for takes
+         the one after, and a gesture whose deltas have stopped is ended by
+         the timer above, which lays out on its own. */
+      gestureSkipFrame = false;
+      return;
+    }
+    gestureSkipFrame = !gestureSkipFrame;
     relayoutAll();
   });
 }

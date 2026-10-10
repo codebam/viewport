@@ -766,41 +766,57 @@ function loadWidgetExtensions(entries, generation) {
 }
 
 function finishLayoutConfig(message, extensionsLoaded) {
-  const declared = new Set((message.layout_extensions ?? []).map((entry) => entry.name));
-  const availableModes = [
-    ...BUILTIN_LAYOUT_MODES,
-    ...[...declared].filter((name) => layoutRegistry.has(name)),
-  ];
-  LAYOUT_MODES.splice(0, LAYOUT_MODES.length, ...availableModes);
-  const available = BUILTIN_LAYOUT_MODES.includes(message.layout) || declared.has(message.layout);
-  const next = extensionsLoaded !== false && available && layoutRegistry.has(message.layout)
-    ? message.layout : 'tiling';
-  if (next !== layoutMode) {
-    layoutMode = next;
-    normaliseForLayout();
-  }
-  reapplyWindowRules();
-  relayoutAll();
-  settingsChanged();
-  if (!initialConfigReady) {
-    initialConfigReady = true;
-    /* view.query sends Config and then mapped windows in one reply. Async script
-       loads hold those following view.added events here until registration has
-       completed, without adding a second config request to the protocol. */
-    for (const pending of pendingViewReplay.splice(0)) {
-      window.dispatchEvent(new CustomEvent('viewport', { detail: pending }));
+  /* The gate at the bottom lives in a `finally`, deliberately: it must open
+     even when the pass above throws. A layout extension's render, a rule's
+     re-apply — anything that runs here is one more piece of code a throw can
+     come out of, and a gate left shut is worse than any of them failing: every
+     later view message queues in pendingViewReplay forever and the desktop
+     never draws a window. */
+  try {
+    const declared = new Set((message.layout_extensions ?? []).map((entry) => entry.name));
+    const availableModes = [
+      ...BUILTIN_LAYOUT_MODES,
+      ...[...declared].filter((name) => layoutRegistry.has(name)),
+    ];
+    LAYOUT_MODES.splice(0, LAYOUT_MODES.length, ...availableModes);
+    const available = BUILTIN_LAYOUT_MODES.includes(message.layout) || declared.has(message.layout);
+    const next = extensionsLoaded !== false && available && layoutRegistry.has(message.layout)
+      ? message.layout : 'tiling';
+    if (next !== layoutMode) {
+      layoutMode = next;
+      normaliseForLayout();
+    }
+    reapplyWindowRules();
+    relayoutAll();
+    settingsChanged();
+  } finally {
+    if (!initialConfigReady) {
+      initialConfigReady = true;
+      /* view.query sends Config and then mapped windows in one reply. Async script
+         loads hold those following view.added events here until registration has
+         completed, without adding a second config request to the protocol. */
+      for (const pending of pendingViewReplay.splice(0)) {
+        /* Each one runs the whole dispatch, which contains its own throws —
+           but this loop is the last thing between the desktop and a wedged
+           replay, so a dispatch that somehow throws anyway costs one queued
+           message and not the rest of them. */
+        try {
+          window.dispatchEvent(new CustomEvent('viewport', { detail: pending }));
+        } catch (error) {
+          console.error(`viewport: replay: ${error?.message ?? error}`);
+        }
+      }
     }
   }
 }
 
-window.addEventListener('viewport', (event) => {
-  const message = event.detail;
-
-  if (!initialConfigReady && message.type.startsWith('view.')) {
-    pendingViewReplay.push(message);
-    return;
-  }
-
+/* Every inbound message, dispatched on its own type.
+ *
+ * Called from the single 'viewport' listener below under a try/catch, so this
+ * whole switch may assume its throw is contained and logged — a throw in any
+ * one case costs that message and nothing else. The listener is what keeps a
+ * throw from skipping finishLayoutConfig or the replay gate; see it. */
+function dispatchViewport(message) {
   switch (message.type) {
     case 'config':
       /* The whole message, kept as it arrived, for the settings panel to draw
@@ -854,8 +870,15 @@ window.addEventListener('viewport', (event) => {
         if (loading) {
           loading.then(() => {
             if (generation !== widgetLoadGeneration) return;
-            applyBarWidgets(message.bar_widgets);
-            applyBarItems(message.bar_items);
+            /* Contained for the same reason the sync path above is: this
+               runs after the config case has moved on, and a throw here would
+               be an unhandled rejection nobody sees. */
+            try {
+              applyBarWidgets(message.bar_widgets);
+              applyBarItems(message.bar_items);
+            } catch (error) {
+              console.error(`viewport: bar widgets: ${error?.message ?? error}`);
+            }
           });
         }
       }
@@ -997,7 +1020,15 @@ window.addEventListener('viewport', (event) => {
         const loading = loadLayoutExtensions(message.layout_extensions, generation);
         if (loading) {
           loading.then((ok) => {
-            if (generation === layoutLoadGeneration) finishLayoutConfig(message, ok);
+            if (generation !== layoutLoadGeneration) return;
+            /* Contained: finishLayoutConfig opens the gate in a finally even
+               when its pass throws, and the throw itself would otherwise be an
+               unhandled rejection instead of a logged error. */
+            try {
+              finishLayoutConfig(message, ok);
+            } catch (error) {
+              console.error(`viewport: config: ${error?.message ?? error}`);
+            }
           });
           break;
         }
@@ -1295,6 +1326,51 @@ window.addEventListener('viewport', (event) => {
     case 'error':
       console.error(`viewport: ${message.context}: ${message.message}`);
       break;
+  }
+}
+
+/* The one listener for every message the compositor sends the page.
+ *
+ * Nothing about a message can be assumed: `detail` may be missing entirely and
+ * `type` may not be a string, so the dispatch is entered only after both are
+ * checked — `message.type.startsWith` on a message with no type is a TypeError
+ * that silently drops the message and spams uncaught errors. And the dispatch
+ * is contained: this page *is* the desktop, so a throw must cost the one
+ * message it came with, never the shell.
+ *
+ * The config case is the one where containment is not enough. It runs
+ * third-party widget extension code inline, and if it throws before
+ * finishLayoutConfig then the initial-config gate never opens — every later
+ * view message would queue in pendingViewReplay forever, the desktop would
+ * come up with no windows, and the next config would throw at the same place.
+ * So a config that fails part-way is finished anyway: the gate opens and the
+ * queued windows come through, however the rest of the config went. */
+window.addEventListener('viewport', (event) => {
+  const message = event?.detail;
+  if (!message || typeof message.type !== 'string') {
+    console.error('viewport: dropping a message with no string type');
+    return;
+  }
+
+  if (!initialConfigReady && message.type.startsWith('view.')) {
+    pendingViewReplay.push(message);
+    return;
+  }
+
+  try {
+    dispatchViewport(message);
+  } catch (error) {
+    console.error(`viewport: ${message.type}: ${error?.message ?? error}`);
+    if (message.type === 'config' && !initialConfigReady) {
+      try {
+        /* Loaded as if the extensions were all in: the ones that did load are
+           registered, and finishLayoutConfig falls back to tiling for a layout
+           that never got as far as registering itself. */
+        finishLayoutConfig(message, true);
+      } catch (recoveryError) {
+        console.error(`viewport: config recovery: ${recoveryError?.message ?? recoveryError}`);
+      }
+    }
   }
 });
 

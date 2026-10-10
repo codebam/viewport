@@ -720,6 +720,105 @@ function reportNotificationRect() {
   }
 }
 
+/* How much of a window title a regex rule is matched against.
+ *
+ * The pattern is config and the title is client-controlled: a rule with a
+ * catastrophic-backtracking pattern plus a crafted title is a way for any
+ * client to hang the shell page — the whole desktop — on the main thread,
+ * since ruleFor runs on every view.props and reapplyWindowRules runs all of
+ * them per config. Capping the haystack bounds what the match can be made to
+ * chew on. The lint below is the other half of that defence. */
+const MAX_RULE_MATCH_TEXT = 4096;
+
+/* Whether a rule's pattern is one this page is willing to run against a
+ * client's text.
+ *
+ * A heuristic, and deliberately a narrow one: only the classic
+ * catastrophic-backtracking shape is refused — a quantified group that itself
+ * contains a quantifier, `(a+)+` and its cousins — because a false refusal
+ * silently stops a user's rule from matching and is felt as a bug in the
+ * compositor. Ambiguous alternation under a quantifier, `(a|a)*`, is not
+ * caught; nothing short of a regex engine with a timeout can catch everything,
+ * and JavaScript has none. */
+function ruleRegexIsSafe(source) {
+  let escaped = false;
+  let inClass = false;
+  /* Per open paren, whether that group's body has seen a quantifier yet. */
+  const groupHasQuant = [];
+  let hasQuant = false;
+  for (let i = 0; i < source.length; i++) {
+    const ch = source[i];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (ch === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (inClass) {
+      if (ch === ']') inClass = false;
+      continue;
+    }
+    if (ch === '[') {
+      inClass = true;
+      continue;
+    }
+    if (ch === '(') {
+      groupHasQuant.push(hasQuant);
+      hasQuant = false;
+      continue;
+    }
+    if (ch === ')') {
+      const bodyHasQuant = hasQuant;
+      hasQuant = groupHasQuant.pop() ?? false;
+      const next = source[i + 1];
+      /* Unbounded repeats only: `(a+)?` runs its group at most once and
+         cannot blow up, `(a+){2}` is polynomial, `(a+)*` and `(a+){2,}` are
+         the exponential shapes. */
+      if (bodyHasQuant && (next === '*' || next === '+' || next === '{')) {
+        return false;
+      }
+      if (next === '*' || next === '+' || next === '{' || next === '?') {
+        hasQuant = true;
+      }
+      continue;
+    }
+    if (ch === '*' || ch === '+' || ch === '{' || ch === '?') hasQuant = true;
+  }
+  return true;
+}
+
+/* One rule condition's regex, compiled once and remembered.
+ *
+ * Compiling per match is per title change per window for nothing, and a
+ * cached regex makes the `g` and `y` flags a trap: `.test` advances `lastIndex`
+ * on the shared object, so every other call would report no match for text
+ * that does. Those flags mean nothing here — matching is a yes/no question,
+ * never a scan for all matches — so they are stripped at compile time and the
+ * cache is safe. Keyed by the config's own condition object, which is thrown
+ * away and rebuilt by every config message. */
+const ruleRegexCache = new WeakMap();
+
+function compiledRuleRegex(condition) {
+  if (ruleRegexCache.has(condition)) return ruleRegexCache.get(condition);
+  let compiled = null;
+  try {
+    const source = String(condition.regex);
+    const flags = String(condition.flags ?? '').replace(/[gy]/g, '');
+    const regex = new RegExp(source, flags);
+    if (ruleRegexIsSafe(source)) {
+      compiled = regex;
+    } else {
+      console.error(`window rule regex refused (nested quantifiers): ${source}`);
+    }
+  } catch (_) {
+    compiled = null;
+  }
+  ruleRegexCache.set(condition, compiled);
+  return compiled;
+}
+
 /* The first rule matching a window, or null.
  *
  * app_id is the identity worth matching: it is what the application calls
@@ -741,11 +840,8 @@ function ruleValueMatches(value, condition) {
     return text.toLowerCase() === String(condition.equals).toLowerCase();
   }
   if (condition.regex !== undefined) {
-    try {
-      return new RegExp(String(condition.regex), condition.flags ?? '').test(text);
-    } catch (_) {
-      return false;
-    }
+    const regex = compiledRuleRegex(condition);
+    return regex !== null && regex.test(text.slice(0, MAX_RULE_MATCH_TEXT));
   }
   return false;
 }
