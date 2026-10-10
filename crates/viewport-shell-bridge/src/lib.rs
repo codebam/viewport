@@ -296,7 +296,13 @@ where
         .name("ipc-read".into())
         .spawn(move || {
             let mut reader = BufReader::new(reader);
-            loop {
+            // `on_line` is the engine's forwarding closure and can panic; a
+            // panic that unwound this thread would skip the `Closed` below,
+            // and a shell that never learns the session ended can be orphaned
+            // — exactly what `stop_client_shells`'s shutdown ordering exists
+            // to prevent. So the loop is fenced: `Closed` is delivered whether
+            // it ends in EOF, in an error, or in a panic.
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| loop {
                 match read_compositor_line(&mut reader, MAX_LINE) {
                     Ok(ReadLine::Line(line)) => {
                         if line.trim().is_empty() {
@@ -308,7 +314,7 @@ where
                     Ok(ReadLine::Overrun) => {
                         tracing::error!(
                             "a compositor line exceeded {MAX_LINE} bytes; \
-                             closing the control connection"
+                                 closing the control connection"
                         );
                         break;
                     }
@@ -317,6 +323,9 @@ where
                         break;
                     }
                 }
+            }));
+            if result.is_err() {
+                tracing::error!("the compositor line handler panicked");
             }
             on_line(Line::Closed);
         })
@@ -495,5 +504,46 @@ mod tests {
         // Everything else goes to the page untouched, including what this
         // cannot parse at all.
         assert!(!is_reload("not json"));
+    }
+
+    /// A panic in `on_line` — the engine's forwarding closure — must not cost
+    /// the `Closed` that tells the shell the session is over. A shell that
+    /// never learns it ended can be orphaned, which is exactly the outcome
+    /// `stop_client_shells`'s shutdown ordering exists to prevent.
+    #[test]
+    fn a_panicking_handler_still_shares_the_end_of_the_session() {
+        use std::os::unix::net::UnixListener;
+
+        let path = std::env::temp_dir().join(format!("vb{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let listener = UnixListener::bind(&path).expect("a control socket");
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let _sender = connect(&path, move |line| match line {
+            Line::Event(_) => {
+                let _ = tx.send("event");
+                panic!("the engine's forwarder blew up");
+            }
+            Line::Closed => {
+                let _ = tx.send("closed");
+            }
+        })
+        .expect("both halves of the connection");
+
+        // The compositor sends one event and closes the socket. The handler
+        // panics on the event; `Closed` is what the reader still owes.
+        let (mut peer, _) = listener.accept().expect("the shell to connect");
+        peer.write_all(b"{\"type\":\"view.added\"}\n")
+            .expect("the event");
+        drop(peer);
+
+        let timeout = std::time::Duration::from_secs(5);
+        assert_eq!(rx.recv_timeout(timeout).expect("the event"), "event");
+        assert_eq!(
+            rx.recv_timeout(timeout).expect("the close"),
+            "closed",
+            "a panicking handler must not cost the end of the session"
+        );
+        let _ = std::fs::remove_file(&path);
     }
 }

@@ -263,6 +263,10 @@ pub struct ClientShell {
     /// Whether this one was started with WebKit's DMA-BUF renderer off,
     /// because the last one asked for that.
     degraded: bool,
+    /// Whether a buffer of impossible size has already been logged for this
+    /// page. One line per shell rather than one per frame: a client in this
+    /// state repeats it at its frame rate for as long as it lasts.
+    size_warned: bool,
     /// Where in the output layout this page lives.
     ///
     /// The whole layout for the desktop shell on its own, which is what it has
@@ -465,6 +469,7 @@ impl ViewportState {
             restarts: 0,
             restart_window: None,
             degraded,
+            size_warned: false,
             region,
             desktop,
             owned: None,
@@ -888,6 +893,29 @@ impl ViewportState {
             }
             None => return true,
         };
+
+        // A shell-chosen dimension of zero, or one past `i32::MAX`, is not a
+        // size smithay can work in: the cast below would wrap it negative and
+        // the damage and element geometry built from it would describe
+        // rectangles that cannot exist. The same unchecked-supplied-i32 class
+        // FIXES 5/6 fixed for layout numbers, on the buffer path. The commit
+        // is refused — the buffer is left alone and nothing is drawn — and
+        // logged once per shell rather than at its frame rate.
+        if dmabuf.width() == 0
+            || dmabuf.height() == 0
+            || dmabuf.width() > i32::MAX as u32
+            || dmabuf.height() > i32::MAX as u32
+        {
+            if !self.shell_clients[at].size_warned {
+                self.shell_clients[at].size_warned = true;
+                tracing::error!(
+                    "shell {at}: committed a {}x{} buffer, which no size can describe; ignoring it",
+                    dmabuf.width(),
+                    dmabuf.height()
+                );
+            }
+            return true;
+        }
 
         let size: smithay::utils::Size<i32, smithay::utils::Physical> =
             (dmabuf.width() as i32, dmabuf.height() as i32).into();

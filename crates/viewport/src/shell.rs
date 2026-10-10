@@ -24,6 +24,9 @@
 // `FrameDone` or `FrameRelease` — so it crosses threads twice. That is sound
 // because nothing outside the web thread ever dereferences it: the compositor
 // holds it and hands it back, and only the web thread passes it to the shim.
+// It is stamped with the web process that minted it, so the way back can tell
+// a token whose process has died — those are dropped rather than handed to the
+// shim, exactly as `Crashes::terminated` drops the ones still in the mailbox.
 //
 // And a command is asynchronous where the call it replaced was not. Nothing
 // here returns a value from WebKit, which is what makes that safe; `restart`
@@ -41,7 +44,7 @@ use smithay::backend::allocator::{Fourcc, Modifier};
 
 use viewport_ipc::Event;
 use viewport_web::webkit::{CrashSink, MessageSink, Termination, WebView};
-use viewport_web::wpe::{Display, FrameSink, FrameToken};
+use viewport_web::wpe::{Display, FrameGeneration, FrameSink, FrameToken};
 use viewport_web::Frame;
 
 // The numbers live in `shell_client`, which is compiled whether or not this
@@ -87,12 +90,14 @@ const MAX_MAILBOX_MESSAGES: usize = 8192;
 /// handful of the largest ones.
 const MAX_QUEUE_BYTES: usize = 4 << 20;
 
-/// The most commands of any kind the queue may hold.
+/// The most droppable commands the queue may hold.
 ///
 /// The byte budget covers posts; key and button events are fixed-size structs
 /// and an unbounded run of them (a stuck web thread plus a key repeat, or an
 /// IPC client pumping `input.*`) would otherwise grow the deque at a few dozen
-/// bytes per event. This is several seconds of the most frantic input.
+/// bytes per event. This is several seconds of the most frantic input. The
+/// ceiling governs only what the overflow valve may drop — see
+/// [`Command::droppable`]; lifecycle and frame commands are queued past it.
 const MAX_QUEUE_ENTRIES: usize = 4096;
 
 /// How often a full queue logs. The drop count still accumulates; only the
@@ -186,6 +191,33 @@ enum Command {
     Quit,
 }
 
+impl Command {
+    /// Whether the overflow valve may drop this command.
+    ///
+    /// Only what the web thread can stand to lose: an input event from a path
+    /// the user has already left, or a page event a queue this far behind has
+    /// already made moot. Everything else is lifecycle or buffer accounting
+    /// whose loss is permanent — a dropped `Restart` is a shell page that
+    /// never comes back (`take_termination` has already consumed the crash it
+    /// answers, and nothing retries), a dropped `Done` or `Release` is a
+    /// buffer gone from WebKit's pool and a frame clock that never advances
+    /// again (the engine paints no frame until `frame_done`), a dropped `Quit`
+    /// is a web thread left detached with WebKit still running, and a dropped
+    /// `Load`, `Reload` or `Resize` is a page never told what to show or how
+    /// big it is. Those queue past the ceiling; the ceiling exists for these,
+    /// not for them.
+    fn droppable(&self) -> bool {
+        matches!(
+            self,
+            Command::Post(_)
+                | Command::PointerMotion { .. }
+                | Command::PointerAxis { .. }
+                | Command::PointerButton { .. }
+                | Command::KeyboardKey { .. }
+        )
+    }
+}
+
 /// A `GMainContext` pointer, sendable because the two calls made on it from
 /// another thread — `wakeup` and `unref` — are the two GLib documents as
 /// thread-safe.
@@ -248,7 +280,10 @@ impl Queue {
             command @ Command::PointerAxis { .. } => self.coalesce(command, false),
             command => {
                 self.seal();
-                if !self.has_room(&command) {
+                // Lifecycle and frame commands go in whatever the queue
+                // holds; the budget below is for what can be lost. See
+                // `Command::droppable`.
+                if command.droppable() && !self.has_room(&command) {
                     self.note_drop();
                     return;
                 }
@@ -286,9 +321,10 @@ impl Queue {
     /// Whether `command` fits both budgets.
     ///
     /// Checked after sealing, so the pending pointer events it would join are
-    /// part of the entry count. Dropping the newest command is deliberate: the
-    /// web thread is already behind, and the oldest queued work is the work
-    /// most likely to be obsolete.
+    /// part of the entry count. Only droppable commands ever ask (see
+    /// [`Command::droppable`]), and for those dropping the newest is
+    /// deliberate: the web thread is already behind, and the oldest queued
+    /// work is the work most likely to be obsolete.
     fn has_room(&self, command: &Command) -> bool {
         if self.entries() >= MAX_QUEUE_ENTRIES {
             return false;
@@ -356,9 +392,16 @@ impl Queue {
 
 impl Commands {
     fn send(&self, command: Command) {
-        if let Ok(mut queue) = self.queue.lock() {
-            queue.push(command);
-        }
+        // Recovered rather than refused: a poisoned lock would otherwise make
+        // every later command vanish in silence — `Quit` and `Restart` along
+        // with them — and the poison is only ever a panic inside `Queue::push`,
+        // after which the queue's data is intact. Recovered the way the rest
+        // of the codebase recovers a poisoned lock (see `shell_client` and
+        // `background`: `unwrap_or_else(PoisonError::into_inner)`).
+        self.queue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(command);
         // Wakes a `g_main_context_iteration` that is blocked in poll. This is
         // the whole reason no GSource is needed for the command channel:
         // `g_main_context_wakeup` is thread-safe by contract.
@@ -389,7 +432,7 @@ pub struct Shell {
 struct Frames(Arc<Mutex<Mailbox>>);
 
 impl FrameSink for Frames {
-    fn frame(&mut self, frame: Frame, token: FrameToken) -> bool {
+    fn frame(&mut self, mut frame: Frame, token: FrameToken) -> bool {
         // `try_lock`, not a blocking one, and left that way on purpose: a
         // refused frame is one WebKit repaints, while the messages and
         // termination below are state nobody else ever sends again.
@@ -398,7 +441,7 @@ impl FrameSink for Frames {
             return false;
         };
 
-        let buffer = match to_dmabuf(&frame) {
+        let buffer = match to_dmabuf(&mut frame) {
             Ok(buffer) => buffer,
             Err(e) => {
                 tracing::error!("could not describe the shell's frame: {e:#}");
@@ -449,19 +492,35 @@ impl MessageSink for Messages {
     }
 }
 
-struct Crashes(Arc<Mutex<Mailbox>>);
+/// What the crash signal is dropped into, and the generation it retires.
+///
+/// The second field is the same counter the frame tokens are stamped with at
+/// minting: `terminated` bumps it, which retires the frames the compositor had
+/// already taken out of the mailbox and is about to hand back. See
+/// [`FrameGeneration`].
+struct Crashes(Arc<Mutex<Mailbox>>, FrameGeneration);
 
 impl CrashSink for Crashes {
     fn terminated(&mut self, reason: Termination) {
         tracing::error!("the shell died: {reason}");
+        // Every frame this process minted dies with it. The bump retires the
+        // ones the compositor already took — `Done`/`Release` commands still
+        // on their way here name buffers of a pool that no longer exists, and
+        // the web thread drops them when they arrive (`token_is_live`). The
+        // sweep below is the same verdict for the ones still in the mailbox.
+        // Between them, no token outlives its process to be handed back into
+        // freed memory.
+        self.1.bump();
         // Blocking for the same reason as `Messages`: a termination dropped
         // here is a web process that is never recovered.
         if let Ok(mut mailbox) = self.0.lock() {
             // The frames in flight belonged to the process that just died.
             // Handing their tokens back would release buffers into a pool
-            // that no longer exists, so they are dropped instead — `FrameToken`
-            // is deliberately not `Drop`, which makes that a leak of a handle
-            // whose owner is already gone rather than a call into freed memory.
+            // that no longer exists, so they are dropped instead — a leak of
+            // a handle whose owner is already gone rather than a call into
+            // freed memory. Not a stalled engine: `FrameToken` is not `Drop`
+            // because a *live* engine stalls without its token back, and this
+            // one has no frame clock left to stall.
             mailbox.frame = None;
             mailbox.stale.clear();
             mailbox.terminated = Some(reason);
@@ -800,8 +859,10 @@ impl Shell {
     pub fn frame_done(&self, token: &FrameToken) {
         // SAFETY: a second handle to a buffer the caller still owns, for a
         // message that only acknowledges it. The caller's token is what gets
-        // released later; this one is dropped by the web thread.
-        let token = unsafe { FrameToken::from_ptr(token.as_ptr()) };
+        // released later; this one is dropped by the web thread. The
+        // generation is copied along, so both handles are retired together if
+        // the web process dies before either comes back.
+        let token = unsafe { FrameToken::from_ptr(token.as_ptr(), token.generation()) };
         self.commands.send(Command::Done(token));
     }
 
@@ -857,6 +918,20 @@ impl Drop for Shell {
     }
 }
 
+/// Whether a frame command still names a buffer of the web process now running.
+///
+/// A `FrameToken` names a buffer minted by one web process; when that process
+/// dies the pool behind it is gone and passing the token to the shim would be
+/// a call into freed memory. Tokens still in the mailbox are dropped by
+/// [`Crashes::terminated`] itself — but a frame the compositor had already
+/// taken (`take_frame`, `take_stale`) is invisible to that sweep, and its
+/// `Done`/`Release` arrive afterwards. The stamp taken when the frame was
+/// minted is what retires those here, on the web thread, at the last moment
+/// before the shim could be called.
+fn token_is_live(token: &FrameToken, generation: &FrameGeneration) -> bool {
+    token.generation() == generation.current()
+}
+
 /// The web thread: WebKit, its context, and nothing else.
 #[allow(clippy::too_many_arguments)]
 fn web_thread(
@@ -885,7 +960,7 @@ fn web_thread(
         let view = WebView::new(
             display.clone(),
             Box::new(Messages(mailbox.clone())),
-            Box::new(Crashes(mailbox.clone())),
+            Box::new(Crashes(mailbox.clone(), display.generation())),
             console,
         )?;
         // Size, map, focus, then load — the order the C build settled on.
@@ -908,15 +983,22 @@ fn web_thread(
             return;
         }
     };
+    let generation = display.generation();
 
     loop {
         // Blocks until GLib has something, or until `Commands::send` wakes it.
         unsafe { g_main_context_iteration(context, 1) };
 
-        let drained: Vec<Command> = match commands.queue.lock() {
-            Ok(mut queue) => queue.drain(),
-            Err(_) => break,
-        };
+        // Poison-recovered like `Commands::send`, and for the same reason:
+        // breaking the loop here would leave the commands being queued on the
+        // other side of the recovery stranded forever. A panic in `Queue::push`
+        // is not a reason for the web thread to quietly retire — the loop's
+        // only exit is `Command::Quit`, which tears the context down itself.
+        let drained: Vec<Command> = commands
+            .queue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .drain();
         for command in drained {
             match command {
                 Command::Post(json) => {
@@ -924,8 +1006,26 @@ fn web_thread(
                         tracing::warn!("could not post to the shell: {e:#}");
                     }
                 }
-                Command::Done(token) => display.frame_done(&token),
-                Command::Release(token) => view.frame_release(&token),
+                Command::Done(token) => {
+                    if token_is_live(&token, &generation) {
+                        display.frame_done(&token);
+                    } else {
+                        // Minted by a web process that has since died: its
+                        // pool is gone, so the acknowledgement is dropped.
+                        // Nothing is stalled by that — the engine it would
+                        // have unparked no longer exists.
+                        tracing::trace!(
+                            "dropped a frame acknowledgement from before the shell died"
+                        );
+                    }
+                }
+                Command::Release(token) => {
+                    if token_is_live(&token, &generation) {
+                        view.frame_release(&token);
+                    } else {
+                        tracing::trace!("dropped a buffer release from before the shell died");
+                    }
+                }
                 Command::Resize(width, height) => display.resize(width, height),
                 Command::Load(url) => {
                     if let Err(e) = view.load(&url) {
@@ -979,7 +1079,6 @@ fn web_thread(
             }
         }
     }
-    unsafe { g_main_context_pop_thread_default(context) };
 }
 
 /// What to do about a web process that has just died.
@@ -1026,9 +1125,32 @@ pub fn budget(
 }
 
 /// Describe a WebKit frame as a Smithay `Dmabuf`.
-fn to_dmabuf(frame: &Frame) -> Result<Dmabuf> {
+///
+/// Consumes the frame's planes: the fds were already duplicated when the frame
+/// crossed the FFI boundary (`render_frame` clones the borrowed ones), so they
+/// are owned here and moved into the dmabuf rather than duplicated again. Only
+/// the planes go — the fence stays with the frame, which the caller moves out
+/// afterwards.
+fn to_dmabuf(frame: &mut Frame) -> Result<Dmabuf> {
     let code = Fourcc::try_from(frame.format)
         .map_err(|_| anyhow::anyhow!("unknown fourcc {:#x}", frame.format))?;
+
+    // A WebKit-chosen dimension of zero, or one past `i32::MAX`, describes no
+    // buffer the compositor can hold: the cast below would wrap it negative
+    // and the damage and geometry built from it would describe rectangles that
+    // cannot exist. Refuse the frame — WebKit answers a failed frame by
+    // painting again — rather than import a size that is not one. Same class
+    // as the shell client's own guard in `shell_client_commit`.
+    anyhow::ensure!(
+        frame.width > 0 && frame.width <= i32::MAX as u32,
+        "the frame's width {} is not a size the compositor can import",
+        frame.width
+    );
+    anyhow::ensure!(
+        frame.height > 0 && frame.height <= i32::MAX as u32,
+        "the frame's height {} is not a size the compositor can import",
+        frame.height
+    );
 
     let mut builder = Dmabuf::builder(
         (frame.width as i32, frame.height as i32),
@@ -1036,11 +1158,8 @@ fn to_dmabuf(frame: &Frame) -> Result<Dmabuf> {
         Modifier::from(frame.modifier),
         DmabufFlags::empty(),
     );
-    for plane in &frame.planes {
-        // The fds were already duplicated when the frame crossed the FFI
-        // boundary, so this hands over ownership rather than borrowing again.
-        let fd = plane.fd.try_clone()?;
-        if !builder.add_plane(fd, plane.offset, plane.stride) {
+    for plane in std::mem::take(&mut frame.planes) {
+        if !builder.add_plane(plane.fd, plane.offset, plane.stride) {
             anyhow::bail!("too many planes for a dmabuf");
         }
     }
@@ -1163,6 +1282,17 @@ mod tests {
         }
     }
 
+    /// A droppable fixed-size command, for filling the queue past its ceiling.
+    fn key(keycode: u32) -> Command {
+        Command::KeyboardKey {
+            time: 0,
+            keycode,
+            keysym: 0,
+            pressed: true,
+            modifiers: 0,
+        }
+    }
+
     #[test]
     fn pointer_motion_coalesces_to_the_newest() {
         // A stalled web process must not accumulate one entry per motion
@@ -1258,14 +1388,15 @@ mod tests {
         assert_eq!(queue.post_bytes, 0, "draining releases the budget");
     }
 
-    /// The byte budget only knows about posts, so the fixed-size commands
-    /// have their own entry ceiling. A stuck web thread cannot be made to
-    /// hold input or lifecycle commands without bound either.
+    /// The byte budget only knows about posts, so the droppable fixed-size
+    /// commands have their own entry ceiling. A stuck web thread cannot be
+    /// made to hold input without bound either; the lifecycle commands whose
+    /// loss is permanent are exempt from the ceiling and have their own test.
     #[test]
     fn the_command_queue_has_an_entry_ceiling() {
         let mut queue = Queue::default();
         for _ in 0..MAX_QUEUE_ENTRIES + 10 {
-            queue.push(Command::Reload);
+            queue.push(key(0));
         }
         assert!(queue.entries() <= MAX_QUEUE_ENTRIES);
         assert_eq!(queue.dropped, 10);
@@ -1274,13 +1405,13 @@ mod tests {
 
     /// A coalesced pointer motion is sealed -- pushed in order -- by whatever
     /// command follows it. The seal is a push like any other and has to pay
-    /// the same budget: without the check each motion/reload pair grew the
+    /// the same budget: without the check each motion/key pair grew the
     /// queue by one entry for as long as the web thread stayed behind.
     #[test]
     fn sealing_a_coalesced_motion_cannot_outgrow_the_entry_ceiling() {
         let mut queue = Queue::default();
         for _ in 0..MAX_QUEUE_ENTRIES {
-            queue.push(Command::Reload);
+            queue.push(key(0));
         }
         assert_eq!(queue.commands.len(), MAX_QUEUE_ENTRIES);
 
@@ -1291,7 +1422,7 @@ mod tests {
                 y: 0.0,
                 modifiers: 0,
             });
-            queue.push(Command::Reload);
+            queue.push(key(1));
             assert!(
                 queue.entries() <= MAX_QUEUE_ENTRIES,
                 "{} entries",
@@ -1303,6 +1434,43 @@ mod tests {
                 queue.commands.len()
             );
         }
+    }
+
+    /// The overflow valve covers input and page events only. The rest is
+    /// lifecycle and buffer accounting whose loss is permanent: a dropped
+    /// `Restart` is a shell page that never comes back, a dropped
+    /// `Done`/`Release` is a buffer gone from WebKit's pool and a frame clock
+    /// that never advances again, a dropped `Quit` is a web thread left
+    /// detached. So a full queue still takes them — in order — and drops only
+    /// what the web thread can stand to lose.
+    #[test]
+    fn a_full_queue_still_takes_lifecycle_and_frame_commands() {
+        let token = || unsafe { FrameToken::from_ptr(std::ptr::null_mut(), 0) };
+        let mut queue = Queue::default();
+        for _ in 0..MAX_QUEUE_ENTRIES {
+            queue.push(key(0));
+        }
+        queue.push(Command::Quit);
+        queue.push(Command::Restart);
+        queue.push(Command::Load("file:///new".to_owned()));
+        queue.push(Command::Reload);
+        queue.push(Command::Resize(800, 600));
+        queue.push(Command::Done(token()));
+        queue.push(Command::Release(token()));
+        // …and one droppable command past the ceiling is still dropped.
+        queue.push(key(2));
+        assert_eq!(queue.dropped, 1);
+
+        let drained = queue.drain();
+        assert_eq!(drained.len(), MAX_QUEUE_ENTRIES + 7);
+        let tail = &drained[MAX_QUEUE_ENTRIES..];
+        assert!(matches!(tail[0], Command::Quit));
+        assert!(matches!(tail[1], Command::Restart));
+        assert!(matches!(tail[2], Command::Load(ref url) if url == "file:///new"));
+        assert!(matches!(tail[3], Command::Reload));
+        assert!(matches!(tail[4], Command::Resize(800, 600)));
+        assert!(matches!(tail[5], Command::Done(_)));
+        assert!(matches!(tail[6], Command::Release(_)));
     }
 
     /// The compositor cannot wait for a fence it never received. A frame's
@@ -1330,7 +1498,9 @@ mod tests {
             fence: Some(fence),
         };
 
-        assert!(frames.frame(frame, unsafe { FrameToken::from_ptr(std::ptr::null_mut()) }));
+        assert!(frames.frame(frame, unsafe {
+            FrameToken::from_ptr(std::ptr::null_mut(), 0)
+        }));
 
         let mailbox = mailbox.lock().unwrap();
         assert!(
@@ -1341,5 +1511,150 @@ mod tests {
                 .is_some(),
             "the fence did not survive into the mailbox"
         );
+    }
+
+    /// The race the generation stamps: the compositor takes a frame out of the
+    /// mailbox, the web process dies, and only then do the frame's `Done` and
+    /// `Release` reach the web thread. `Crashes::terminated` has already run
+    /// and found the mailbox empty of this frame, so without the stamp the web
+    /// thread would hand the dead process's buffer back to the shim. With one,
+    /// the generation the token was minted under no longer matches and the
+    /// commands are dropped — the same verdict the crash handler gives the
+    /// frames it can still see.
+    #[test]
+    fn a_frame_taken_before_the_crash_is_not_released_after_it() {
+        let generation = FrameGeneration::default();
+        let token = unsafe { FrameToken::from_ptr(std::ptr::null_mut(), generation.current()) };
+        assert!(token_is_live(&token, &generation));
+
+        generation.bump(); // what `Crashes::terminated` does
+        assert!(
+            !token_is_live(&token, &generation),
+            "a pre-crash token must not be handed to the shim"
+        );
+
+        // A frame minted by the replacement process is fine — the stamp
+        // retires the dead process's buffers, not every buffer ever.
+        let fresh = unsafe { FrameToken::from_ptr(std::ptr::null_mut(), generation.current()) };
+        assert!(token_is_live(&fresh, &generation));
+    }
+
+    /// The crash handler's own sweep: frames still in the mailbox go without
+    /// being handed back, and the generation moves on so the ones already
+    /// taken go with them.
+    #[test]
+    fn the_crash_retires_the_frames_it_cannot_hand_back() {
+        use viewport_web::Plane;
+
+        let mailbox = Arc::new(Mutex::new(Mailbox::default()));
+        let generation = FrameGeneration::default();
+        let minted = generation.current();
+        let mut frames = Frames(mailbox.clone());
+
+        let plane: OwnedFd = std::fs::File::open("/dev/null").unwrap().into();
+        let frame = Frame {
+            planes: vec![Plane {
+                fd: plane,
+                offset: 0,
+                stride: 4,
+            }],
+            format: Fourcc::Argb8888 as u32,
+            modifier: 0,
+            width: 1,
+            height: 1,
+            fence: None,
+        };
+        // A second frame supersedes the first, so one token is current and one
+        // is stale — both belong to the dying process.
+        assert!(frames.frame(frame, unsafe {
+            FrameToken::from_ptr(std::ptr::null_mut(), minted)
+        }));
+        let plane: OwnedFd = std::fs::File::open("/dev/null").unwrap().into();
+        let frame = Frame {
+            planes: vec![Plane {
+                fd: plane,
+                offset: 0,
+                stride: 4,
+            }],
+            format: Fourcc::Argb8888 as u32,
+            modifier: 0,
+            width: 1,
+            height: 1,
+            fence: None,
+        };
+        assert!(frames.frame(frame, unsafe {
+            FrameToken::from_ptr(std::ptr::null_mut(), minted)
+        }));
+
+        let mut crashes = Crashes(mailbox.clone(), generation.clone());
+        crashes.terminated(Termination::Crashed);
+
+        assert_ne!(
+            generation.current(),
+            minted,
+            "the crash must retire the tokens already taken"
+        );
+        let held = mailbox.lock().unwrap();
+        assert!(held.frame.is_none(), "the undrawn frame was dropped");
+        assert!(held.stale.is_empty(), "the stale frames were dropped");
+        assert!(held.terminated.is_some());
+    }
+
+    /// The frame's plane fds are moved into the dmabuf, not duplicated again —
+    /// `render_frame` already owned them — and the fence stays with the frame
+    /// for the caller to move out afterwards.
+    #[test]
+    fn the_frames_plane_fds_move_into_the_dmabuf() {
+        use smithay::backend::allocator::Buffer as _;
+        use viewport_web::Plane;
+
+        let plane: OwnedFd = std::fs::File::open("/dev/null").unwrap().into();
+        let fence: OwnedFd = std::fs::File::open("/dev/null").unwrap().into();
+        let mut frame = Frame {
+            planes: vec![Plane {
+                fd: plane,
+                offset: 0,
+                stride: 4,
+            }],
+            format: Fourcc::Argb8888 as u32,
+            modifier: 0,
+            width: 1,
+            height: 1,
+            fence: Some(fence),
+        };
+        let dmabuf = to_dmabuf(&mut frame).expect("the frame describes a buffer");
+        assert_eq!(dmabuf.width(), 1);
+        assert!(frame.planes.is_empty(), "the planes were moved, not copied");
+        assert!(
+            frame.fence.is_some(),
+            "the fence is still the frame's to move"
+        );
+    }
+
+    /// A frame whose size cannot exist is refused instead of wrapped: the
+    /// `u32 as i32` cast would go negative, and the damage and geometry built
+    /// from it would describe rectangles that are not there. Same class as the
+    /// shell-supplied dimensions FIXES 5/6 fixed, on the engine's own path.
+    #[test]
+    fn a_frame_of_impossible_size_is_refused() {
+        use viewport_web::Plane;
+
+        let build = |width: u32, height: u32| Frame {
+            planes: vec![Plane {
+                fd: std::fs::File::open("/dev/null").unwrap().into(),
+                offset: 0,
+                stride: 4,
+            }],
+            format: Fourcc::Argb8888 as u32,
+            modifier: 0,
+            width,
+            height,
+            fence: None,
+        };
+        assert!(to_dmabuf(&mut build(0, 1)).is_err());
+        assert!(to_dmabuf(&mut build(1, 0)).is_err());
+        assert!(to_dmabuf(&mut build(i32::MAX as u32 + 1, 1)).is_err());
+        assert!(to_dmabuf(&mut build(1, i32::MAX as u32 + 1)).is_err());
+        assert!(to_dmabuf(&mut build(1, 1)).is_ok());
     }
 }

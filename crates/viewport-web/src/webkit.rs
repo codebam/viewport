@@ -283,16 +283,23 @@ impl WebView {
                 std::ptr::null(),
                 std::ptr::null(),
             );
+            // Fail closed. This guard is the only control that keeps subframes
+            // out of the bridge: the message handler's URI check below reads
+            // the *main* frame's URI, and the signal does not say which frame
+            // posted, so without the guard a remote subframe embedded in an
+            // allowed shell page would be accepted as the shell itself. The
+            // URI policy does not replace it — running without it is a hole,
+            // not a fallback.
             if guard.is_null() {
-                tracing::warn!(
-                    "could not build the subframe bridge guard; relying on the URI policy"
-                );
-            } else {
-                webkit_user_content_manager_add_script(manager, guard);
-                // The manager holds its own reference; this is the reference
-                // `webkit_user_script_new` handed over.
-                webkit_user_script_unref(guard);
+                g_object_unref(manager);
+                return Err(anyhow!(
+                    "could not build the subframe bridge guard; refusing to run without it"
+                ));
             }
+            webkit_user_content_manager_add_script(manager, guard);
+            // The manager holds its own reference; this is the reference
+            // `webkit_user_script_new` handed over.
+            webkit_user_script_unref(guard);
 
             // Detailed signal: only messages for our handler name.
             let signal = CString::new("script-message-received::viewport").unwrap();
