@@ -568,12 +568,15 @@ impl ViewportState {
     /// the life of the session.
     ///
     /// `hits` is the subset of them that takes the pointer. Everything the
-    /// shell floats does, bar one: see `shell_overlay_hits`.
+    /// shell floats does, bar one: see `shell_overlay_hits`. And `keep_focus`
+    /// is the subset of those whose press must leave the keyboard's focus
+    /// alone: see `shell_overlay_keep_focus`.
     pub fn set_shell_overlays(
         &mut self,
         rects: Vec<smithay::utils::Rectangle<i32, Logical>>,
         hits: Vec<smithay::utils::Rectangle<i32, Logical>>,
         blur: Vec<smithay::utils::Rectangle<i32, Logical>>,
+        keep_focus: Vec<smithay::utils::Rectangle<i32, Logical>>,
     ) {
         // A cap rather than trust: the list comes over the control socket, and
         // the render elements it becomes are walked on every frame. A client
@@ -598,11 +601,13 @@ impl ViewportState {
         if self.shell_overlays == rects
             && self.shell_overlay_hits == hits
             && self.shell_overlay_blur == blur
+            && self.shell_overlay_keep_focus == keep_focus
         {
             return;
         }
         self.shell_overlay_hits = hits;
         self.shell_overlay_blur = blur;
+        self.shell_overlay_keep_focus = keep_focus;
         // The blur elements key their damage on this; a moved rectangle is a
         // new commit so what was under the old one is repainted.
         self.shell_overlay_commit.increment();

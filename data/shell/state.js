@@ -531,8 +531,16 @@ const overlays = new Map();
    instead, because the compositor read it as a click on the desktop. Nothing
    is lost by declining: while the bar is visible Mod4 is down, and the
    compositor keeps those clicks for the gesture rather than forwarding them
-   here. */
-function setOverlay(name, el, { passthrough = false, blur = false } = {}) {
+   here.
+
+   `keepFocus` is the third kind: a rectangle that is there to be pressed and
+   must leave the keyboard alone. The on-screen keyboard is why. Its keys are
+   typed into whatever holds the keyboard at the moment, so a press that took
+   the keyboard for the page would type into the page — and would cancel the
+   text-input the very keyboard on screen is raised for. Every other overlay
+   takes the keyboard on a press, which is what makes a click in the
+   launcher's input mean typing. */
+function setOverlay(name, el, { passthrough = false, blur = false, keepFocus = false } = {}) {
   const rect = el?.getBoundingClientRect();
   if (!rect || rect.width < 1 || rect.height < 1) {
     if (!overlays.delete(name)) return;
@@ -543,6 +551,7 @@ function setOverlay(name, el, { passthrough = false, blur = false } = {}) {
       width: Math.round(rect.width),
       height: Math.round(rect.height),
       passthrough,
+      keep_focus: keepFocus,
       /* The compositor blurs the windows behind this rectangle before drawing
          the page's own pixels over it — the shell's half of
          `ext-background-effect-v1`, which a page cannot ask for itself. */
@@ -553,6 +562,7 @@ function setOverlay(name, el, { passthrough = false, blur = false } = {}) {
       && previous.x === next.x && previous.y === next.y
       && previous.width === next.width && previous.height === next.height
       && previous.passthrough === next.passthrough
+      && previous.keep_focus === next.keep_focus
       && previous.blur === next.blur) {
       return;
     }

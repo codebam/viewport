@@ -240,3 +240,11 @@ and the JavaScript shell suites under `tests/`.
 - [x] **50. GTK/Servo buffer inbound events in unbounded channels.**
   `viewport-shell-gtk/src/main.rs:315`, `viewport-shell-servo/src/main.rs:120`.
   Fix: bounded channel.
+
+- [x] **51. Pressing a key on the on-screen keyboard takes the keyboard away.**
+  `focus_touch_target` in `input.rs` (finger and pen) and the click's focus
+  block land on the shell page and give it the keyboard, so the first tap on
+  an `osk` key cancelled the focused field's text-input (the keyboard lowered
+  itself) and `osk.key`'s synthetic key then reached the page instead of the
+  field. Fix: `shell.overlay` rects carry `keep_focus`, the keyboard's panel
+  sends it, and both focus paths move nothing over such a rectangle.

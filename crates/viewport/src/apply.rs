@@ -330,7 +330,9 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             };
             // The chooser is a dialog: it is there to be clicked, and it is
             // drawn over whatever it is asking about — so it blurs that too.
-            state.set_shell_overlays(rects.clone(), rects.clone(), rects);
+            // It takes the keyboard on a press like any other overlay, so the
+            // keep-focus list has nothing to carry here.
+            state.set_shell_overlays(rects.clone(), rects.clone(), rects, Vec::new());
         }
 
         Request::ShellOverlay { rects } => {
@@ -355,6 +357,7 @@ pub fn apply(state: &mut ViewportState, request: Request) {
                         ),
                         rect.passthrough,
                         rect.blur,
+                        rect.keep_focus,
                     )
                 })
                 .collect();
@@ -362,16 +365,26 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             // ones that did not ask to be seen through take the pointer.
             let hits = placed
                 .iter()
-                .filter(|(_, passthrough, _)| !passthrough)
-                .map(|(rect, _, _)| *rect)
+                .filter(|(_, passthrough, _, _)| !passthrough)
+                .map(|(rect, _, _, _)| *rect)
                 .collect();
             let blur = placed
                 .iter()
-                .filter(|(_, _, blur)| *blur)
-                .map(|(rect, _, _)| *rect)
+                .filter(|(_, _, blur, _)| *blur)
+                .map(|(rect, _, _, _)| *rect)
                 .collect();
-            let all = placed.into_iter().map(|(rect, _, _)| rect).collect();
-            state.set_shell_overlays(all, hits, blur);
+            // And of the ones that take the press, the ones that leave the
+            // keyboard's focus alone — see `OverlayRect::keep_focus`. Only
+            // those: a press through a `passthrough` rectangle lands on the
+            // window behind it, and that window is where the keyboard
+            // belongs.
+            let keep_focus = placed
+                .iter()
+                .filter(|(_, passthrough, _, keep_focus)| !passthrough && *keep_focus)
+                .map(|(rect, _, _, _)| *rect)
+                .collect();
+            let all = placed.into_iter().map(|(rect, _, _, _)| rect).collect();
+            state.set_shell_overlays(all, hits, blur, keep_focus);
         }
 
         Request::ShellOverview { active } => {

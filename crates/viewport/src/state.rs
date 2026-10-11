@@ -683,6 +683,14 @@ pub struct ViewportState {
     /// and cannot request `ext-background-effect-v1`, so this is where its
     /// blur regions live — see `OverlayRect::blur`.
     pub shell_overlay_blur: Vec<smithay::utils::Rectangle<i32, Logical>>,
+    /// The ones that take the pointer and leave the keyboard's focus alone
+    /// when pressed — see `OverlayRect::keep_focus`.
+    ///
+    /// The on-screen keyboard is the whole reason the set exists: its keys
+    /// are typed into whatever holds the keyboard at the moment, so a press
+    /// on its panel must leave every focus where it was. Checked by position
+    /// in `input.rs`, in front of the focus every other press moves.
+    pub shell_overlay_keep_focus: Vec<smithay::utils::Rectangle<i32, Logical>>,
     /// Bumped whenever the overlay list changes, so a blur element's damage
     /// tracker sees a new commit and repaints what moved. One counter for all
     /// of them: a change to any rectangle damages the blur behind every one,
@@ -1903,6 +1911,7 @@ impl ViewportState {
             shell_overlay_blur_ids: Vec::new(),
             shell_overlays: Vec::new(),
             shell_overlay_hits: Vec::new(),
+            shell_overlay_keep_focus: Vec::new(),
             shell_overlay_blur: Vec::new(),
             shell_overlay_commit: smithay::backend::renderer::utils::CommitCounter::default(),
 

@@ -148,7 +148,7 @@ Also accepted on the UNIX socket, which speaks the same message set.
 | `shell.focus` | — |
 | `background.focus` | — (toggles the keyboard onto the wallpaper terminal and back) |
 | `shell.overview` | `active` |
-| `shell.overlay` | `rects[]` of `x`, `y`, `width`, `height`, optional `passthrough` — everywhere the shell has drawn something that belongs above the windows. Sent whole; an empty list means nothing does. See [Drawing in front of the windows](#drawing-in-front-of-the-windows) |
+| `shell.overlay` | `rects[]` of `x`, `y`, `width`, `height`, optional `passthrough`, `keep_focus` — everywhere the shell has drawn something that belongs above the windows. Sent whole; an empty list means nothing does. See [Drawing in front of the windows](#drawing-in-front-of-the-windows) |
 | `screencast.rect` | `x`, `y`, `width`, `height` — the older single-rectangle form of `shell.overlay`, still accepted; a zero size means nothing is above the windows |
 | `session.save` | `state` (opaque string) |
 | `session.query` | — |
@@ -455,6 +455,16 @@ or focus the window behind it, and `Mod4`-dragging inside one does not drag
 that window — the click never reached it, so neither should its consequences.
 Asking for something by name is unaffected: a binding on `shell output.focus`
 still works, because it is not a click landing anywhere.
+
+What it does take is the keyboard. A press on an overlay gives the keyboard to
+the page, which is what makes a click into the launcher's input mean typing —
+and `keep_focus: true` is the one overlay that asks it not to. The on-screen
+keyboard is why: its keys are typed into whatever holds the keyboard at the
+moment, so a press on its panel that took the keyboard for the page would type
+into the page and cancel the text-input the keyboard is raised for. A flagged
+rectangle takes the press and leaves every focus where it was. It counts only
+on a rectangle that is not `passthrough` — there the press belongs to the
+window behind, and that window is where the keyboard should go.
 
 Before this, input and drawing disagreed. A notification was painted on top and
 every click went through it to whatever was underneath, so its close button did

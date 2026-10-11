@@ -403,9 +403,13 @@ function renderOsk() {
 /* Tell the compositor where the keyboard is, so it draws that piece of the
  * shell above the windows — see setOverlay's own comment in state.js. The
  * panel alone, not the docking box that spans the whole output: what the
- * compositor needs is the rectangle somebody can actually touch. */
+ * compositor needs is the rectangle somebody can actually touch.
+ *
+ * `keepFocus` because a key is typed into wherever the keyboard already is:
+ * a press that took the keyboard for the page would type into the page and
+ * drop the text-input the keyboard is up for. */
 function reportOskRect(panel) {
-  setOverlay('osk', panel);
+  setOverlay('osk', panel, { keepFocus: true });
 }
 
 function showOsk() {

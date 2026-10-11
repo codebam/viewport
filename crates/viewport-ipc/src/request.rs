@@ -1103,6 +1103,20 @@ pub struct OverlayRect {
     /// the compositor keeps for the gesture and never forwards to the shell.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub passthrough: bool,
+    /// Takes the press but leaves the keyboard's focus where it is.
+    ///
+    /// The on-screen keyboard is what this exists for. It floats above the
+    /// windows and is pressed like any other overlay, but what its keys send
+    /// is typed into whatever holds the keyboard *now* — `osk.key` reaches
+    /// the focused client — so a press that took the keyboard for the page
+    /// would type into the page and cancel the text-input the keyboard is
+    /// raised for. An overlay without this flag takes the keyboard when it
+    /// is pressed, which is what clicking into the launcher's input means to
+    /// anybody: this flag is for the panels that press keys rather than
+    /// receive them. Only meaningful on a rectangle that is not
+    /// `passthrough` — there the press belongs to the window behind.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub keep_focus: bool,
     /// Blur the windows behind this rectangle, the way a client does through
     /// `ext-background-effect-v1`.
     ///
@@ -1396,6 +1410,7 @@ mod tests {
                         width: 300,
                         height: 120,
                         passthrough: false,
+                        keep_focus: false,
                         blur: false,
                     },
                     OverlayRect {
@@ -1404,9 +1419,34 @@ mod tests {
                         width: 1920,
                         height: 30,
                         passthrough: true,
+                        keep_focus: false,
                         blur: true,
                     },
                 ],
+            }
+        );
+    }
+
+    #[test]
+    fn an_overlay_can_press_keys_without_taking_the_keyboard() {
+        // The on-screen keyboard's rectangle — see `keep_focus`. Taking the
+        // keyboard on a press stays the default and stays untouched here; this
+        // is only the one overlay that asks out of it, and it asks by name.
+        assert_eq!(
+            parse(
+                r#"{"type":"shell.overlay","rects":[
+                    {"x":1400,"y":900,"width":520,"height":180,"keep_focus":true}]}"#
+            ),
+            Request::ShellOverlay {
+                rects: vec![OverlayRect {
+                    x: 1400,
+                    y: 900,
+                    width: 520,
+                    height: 180,
+                    passthrough: false,
+                    keep_focus: true,
+                    blur: false,
+                }],
             }
         );
     }

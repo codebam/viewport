@@ -1986,6 +1986,9 @@ check('windows laid out', new Set(layouts.map((m) => m.id)).size === 4);
   emit({ type: 'osk.wanted', wanted: true });
   check('a text-input becoming enabled brings it up on its own',
     el().hidden === false);
+  check('and what it floats above the windows takes the press but not the keyboard',
+    (sent.slice(before).filter((m) => m.type === 'shell.overlay').at(-1)
+      ?.rects ?? []).some((r) => r.keep_focus === true));
   check('on the letters page, to start', globalThis.__shell.oskPageForTest === 'letters');
   check('the top row is the ten letters of a QWERTY keyboard',
     row(0).children.length === 10 && row(0).children[0].textContent === 'q');

@@ -1194,7 +1194,7 @@ impl ViewportState {
         let position = (x, y).into();
         let serial = SERIAL_COUNTER.next_serial();
         let under = self.surface_under(position);
-        self.focus_touch_target(under.as_ref(), serial);
+        self.focus_touch_target(under.as_ref(), position, serial);
         touch.down(
             self,
             under,
@@ -2429,7 +2429,20 @@ impl ViewportState {
                 // The locker's surface is the only thing that may hold it, and
                 // a click where a window happens to be mapped raised that
                 // window and handed it every keystroke that followed.
-                if state == ButtonState::Pressed && !pointer.is_grabbed() && !self.locked {
+                //
+                // A press on one of the keep-focus overlays takes nothing
+                // either: the on-screen keyboard is pressed to type into
+                // wherever the keyboard already is, so raising or focusing
+                // anything for that press would steal the very focus its keys
+                // are aimed at. See `OverlayRect::keep_focus`.
+                if state == ButtonState::Pressed
+                    && !pointer.is_grabbed()
+                    && !self.locked
+                    && !crate::pointer::over_overlay(
+                        &self.shell_overlay_keep_focus,
+                        pointer.current_location(),
+                    )
+                {
                     let hit = self.window_under(pointer.current_location());
                     // Clicking a notification must not raise and focus the
                     // window behind it — the click never reached that window.
@@ -2863,7 +2876,7 @@ impl ViewportState {
                             .map(|pointer| pointer.current_location());
                         if let Some(at) = at {
                             let under = self.surface_under(at);
-                            self.focus_touch_target(under.as_ref(), serial);
+                            self.focus_touch_target(under.as_ref(), at, serial);
                         }
                     }
                     smithay::backend::input::TabletToolTipState::Up => tool.up(
@@ -3238,7 +3251,7 @@ impl ViewportState {
         // The window under the finger takes the keyboard too. There is
         // no other way to focus something on a touchscreen: there is no
         // pointer to click with and no way to reach a chord.
-        self.focus_touch_target(under.as_ref(), serial);
+        self.focus_touch_target(under.as_ref(), position, serial);
 
         touch.down(
             self,
@@ -4189,8 +4202,18 @@ impl ViewportState {
     fn focus_touch_target(
         &mut self,
         under: Option<&(WlSurface, Point<f64, Logical>)>,
+        at: Point<f64, Logical>,
         serial: Serial,
     ) {
+        // A press on one of the shell's own keep-focus overlays — the
+        // on-screen keyboard — leaves the keyboard where it is. Its keys are
+        // typed into whatever holds the keyboard now (`osk.key` reaches the
+        // focused client), so taking the focus for the page would type into
+        // the page and cancel the text-input the keyboard is raised for. See
+        // `OverlayRect::keep_focus`.
+        if crate::pointer::over_overlay(&self.shell_overlay_keep_focus, at) {
+            return;
+        }
         let Some((surface, _)) = under else {
             return;
         };
