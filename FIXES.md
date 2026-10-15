@@ -248,3 +248,22 @@ and the JavaScript shell suites under `tests/`.
   itself) and `osk.key`'s synthetic key then reached the page instead of the
   field. Fix: `shell.overlay` rects carry `keep_focus`, the keyboard's panel
   sends it, and both focus paths move nothing over such a rectangle.
+
+- [x] **52. An X11 window granted fullscreen is never resized.**
+  `view_layout` refuses to configure a fullscreen X11 window at all — the
+  rectangles a shell animation passes through are ones wine reads as its
+  handshake having been refused and drops back out of fullscreen on — and the
+  note over that skip, "the request path has already configured it", was only
+  ever true for a client that sized its own window before mapping (a wine
+  game, `mpv --fullscreen`). A window the SHELL fullscreened — the
+  `window.fullscreen` chord, `view.fullscreen` over the socket — was granted
+  `_NET_WM_STATE_FULLSCREEN`, the frame went away, and the client stayed
+  exactly the size it was: a borderless tile where a covered output should be.
+  Found driving Steam Big Picture from the chord. Fix:
+  `apply::configure_x11_fullscreen` sends the output's rectangle once at the
+  grant — from every way in (`set_view_fullscreen`, `answer_x11_fullscreen`,
+  the announce of a pre-map hint), deduplicated against `last_configure` so a
+  client already holding it is told nothing — and `view_layout` now also lets
+  a fullscreen window's *settled* rectangle through (so one that crosses to
+  another output while fullscreen follows it), still skipping every transient
+  one.

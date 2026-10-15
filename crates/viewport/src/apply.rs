@@ -1021,6 +1021,62 @@ pub fn apply(state: &mut ViewportState, request: Request) {
     }
 }
 
+/// Configure an X11 window to cover its output, at the moment fullscreen is
+/// granted to it.
+///
+/// `view_layout` will not configure a fullscreen X11 window at all — the
+/// rectangles it sees while anything is animating are ones wine reads as its
+/// handshake having been refused, and drops back out of fullscreen on
+/// (`apply: stop configuring a fullscreen X11 window from the layout`). That
+/// guard is about the journey; the destination still has to be sent once, and
+/// the note over the skip assumed the request path already had — which was
+/// only ever true for a client that sized its own window before mapping (a
+/// wine game, `mpv --fullscreen`). A window the SHELL fullscreened — the
+/// `window.fullscreen` chord, `view.fullscreen` over the socket — was granted
+/// the state, lost its frame, and stayed exactly the size it was: a
+/// borderless tile instead of a covered output.
+///
+/// EWMH's answer for every client, whichever way it got here: "The window
+/// MUST be resized to the size of the monitor." One configure per grant, at
+/// the output the window is on, deduplicated against `last_configure` so a
+/// client already holding this rectangle — a game that mapped at the output's
+/// size — is told nothing at all. Wine counts configures.
+pub(crate) fn configure_x11_fullscreen(state: &mut ViewportState, id: u32) {
+    let Some(view) = state.views.get(id) else {
+        return;
+    };
+    let Some(x11) = view.window.x11_surface().cloned() else {
+        // The xdg side needs nothing here: `view_layout` configures a
+        // toplevel's size whether it is fullscreen or not.
+        return;
+    };
+    let min = view.min_size();
+    // The output the window is on, and fullscreen covers that one. Before the
+    // first layout there is no element in the space to ask about, and the
+    // answer then is the one the announce path already gave the shell: the
+    // output a new window is told it is on.
+    let output = state
+        .space
+        .outputs_for_element(&view.window)
+        .into_iter()
+        .next()
+        .or_else(|| state.output_by_name(&state.output_for_new_view()));
+    let Some(geometry) = output.and_then(|output| state.space.output_geometry(&output)) else {
+        return;
+    };
+    // Clamped exactly as `view_layout` clamps what the shell asks for: a
+    // client configured under its minimum is entitled to ignore it, and a
+    // window that ignores this one is the bug again.
+    let (width, height) = configure_size((geometry.size.w, geometry.size.h), min);
+    let rect = smithay::utils::Rectangle::new(geometry.loc, (width, height).into());
+    if x11.last_configure() == rect {
+        return;
+    }
+    if let Err(e) = x11.configure(rect) {
+        tracing::warn!("could not configure an X11 window into fullscreen: {e}");
+    }
+}
+
 /// Apply fullscreen state to either kind of managed client.
 ///
 /// Resizing the hole is not enough: applications rearrange their own layout
@@ -1043,6 +1099,12 @@ pub(crate) fn set_view_fullscreen(state: &mut ViewportState, id: u32, fullscreen
         if let Err(e) = x11.set_fullscreen(fullscreen) {
             tracing::warn!("could not set fullscreen on an X11 window: {e}");
             return false;
+        }
+        // The state alone is not the resize. See `configure_x11_fullscreen`:
+        // the layout will not configure this window again while it is
+        // fullscreen, so the covering rectangle has to come from here.
+        if fullscreen {
+            configure_x11_fullscreen(state, id);
         }
     } else {
         return false;
@@ -1461,8 +1523,10 @@ fn view_layout(state: &mut ViewportState, mut layout: viewport_ipc::request::Vie
     // rectangle the client reads as its request having been refused: wine
     // leaves fullscreen again on the first configure that is not its own, and
     // a window that asked to cover its output has no journey left to make
-    // anyway. The request path has already configured it, and the state is
-    // what the shell's rectangle falls back to when it stops being fullscreen.
+    // anyway. The destination rectangle is sent once, by the grant path (see
+    // `configure_x11_fullscreen`) and by the settled-rectangle branch below,
+    // and the state is what the shell's rectangle falls back to when it stops
+    // being fullscreen.
     //
     // And not when the client already holds this exact rectangle. The shell
     // lays every window out on every frame of an animation and Smithay's
@@ -1481,12 +1545,42 @@ fn view_layout(state: &mut ViewportState, mut layout: viewport_ipc::request::Vie
     // skipped; the toplevel above is spared by its size half and needs no
     // position at all.
     if let Some(x11) = window.x11_surface() {
+        let x11_rect = smithay::utils::Rectangle::new(
+            (resolved.box_.x, resolved.box_.y).into(),
+            (width, height).into(),
+        );
         if !x11.is_fullscreen() {
-            let x11_rect = smithay::utils::Rectangle::new(
-                (resolved.box_.x, resolved.box_.y).into(),
-                (width, height).into(),
-            );
             if relaid || x11.last_configure() != x11_rect {
+                if let Err(e) = x11.configure(x11_rect) {
+                    tracing::warn!("could not configure an X11 window: {e}");
+                }
+            }
+        } else {
+            // The one rectangle a fullscreen window may be configured with is
+            // its output's — which is what the settled layout of a fullscreen
+            // window is, and the only one that is safe to send while the state
+            // stands. Without it a window that crossed onto another output
+            // while fullscreen keeps covering the rectangle it started on.
+            // Everything else here is a rectangle still in flight from some
+            // animation, which is exactly the configure wine drops fullscreen
+            // on and the reason this branch does not simply fall through.
+            //
+            // Deduplicated on `last_configure` alone rather than `relaid`:
+            // the settled rectangle arrives more than once — the grant path
+            // (see `configure_x11_fullscreen`) usually sent it first, and
+            // transient layouts are skipped in between — and wine counts
+            // configures.
+            let settled = {
+                let resolved_rect = smithay::utils::Rectangle::new(
+                    (resolved.box_.x, resolved.box_.y).into(),
+                    (resolved.box_.width, resolved.box_.height).into(),
+                );
+                state
+                    .space
+                    .outputs()
+                    .any(|output| state.space.output_geometry(output) == Some(resolved_rect))
+            };
+            if settled && x11.last_configure() != x11_rect {
                 if let Err(e) = x11.configure(x11_rect) {
                     tracing::warn!("could not configure an X11 window: {e}");
                 }

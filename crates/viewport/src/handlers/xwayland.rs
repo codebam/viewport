@@ -552,6 +552,13 @@ impl ViewportState {
             fullscreen,
         );
         if mapped {
+            // Resized before the shell hears about it: the layout will not
+            // configure this window while it is fullscreen, so this is where
+            // the covering rectangle is sent. See
+            // `crate::apply::configure_x11_fullscreen`.
+            if fullscreen {
+                crate::apply::configure_x11_fullscreen(self, id);
+            }
             self.notify_fullscreen(id, fullscreen);
         }
     }

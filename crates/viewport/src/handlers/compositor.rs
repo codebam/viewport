@@ -468,6 +468,11 @@ impl ViewportState {
         // runtime path sends, and it only means anything once the shell has a
         // window to apply it to.
         if fullscreen {
+            // And the window covers its output from the first frame. An X11
+            // client that asked before it mapped got the state but no resize —
+            // `view_layout` will not configure it while it is fullscreen. See
+            // `crate::apply::configure_x11_fullscreen`.
+            crate::apply::configure_x11_fullscreen(self, id);
             self.notify_fullscreen(id, true);
         }
         if maximized {
