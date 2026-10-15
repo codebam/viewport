@@ -294,4 +294,14 @@ and the JavaScript shell suites under `tests/`.
   restore with `PointerHandle::set_location` — Smithay's own contract for
   a lock hint: clients are never notified of it (smithay
   `input/pointer/mod.rs`). The game re-centers by its own warp and needs no
-  event; dispatching one only injects aim.
+  event; dispatching one only injects aim. Third, the capture itself: the
+  cursor must stay pinned to the hint stream for the whole capture, not be
+  repaired once at its end — Xwayland's warp emulator re-sends the hint on
+  every relative motion while a game holds the pointer, and its grab
+  mirror tears down and rebuilds mid-dance (`a capture ended` 1ms after a
+  lock was seen live), so the one-time restore can fire when the hint was
+  already taken and leave the cursor at wherever the hand crept — measured
+  (−4,−6)/(−31,−11) offsets from the recenter target in live CS2 logs,
+  absorbed into the game's warp-mode bookkeeping as aim per shot. The fix
+  pins on every hint (silent again) and re-pins at constraint creation, so
+  no capture can drift away from the game's own anchor.

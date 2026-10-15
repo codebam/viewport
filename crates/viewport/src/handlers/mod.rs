@@ -911,6 +911,13 @@ impl smithay::wayland::pointer_constraints::PointerConstraintsHandler for Viewpo
                 constraint.activate();
             }
         });
+        // A capture must begin pinned to the client's own anchor. Xwayland's
+        // ebb of lock/confine teardowns (its grab mirror is destroyed and
+        // rebuilt during the dance — `a capture ended` 1ms after a lock was
+        // observed live) means the restore alone can run at a moment when a
+        // fresh capture is already starting; pinning here too guarantees the
+        // baseline is exact whatever order the churn lands in.
+        self.pin_cursor_to_hint(surface, pointer);
     }
 
     fn remove_constraint(
@@ -937,19 +944,29 @@ impl smithay::wayland::pointer_constraints::PointerConstraintsHandler for Viewpo
     fn cursor_position_hint(
         &mut self,
         surface: &WlSurface,
-        _pointer: &smithay::input::pointer::PointerHandle<Self>,
+        pointer: &smithay::input::pointer::PointerHandle<Self>,
         location: smithay::utils::Point<f64, smithay::utils::Logical>,
     ) {
-        // Recorded, not acted on. The protocol says the hint takes effect
-        // when the lock is *deactivated*; moving the cursor now would also
-        // send absolute motion to a client that asked for none.
+        // Recorded for the lock's end, per the protocol: the hint takes
+        // effect as the cursor's place when the lock is *deactivated*.
         //
         // This is not a nicety. XWayland's warp emulator re-sends the hint
         // and commits the surface on every single relative motion event
-        // while an X11 game holds the pointer, so acting on arrival turned
-        // every mouse delta into an absolute reposition — which is exactly
-        // what a game in GLFW's warp fallback reads as "the cursor did not
-        // move", leaving the camera dead while clicks still worked.
+        // while an X11 game holds the pointer, so acting on arrival with a
+        // dispatched motion turned every mouse delta into an absolute
+        // reposition — which is exactly what a game in GLFW's warp fallback
+        // reads as "the cursor did not move", leaving the camera dead while
+        // clicks still worked. The repair to that was to act silently
+        // (set_location: "clients will never be notified of a location
+        // hint"), and that opens the door to acting on *every* hint: the
+        // stream IS the warp emulator's live anchor — where the X server's
+        // sprite sits — so pinning the compositor's own cursor to it keeps
+        // the cursor and the sprite in lockstep for the whole capture
+        // instead of only at its end. A capture that drifts between those
+        // two (churned constraint teardowns pin the hand-crept position or
+        // a taken-fresh None) hands the game a recenter-baseline error it
+        // credits as aim on every shot: measured (−4,−6), (−31,−11)-class
+        // biases in live CS2 logs.
         //
         // The first one unconditionally, because whether Xwayland sends these
         // at all is the question; the rest only when asked, because it sends
@@ -964,10 +981,68 @@ impl smithay::wayland::pointer_constraints::PointerConstraintsHandler for Viewpo
             );
         }
         self.cursor_position_hint = Some((surface.clone(), location));
+        self.pin_cursor_to_hint(surface, pointer);
     }
 }
 
 impl ViewportState {
+    /// Where a surface-local cursor hint lands in the layout.
+    ///
+    /// The hint is anchored at the surface root — the placement minus the
+    /// content offset, the same `render_location()` formula `Space`
+    /// hit-tests and renders with. `element_geometry()`'s loc is where the
+    /// *content* sits: for an X11 window whose `_GTK_FRAME_EXTENTS` carve
+    /// the content out of the middle of the surface — a game's window —
+    /// that is within the surface, and anchoring there plants the cursor
+    /// right and down of the warp target by exactly the margin. Every
+    /// capture end then hands the game that error as camera motion.
+    fn hint_target(
+        &self,
+        surface: &WlSurface,
+        hint: smithay::utils::Point<f64, smithay::utils::Logical>,
+    ) -> Option<smithay::utils::Point<f64, smithay::utils::Logical>> {
+        use smithay::wayland::seat::WaylandFocus as _;
+
+        let origin = self
+            .space
+            .elements()
+            .find(|window| window.wl_surface().map(|s| &*s == surface).unwrap_or(false))
+            .and_then(|window| {
+                self.space
+                    .element_location(window)
+                    .map(|location| (location - window.geometry().loc).to_f64())
+            })?;
+        Some(hint + origin)
+    }
+
+    /// Re-pin the compositor's cursor to a surface's hint, silently.
+    ///
+    /// `set_location`, never `pointer.motion`: Smithay's contract for a
+    /// hint is "clients will never be notified of a location hint". The
+    /// cursor keeps its place in lockstep with the warp emulator's anchor
+    /// and nothing is dispatched, so no synthetic delta ever reaches a
+    /// client's aim bookkeeping.
+    fn pin_cursor_to_hint(
+        &mut self,
+        surface: &WlSurface,
+        pointer: &smithay::input::pointer::PointerHandle<Self>,
+    ) {
+        let Some(location) = self.cursor_position_hint.as_ref().and_then(|(hinted, at)| {
+            if hinted == surface {
+                Some(*at)
+            } else {
+                None
+            }
+        }) else {
+            return;
+        };
+        let Some(at) = self.hint_target(surface, location) else {
+            return;
+        };
+        pointer.set_location(at);
+        self.needs_render = true;
+    }
+
     /// Move the cursor to a hint a lock left behind, if that surface left one.
     ///
     /// Surface-local, so it needs the window's position; a hint for a window
@@ -977,8 +1052,6 @@ impl ViewportState {
         surface: &WlSurface,
         pointer: &smithay::input::pointer::PointerHandle<Self>,
     ) {
-        use smithay::wayland::seat::WaylandFocus as _;
-
         let Some((hinted, location)) = self.cursor_position_hint.take() else {
             return;
         };
@@ -988,28 +1061,6 @@ impl ViewportState {
             self.cursor_position_hint = Some((hinted, location));
             return;
         }
-        let Some(origin) = self
-            .space
-            .elements()
-            .find(|window| window.wl_surface().map(|s| &*s == surface).unwrap_or(false))
-            // The hint is surface-local, so its anchor is where the surface
-            // is drawn — the placement minus the content offset, which is
-            // what Space computes as render_location() and what it hit-tests
-            // with. element_geometry()'s loc is where the *content* sits: for
-            // an X11 window whose _GTK_FRAME_EXTENTS carve the content out of
-            // the middle of the surface — a game's window — that is within
-            // the surface, and anchoring there plants the cursor right and
-            // down of the warp target by exactly the margin. Every capture
-            // end then hands the game that error as camera motion.
-            .and_then(|window| {
-                self.space
-                    .element_location(window)
-                    .map(|location| (location - window.geometry().loc).to_f64())
-            })
-        else {
-            return;
-        };
-        let at = location + origin.to_f64();
         // The restore repositions the compositor's cursor; it is not movement
         // of anyone's mouse. Smithay answers a hint exactly so:
         // PointerHandle::set_location updates where the cursor is "without
@@ -1020,6 +1071,9 @@ impl ViewportState {
         // cursor — measured (+31.4, +11.2) per capture in a live CS2 log,
         // always right and down of the recenter target, credited by the
         // game's event-driven aim exactly once per shot.
+        let Some(at) = self.hint_target(surface, location) else {
+            return;
+        };
         pointer.set_location(at);
         self.needs_render = true;
     }
