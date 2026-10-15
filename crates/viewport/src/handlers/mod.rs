@@ -1010,21 +1010,17 @@ impl ViewportState {
             return;
         };
         let at = location + origin.to_f64();
-        let serial = smithay::utils::SERIAL_COUNTER.next_serial();
-        let under = self.surface_under(at);
-        pointer.motion(
-            self,
-            under,
-            &smithay::input::pointer::MotionEvent {
-                location: at,
-                serial,
-                time: smithay::backend::input::InputTime::now(),
-            },
-        );
-        // Without the frame the motion sits in the client's pending event
-        // batch: wl_pointer only commits on frame, and XWayland is one of the
-        // clients that waits for it.
-        pointer.frame(self);
+        // The restore repositions the compositor's cursor; it is not movement
+        // of anyone's mouse. Smithay answers a hint exactly so:
+        // PointerHandle::set_location updates where the cursor is "without
+        // sending any event and without updating the focus… Clients will
+        // never be notified of a location hint" (smithay
+        // input/pointer/mod.rs). Dispatching a motion instead hands the
+        // surface a delta of hint-minus-wherever the physical hand left the
+        // cursor — measured (+31.4, +11.2) per capture in a live CS2 log,
+        // always right and down of the recenter target, credited by the
+        // game's event-driven aim exactly once per shot.
+        pointer.set_location(at);
         self.needs_render = true;
     }
 }

@@ -195,22 +195,41 @@ run_phase() {
 	sleep 0.3
 	echo "query" >&3
 	sleep 0.1
+	# The game's own warp is the only motion its event stream may see at
+	# the recenter target. Cursor restore relocates the pointer silently —
+	# a second motion here is a phantom delta a game credits as aim.
+	echo "motioncount" >&3
+	sleep 0.2
 
 	local got
 	got=$(sed -n 's/^query: \([0-9-]*\) \([0-9-]*\)$/\1 \2/p' "$client_out" | tail -1)
+	local cnt
+	cnt=$(sed -n 's/^motioncount: \([0-9]*\)$/\1/p' "$client_out" | tail -1)
 	echo "quit" >&3
 	exec 3>&-
 	wait "$client_pid" 2>/dev/null
 	client_pid=
 
-	if [ "$got" = "400 300" ]; then
-		echo "PASS($phase): the cursor came back to the warp target ($got)"
+	local fail=0
+	if [ "$got" != "400 300" ]; then
+		echo "FAIL($phase): the warp target (400, 300) came back as ($got)" >&2
+		echo "      A game reads that difference as camera motion — the aim drifts." >&2
+		echo "      The hint is surface-local; the cursor must return to the" >&2
+		echo "      surface origin plus the hint, not the window's content." >&2
+		fail=1
+	fi
+	if [ "$cnt" != "1" ]; then
+		echo "FAIL($phase): expected 1 motion at the recenter target, saw ${cnt:-0}" >&2
+		echo "      The cursor hint restores position, never intent: Smithay's" >&2
+		echo "      set_location answers it silently. A synthetic motion hands" >&2
+		echo "      the game an aim delta per capture — the live drift vector." >&2
+		fail=1
+	fi
+	if [ "$fail" -eq 0 ]; then
+		echo "PASS($phase): the cursor came back to the warp target ($got)" \
+		     "with exactly one motion at it"
 		return 0
 	fi
-	echo "FAIL($phase): the warp target (400, 300) came back as ($got)" >&2
-	echo "      A game reads that difference as camera motion — the aim drifts." >&2
-	echo "      The hint is surface-local; the cursor must return to the" >&2
-	echo "      surface origin plus the hint, not the window's content." >&2
 	sed -n 's/^event: /      /p' "$client_out" | tail -8 >&2
 	return 1
 }

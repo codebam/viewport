@@ -95,13 +95,23 @@ int main(int argc, char **argv) {
     fflush(stdout);
 
     int sequence = 0;
+    int target_x = -9999, target_y = -9999, target_motions = 0;
     char line[256];
     while (fgets(line, sizeof line, stdin)) {
         int x, y;
         if (sscanf(line, "warp %d %d", &x, &y) == 2) {
             XWarpPointer(display, None, window, 0, 0, 0, 0, x, y);
             XSync(display, False);
+            /* The game's recenter: exactly one motion at the target — the
+             * one its own warp is entitled to. Anything the compositor
+             * invents later lands on top of this count. */
+            target_x = x;
+            target_y = y;
+            target_motions = 0;
             printf("ok %d\n", ++sequence);
+        } else if (strncmp(line, "motioncount", 11) == 0) {
+            printf("motioncount: %d\n", target_motions);
+            target_motions = 0;
         } else if (strncmp(line, "capture", 7) == 0) {
             /* Hidden cursor plus a grab is the game's capture: Xwayland sees
              * the pairing and takes its own pointer lock behind the warps.
@@ -156,6 +166,8 @@ int main(int argc, char **argv) {
                 int lx = 0, ly = 0;
                 XTranslateCoordinates(display, root, window, motion->x_root, motion->y_root, &lx,
                                       &ly, &child3);
+                if (lx == target_x && ly == target_y)
+                    target_motions++;
                 printf("event: motion %d %d\n", lx, ly);
             } else if (event.type == ButtonPress || event.type == ButtonRelease) {
                 XButtonEvent *button = &event.xbutton;

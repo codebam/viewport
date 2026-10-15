@@ -268,19 +268,30 @@ and the JavaScript shell suites under `tests/`.
   another output while fullscreen follows it), still skipping every transient
   one.
 
-- [x] **53. Restoring the cursor from a lock's hint lands it inside the window's
-  margins, so an X11 game's aim drifts right and down.** `zwp_locked_pointer_v1`
+- [x] **53. Restoring the cursor from a lock's hint aimed at the wrong point
+  and announced the move to the game — two bugs, and the second is why an
+  X11 game's aim drifts right and down every shot.** `zwp_locked_pointer_v1`
   hints are surface-local — Xwayland's warp emulator of a recentering game
-  states where the X server's sprite sits over the wl_surface — but
+  states where the X server's sprite sits over the wl_surface. First,
   `apply_cursor_position_hint` anchored them at `element_geometry().loc`,
   which is where the *content* is: `Space` maps content at the element's
   placement while the surface is drawn at `placement − geometry().loc`, and
   an X11 window carrying `_GTK_FRAME_EXTENTS` (CS2's) has its content inset
-  within its surface by exactly that margin. Every capture end therefore
-  planted the cursor at `warp target + extents` — the +8,+8 the game then
-  read as camera motion on the next shot. Native Wayland games never touch
-  this path and were fine. Found with `tests/xwayland-warp-hint.test.sh`
+  within its surface by exactly that margin — the restore landed at
+  `warp target + extents` instead of at the warp target. Fixing that did
+  not stop the drift, because the restore had a second disease: it
+  dispatched `pointer.motion` to whatever surface was under the point,
+  synthesizing a motion event of `hint − wherever the physical hand left
+  the cursor` into the game's stream — measured (+31.4, +11.2) per capture
+  in the live CS2 log, always right and down at every recenter, credited by
+  the game's event-driven aim once per shot. Native Wayland games never
+  touch this path and were fine. Found with `tests/xwayland-warp-hint.test.sh`
   (X11 client fakes the capture dance: hidden cursor + grab + warp; asserts
-  the cursor comes back to the warp target, a no-extents phase as control).
-  Fix: anchor at the surface root — the placement minus the content offset,
-  the same `render_location()` formula `Space` hit-tests and renders with.
+  the cursor comes back to the warp target *and that exactly one motion —
+  the game's own warp — reaches it*, a no-extents phase as control). Fix:
+  anchor at the surface root (the placement minus the content offset, the
+  `render_location()` formula `Space` hit-tests and renders with), and
+  restore with `PointerHandle::set_location` — Smithay's own contract for
+  a lock hint: clients are never notified of it (smithay
+  `input/pointer/mod.rs`). The game re-centers by its own warp and needs no
+  event; dispatching one only injects aim.
