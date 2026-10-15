@@ -733,6 +733,11 @@
             # shell tests/xwayland-focus.test.sh has no X server to ask.
             xwayland
 
+            # tests/xwayland-warp-hint-client.c hides the cursor the way a
+            # game does — XFixesHideCursor is what Xwayland keys its pointer
+            # lock off, and a window cursor of None only means "inherit".
+            libXfixes
+
             # Likewise for the bus: the compositor claims its portal name at
             # startup, so tests/screencast-restore.test.sh puts the whole run
             # inside a `dbus-run-session` of its own. Without it that test can

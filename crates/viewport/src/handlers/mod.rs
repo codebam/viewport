@@ -992,8 +992,20 @@ impl ViewportState {
             .space
             .elements()
             .find(|window| window.wl_surface().map(|s| &*s == surface).unwrap_or(false))
-            .and_then(|window| self.space.element_geometry(window))
-            .map(|geometry| geometry.loc)
+            // The hint is surface-local, so its anchor is where the surface
+            // is drawn — the placement minus the content offset, which is
+            // what Space computes as render_location() and what it hit-tests
+            // with. element_geometry()'s loc is where the *content* sits: for
+            // an X11 window whose _GTK_FRAME_EXTENTS carve the content out of
+            // the middle of the surface — a game's window — that is within
+            // the surface, and anchoring there plants the cursor right and
+            // down of the warp target by exactly the margin. Every capture
+            // end then hands the game that error as camera motion.
+            .and_then(|window| {
+                self.space
+                    .element_location(window)
+                    .map(|location| (location - window.geometry().loc).to_f64())
+            })
         else {
             return;
         };

@@ -231,5 +231,6 @@ run xwayland-float "$root/tests/xwayland-float.test.sh" "$VIEWPORT"
 run xwayland-clipboard "$root/tests/xwayland-clipboard.test.sh" "$VIEWPORT"
 run xwayland-fullscreen "$root/tests/xwayland-fullscreen.test.sh" \
 	"$VIEWPORT" "$work/foreign-toplevel-client"
+run xwayland-warp-hint "$root/tests/xwayland-warp-hint.test.sh" "$VIEWPORT"
 
 exit "$failed"
