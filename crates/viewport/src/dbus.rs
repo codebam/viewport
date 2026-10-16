@@ -43,6 +43,68 @@ pub fn name_flags() -> enumflags2::BitFlags<zbus::fdo::RequestNameFlags> {
     zbus::fdo::RequestNameFlags::AllowReplacement.into()
 }
 
+/// Whether this instance should ask for one of the session-wide names at all.
+///
+/// The wide names — the portal backend name, `org.freedesktop.Notifications`,
+/// `org.freedesktop.ScreenSaver`, `org.kde.StatusNotifierWatcher` — answer for
+/// the whole session, so only the compositor the user is looking at should
+/// hold them. That is the one on DRM, the same rule `main.rs` already applies
+/// to `export_session_environment`, which this extends: a headless or nested
+/// instance is a client of the session around it and answers for no desktop.
+///
+/// A leftover `--headless` test instance is what showed the rule is needed. It
+/// sat on the session bus — nothing had given it a bus of its own — and held
+/// the portal name for hours. Every screen share from the session's own
+/// applications was then routed to it, where an abandoned test had left its
+/// session locked, and each one was refused there ("screencast: the session is
+/// locked") while the compositor the user was looking at sat queued behind it,
+/// saying so at INFO once and never asked again. A name queued behind a dead
+/// holder comes back by itself; one queued behind a live holder that never
+/// exits does not.
+///
+/// The claims a test makes on its own bus are the point of the tests, and
+/// stay: a private bus is one where this instance IS the desktop, and the
+/// integration tests grep for `claimed ...` in the log to see it happen.
+pub fn may_claim(session_compositor: bool) -> bool {
+    serves(session_compositor, &session_bus_address())
+}
+
+/// The decision itself, with the bus passed in so it is tested without
+/// touching the environment of the process running the tests.
+fn serves(session_compositor: bool, bus_address: &str) -> bool {
+    session_compositor || !is_session_bus(bus_address)
+}
+
+/// Whether an address is the session bus of this login — the one logind puts
+/// at `/run/user/UID/bus`, and the one every desktop process shares.
+///
+/// A bus a test makes for itself is anywhere else at all, so the path is the
+/// whole test. An `abstract=` address can never be one: logind's socket is a
+/// file, and so is the fallback zbus's session builder takes, which
+/// [`session_bus_address`] mirrors.
+fn is_session_bus(bus_address: &str) -> bool {
+    let path = bus_address
+        .split("path=")
+        .nth(1)
+        .map(|rest| rest.split(',').next().unwrap_or(rest));
+    matches!(path, Some(path) if path.starts_with("/run/user/") && path.ends_with("/bus"))
+}
+
+/// What zbus's session-bus builder will connect to: `DBUS_SESSION_BUS_ADDRESS`
+/// if the environment names one, else the logind socket under
+/// `XDG_RUNTIME_DIR`, which is the same fallback the builder takes.
+fn session_bus_address() -> String {
+    match std::env::var_os("DBUS_SESSION_BUS_ADDRESS") {
+        Some(address) => address.to_string_lossy().into_owned(),
+        None => format!(
+            "{}/bus",
+            std::env::var_os("XDG_RUNTIME_DIR")
+                .unwrap_or_default()
+                .to_string_lossy()
+        ),
+    }
+}
+
 /// Say what came of asking, in the log, once per name.
 ///
 /// `InQueue` is not a failure and is not rare — it is what a second compositor
@@ -57,6 +119,17 @@ pub fn log_name_reply(name: &str, reply: zbus::Result<zbus::fdo::RequestNameRepl
         Ok(other) => tracing::warn!("{name}: {other:?}"),
         Err(e) => tracing::warn!("could not ask for {name}: {e}"),
     }
+}
+
+/// Say why a name is not being asked for, once per name.
+///
+/// On the same half of the log [`log_name_reply`] speaks for: silence here
+/// would read exactly like a claim.
+pub fn log_name_skipped(name: &str) {
+    tracing::warn!(
+        "not claiming {name}: this instance is not the session's own compositor, \
+         and a name held here answers for a desktop nobody is looking at"
+    );
 }
 
 #[cfg(test)]
@@ -85,5 +158,47 @@ mod tests {
             flags.contains(AllowReplacement),
             "a daemon somebody started on purpose should win"
         );
+    }
+
+    /// The claims a test makes on its own bus are the tests — a private bus is
+    /// one where this instance IS the desktop — so a run with no DRM behind it
+    /// still claims there.
+    #[test]
+    fn a_bus_of_ones_own_is_claimed_on() {
+        assert!(serves(
+            false,
+            "unix:path=/tmp/dbus-FsaaxRxMnf,guid=67d82851c8ddc18a05c771e86ad193f3"
+        ));
+        assert!(serves(
+            false,
+            "unix:abstract=/tmp/dbus-kZ0mQz,guid=67d82851c8ddc18a05c771e86ad193f3"
+        ));
+    }
+
+    /// The session bus belongs to the session's compositor, and only to it: a
+    /// headless or nested instance answering there is a leftover test holding
+    /// the screen shares, notifications and idle holds of a desktop it cannot
+    /// see — which is how every screen share was refused for hours by an
+    /// instance whose own stuck lock screen was the thing answering.
+    #[test]
+    fn the_session_bus_is_left_to_the_session_compositor() {
+        assert!(!serves(false, "unix:path=/run/user/1000/bus"));
+        assert!(!serves(
+            false,
+            "unix:path=/run/user/1000/bus,guid=67d82851c8ddc18a05c771e86ad193f3"
+        ));
+        assert!(serves(true, "unix:path=/run/user/1000/bus"));
+    }
+
+    /// The path is the whole test: a socket somewhere else is nobody's login
+    /// session, however it is named.
+    #[test]
+    fn only_loginds_own_bus_counts_as_the_session_bus() {
+        assert!(is_session_bus("unix:path=/run/user/1000/bus"));
+        assert!(is_session_bus("unix:path=/run/user/1234/bus,guid=1234"));
+        assert!(!is_session_bus("unix:path=/run/user/1000/bus-something"));
+        assert!(!is_session_bus("unix:path=/run/user/1000/wayland-1"));
+        assert!(!is_session_bus("unix:path=/tmp/dbus-abc"));
+        assert!(!is_session_bus("unix:abstract=/tmp/dbus-abc"));
     }
 }

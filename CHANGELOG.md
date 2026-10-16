@@ -64,6 +64,21 @@ to summarise rather than to duplicate.
   second against 43 to 48); see `docs/benchmarks.md`.
 
 ### Fixed
+- Screen sharing works again on a machine that has run tests. The
+  desktop-wide bus names — the portal backend name,
+  `org.freedesktop.Notifications`, `org.freedesktop.ScreenSaver` and
+  `org.kde.StatusNotifierWatcher` — are now asked for only by the session's
+  own compositor, the one on DRM, which is the rule `main.rs` already applied
+  to `export_session_environment` and this extends. A `--headless` or nested
+  instance answering on the session bus is a leftover test answering for a
+  desktop nobody is looking at: one such instance can hold the portal name for
+  hours, and every screen share from the session's applications is then routed
+  to its stuck state ("screencast: the session is locked") while the compositor
+  the user is looking at sits queued behind it. A name queued behind a dead
+  holder comes back by itself; one queued behind a live holder that never
+  exits does not. A test's claims on its own private bus are unchanged — that
+  is one where the test instance IS the desktop, and the integration tests
+  grep the log for `claimed ...` to see it.
 - A game that sets fullscreen by writing `_NET_WM_STATE` itself opens
   fullscreen. Wine is the client that does this: it sets
   `_NET_WM_STATE_FULLSCREEN` by writing the property after mapping its window

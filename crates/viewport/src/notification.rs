@@ -140,6 +140,7 @@ impl Notifications {
     pub fn start(
         &mut self,
         sender: smithay::reexports::calloop::channel::SyncSender<Message>,
+        session_compositor: bool,
     ) -> anyhow::Result<()> {
         let next = self.next.clone();
         let owners = self.owners.clone();
@@ -162,9 +163,17 @@ impl Notifications {
         // `crate::dbus::name_flags`: the compositor queues for this name and
         // never takes it, so a notification daemon somebody starts wins and
         // the compositor gets it back when that daemon exits.
-        let reply = connection
-            .request_name_with_flags("org.freedesktop.Notifications", crate::dbus::name_flags());
-        crate::dbus::log_name_reply("org.freedesktop.Notifications", reply);
+        // Asked for at all only by the session's own compositor — see
+        // `crate::dbus::may_claim`, the rule this obeys like every other name.
+        if crate::dbus::may_claim(session_compositor) {
+            let reply = connection.request_name_with_flags(
+                "org.freedesktop.Notifications",
+                crate::dbus::name_flags(),
+            );
+            crate::dbus::log_name_reply("org.freedesktop.Notifications", reply);
+        } else {
+            crate::dbus::log_name_skipped("org.freedesktop.Notifications");
+        }
 
         self.outbound = Some(connection);
         Ok(())
