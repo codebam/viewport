@@ -154,6 +154,10 @@ pub struct Tray {
     /// to receive one — and absent for good in a run with no loop at all,
     /// which is what makes every method here safe to call from a test.
     events: Option<smithay::reexports::calloop::channel::Sender<Message>>,
+    /// Whether this compositor is the session's own — the one on DRM. The
+    /// wide names are asked for only by that one; see `crate::dbus::may_claim`.
+    /// Set in `attach`, before anything can be enabled.
+    session_compositor: bool,
 }
 
 impl Tray {
@@ -164,8 +168,10 @@ impl Tray {
         &mut self,
         events: smithay::reexports::calloop::channel::Sender<Message>,
         enabled: bool,
+        session_compositor: bool,
     ) {
         self.events = Some(events);
+        self.session_compositor = session_compositor;
         self.set_enabled(enabled);
     }
 
@@ -204,7 +210,7 @@ impl Tray {
             // connection is made inside the worker — so there is nothing to
             // fail here, and a bus that never answers is reported through the
             // events channel like any other empty tray.
-            self.worker = Some(start(events));
+            self.worker = Some(start(events, self.session_compositor));
         }
         self.send(Command::Enable(enabled));
     }
@@ -407,7 +413,10 @@ where
 /// with no bus at all is reported through the events channel as an empty tray,
 /// the way an empty answer is. It is also not retried: a machine with no bus
 /// does not grow one because the configuration was reloaded.
-fn start(events: smithay::reexports::calloop::channel::Sender<Message>) -> mpsc::Sender<Command> {
+fn start(
+    events: smithay::reexports::calloop::channel::Sender<Message>,
+    session_compositor: bool,
+) -> mpsc::Sender<Command> {
     let (commands, inbox) = mpsc::channel();
 
     // The registry of registered items, shared between the watcher and the
@@ -528,7 +537,14 @@ fn start(events: smithay::reexports::calloop::channel::Sender<Message>) -> mpsc:
                 }
             }
 
-            Worker::new(connection, worker_events, items, pending).run(&inbox);
+            Worker::new(
+                connection,
+                worker_events,
+                items,
+                pending,
+                session_compositor,
+            )
+            .run(&inbox);
         });
 
     if spawned.is_err() {
@@ -761,6 +777,9 @@ struct Worker {
     theme: String,
     /// Whether the names are currently held.
     enabled: bool,
+    /// Whether this compositor is the session's own, and so may hold the
+    /// wide names at all. See `crate::dbus::may_claim`.
+    session_compositor: bool,
     /// The items whose menus the shell has open, by item key.
     ///
     /// The dbusmenu specification asks for an `Event` with `"closed"` when a
@@ -779,6 +798,7 @@ impl Worker {
         events: smithay::reexports::calloop::channel::Sender<Message>,
         registry: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
         pending: PendingItems,
+        session_compositor: bool,
     ) -> Self {
         Self {
             connection,
@@ -792,6 +812,7 @@ impl Worker {
             // in either case; this is the theme searched before it.
             theme: "hicolor".to_owned(),
             enabled: false,
+            session_compositor,
             open_menus: Vec::new(),
         }
     }
@@ -905,6 +926,13 @@ impl Worker {
         }
         let host = format!("org.kde.StatusNotifierHost-{}", std::process::id());
         for name in [WATCHER_NAME.to_owned(), host] {
+            // Only the session's own compositor holds the wide names — see
+            // `crate::dbus::may_claim`, the rule this obeys like every other
+            // name here.
+            if !crate::dbus::may_claim(self.session_compositor) {
+                crate::dbus::log_name_skipped(&name);
+                continue;
+            }
             // The compositor's own flags: it queues for a name and never takes
             // one. A KDE session or a GNOME extension that already draws a
             // tray knows more about that desktop than this does — and when it

@@ -150,6 +150,7 @@ impl Appearance {
     /// desktop portal already owns the name, still has a working compositor —
     /// its applications simply keep their own defaults, which is what they had
     /// a moment ago.
+    #[allow(clippy::too_many_arguments)]
     pub fn start(
         &mut self,
         settings: Settings,
@@ -158,6 +159,7 @@ impl Appearance {
         inhibit: crate::inhibit::PortalInhibit,
         shortcuts: crate::shortcuts::GlobalShortcuts,
         input_capture_shared: crate::input_capture::Shared,
+        session_compositor: bool,
     ) -> anyhow::Result<()> {
         let scheme = settings.color_scheme;
         *self.settings.lock().unwrap() = settings;
@@ -217,8 +219,14 @@ impl Appearance {
         // default carries `ReplaceExisting`, so this did take the name from
         // whoever held it — including from the session a nested compositor was
         // started inside.
-        let reply = connection.request_name_with_flags(BUS_NAME, crate::dbus::name_flags());
-        crate::dbus::log_name_reply(BUS_NAME, reply);
+        // Asked for at all only by the session's own compositor — see
+        // `crate::dbus::may_claim`, the rule this obeys like every other name.
+        if crate::dbus::may_claim(session_compositor) {
+            let reply = connection.request_name_with_flags(BUS_NAME, crate::dbus::name_flags());
+            crate::dbus::log_name_reply(BUS_NAME, reply);
+        } else {
+            crate::dbus::log_name_skipped(BUS_NAME);
+        }
 
         crate::screencast::portal::watch_frontend(connection.clone(), sessions, closer);
 

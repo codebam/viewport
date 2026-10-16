@@ -553,6 +553,7 @@ impl RequestObject {
 pub fn start(
     registry: Registry,
     sender: smithay::reexports::calloop::channel::Sender<Message>,
+    session_compositor: bool,
 ) -> anyhow::Result<zbus::blocking::Connection> {
     let mut builder = zbus::blocking::connection::Builder::session()?;
     for path in SCREENSAVER_PATHS {
@@ -569,8 +570,14 @@ pub fn start(
     // With `crate::dbus::name_flags`, like every other name here: queued for
     // rather than taken, so a screensaver daemon somebody started on purpose
     // wins and this gets the name back when that daemon exits.
-    let reply = connection.request_name_with_flags(SCREENSAVER_NAME, crate::dbus::name_flags());
-    crate::dbus::log_name_reply(SCREENSAVER_NAME, reply);
+    // Asked for at all only by the session's own compositor — see
+    // `crate::dbus::may_claim`, the rule this obeys like every other name.
+    if crate::dbus::may_claim(session_compositor) {
+        let reply = connection.request_name_with_flags(SCREENSAVER_NAME, crate::dbus::name_flags());
+        crate::dbus::log_name_reply(SCREENSAVER_NAME, reply);
+    } else {
+        crate::dbus::log_name_skipped(SCREENSAVER_NAME);
+    }
 
     watch_owners(connection.clone(), registry);
     Ok(connection)

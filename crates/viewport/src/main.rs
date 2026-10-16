@@ -825,7 +825,7 @@ fn run() -> Result<()> {
 
         // Not fatal: a session with no D-Bus, or one where mako already holds
         // the name, still has a working compositor.
-        if let Err(e) = state.notifications.start(sender) {
+        if let Err(e) = state.notifications.start(sender, drm) {
             tracing::warn!("notifications are unavailable: {e}");
         }
     }
@@ -869,7 +869,7 @@ fn run() -> Result<()> {
         // is applied before this loop has anywhere to send a tray, so what it
         // asked for was remembered and is acted on here.
         let enabled = state.tray_enabled;
-        state.tray.attach(sender, enabled);
+        state.tray.attach(sender, enabled, drm);
     }
 
     // What is playing, on the same shape again — and idle until a bar widget
@@ -1069,6 +1069,7 @@ fn run() -> Result<()> {
             inhibit,
             shortcuts,
             state.input_capture_shared.clone(),
+            drm,
         ) {
             tracing::warn!("the portals are unavailable: {e}");
         }
@@ -1113,7 +1114,7 @@ fn run() -> Result<()> {
         // Not fatal, on the same terms as the rest: a session with no bus, or
         // one where a screensaver daemon already holds the name, has the idle
         // policy it had a moment ago.
-        match crate::inhibit::start(state.bus_inhibitors.clone(), sender) {
+        match crate::inhibit::start(state.bus_inhibitors.clone(), sender, drm) {
             Ok(connection) => state.screensaver = Some(connection),
             Err(e) => tracing::warn!("the screensaver interface is unavailable: {e}"),
         }
