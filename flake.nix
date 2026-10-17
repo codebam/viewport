@@ -738,6 +738,14 @@
             # lock off, and a window cursor of None only means "inherit".
             libXfixes
 
+            # tests/xwayland-xtest-client.c emulates input the way every X
+            # client has for forty years — XTestFakeRelativeMotionEvent — which
+            # is the request tests/xwayland-xtest-portal.test.sh follows from
+            # Xwayland to this compositor's RemoteDesktop portal. XTest.h
+            # includes XInput.h, so the client needs that header too.
+            libXtst
+            libXi
+
             # Likewise for the bus: the compositor claims its portal name at
             # startup, so tests/screencast-restore.test.sh puts the whole run
             # inside a `dbus-run-session` of its own. Without it that test can
