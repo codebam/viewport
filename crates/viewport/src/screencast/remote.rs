@@ -14,8 +14,10 @@
 // The conversation is three calls again. CreateSession makes the handle,
 // SelectDevices says which of keyboard, pointer and touchscreen are wanted,
 // and Start asks the person at the machine and answers with the set that was
-// actually granted. After that there are two ways for input to arrive, and
-// both are implemented here.
+// actually granted. What is offered is not always quite what was asked for:
+// `shape_grant` is the one place that narrows it, and the shape it narrows is
+// an X client's emulated input. After that there are two ways for input to
+// arrive, and both are implemented here.
 //
 // The first is the Notify calls: one D-Bus call per input event, forwarded by
 // the frontend, checked here against the grant and handed to the compositor
@@ -235,6 +237,33 @@ pub fn device_names(devices: u32) -> Vec<String> {
     .filter(|(bit, _)| devices & bit != 0)
     .map(|(_, name)| name.to_owned())
     .collect()
+}
+
+/// What this compositor is willing to offer for a request, before the person
+/// at the desk is asked.
+///
+/// One shape is narrowed. A session that asks for the keyboard and the mouse
+/// and asks to see nothing is exactly what Xwayland's XTEST translation asks
+/// for on behalf of an X11 client — Steam Input's desktop layout, `xdotool`, a
+/// game recentring its aim — and the cursor is the one thing such a client
+/// cannot get any other way. Its keystrokes already reach this seat through
+/// the uinput bridge the Steam Deck runs, and a chord that arrives by two
+/// paths is a chord that fires twice, so the offer is the pointer alone.
+///
+/// Deliberately narrow. A tool that asks for the keyboard together with a
+/// picture of the screen — the remote-support shape — keeps it, and so does
+/// anything asking for the touchscreen or for the keyboard by itself. A wider
+/// rule ("the mouse for anyone who does not ask to watch") would turn every
+/// keyboard-sharing tool into a mouse while the person at the desk read a
+/// dialog that did not say so.
+pub fn shape_grant(wanted: u32, types: Option<u32>) -> u32 {
+    let emulated_input =
+        (wanted & ALL_DEVICES) == (DEVICE_KEYBOARD | DEVICE_POINTER) && types.is_none();
+    if emulated_input {
+        DEVICE_POINTER
+    } else {
+        wanted
+    }
 }
 
 /// The object on the bus.
@@ -520,6 +549,21 @@ impl RemoteDesktop {
             tracing::warn!("remote desktop: refusing {path}, which asked for no devices");
             return (RESPONSE_CANCELLED, HashMap::new());
         }
+
+        // Not always what was asked for: see `shape_grant`. The chooser is
+        // given the narrowed set, so the devices the dialog names are the
+        // devices the answer hands over.
+        let offered = shape_grant(devices, types);
+        if offered != devices {
+            tracing::info!(
+                "remote desktop: {path} asked for the {} and is being offered the {} — \
+                 the shape an X client's emulated input arrives in, whose keys already \
+                 reach this seat by another path",
+                device_names(devices).join(", "),
+                device_names(offered).join(", ")
+            );
+        }
+        let devices = offered;
 
         let (sender, receiver) = async_channel::bounded(1);
         let started = match self
@@ -1888,6 +1932,46 @@ pub fn wheel_notches(dx: i32, dy: i32) -> (f64, f64, (i32, i32)) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What the person is asked about, and what they are handed.
+    ///
+    /// The XTEST shape — keyboard and pointer, nothing to watch — is offered
+    /// the pointer alone: an X client's keys already have a path to this seat,
+    /// and the same chord arriving twice is the chord firing twice.
+    #[test]
+    fn an_emulated_input_request_is_offered_the_pointer_alone() {
+        assert_eq!(
+            shape_grant(DEVICE_KEYBOARD | DEVICE_POINTER, None),
+            DEVICE_POINTER
+        );
+    }
+
+    /// Everything else is offered exactly what it asked for. Written out one
+    /// shape at a time, because the mistakes worth catching are the
+    /// neighbouring ones: a rule that narrowed too much would take a
+    /// remote-support tool's keyboard away while its dialog said nothing
+    /// about it.
+    #[test]
+    fn every_other_shape_is_offered_what_it_asked_for() {
+        // Keyboard and a picture of the screen: the remote-support shape.
+        assert_eq!(
+            shape_grant(
+                DEVICE_KEYBOARD | DEVICE_POINTER,
+                Some(crate::screencast::SOURCE_MONITOR)
+            ),
+            DEVICE_KEYBOARD | DEVICE_POINTER
+        );
+        // The pointer by itself, with or without a picture.
+        assert_eq!(shape_grant(DEVICE_POINTER, None), DEVICE_POINTER);
+        assert_eq!(
+            shape_grant(DEVICE_POINTER, Some(crate::screencast::SOURCE_MONITOR)),
+            DEVICE_POINTER
+        );
+        // The keyboard by itself is not the emulated-input shape.
+        assert_eq!(shape_grant(DEVICE_KEYBOARD, None), DEVICE_KEYBOARD);
+        // A touchscreen in the request is a different question.
+        assert_eq!(shape_grant(ALL_DEVICES, None), ALL_DEVICES);
+    }
 
     #[test]
     fn the_advertised_mime_types_come_out_of_the_options() {
