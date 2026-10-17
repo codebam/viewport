@@ -116,11 +116,19 @@ function renderScreencastPicker() {
     : [];
   const remote = devices.length > 0;
   const inputCapture = screencastPick.purpose === 'input-capture';
+  /* A remote request that wants only the pointer is one thing, and it is the
+     shape an X client's emulated input takes — a controller driving the
+     desktop, xdotool, a game recentering its aim. "Control this computer"
+     would be describing something larger than the grant, and the grant is
+     what the person is agreeing to. */
+  const cursorOnly = remote && devices.length === 1 && devices[0] === 'mouse';
 
   const title = document.createElement('div');
   title.className = 'screencast-title';
   title.textContent = inputCapture
     ? 'Let an application capture your input'
+    : cursorOnly
+    ? 'Let an application control the cursor'
     : remote
     ? 'Let an application control this computer'
     : 'Share your screen';
@@ -130,6 +138,8 @@ function renderScreencastPicker() {
   help.className = 'screencast-help';
   help.textContent = inputCapture
     ? 'Local keyboard and pointer events would be sent to the application after you cross one of its screen-edge barriers.'
+    : cursorOnly
+    ? 'An application is asking to move and click the pointer on this desktop.'
     : remote
     ? 'An application is asking to use this desktop as if it were sitting here.'
     : 'An application is asking for a picture of this desktop.';

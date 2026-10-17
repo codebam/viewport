@@ -7060,6 +7060,38 @@ if (mode === 'scrolling') {
       === 'It would receive events from the keyboard and mouse. Press Ctrl+Alt+Escape to stop capture.');
   emit({ type: 'screencast.pick.done', id: 8 });
 
+  /* A remote request that wants only the pointer — the shape Xwayland's
+     XTEST translation produces, which is how a controller drives the
+     desktop — must be asked as cursor control: the grant is a cursor, and
+     "control this computer" would be describing something larger than what
+     the person is agreeing to. */
+  emit({ type: 'screencast.pick', id: 41, selected: 0, sources: [],
+    devices: ['mouse'] });
+  const cursorDialog = screencastEl.children[0];
+  check('pointer-only remote control is named as cursor control',
+    cursorDialog.children.find((c) => c._classes.has('screencast-title')).textContent
+      === 'Let an application control the cursor');
+  check('and says what the application would do',
+    cursorDialog.children.find((c) => c._classes.has('screencast-help')).textContent
+      === 'An application is asking to move and click the pointer on this desktop.');
+  check('and names the device that would be handed over',
+    cursorDialog.children.find((c) => c._classes.has('screencast-devices')).textContent
+      === 'It would be able to use the mouse.');
+  emit({ type: 'screencast.pick.done', id: 41 });
+
+  /* The larger remote grant keeps its own words: a keyboard is not a cursor,
+     and a dialogue that called it one would be asking the wrong question. */
+  emit({ type: 'screencast.pick', id: 42, selected: 0, sources: [],
+    devices: ['keyboard', 'mouse'] });
+  const remoteDialog = screencastEl.children[0];
+  check('a keyboard-and-pointer request keeps the larger wording',
+    remoteDialog.children.find((c) => c._classes.has('screencast-title')).textContent
+      === 'Let an application control this computer');
+  check('and names both devices',
+    remoteDialog.children.find((c) => c._classes.has('screencast-devices')).textContent
+      === 'It would be able to use the keyboard and mouse.');
+  emit({ type: 'screencast.pick.done', id: 42 });
+
   /* The third question through the same dialog: keys an application wants to
      hear while something else has focus. There is nothing to choose between,
      so there is no highlight and the list is sent once. */
