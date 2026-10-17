@@ -3353,6 +3353,30 @@ impl ViewportState {
 
 include!("state/render_frame.rs");
 
+/// Whether the Xwayland on PATH knows `-enable-ei-portal`.
+///
+/// The switch that turns on XTEST-through-the-portal, and the only way to
+/// find out is to ask the binary: there is no version in the protocol, the
+/// option appeared in 23.2 alongside the libei support and a build can leave
+/// that support out, and the cost of guessing wrong is not a missing feature
+/// but a session with no X11 at all — a server does not ignore an option it
+/// does not know, it exits.
+///
+/// `-help` prints the option list and leaves; both streams are read because
+/// which one it prints on is the server's business. A binary that cannot be
+/// run at all answers false, which is also what a compositor with no
+/// Xwayland wants: nothing to pass arguments to.
+fn xwayland_supports_ei_portal() -> bool {
+    let listed = |out: std::process::Output| {
+        String::from_utf8_lossy(&[out.stdout.as_slice(), out.stderr.as_slice()].concat())
+            .contains("-enable-ei-portal")
+    };
+    match std::process::Command::new("Xwayland").arg("-help").output() {
+        Ok(out) => listed(out),
+        Err(_) => false,
+    }
+}
+
 impl ViewportState {
     /// Start Xwayland, so X11 applications can connect.
     ///
@@ -3419,6 +3443,48 @@ impl ViewportState {
             ));
             extra_args.push("-dpi".to_owned());
             extra_args.push((96 * scale).to_string());
+        }
+
+        // XTEST through the Remote Desktop portal.
+        //
+        // X clients have emulated input with XTEST for forty years, and on
+        // Wayland none of it went anywhere: a synthetic event was delivered to
+        // X clients and to no compositor, because a rootless Xwayland has no
+        // path back. That is Steam Input's desktop layout, xdotool, and every
+        // one of the tools people already use. Since Xwayland 23.2 the server
+        // can translate XTEST into libei events and negotiate them through
+        // `org.freedesktop.portal.RemoteDesktop`, which this compositor
+        // implements — so the events arrive here as real input, behind this
+        // compositor's own consent dialogue, and nothing about the client
+        // changes.
+        //
+        // It is off unless asked for, and the asking is a command-line switch.
+        // Offered only when the server on PATH advertises it: an older
+        // Xwayland does not ignore an unknown option, it refuses to start, and
+        // losing X11 support entirely is a much worse outcome than a session
+        // where XTEST stays local.
+        if xwayland_supports_ei_portal() {
+            extra_args.push("-enable-ei-portal".to_owned());
+        }
+
+        // The session bus, or the XTEST handshake cannot start.
+        //
+        // Xwayland reaches this compositor's consent portal over D-Bus:
+        // liboeffis asks `org.freedesktop.portal.RemoteDesktop` for an input
+        // session before a single emulated event is sent. smithay hands
+        // Xwayland a cleared environment — PATH and XDG_RUNTIME_DIR and
+        // nothing else — so without the bus address here the connection
+        // attempt has nowhere to go, and it fails on Xwayland's side of a
+        // `/dev/null` stderr: XTEST keeps working locally and silently, which
+        // is exactly the old behaviour this is meant to replace.
+        //
+        // Read here rather than at startup: this is the address of the bus
+        // this process is on, whatever it is.
+        if let Some(address) = std::env::var_os("DBUS_SESSION_BUS_ADDRESS") {
+            envs.push((
+                "DBUS_SESSION_BUS_ADDRESS".to_owned(),
+                address.to_string_lossy().into_owned(),
+            ));
         }
 
         let (xwayland, client) = match XWayland::spawn(
