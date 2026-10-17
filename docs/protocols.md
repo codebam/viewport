@@ -780,6 +780,72 @@ into the first one has nothing to put on the second. What it costs is that a
 remote pointer and a local one fight over the same cursor, which is what
 somebody sharing control of their machine expects to happen.
 
+## XTEST through the portal
+
+An X client's emulated input — `XTestFakeInput`, which is what `xdotool`,
+Steam Input's desktop layout, and every scripted X automation sends — has two
+possible exits. For forty years it has had one: the X server applies it to its
+own sprite, and on a rootless Xwayland that sprite is not the compositor's
+cursor, which is why a controller could not move the pointer here and why the
+Steam Deck needs a uinput bridge to get chords to the seat at all. Since
+Xwayland 23.2 it has a second: the server can translate those requests into
+libei events and negotiate the session through `org.freedesktop.portal.
+RemoteDesktop`, with a consent prompt, and the compositor sees them on the
+seat like any other input. Nothing changes on the X client's side of the wire;
+the whole feature is three things this compositor does.
+
+**Xwayland is started with `-enable-ei-portal`.** Without the switch the
+translation does not exist and every XTEST request stays inside X11. The
+compositor asks the Xwayland on `PATH` whether it advertises the option before
+passing it, because a server that does not know it refuses to start rather than
+ignoring it.
+
+**Xwayland is given the session bus.** Smithay spawns it with a cleared
+environment — `PATH`, `XDG_RUNTIME_DIR` and what the caller adds, nothing else
+— and the handshake is a D-Bus conversation with `org.freedesktop.portal.
+RemoteDesktop`. With no `DBUS_SESSION_BUS_ADDRESS` the server's liboeffis
+cannot reach the portal, the failure is a debug line on a stderr this
+compositor discards, and from the compositor's side nothing happens at all:
+no prompt, no error, no trace. Neither had ever been done here, and each one
+alone is enough to make the path dead while XTEST itself keeps working, which
+is why the failure looks like nothing at all from the X side.
+
+**The offer is narrowed, and the prompt says what it is.** The request Xwayland
+sends asks for the keyboard and the mouse and to see nothing, and the cursor is
+the only part of that an X client cannot get any other way — its keystrokes
+already reach this seat through the uinput bridge the Deck runs, and a chord
+that arrives twice fires twice. So that shape is offered the pointer alone
+(`shape_grant` in `crates/viewport/src/screencast/remote.rs`), the chooser asks
+whether an application may control the cursor, and the person's answer is the
+grant. It is deliberately narrow: a request that wants to watch as well — the
+remote-support shape — keeps the keyboard it asked for, and so does anything
+that asks for the keyboard by itself.
+
+What the narrowing costs is worth stating, because it is not nothing.
+Xwayland diverts a client's XTEST wholesale once that client has a session: it
+stops applying those events to its own sprite and hands them to the session it
+negotiated, and an event the session has no device for is queued inside the
+server rather than delivered on the old path. So a client that emulates input
+through XTEST *and* sends keys through it — Steam Input's desktop layout, and
+the Deck's chords — has those keys held for as long as its session lives: the
+cursor moves, the keys go quiet, and both come back the moment the session
+ends or the prompt is denied, because a refused session falls back to local
+delivery and the uinput bridge sees the input again. Settling that is the
+second half of this path, and it is a choice with two honest ends: grant the
+keys too and retire the bridge (the two must never carry the same stream), or
+leave clients that need both to the bridge and decline the prompt on the
+machines that have one.
+
+Consent is per session and cannot be resumed: RemoteDesktop sessions are never
+restored from a token, and with no shell page that can draw there is nothing to
+ask with, so the request is refused rather than granted — the same rule
+"Input capture" states for its own prompts, and for the same reason: a machine
+that hands out input because its own interface is broken has turned a shell bug
+into a way in. `tests/xwayland-xtest-portal.test.sh`
+follows the chain from the X client to that refusal, on a headless runner; the
+grant half — Enter, the EIS socket, the cursor moving — needs a seat whose
+shell page can draw a DMA-BUF, which is the acceptance run on the real deck.
+
 ## Xwayland and HiDPI
 
 X11 clients are left at 1x unless the config file says otherwise, and the

@@ -305,3 +305,31 @@ and the JavaScript shell suites under `tests/`.
   absorbed into the game's warp-mode bookkeeping as aim per shot. The fix
   pins on every hint (silent again) and re-pins at constraint creation, so
   no capture can drift away from the game's own anchor.
+
+- [x] **54. An X client's emulated input never reached this compositor, and
+  both reasons were invisible from here.** Xwayland 23.2 and later can
+  translate an X client's XTEST calls into libei events negotiated through
+  `org.freedesktop.portal.RemoteDesktop` — the path that lets a controller or
+  `xdotool` move the real cursor on a portal-owning desktop, and the second
+  exit from X11 that the Steam Deck's uinput bridge exists to substitute for.
+  This tree implements the RemoteDesktop half of it in full and had never once
+  seen a request, for two independent reasons: the Xwayland spawn never passed
+  `-enable-ei-portal`, so the translation did not exist to be asked for; and
+  once it did, Xwayland had no session bus to ask on, because smithay spawns it
+  with a cleared environment — `PATH`, `XDG_RUNTIME_DIR` and whatever the
+  caller adds — and the handshake is a D-Bus conversation that liboeffis
+  cannot start without `DBUS_SESSION_BUS_ADDRESS`. Both failures are silent
+  from the compositor's side: Xwayland writes its complaint to a stderr this
+  spawn discards, and XTEST keeps working perfectly inside X11 throughout, so
+  a harness that only checks whether the X pointer moved sees a working system.
+  The instrument that finds them is one that waits for the request to arrive
+  (an X client emulating a motion, the implementation's own log, and no other
+  assumption); the nested harness that did was built on the real chain, with
+  the compositor's own Xwayland and a real frontend on a private bus. Fixed by
+  passing the flag when the Xwayland on `PATH` advertises it and the bus
+  address always, with `tests/xwayland-xtest-portal.test.sh` asserting the
+  request arrives, that the offer is the cursor alone, and that it is refused
+  when nothing can draw a chooser. Found and fixed with
+  `.hermes/plans/2026-10-17_0012-steam-cursor-control.md`; the grant half —
+  Enter, the EIS socket, the cursor moving — is the live acceptance run, since
+  a headless shell cannot commit the DMA-BUF the chooser needs to exist.

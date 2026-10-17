@@ -12,6 +12,17 @@ to summarise rather than to duplicate.
 ## [Unreleased]
 
 ### Added
+- An X client's emulated input now reaches the desktop. Xwayland ≥ 23.2 can
+  hand a client's XTEST calls to libei and negotiate the session through the
+  RemoteDesktop portal, and the compositor now starts it that way — the switch
+  on, and the session bus in an environment smithay otherwise clears — so
+  Steam Input's desktop layout moves the real cursor, `xdotool` works outside
+  X11, and a controller that used to need a uinput bridge has a second path
+  with a consent prompt in front of it. The prompt asks about the cursor, and
+  the cursor is what the request is offered: the shape asks for the keyboard
+  too, and an X client's keys already have a path to this seat.
+  `tests/xwayland-xtest-portal.test.sh` follows the request from the X client
+  to the refusal that stands in for a chooser on a headless runner.
 - Animated wallpapers. A GIF — or an animated WebP or APNG — is a
   `background-image` the engine animates by itself, with all five fittings
   including `tile`; the shell tests now pin that path down. A video cannot be
