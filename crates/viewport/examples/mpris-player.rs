@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::sync::Mutex;
 
-use zvariant::Value;
+use zbus::Variant;
 
 fn say(line: &str) {
     println!("{line}");
@@ -39,20 +39,20 @@ impl Player {
     /// The metadata map, whose keys are the xesam vocabulary every player
     /// uses. The artist is a list, because a track can have several.
     #[zbus(property)]
-    fn metadata(&self) -> HashMap<String, Value<'static>> {
+    fn metadata(&self) -> HashMap<String, Variant<'static>> {
         HashMap::from([
             (
                 "mpris:trackid".to_owned(),
-                Value::from("/org/viewport/track/1".to_owned()),
+                Variant::from("/org/viewport/track/1".to_owned()),
             ),
-            ("xesam:title".to_owned(), Value::from(self.title.clone())),
+            ("xesam:title".to_owned(), Variant::from(self.title.clone())),
             (
                 "xesam:artist".to_owned(),
-                Value::from(vec!["Aphex Twin".to_owned()]),
+                Variant::from(vec!["Aphex Twin".to_owned()]),
             ),
             (
                 "xesam:album".to_owned(),
-                Value::from("Selected Ambient Works".to_owned()),
+                Variant::from("Selected Ambient Works".to_owned()),
             ),
         ])
     }
@@ -136,21 +136,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .nth(1)
         .unwrap_or_else(|| "Rhubarb".to_owned());
 
-    let connection = zbus::blocking::connection::Builder::session()?
-        .serve_at(
-            "/org/mpris/MediaPlayer2",
-            Player {
-                title,
-                playing: Mutex::new(true),
-            },
-        )?
-        .serve_at("/org/mpris/MediaPlayer2", Root)?
-        .build()?;
+    let connection = zbus::block_on(async {
+        zbus::connection::Builder::session()
+            .serve_at(
+                "/org/mpris/MediaPlayer2",
+                Player {
+                    title,
+                    playing: Mutex::new(true),
+                },
+            )
+            .serve_at("/org/mpris/MediaPlayer2", Root)
+            .build()
+            .await
+    })?;
 
     // The name every player takes, with something after the prefix to say
     // which player it is.
     let name = format!("org.mpris.MediaPlayer2.viewporttest{}", std::process::id());
-    connection.request_name(name.as_str())?;
+    zbus::block_on(connection.request_name(name.as_str()))?;
     say(&format!("registered {name}"));
 
     loop {

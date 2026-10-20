@@ -22,6 +22,8 @@
 // battery — a scan is the radio transmitting, and a scan nobody is looking at
 // is a battery cost with nothing on screen to show for it.
 
+use crate::dbus::sync::proxy::BuildBlocking as _;
+use crate::dbus::sync::ProxyExt as _;
 use std::collections::HashMap;
 use std::sync::mpsc;
 
@@ -162,7 +164,7 @@ fn start(events: smithay::reexports::calloop::channel::Sender<Message>) -> mpsc:
     let spawned = std::thread::Builder::new()
         .name("network".to_owned())
         .spawn(move || {
-            let connection = match zbus::blocking::Connection::system() {
+            let connection = match crate::dbus::sync::system() {
                 Ok(connection) => connection,
                 Err(e) => {
                     tracing::warn!("network: NetworkManager is unavailable: {e:#}");
@@ -203,7 +205,7 @@ fn start(events: smithay::reexports::calloop::channel::Sender<Message>) -> mpsc:
 }
 
 struct Worker {
-    connection: zbus::blocking::Connection,
+    connection: crate::dbus::sync::Connection,
     events: smithay::reexports::calloop::channel::Sender<Message>,
     last: NetworkSnapshot,
     /// Whether a picker is up. While it is not, a signal is still received —
@@ -235,7 +237,7 @@ struct Worker {
     /// most of which are a single access point's strength moving. The cache
     /// bounds that to one rebuild per [`KNOWN_TTL`], and opening the picker
     /// clears it so the list is fresh when it matters.
-    known: HashMap<String, zvariant::OwnedObjectPath>,
+    known: HashMap<String, zbus::OwnedObjectPath>,
     known_at: Option<std::time::Instant>,
 }
 
@@ -248,7 +250,7 @@ const KNOWN_TTL: std::time::Duration = std::time::Duration::from_secs(30);
 
 impl Worker {
     fn new(
-        connection: zbus::blocking::Connection,
+        connection: crate::dbus::sync::Connection,
         events: smithay::reexports::calloop::channel::Sender<Message>,
     ) -> Self {
         Self {
@@ -332,10 +334,8 @@ impl Worker {
 
         let mut snapshot = NetworkSnapshot {
             available: true,
-            enabled: manager
-                .get_property::<bool>("WirelessEnabled")
-                .unwrap_or(false),
-            state: match manager.get_property::<u32>("State").unwrap_or(0) {
+            enabled: manager.property::<bool>("WirelessEnabled").unwrap_or(false),
+            state: match manager.property::<u32>("State").unwrap_or(0) {
                 STATE_CONNECTED_LOCAL..=STATE_CONNECTED_GLOBAL => "connected",
                 STATE_CONNECTING => "connecting",
                 0 => "unknown",
@@ -346,8 +346,7 @@ impl Worker {
             ..NetworkSnapshot::default()
         };
 
-        let devices: Vec<zvariant::OwnedObjectPath> =
-            manager.get_property("Devices").unwrap_or_default();
+        let devices: Vec<zbus::OwnedObjectPath> = manager.property("Devices").unwrap_or_default();
         let known = self.known_networks();
 
         for path in &devices {
@@ -355,8 +354,8 @@ impl Worker {
             else {
                 continue;
             };
-            let kind = device.get_property::<u32>("DeviceType").unwrap_or(0);
-            let state = device.get_property::<u32>("State").unwrap_or(0);
+            let kind = device.property::<u32>("DeviceType").unwrap_or(0);
+            let state = device.property::<u32>("State").unwrap_or(0);
             if kind == DEVICE_ETHERNET && state == DEVICE_ACTIVATED {
                 snapshot.wired = true;
                 continue;
@@ -381,8 +380,8 @@ impl Worker {
     /// One wireless device: what it can see, and what it is on.
     fn read_wireless(
         &mut self,
-        path: &zvariant::OwnedObjectPath,
-        known: &HashMap<String, zvariant::OwnedObjectPath>,
+        path: &zbus::OwnedObjectPath,
+        known: &HashMap<String, zbus::OwnedObjectPath>,
         snapshot: &mut NetworkSnapshot,
     ) {
         let Some(wireless) = self.proxy(
@@ -396,12 +395,12 @@ impl Worker {
         // `"/"` is the object path that means none, which is what this
         // property is while the radio is associating or off.
         let active: String = wireless
-            .get_property::<zvariant::OwnedObjectPath>("ActiveAccessPoint")
+            .property::<zbus::OwnedObjectPath>("ActiveAccessPoint")
             .map(|path| path.as_str().to_owned())
             .unwrap_or_default();
 
-        let points: Vec<zvariant::OwnedObjectPath> =
-            wireless.get_property("AccessPoints").unwrap_or_default();
+        let points: Vec<zbus::OwnedObjectPath> =
+            wireless.property("AccessPoints").unwrap_or_default();
 
         // Merged by name rather than listed by radio. A house with a mesh
         // publishes the same SSID from three access points and joining it is
@@ -415,7 +414,7 @@ impl Worker {
             else {
                 continue;
             };
-            let raw: Vec<u8> = proxy.get_property("Ssid").unwrap_or_default();
+            let raw: Vec<u8> = proxy.property("Ssid").unwrap_or_default();
             // A hidden network publishes an empty SSID and a non-UTF-8 one
             // cannot be written into JSON, drawn in a list or typed back.
             // Neither is a row somebody could act on.
@@ -426,11 +425,11 @@ impl Worker {
                 continue;
             }
 
-            let strength = proxy.get_property::<u8>("Strength").unwrap_or(0);
+            let strength = proxy.property::<u8>("Strength").unwrap_or(0);
             let security = security_of(
-                proxy.get_property::<u32>("Flags").unwrap_or(0),
-                proxy.get_property::<u32>("WpaFlags").unwrap_or(0),
-                proxy.get_property::<u32>("RsnFlags").unwrap_or(0),
+                proxy.property::<u32>("Flags").unwrap_or(0),
+                proxy.property::<u32>("WpaFlags").unwrap_or(0),
+                proxy.property::<u32>("RsnFlags").unwrap_or(0),
             );
             let is_active = !active.is_empty() && active != "/" && active == point.as_str();
 
@@ -487,11 +486,11 @@ impl Worker {
     /// It only ever says a word on the picker, so the one case it gets wrong —
     /// a scan somebody else asked for, which this never saw begin — costs
     /// nothing but the word.
-    fn scanning(&self, wireless: &zbus::blocking::Proxy<'static>) -> bool {
+    fn scanning(&self, wireless: &crate::dbus::sync::Proxy<'static>) -> bool {
         let Some(asked) = self.scan_asked else {
             return false;
         };
-        wireless.get_property::<i64>("LastScan").unwrap_or(-1) == asked
+        wireless.property::<i64>("LastScan").unwrap_or(-1) == asked
     }
 
     /// Every saved wireless connection, by the network it is for.
@@ -506,7 +505,7 @@ impl Worker {
     /// signal. Cloned rather than borrowed because the caller needs `&mut
     /// self` to read the access points, and a map of saved networks is small
     /// next to the `GetSettings` round trip per connection it replaces.
-    fn known_networks(&mut self) -> HashMap<String, zvariant::OwnedObjectPath> {
+    fn known_networks(&mut self) -> HashMap<String, zbus::OwnedObjectPath> {
         if self.known_at.is_some_and(|at| at.elapsed() < KNOWN_TTL) {
             return self.known.clone();
         }
@@ -519,8 +518,8 @@ impl Worker {
             // would make every row look like it needs a passphrase.
             return self.known.clone();
         };
-        let connections: Vec<zvariant::OwnedObjectPath> =
-            settings.call("ListConnections", &()).unwrap_or_default();
+        let connections: Vec<zbus::OwnedObjectPath> =
+            settings.method("ListConnections", &()).unwrap_or_default();
         for path in connections {
             let Some(proxy) = self.proxy(
                 path.as_str(),
@@ -528,8 +527,8 @@ impl Worker {
             ) else {
                 continue;
             };
-            type Settings = HashMap<String, HashMap<String, zvariant::OwnedValue>>;
-            let Ok(sections) = proxy.call::<&str, (), Settings>("GetSettings", &()) else {
+            type Settings = HashMap<String, HashMap<String, zbus::OwnedVariant>>;
+            let Ok(sections) = proxy.method::<(), Settings>("GetSettings", &()) else {
                 continue;
             };
             let Some(wireless) = sections.get("802-11-wireless") else {
@@ -567,11 +566,9 @@ impl Worker {
         };
         // Read before asking, so that "the number has not moved" is a question
         // about this scan and not about one that finished a minute ago.
-        let before = wireless.get_property::<i64>("LastScan").unwrap_or(-1);
-        let options: HashMap<&str, zvariant::Value> = HashMap::new();
-        match wireless
-            .call::<&str, (HashMap<&str, zvariant::Value>,), ()>("RequestScan", &(options,))
-        {
+        let before = wireless.property::<i64>("LastScan").unwrap_or(-1);
+        let options: HashMap<&str, zbus::Variant> = HashMap::new();
+        match wireless.method::<(HashMap<&str, zbus::Variant>,), ()>("RequestScan", &(options,)) {
             Ok(()) => self.scan_asked = Some(before),
             // `AlreadyScanning` is not a failure — what was asked for is
             // happening — and neither is a radio that is switched off, which
@@ -581,13 +578,12 @@ impl Worker {
     }
 
     /// The first wireless device, which is the one everything acts on.
-    fn wireless_device(&self) -> Option<zvariant::OwnedObjectPath> {
+    fn wireless_device(&self) -> Option<zbus::OwnedObjectPath> {
         let manager = self.proxy(MANAGER_PATH, NM)?;
-        let devices: Vec<zvariant::OwnedObjectPath> =
-            manager.get_property("Devices").unwrap_or_default();
+        let devices: Vec<zbus::OwnedObjectPath> = manager.property("Devices").unwrap_or_default();
         devices.into_iter().find(|path| {
             self.proxy(path.as_str(), "org.freedesktop.NetworkManager.Device")
-                .and_then(|device| device.get_property::<u32>("DeviceType").ok())
+                .and_then(|device| device.property::<u32>("DeviceType").ok())
                 == Some(DEVICE_WIFI)
         })
     }
@@ -627,9 +623,9 @@ impl Worker {
         if let Some(connection) = self.known_networks().get(ssid) {
             // `"/"` for the specific object: any access point publishing this
             // network will do, which is the whole point of a mesh.
-            let root = zvariant::ObjectPath::try_from("/").expect("\"/\" is an object path");
+            let root = zbus::ObjectPath::try_from("/").expect("\"/\" is an object path");
             return manager
-                .call::<&str, _, zvariant::OwnedObjectPath>(
+                .method::<_, zbus::OwnedObjectPath>(
                     "ActivateConnection",
                     &(connection.as_ref(), device.as_ref(), root),
                 )
@@ -639,9 +635,9 @@ impl Worker {
 
         let passphrase = passphrase.unwrap_or_default();
         let settings = new_connection(ssid, passphrase, security);
-        let root = zvariant::ObjectPath::try_from("/").expect("\"/\" is an object path");
+        let root = zbus::ObjectPath::try_from("/").expect("\"/\" is an object path");
         manager
-            .call::<&str, _, (zvariant::OwnedObjectPath, zvariant::OwnedObjectPath)>(
+            .method::<_, (zbus::OwnedObjectPath, zbus::OwnedObjectPath)>(
                 "AddAndActivateConnection",
                 &(settings, device.as_ref(), root),
             )
@@ -663,7 +659,7 @@ impl Worker {
             .proxy(device.as_str(), "org.freedesktop.NetworkManager.Device")
             .ok_or_else(|| "NetworkManager is not answering".to_owned())?;
         proxy
-            .call::<&str, (), ()>("Disconnect", &())
+            .method::<(), ()>("Disconnect", &())
             .map_err(crate::dbus_util::complaint)
     }
 
@@ -677,28 +673,23 @@ impl Worker {
             .ok_or_else(|| "NetworkManager is not answering".to_owned())?;
         let enabled = match enabled {
             Some(enabled) => enabled,
-            None => !manager
-                .get_property::<bool>("WirelessEnabled")
-                .unwrap_or(false),
+            None => !manager.property::<bool>("WirelessEnabled").unwrap_or(false),
         };
         manager
-            .set_property("WirelessEnabled", enabled)
+            .put_property("WirelessEnabled", enabled)
             .map_err(crate::dbus_util::complaint)
     }
 
-    fn proxy(&self, path: &str, interface: &str) -> Option<zbus::blocking::Proxy<'static>> {
-        zbus::blocking::proxy::Builder::new(&self.connection)
+    fn proxy(&self, path: &str, interface: &str) -> Option<crate::dbus::sync::Proxy<'static>> {
+        crate::dbus::sync::proxy::Builder::new(&self.connection)
             .destination(NM.to_owned())
-            .ok()?
             .path(path.to_owned())
-            .ok()?
             .interface(interface.to_owned())
-            .ok()?
             // Uncached for the reason power.rs gives: these properties are
             // read once each and thrown away, and a cache is a second
             // subscription per object — one per access point, here.
             .cache_properties(zbus::proxy::CacheProperties::No)
-            .build()
+            .build_blocking()
             .ok()
     }
 }
@@ -724,41 +715,41 @@ fn new_connection<'a>(
     ssid: &'a str,
     passphrase: &'a str,
     security: &str,
-) -> HashMap<&'a str, HashMap<&'a str, zvariant::Value<'a>>> {
-    let mut connection: HashMap<&str, zvariant::Value> = HashMap::new();
-    connection.insert("id", zvariant::Value::from(ssid));
-    connection.insert("type", zvariant::Value::from("802-11-wireless"));
+) -> HashMap<&'a str, HashMap<&'a str, zbus::Variant<'a>>> {
+    let mut connection: HashMap<&str, zbus::Variant> = HashMap::new();
+    connection.insert("id", zbus::Variant::from(ssid));
+    connection.insert("type", zbus::Variant::from("802-11-wireless"));
 
-    let mut wireless: HashMap<&str, zvariant::Value> = HashMap::new();
+    let mut wireless: HashMap<&str, zbus::Variant> = HashMap::new();
     // As bytes, because that is what an SSID is: the string is this
     // compositor's rendering of it and the wire format is the octets.
-    wireless.insert("ssid", zvariant::Value::from(ssid.as_bytes().to_vec()));
+    wireless.insert("ssid", zbus::Variant::from(ssid.as_bytes().to_vec()));
 
-    let mut document: HashMap<&str, HashMap<&str, zvariant::Value>> = HashMap::new();
+    let mut document: HashMap<&str, HashMap<&str, zbus::Variant>> = HashMap::new();
     document.insert("connection", connection);
     document.insert("802-11-wireless", wireless);
 
     if !passphrase.is_empty() {
-        let mut security_section: HashMap<&str, zvariant::Value> = HashMap::new();
+        let mut security_section: HashMap<&str, zbus::Variant> = HashMap::new();
         match security {
             // A WPA3-only network. `wpa-psk` here would be SAE refused at
             // association — which reads to the user as "wrong passphrase"
             // when the passphrase is right.
             "wpa3" => {
-                security_section.insert("key-mgmt", zvariant::Value::from("sae"));
-                security_section.insert("psk", zvariant::Value::from(passphrase));
+                security_section.insert("key-mgmt", zbus::Variant::from("sae"));
+                security_section.insert("psk", zbus::Variant::from(passphrase));
             }
             // WEP predates key management, and NetworkManager spells that
             // `none`; the secret goes under its own key rather than `psk`,
             // with the index saying it is the one in use.
             "wep" => {
-                security_section.insert("key-mgmt", zvariant::Value::from("none"));
-                security_section.insert("wep-key0", zvariant::Value::from(passphrase));
-                security_section.insert("wep-tx-keyidx", zvariant::Value::from(0u32));
+                security_section.insert("key-mgmt", zbus::Variant::from("none"));
+                security_section.insert("wep-key0", zbus::Variant::from(passphrase));
+                security_section.insert("wep-tx-keyidx", zbus::Variant::from(0u32));
             }
             _ => {
-                security_section.insert("key-mgmt", zvariant::Value::from("wpa-psk"));
-                security_section.insert("psk", zvariant::Value::from(passphrase));
+                security_section.insert("key-mgmt", zbus::Variant::from("wpa-psk"));
+                security_section.insert("psk", zbus::Variant::from(passphrase));
             }
         }
         document.insert("802-11-wireless-security", security_section);
@@ -803,13 +794,13 @@ pub fn security_of(flags: u32, wpa: u32, rsn: u32) -> &'static str {
 /// through another variant (which `GetSettings` does for some keys) is a
 /// variant inside a variant. Unwrapping once and trying again is cheaper than
 /// caring which.
-fn as_bytes(value: &zvariant::OwnedValue) -> Option<Vec<u8>> {
+fn as_bytes(value: &zbus::OwnedVariant) -> Option<Vec<u8>> {
     if let Ok(bytes) = <Vec<u8>>::try_from(value.clone()) {
         return Some(bytes);
     }
-    match zvariant::Value::from(value.clone()) {
-        zvariant::Value::Value(inner) => {
-            <Vec<u8>>::try_from(zvariant::OwnedValue::try_from(*inner).ok()?).ok()
+    match zbus::Variant::from(value.clone()) {
+        zbus::Variant::Variant(inner) => {
+            <Vec<u8>>::try_from(zbus::OwnedVariant::try_from(*inner).ok()?).ok()
         }
         _ => None,
     }
@@ -854,21 +845,18 @@ mod tests {
     #[test]
     fn a_new_connection_names_the_network_twice_and_the_secret_once() {
         let document = new_connection("kitchen", "hunter2", "wpa2");
-        assert_eq!(
-            document["connection"]["id"],
-            zvariant::Value::from("kitchen")
-        );
+        assert_eq!(document["connection"]["id"], zbus::Variant::from("kitchen"));
         assert_eq!(
             document["802-11-wireless"]["ssid"],
-            zvariant::Value::from(b"kitchen".to_vec())
+            zbus::Variant::from(b"kitchen".to_vec())
         );
         assert_eq!(
             document["802-11-wireless-security"]["psk"],
-            zvariant::Value::from("hunter2")
+            zbus::Variant::from("hunter2")
         );
         assert_eq!(
             document["802-11-wireless-security"]["key-mgmt"],
-            zvariant::Value::from("wpa-psk")
+            zbus::Variant::from("wpa-psk")
         );
     }
 
@@ -879,8 +867,8 @@ mod tests {
     fn a_wpa3_network_is_joined_with_sae() {
         let document = new_connection("kitchen", "hunter2", "wpa3");
         let security = &document["802-11-wireless-security"];
-        assert_eq!(security["key-mgmt"], zvariant::Value::from("sae"));
-        assert_eq!(security["psk"], zvariant::Value::from("hunter2"));
+        assert_eq!(security["key-mgmt"], zbus::Variant::from("sae"));
+        assert_eq!(security["psk"], zbus::Variant::from("hunter2"));
     }
 
     /// And an unknown classification falls through to the common case, which
@@ -890,7 +878,7 @@ mod tests {
         let document = new_connection("hidden", "hunter2", "");
         assert_eq!(
             document["802-11-wireless-security"]["key-mgmt"],
-            zvariant::Value::from("wpa-psk")
+            zbus::Variant::from("wpa-psk")
         );
     }
 
@@ -900,9 +888,9 @@ mod tests {
     fn a_wep_network_takes_the_passphrase_as_a_wep_key() {
         let document = new_connection("ancient", "hunter2", "wep");
         let security = &document["802-11-wireless-security"];
-        assert_eq!(security["key-mgmt"], zvariant::Value::from("none"));
-        assert_eq!(security["wep-key0"], zvariant::Value::from("hunter2"));
-        assert_eq!(security["wep-tx-keyidx"], zvariant::Value::from(0u32));
+        assert_eq!(security["key-mgmt"], zbus::Variant::from("none"));
+        assert_eq!(security["wep-key0"], zbus::Variant::from("hunter2"));
+        assert_eq!(security["wep-tx-keyidx"], zbus::Variant::from(0u32));
     }
 
     /// An open network is joined with no security section at all. With one —

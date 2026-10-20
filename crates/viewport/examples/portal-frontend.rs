@@ -22,7 +22,7 @@
 
 use std::collections::HashMap;
 
-use zvariant::{ObjectPath, OwnedValue, Value};
+use zbus::{ObjectPath, OwnedVariant, Variant};
 
 /// The connection the compositor serves both portal interfaces on.
 const BUS_NAME: &str = "org.freedesktop.impl.portal.desktop.viewport";
@@ -58,11 +58,16 @@ struct Options {
 fn main() -> anyhow::Result<()> {
     let options = parse()?;
 
-    let connection = zbus::blocking::Connection::session()?;
+    let connection = zbus::block_on(zbus::Connection::session())?;
     // Claimed before anything is called: the compositor refuses everything
     // from a peer that does not own it.
-    connection.request_name(FRONTEND_NAME)?;
-    let proxy = zbus::blocking::Proxy::new(&connection, BUS_NAME, OBJECT_PATH, INTERFACE)?;
+    zbus::block_on(connection.request_name(FRONTEND_NAME))?;
+    let proxy = zbus::block_on(zbus::Proxy::new(
+        &connection,
+        BUS_NAME,
+        OBJECT_PATH,
+        INTERFACE,
+    ))?;
 
     // The paths the frontend would invent per request. Anything unique will
     // do: the compositor keys its sessions by the session path and never
@@ -77,15 +82,15 @@ fn main() -> anyhow::Result<()> {
     // gone away by the time it is read.
     let mut response = 0;
     for _ in 0..100 {
-        let (answer, _): (u32, HashMap<String, OwnedValue>) = proxy.call(
+        let (answer, _): (u32, HashMap<String, OwnedVariant>) = zbus::block_on(proxy.call(
             "CreateSession",
             &(
                 &request,
                 &session,
                 app_id,
-                HashMap::<String, Value<'_>>::new(),
+                HashMap::<String, Variant<'_>>::new(),
             ),
-        )?;
+        ))?;
         response = answer;
         if response == 0 {
             break;
@@ -96,34 +101,34 @@ fn main() -> anyhow::Result<()> {
         anyhow::bail!("CreateSession refused with {response}");
     }
 
-    let mut select: HashMap<String, Value<'_>> = HashMap::new();
-    select.insert("types".to_owned(), Value::from(options.types));
-    select.insert("cursor_mode".to_owned(), Value::from(2u32));
-    select.insert("persist_mode".to_owned(), Value::from(options.persist));
+    let mut select: HashMap<String, Variant<'_>> = HashMap::new();
+    select.insert("types".to_owned(), Variant::from(options.types));
+    select.insert("cursor_mode".to_owned(), Variant::from(2u32));
+    select.insert("persist_mode".to_owned(), Variant::from(options.persist));
     if let Some(path) = options.restore.as_deref() {
         let token = load(path, options.forge_vendor.as_deref())?;
         println!("sent_restore_data=yes");
-        select.insert("restore_data".to_owned(), Value::from(token));
+        select.insert("restore_data".to_owned(), Variant::from(token));
     } else {
         println!("sent_restore_data=no");
     }
 
-    let (response, _): (u32, HashMap<String, OwnedValue>) =
-        proxy.call("SelectSources", &(&request, &session, app_id, select))?;
+    let (response, _): (u32, HashMap<String, OwnedVariant>) =
+        zbus::block_on(proxy.call("SelectSources", &(&request, &session, app_id, select)))?;
     if response != 0 {
         anyhow::bail!("SelectSources refused with {response}");
     }
 
-    let (response, results): (u32, HashMap<String, OwnedValue>) = proxy.call(
+    let (response, results): (u32, HashMap<String, OwnedVariant>) = zbus::block_on(proxy.call(
         "Start",
         &(
             &request,
             &session,
             app_id,
             "",
-            HashMap::<String, Value<'_>>::new(),
+            HashMap::<String, Variant<'_>>::new(),
         ),
-    )?;
+    ))?;
     println!("response={response}");
     if response != 0 {
         // Not an error to report loudly: a refusal is what a cancelled
@@ -140,34 +145,34 @@ fn main() -> anyhow::Result<()> {
 }
 
 /// Say what came back, in lines a shell script can grep.
-fn describe(results: &HashMap<String, OwnedValue>) {
+fn describe(results: &HashMap<String, OwnedVariant>) {
     // streams is a(ua{sv}) — one entry, because this compositor shares one
     // thing at a time.
-    if let Some(Value::Array(streams)) = results.get("streams").map(|value| &**value) {
+    if let Some(Variant::Array(streams)) = results.get("streams").map(|value| &**value) {
         for stream in streams.iter() {
-            let Value::Structure(stream) = stream else {
+            let Variant::Structure(stream) = stream else {
                 continue;
             };
             let [node, properties] = stream.fields() else {
                 continue;
             };
-            if let Value::U32(node) = node {
+            if let Variant::U32(node) = node {
                 println!("node={node}");
             }
-            let Value::Dict(properties) = properties else {
+            let Variant::Dict(properties) = properties else {
                 continue;
             };
             for (key, value) in properties.iter() {
-                let (Value::Str(key), value) = (key, unvariant(value)) else {
+                let (Variant::Str(key), value) = (key, unvariant(value)) else {
                     continue;
                 };
                 match (key.as_str(), value) {
-                    ("size", Value::Structure(size)) => {
-                        if let [Value::I32(w), Value::I32(h)] = size.fields() {
+                    ("size", Variant::Structure(size)) => {
+                        if let [Variant::I32(w), Variant::I32(h)] = size.fields() {
                             println!("size={w}x{h}");
                         }
                     }
-                    ("source_type", Value::U32(kind)) => println!("source_type={kind}"),
+                    ("source_type", Variant::U32(kind)) => println!("source_type={kind}"),
                     _ => {}
                 }
             }
@@ -175,7 +180,7 @@ fn describe(results: &HashMap<String, OwnedValue>) {
     }
 
     match results.get("persist_mode").map(|value| &**value) {
-        Some(Value::U32(mode)) => println!("persist_mode={mode}"),
+        Some(Variant::U32(mode)) => println!("persist_mode={mode}"),
         _ => println!("persist_mode=absent"),
     }
     println!(
@@ -189,30 +194,30 @@ fn describe(results: &HashMap<String, OwnedValue>) {
 }
 
 /// The context the bus itself serialises with.
-fn context() -> zvariant::serialized::Context {
-    zvariant::serialized::Context::new_dbus(zvariant::Endian::Little, 0)
+fn context() -> zbus::wire::serialized::Context {
+    zbus::wire::serialized::Context::new(zbus::wire::Endian::Little, 0)
 }
 
 /// Write restore data down the way the permission store does.
-fn save(path: &str, data: &OwnedValue) -> anyhow::Result<()> {
-    let bytes = zvariant::to_bytes(context(), data)?;
+fn save(path: &str, data: &OwnedVariant) -> anyhow::Result<()> {
+    let bytes = zbus::wire::to_bytes(context(), data)?;
     std::fs::write(path, &*bytes)?;
     Ok(())
 }
 
 /// Read it back into a process that did not write it.
-fn load(path: &str, forge_vendor: Option<&str>) -> anyhow::Result<OwnedValue> {
+fn load(path: &str, forge_vendor: Option<&str>) -> anyhow::Result<OwnedVariant> {
     let bytes = std::fs::read(path)?;
-    let data = zvariant::serialized::Data::new(bytes, context());
-    let (value, _) = data.deserialize::<Value<'_>>()?;
+    let data = zbus::wire::serialized::Data::new(bytes, context());
+    let (value, _) = data.deserialize::<Variant<'_>>()?;
 
     let Some(vendor) = forge_vendor else {
-        return Ok(OwnedValue::try_from(value)?);
+        return Ok(OwnedVariant::try_from(value)?);
     };
 
     // Somebody else's token, in every respect but the fields inside: the
     // compositor should read the vendor, stop there, and ask.
-    let Value::Structure(structure) = value else {
+    let Variant::Structure(structure) = value else {
         anyhow::bail!("{path} does not hold a (suv)");
     };
     let mut fields = structure.into_fields();
@@ -221,7 +226,7 @@ fn load(path: &str, forge_vendor: Option<&str>) -> anyhow::Result<OwnedValue> {
     }
     let inner = fields.pop().expect("three fields");
     let version = fields.pop().expect("three fields");
-    Ok(OwnedValue::try_from(Value::from((
+    Ok(OwnedVariant::try_from(Variant::from((
         vendor.to_owned(),
         version,
         inner,
@@ -229,9 +234,9 @@ fn load(path: &str, forge_vendor: Option<&str>) -> anyhow::Result<OwnedValue> {
 }
 
 /// What is inside a variant, however many of them there are.
-fn unvariant<'v>(value: &'v Value<'v>) -> &'v Value<'v> {
+fn unvariant<'v>(value: &'v Variant<'v>) -> &'v Variant<'v> {
     let mut value = value;
-    while let Value::Value(inner) = value {
+    while let Variant::Variant(inner) = value {
         value = inner;
     }
     value

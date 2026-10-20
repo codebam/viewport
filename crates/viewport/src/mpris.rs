@@ -1,3 +1,4 @@
+use crate::dbus::sync::connection::BuildBlocking as _;
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // What is playing, for the bar.
@@ -18,6 +19,8 @@
 // while they buffer; a compositor that waited on one would drop frames for a
 // track title.
 
+use crate::dbus::sync::proxy::BuildBlocking as _;
+use crate::dbus::sync::ProxyExt as _;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Mutex};
@@ -245,8 +248,9 @@ fn start(events: smithay::reexports::calloop::channel::Sender<Message>) -> mpsc:
     let spawned = std::thread::Builder::new()
         .name("mpris".to_owned())
         .spawn(move || {
-            let connection = match zbus::blocking::connection::Builder::session()
-                .and_then(|builder| builder.method_timeout(CALL_TIMEOUT).build())
+            let connection = match crate::dbus::sync::connection::Builder::session()
+                .method_timeout(CALL_TIMEOUT)
+                .build_blocking()
             {
                 Ok(connection) => connection,
                 Err(e) => {
@@ -310,7 +314,7 @@ fn start(events: smithay::reexports::calloop::channel::Sender<Message>) -> mpsc:
 }
 
 struct Worker {
-    connection: zbus::blocking::Connection,
+    connection: crate::dbus::sync::Connection,
     events: smithay::reexports::calloop::channel::Sender<Message>,
     /// What was last sent, so an unchanged sample costs the shell nothing. A
     /// player that reports its position through `PropertiesChanged` — several
@@ -328,7 +332,7 @@ struct Worker {
 
 impl Worker {
     fn new(
-        connection: zbus::blocking::Connection,
+        connection: crate::dbus::sync::Connection,
         events: smithay::reexports::calloop::channel::Sender<Message>,
     ) -> Self {
         Self {
@@ -415,8 +419,9 @@ impl Worker {
             move || {
                 // `list_names` answers in `fdo::Error`; one conversion puts it
                 // in the same shape every other bus answer takes here.
-                zbus::blocking::fdo::DBusProxy::new(&connection)
-                    .and_then(|proxy| proxy.list_names().map_err(zbus::Error::from))
+                crate::dbus::sync::bus_proxy(&connection).and_then(|proxy| {
+                    crate::dbus::sync::DBusProxyExt::list_names(&proxy).map_err(zbus::Error::from)
+                })
             }
         });
         let Some(Ok(names)) = listed else {
@@ -443,7 +448,7 @@ impl Worker {
             if self.unresponsive.contains(&name) {
                 continue;
             }
-            let rank = match self.status(&name).as_str() {
+            let rank = match self.status(name.as_str()).as_str() {
                 "Playing" => 0,
                 "Paused" => 1,
                 _ => 2,
@@ -458,7 +463,7 @@ impl Worker {
             return String::new();
         };
         match crate::dbus_util::with_deadline(PLAYER_TIMEOUT, "mpris-status", move || {
-            proxy.get_property::<String>("PlaybackStatus")
+            proxy.property::<String>("PlaybackStatus")
         }) {
             Some(Ok(status)) => status,
             Some(Err(_)) => String::new(),
@@ -486,17 +491,17 @@ impl Worker {
     fn read(&mut self, name: &str) -> Option<MprisPlayer> {
         let proxy = self.proxy(name)?;
         let fetched = crate::dbus_util::with_deadline(PLAYER_TIMEOUT, "mpris-read", move || {
-            let metadata: HashMap<String, zvariant::OwnedValue> =
-                proxy.get_property("Metadata").unwrap_or_default();
+            let metadata: HashMap<String, zbus::OwnedVariant> =
+                proxy.property("Metadata").unwrap_or_default();
             (
                 metadata,
                 proxy
-                    .get_property::<String>("PlaybackStatus")
+                    .property::<String>("PlaybackStatus")
                     .unwrap_or_default(),
-                proxy.get_property("CanGoNext").unwrap_or(false),
-                proxy.get_property("CanGoPrevious").unwrap_or(false),
-                proxy.get_property("CanPause").unwrap_or(false),
-                proxy.get_property("CanPlay").unwrap_or(false),
+                proxy.property("CanGoNext").unwrap_or(false),
+                proxy.property("CanGoPrevious").unwrap_or(false),
+                proxy.property("CanPause").unwrap_or(false),
+                proxy.property("CanPlay").unwrap_or(false),
             )
         });
         let Some((metadata, status, can_go_next, can_go_previous, can_pause, can_play)) = fetched
@@ -580,23 +585,20 @@ impl Worker {
         let Some(proxy) = self.proxy(&name) else {
             return;
         };
-        if let Err(e) = proxy.call_noreply(method, &()) {
+        if let Err(e) = proxy.notify(method, &()) {
             tracing::debug!("{name}: {method} failed: {e}");
         }
     }
 
-    fn proxy(&self, name: &str) -> Option<zbus::blocking::Proxy<'static>> {
-        zbus::blocking::proxy::Builder::new(&self.connection)
+    fn proxy(&self, name: &str) -> Option<crate::dbus::sync::Proxy<'static>> {
+        crate::dbus::sync::proxy::Builder::new(&self.connection)
             .destination(name.to_owned())
-            .ok()?
             .path(PATH)
-            .ok()?
             .interface(PLAYER)
-            .ok()?
             // The properties change constantly and the signal is what this
             // listens to; a cache would be a second subscription per player.
             .cache_properties(zbus::proxy::CacheProperties::No)
-            .build()
+            .build_blocking()
             .ok()
     }
 }

@@ -23,17 +23,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let name = args.next().unwrap_or_else(|| "test-holder".to_owned());
     let reason = args.next().unwrap_or_else(|| "playing video".to_owned());
 
-    let connection = zbus::blocking::Connection::session()?;
-    let cookie: u32 = connection
-        .call_method(
-            Some("org.freedesktop.ScreenSaver"),
-            "/org/freedesktop/ScreenSaver",
-            Some("org.freedesktop.ScreenSaver"),
-            "Inhibit",
-            &(name.as_str(), reason.as_str()),
-        )?
-        .body()
-        .deserialize()?;
+    let connection = zbus::block_on(zbus::Connection::session())?;
+    let reply = zbus::block_on(connection.call_method(
+        Some("org.freedesktop.ScreenSaver"),
+        "/org/freedesktop/ScreenSaver",
+        Some("org.freedesktop.ScreenSaver"),
+        "Inhibit",
+        &(name.as_str(), reason.as_str()),
+    ))?;
+    let cookie: u32 = reply.body().deserialize()?;
 
     println!("held {cookie}");
     let _ = std::io::stdout().flush();

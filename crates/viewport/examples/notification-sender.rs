@@ -7,16 +7,16 @@
 use std::collections::HashMap;
 
 use anyhow::Result;
-use zvariant::OwnedValue;
+use zbus::OwnedVariant;
 
 fn main() -> Result<()> {
-    let connection = zbus::blocking::Connection::session()?;
-    let proxy = zbus::blocking::Proxy::new(
+    let connection = zbus::block_on(zbus::Connection::session())?;
+    let proxy = zbus::block_on(zbus::Proxy::new(
         &connection,
         "org.freedesktop.Notifications",
         "/org/freedesktop/Notifications",
         "org.freedesktop.Notifications",
-    )?;
+    ))?;
 
     let first = notify(&proxy, 0, "counting", "1 of 10")?;
     let second = notify(&proxy, first, "counting", "10 of 10")?;
@@ -25,13 +25,8 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn notify(
-    proxy: &zbus::blocking::Proxy<'_>,
-    replaces: u32,
-    summary: &str,
-    body: &str,
-) -> Result<u32> {
-    Ok(proxy.call(
+fn notify(proxy: &zbus::Proxy<'_>, replaces: u32, summary: &str, body: &str) -> Result<u32> {
+    let reply = zbus::block_on(proxy.call(
         "Notify",
         &(
             "viewport-notification-test",
@@ -40,8 +35,9 @@ fn notify(
             summary,
             body,
             Vec::<String>::new(),
-            HashMap::<String, OwnedValue>::new(),
+            HashMap::<String, OwnedVariant>::new(),
             5000i32,
         ),
-    )?)
+    ))?;
+    Ok(reply)
 }

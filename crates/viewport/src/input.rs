@@ -4807,7 +4807,7 @@ mod tests {
         let mut repeating = std::collections::HashMap::new();
         repeating.insert(keysyms::KEY_v, crate::binding::Action::Close);
         let fired = crate::shortcuts::Fired {
-            session: zvariant::OwnedObjectPath::try_from("/org/example/session").unwrap(),
+            session: zbus::OwnedObjectPath::try_from("/org/example/session").unwrap(),
             id: "push-to-talk".to_owned(),
         };
         let mut held = vec![(keysyms::KEY_v, fired.clone())];

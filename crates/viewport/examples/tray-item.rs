@@ -17,7 +17,7 @@
 use std::collections::HashMap;
 use std::io::Write;
 
-use zvariant::Value;
+use zbus::Variant;
 
 fn say(line: &str) {
     println!("{line}");
@@ -65,9 +65,9 @@ impl Item {
 
     /// Where the menu is. An item with no menu publishes `/` here.
     #[zbus(property)]
-    fn menu(&self) -> zvariant::ObjectPath<'_> {
+    fn menu(&self) -> zbus::ObjectPath<'_> {
         let path = if self.menu { MENU_PATH } else { "/" };
-        zvariant::ObjectPath::from_static_str(path).expect("a valid path")
+        zbus::ObjectPath::from_static_str(path).expect("a valid path")
     }
 
     /// A pixmap rather than a name: two pixels of solid red, ARGB in network
@@ -110,7 +110,7 @@ impl Item {
 const MENU_PATH: &str = "/MenuBar";
 
 /// One node of a layout: an id, its properties, and its children.
-type Node<'a> = (i32, HashMap<String, Value<'a>>, Vec<Value<'a>>);
+type Node<'a> = (i32, HashMap<String, Variant<'a>>, Vec<Variant<'a>>);
 
 /// The menu object, which is a separate interface on a separate path — the
 /// tray specification says nothing about menus, and this is Canonical's.
@@ -119,15 +119,15 @@ struct Menu;
 impl Menu {
     /// One row. Properties are an open map, and a row that carries none is the
     /// common case: everything below defaults.
-    fn row(id: i32, label: &str, props: Vec<(&str, Value<'static>)>) -> Value<'static> {
-        let mut map: HashMap<String, Value<'static>> = HashMap::new();
+    fn row(id: i32, label: &str, props: Vec<(&str, Variant<'static>)>) -> Variant<'static> {
+        let mut map: HashMap<String, Variant<'static>> = HashMap::new();
         if !label.is_empty() {
-            map.insert("label".to_owned(), Value::from(label.to_owned()));
+            map.insert("label".to_owned(), Variant::from(label.to_owned()));
         }
         for (name, value) in props {
             map.insert(name.to_owned(), value);
         }
-        Value::from((id, map, Vec::<Value<'static>>::new()))
+        Variant::from((id, map, Vec::<Variant<'static>>::new()))
     }
 }
 
@@ -143,10 +143,10 @@ impl Menu {
         let submenu = (
             5i32,
             HashMap::from([
-                ("label".to_owned(), Value::from("Recent".to_owned())),
+                ("label".to_owned(), Variant::from("Recent".to_owned())),
                 (
                     "children-display".to_owned(),
-                    Value::from("submenu".to_owned()),
+                    Variant::from("submenu".to_owned()),
                 ),
             ]),
             vec![Self::row(6, "notes.md", vec![])],
@@ -155,20 +155,20 @@ impl Menu {
         let children = vec![
             // The label carries a mnemonic, as a real menu's does.
             Self::row(1, "_Open", vec![]),
-            Self::row(2, "", vec![("type", Value::from("separator".to_owned()))]),
-            Self::row(3, "Sync now", vec![("enabled", Value::from(false))]),
+            Self::row(2, "", vec![("type", Variant::from("separator".to_owned()))]),
+            Self::row(3, "Sync now", vec![("enabled", Variant::from(false))]),
             Self::row(
                 4,
                 "Automatic",
                 vec![
-                    ("toggle-type", Value::from("checkmark".to_owned())),
-                    ("toggle-state", Value::from(1i32)),
+                    ("toggle-type", Variant::from("checkmark".to_owned())),
+                    ("toggle-state", Variant::from(1i32)),
                 ],
             ),
             // A row nobody should see, which is how an application hides one
             // rather than leaving it out.
-            Self::row(7, "Hidden", vec![("visible", Value::from(false))]),
-            Value::from(submenu),
+            Self::row(7, "Hidden", vec![("visible", Variant::from(false))]),
+            Variant::from(submenu),
         ];
 
         (1, (0, HashMap::new(), children))
@@ -181,7 +181,7 @@ impl Menu {
         false
     }
 
-    fn event(&self, id: i32, event_id: String, _data: Value<'_>, _timestamp: u32) {
+    fn event(&self, id: i32, event_id: String, _data: Variant<'_>, _timestamp: u32) {
         say(&format!("menu event {id} {event_id}"));
     }
 }
@@ -198,30 +198,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .cloned()
         .unwrap_or_else(|| "Test".to_owned());
 
-    let mut builder = zbus::blocking::connection::Builder::session()?
-        .serve_at("/StatusNotifierItem", Item { title, menu })?;
-    if menu {
-        builder = builder.serve_at(MENU_PATH, Menu)?;
-    }
-    let connection = builder.build()?;
+    let connection = zbus::block_on(async {
+        let mut builder = zbus::connection::Builder::session()
+            .serve_at("/StatusNotifierItem", Item { title, menu });
+        if menu {
+            builder = builder.serve_at(MENU_PATH, Menu);
+        }
+        builder.build().await
+    })?;
 
     // The name an item takes, as every toolkit spells it. Nothing reads it
     // here — the compositor is told the unique name below — but an
     // implementation that watched for well-known names would need it.
     let well_known = format!("org.kde.StatusNotifierItem-{}-1", std::process::id());
-    connection.request_name(well_known.as_str())?;
+    zbus::block_on(connection.request_name(well_known.as_str()))?;
 
     let unique = connection
         .unique_name()
         .map(ToString::to_string)
         .unwrap_or_default();
-    connection.call_method(
+    zbus::block_on(connection.call_method(
         Some("org.kde.StatusNotifierWatcher"),
         "/StatusNotifierWatcher",
         Some("org.kde.StatusNotifierWatcher"),
         "RegisterStatusNotifierItem",
         &(unique.as_str()),
-    )?;
+    ))?;
     say(&format!("registered {unique}"));
 
     // Until it is killed. The connection answers on its own threads.

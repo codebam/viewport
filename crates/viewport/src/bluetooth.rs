@@ -1,3 +1,4 @@
+use crate::dbus::sync::ObjectServerExt as _;
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // The Bluetooth adapter: what is near it, and pairing with one of them.
@@ -22,6 +23,8 @@
 // transmitting, and one left running is a battery cost with nothing on screen
 // to account for it.
 
+use crate::dbus::sync::proxy::BuildBlocking as _;
+use crate::dbus::sync::ProxyExt as _;
 use std::collections::HashMap;
 use std::sync::mpsc;
 
@@ -141,11 +144,11 @@ impl PairingAgent {
     /// A device with no display asked to be allowed to pair. Accepted by
     /// returning: the pairing was started from the picker, which is the
     /// consent.
-    fn request_authorization(&self, _device: zvariant::OwnedObjectPath) {}
+    fn request_authorization(&self, _device: zbus::OwnedObjectPath) {}
 
     /// A paired device asked to use a profile — audio, input, a serial port.
     /// Accepted for the same reason.
-    fn authorize_service(&self, _device: zvariant::OwnedObjectPath, _uuid: String) {}
+    fn authorize_service(&self, _device: zbus::OwnedObjectPath, _uuid: String) {}
 
     /// The pairing was abandoned from the other end.
     fn cancel(&self) {}
@@ -165,7 +168,7 @@ fn start(events: smithay::reexports::calloop::channel::Sender<Message>) -> mpsc:
     let spawned = std::thread::Builder::new()
         .name("bluetooth".to_owned())
         .spawn(move || {
-            let connection = match zbus::blocking::Connection::system() {
+            let connection = match crate::dbus::sync::system() {
                 Ok(connection) => connection,
                 Err(e) => {
                     tracing::warn!("bluetooth: BlueZ is unavailable: {e:#}");
@@ -220,7 +223,7 @@ fn start(events: smithay::reexports::calloop::channel::Sender<Message>) -> mpsc:
 }
 
 struct Worker {
-    connection: zbus::blocking::Connection,
+    connection: crate::dbus::sync::Connection,
     events: smithay::reexports::calloop::channel::Sender<Message>,
     last: BluetoothSnapshot,
     watching: bool,
@@ -237,7 +240,7 @@ struct Worker {
 
 impl Worker {
     fn new(
-        connection: zbus::blocking::Connection,
+        connection: crate::dbus::sync::Connection,
         events: smithay::reexports::calloop::channel::Sender<Message>,
     ) -> Self {
         Self {
@@ -369,13 +372,11 @@ impl Worker {
     /// `GetManagedObjects`, which is the only way to enumerate BlueZ.
     fn objects(&self) -> Option<Objects> {
         let proxy = self.proxy(ROOT, "org.freedesktop.DBus.ObjectManager")?;
-        proxy
-            .call::<&str, (), Objects>("GetManagedObjects", &())
-            .ok()
+        proxy.method::<(), Objects>("GetManagedObjects", &()).ok()
     }
 
     /// The first adapter's object path, which every adapter call needs.
-    fn adapter(&self) -> Option<zvariant::OwnedObjectPath> {
+    fn adapter(&self) -> Option<zbus::OwnedObjectPath> {
         self.objects()?
             .into_iter()
             .find(|(_, interfaces)| interfaces.contains_key("org.bluez.Adapter1"))
@@ -388,7 +389,7 @@ impl Worker {
     /// address — `/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF` — and reconstructing
     /// it would be this compositor guessing at another program's naming
     /// scheme, including which adapter the device was found on.
-    fn device_path(&self, address: &str) -> Option<zvariant::OwnedObjectPath> {
+    fn device_path(&self, address: &str) -> Option<zbus::OwnedObjectPath> {
         self.objects()?.into_iter().find_map(|(path, interfaces)| {
             let device = interfaces.get("org.bluez.Device1")?;
             (text(device, "Address").eq_ignore_ascii_case(address)).then_some(path)
@@ -418,7 +419,7 @@ impl Worker {
         } else {
             "StopDiscovery"
         };
-        proxy.call::<&str, (), ()>(method, &()).map_err(complaint)?;
+        proxy.method::<(), ()>(method, &()).map_err(complaint)?;
         self.discovering = wanted;
         Ok(())
     }
@@ -433,8 +434,8 @@ impl Worker {
             .ok_or_else(|| "BlueZ is not answering".to_owned())?;
         // Read rather than remembered: `rfkill` and another applet both change
         // this without anything here hearing about it first.
-        let enabled = enabled.unwrap_or(!proxy.get_property::<bool>("Powered").unwrap_or(false));
-        proxy.set_property("Powered", enabled).map_err(complaint)?;
+        let enabled = enabled.unwrap_or(!proxy.property::<bool>("Powered").unwrap_or(false));
+        proxy.put_property("Powered", enabled).map_err(complaint)?;
         if !enabled {
             // The adapter going down takes any discovery with it, and BlueZ
             // does not say so on a signal this would notice.
@@ -472,7 +473,7 @@ impl Worker {
         match action {
             "trust" | "untrust" => {
                 return device
-                    .set_property("Trusted", action == "trust")
+                    .put_property("Trusted", action == "trust")
                     .map_err(complaint);
             }
             "forget" => {
@@ -483,36 +484,32 @@ impl Worker {
                     .proxy(adapter.as_str(), "org.bluez.Adapter1")
                     .ok_or_else(|| "BlueZ is not answering".to_owned())?;
                 return proxy
-                    .call::<&str, _, ()>("RemoveDevice", &(path.as_ref(),))
+                    .method::<_, ()>("RemoveDevice", &(path.as_ref(),))
                     .map_err(complaint);
             }
             "disconnect" => {
                 return device
-                    .call::<&str, (), ()>("Disconnect", &())
+                    .method::<(), ()>("Disconnect", &())
                     .map_err(complaint);
             }
             _ => {}
         }
 
-        let paired = device.get_property::<bool>("Paired").unwrap_or(false);
+        let paired = device.property::<bool>("Paired").unwrap_or(false);
         if !paired {
             self.register_agent();
-            device
-                .call::<&str, (), ()>("Pair", &())
-                .map_err(complaint)?;
+            device.method::<(), ()>("Pair", &()).map_err(complaint)?;
             // Trusted straight after pairing, and only then: this is the bit
             // that lets a headset reconnect by itself, and a device that was
             // never paired has nothing to be trusted for.
-            if let Err(e) = device.set_property("Trusted", true) {
+            if let Err(e) = device.put_property("Trusted", true) {
                 tracing::debug!("bluetooth: trusting {address} failed: {e}");
             }
         }
         if action == "pair" {
             return Ok(());
         }
-        device
-            .call::<&str, (), ()>("Connect", &())
-            .map_err(complaint)
+        device.method::<(), ()>("Connect", &()).map_err(complaint)
     }
 
     /// Publish the pairing agent and tell BlueZ about it, once.
@@ -530,14 +527,19 @@ impl Worker {
         // round trip spent to log the same line again.
         self.agent = true;
 
-        if let Err(e) = self.connection.object_server().at(AGENT_PATH, PairingAgent) {
+        if let Err(e) = self.connection.object_server().at_blocking(
+            zbus::ObjectPath::try_from(AGENT_PATH)
+                .expect("a valid agent path")
+                .into(),
+            PairingAgent,
+        ) {
             tracing::warn!("bluetooth: the pairing agent could not be published: {e}");
             return;
         }
         let Some(manager) = self.proxy(AGENT_MANAGER_PATH, "org.bluez.AgentManager1") else {
             return;
         };
-        let path = match zvariant::ObjectPath::try_from(AGENT_PATH) {
+        let path = match zbus::ObjectPath::try_from(AGENT_PATH) {
             Ok(path) => path,
             Err(e) => {
                 tracing::warn!("bluetooth: {AGENT_PATH} is not an object path: {e}");
@@ -546,36 +548,33 @@ impl Worker {
         };
         // See the note on `PairingAgent` for why this capability, and why
         // `RequestDefaultAgent` is not called after it.
-        if let Err(e) = manager.call::<&str, _, ()>("RegisterAgent", &(path, "NoInputNoOutput")) {
+        if let Err(e) = manager.method::<_, ()>("RegisterAgent", &(path, "NoInputNoOutput")) {
             tracing::warn!("bluetooth: BlueZ refused the pairing agent: {e}");
         }
     }
 
-    fn proxy(&self, path: &str, interface: &str) -> Option<zbus::blocking::Proxy<'static>> {
-        zbus::blocking::proxy::Builder::new(&self.connection)
+    fn proxy(&self, path: &str, interface: &str) -> Option<crate::dbus::sync::Proxy<'static>> {
+        crate::dbus::sync::proxy::Builder::new(&self.connection)
             .destination(BLUEZ.to_owned())
-            .ok()?
             .path(path.to_owned())
-            .ok()?
             .interface(interface.to_owned())
-            .ok()?
             .cache_properties(zbus::proxy::CacheProperties::No)
-            .build()
+            .build_blocking()
             .ok()
     }
 }
 
 /// What `GetManagedObjects` answers with: every object, every interface on it,
 /// and every property of each.
-type Objects = HashMap<zvariant::OwnedObjectPath, Interfaces>;
-type Interfaces = HashMap<String, HashMap<String, zvariant::OwnedValue>>;
+type Objects = HashMap<zbus::OwnedObjectPath, Interfaces>;
+type Interfaces = HashMap<String, HashMap<String, zbus::OwnedVariant>>;
 
 /// A boolean property, false when it is absent or of another type.
 ///
 /// Absent is the common case rather than the error case: BlueZ omits a
 /// property it has nothing to say about, so a device that has never been seen
 /// has no `Connected` at all.
-fn flag(properties: &HashMap<String, zvariant::OwnedValue>, name: &str) -> bool {
+fn flag(properties: &HashMap<String, zbus::OwnedVariant>, name: &str) -> bool {
     properties
         .get(name)
         .and_then(|value| bool::try_from(value.clone()).ok())
@@ -583,7 +582,7 @@ fn flag(properties: &HashMap<String, zvariant::OwnedValue>, name: &str) -> bool 
 }
 
 /// A string property, empty when it is absent.
-fn text(properties: &HashMap<String, zvariant::OwnedValue>, name: &str) -> String {
+fn text(properties: &HashMap<String, zbus::OwnedVariant>, name: &str) -> String {
     properties
         .get(name)
         .and_then(|value| <&str>::try_from(value).ok())
@@ -592,7 +591,7 @@ fn text(properties: &HashMap<String, zvariant::OwnedValue>, name: &str) -> Strin
 }
 
 /// `RSSI`, which is signed 16-bit and only present while a device is in range.
-fn as_i16(value: &zvariant::OwnedValue) -> Option<i16> {
+fn as_i16(value: &zbus::OwnedVariant) -> Option<i16> {
     i16::try_from(value.clone()).ok()
 }
 
@@ -649,7 +648,7 @@ mod tests {
     /// has to survive its absence.
     #[test]
     fn absent_properties_read_as_nothing() {
-        let properties: HashMap<String, zvariant::OwnedValue> = HashMap::new();
+        let properties: HashMap<String, zbus::OwnedVariant> = HashMap::new();
         assert!(!flag(&properties, "Paired"));
         assert_eq!(text(&properties, "Alias"), "");
         assert_eq!(properties.get("RSSI").and_then(as_i16), None);

@@ -48,7 +48,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use zvariant::{ObjectPath, OwnedObjectPath, OwnedValue, Value};
+use zbus::{ObjectPath, OwnedObjectPath, OwnedVariant, Variant};
 
 use super::portal::{release_session, Message, SessionObject, Sessions, Started as CastStarted};
 
@@ -419,10 +419,10 @@ impl RemoteDesktop {
         _handle: ObjectPath<'_>,
         session_handle: ObjectPath<'_>,
         app_id: &str,
-        _options: HashMap<String, OwnedValue>,
+        _options: HashMap<String, OwnedVariant>,
         #[zbus(object_server)] server: &zbus::ObjectServer,
         #[zbus(header)] header: zbus::message::Header<'_>,
-    ) -> (u32, HashMap<String, OwnedValue>) {
+    ) -> (u32, HashMap<String, OwnedVariant>) {
         if !self.called_by_frontend(&header) {
             return (RESPONSE_FAILED, HashMap::new());
         }
@@ -479,9 +479,9 @@ impl RemoteDesktop {
         _handle: ObjectPath<'_>,
         session_handle: ObjectPath<'_>,
         _app_id: &str,
-        options: HashMap<String, OwnedValue>,
+        options: HashMap<String, OwnedVariant>,
         #[zbus(header)] header: zbus::message::Header<'_>,
-    ) -> (u32, HashMap<String, OwnedValue>) {
+    ) -> (u32, HashMap<String, OwnedVariant>) {
         if !self.called_by_frontend(&header) {
             return (RESPONSE_FAILED, HashMap::new());
         }
@@ -513,9 +513,9 @@ impl RemoteDesktop {
         session_handle: ObjectPath<'_>,
         _app_id: &str,
         _parent_window: &str,
-        _options: HashMap<String, OwnedValue>,
+        _options: HashMap<String, OwnedVariant>,
         #[zbus(header)] header: zbus::message::Header<'_>,
-    ) -> (u32, HashMap<String, OwnedValue>) {
+    ) -> (u32, HashMap<String, OwnedVariant>) {
         if !self.called_by_frontend(&header) {
             return (RESPONSE_FAILED, HashMap::new());
         }
@@ -623,25 +623,28 @@ impl RemoteDesktop {
             device_names(started.devices).join(", ")
         );
 
-        let mut results: HashMap<String, OwnedValue> = HashMap::new();
-        results.insert("devices".to_owned(), OwnedValue::from(started.devices));
+        let mut results: HashMap<String, OwnedVariant> = HashMap::new();
+        results.insert("devices".to_owned(), OwnedVariant::from(started.devices));
         // Said explicitly either way. The frontend reads an absent key as
         // false, but an application reading the results dictionary sees the
         // difference between "no" and "this compositor did not think about it",
         // and a remote session pasting into the machine is the kind of thing
         // that should be a stated answer. True only when the session asked
         // through `RequestClipboard` before Start.
-        results.insert("clipboard_enabled".to_owned(), OwnedValue::from(clipboard));
+        results.insert(
+            "clipboard_enabled".to_owned(),
+            OwnedVariant::from(clipboard),
+        );
 
         if let Some(cast) = started.cast {
             // Described exactly as ScreenCast.Start describes it, because it
             // is the same stream: the consumer on the other end builds its
             // pw_stream from this and cannot tell which interface answered.
-            let mut properties: HashMap<String, Value<'static>> = HashMap::new();
-            properties.insert("size".to_owned(), Value::from((cast.width, cast.height)));
-            properties.insert("source_type".to_owned(), Value::from(cast.source_type));
+            let mut properties: HashMap<String, Variant<'static>> = HashMap::new();
+            properties.insert("size".to_owned(), Variant::from((cast.width, cast.height)));
+            properties.insert("source_type".to_owned(), Variant::from(cast.source_type));
             let streams = vec![(cast.node, properties)];
-            match OwnedValue::try_from(Value::from(streams)) {
+            match OwnedVariant::try_from(Variant::from(streams)) {
                 Ok(value) => {
                     results.insert("streams".to_owned(), value);
                     tracing::debug!(
@@ -669,7 +672,7 @@ impl RemoteDesktop {
     fn notify_pointer_motion(
         &self,
         session_handle: ObjectPath<'_>,
-        _options: HashMap<String, OwnedValue>,
+        _options: HashMap<String, OwnedVariant>,
         dx: f64,
         dy: f64,
         #[zbus(header)] header: zbus::message::Header<'_>,
@@ -681,7 +684,7 @@ impl RemoteDesktop {
     fn notify_pointer_motion_absolute(
         &self,
         session_handle: ObjectPath<'_>,
-        _options: HashMap<String, OwnedValue>,
+        _options: HashMap<String, OwnedVariant>,
         stream: u32,
         x: f64,
         y: f64,
@@ -705,7 +708,7 @@ impl RemoteDesktop {
     fn notify_pointer_button(
         &self,
         session_handle: ObjectPath<'_>,
-        _options: HashMap<String, OwnedValue>,
+        _options: HashMap<String, OwnedVariant>,
         button: i32,
         state: u32,
         #[zbus(header)] header: zbus::message::Header<'_>,
@@ -730,7 +733,7 @@ impl RemoteDesktop {
     fn notify_pointer_axis(
         &self,
         session_handle: ObjectPath<'_>,
-        options: HashMap<String, OwnedValue>,
+        options: HashMap<String, OwnedVariant>,
         dx: f64,
         dy: f64,
         #[zbus(header)] header: zbus::message::Header<'_>,
@@ -750,7 +753,7 @@ impl RemoteDesktop {
     fn notify_pointer_axis_discrete(
         &self,
         session_handle: ObjectPath<'_>,
-        _options: HashMap<String, OwnedValue>,
+        _options: HashMap<String, OwnedVariant>,
         axis: u32,
         steps: i32,
         #[zbus(header)] header: zbus::message::Header<'_>,
@@ -766,7 +769,7 @@ impl RemoteDesktop {
     fn notify_keyboard_keycode(
         &self,
         session_handle: ObjectPath<'_>,
-        _options: HashMap<String, OwnedValue>,
+        _options: HashMap<String, OwnedVariant>,
         keycode: i32,
         state: u32,
         #[zbus(header)] header: zbus::message::Header<'_>,
@@ -785,7 +788,7 @@ impl RemoteDesktop {
     fn notify_keyboard_keysym(
         &self,
         session_handle: ObjectPath<'_>,
-        _options: HashMap<String, OwnedValue>,
+        _options: HashMap<String, OwnedVariant>,
         keysym: i32,
         state: u32,
         #[zbus(header)] header: zbus::message::Header<'_>,
@@ -810,7 +813,7 @@ impl RemoteDesktop {
     fn notify_touch_down(
         &self,
         session_handle: ObjectPath<'_>,
-        _options: HashMap<String, OwnedValue>,
+        _options: HashMap<String, OwnedVariant>,
         stream: u32,
         slot: u32,
         x: f64,
@@ -834,7 +837,7 @@ impl RemoteDesktop {
     fn notify_touch_motion(
         &self,
         session_handle: ObjectPath<'_>,
-        _options: HashMap<String, OwnedValue>,
+        _options: HashMap<String, OwnedVariant>,
         stream: u32,
         slot: u32,
         x: f64,
@@ -852,7 +855,7 @@ impl RemoteDesktop {
     fn notify_touch_up(
         &self,
         session_handle: ObjectPath<'_>,
-        _options: HashMap<String, OwnedValue>,
+        _options: HashMap<String, OwnedVariant>,
         slot: u32,
         #[zbus(header)] header: zbus::message::Header<'_>,
     ) {
@@ -890,9 +893,9 @@ impl RemoteDesktop {
         &self,
         session_handle: ObjectPath<'_>,
         app_id: &str,
-        _options: HashMap<String, OwnedValue>,
+        _options: HashMap<String, OwnedVariant>,
         #[zbus(header)] header: zbus::message::Header<'_>,
-    ) -> zbus::fdo::Result<zvariant::OwnedFd> {
+    ) -> zbus::fdo::Result<zbus::OwnedFd> {
         if !self.called_by_frontend(&header) {
             return Err(zbus::fdo::Error::AccessDenied(
                 "that is not the portal frontend".to_owned(),
@@ -956,7 +959,7 @@ impl RemoteDesktop {
                 "the compositor is not listening".to_owned(),
             ));
         }
-        Ok(zvariant::OwnedFd::from(std::os::fd::OwnedFd::from(theirs)))
+        Ok(zbus::OwnedFd::from(std::os::fd::OwnedFd::from(theirs)))
     }
 }
 
@@ -1501,7 +1504,7 @@ impl Clipboard {
     async fn request_clipboard(
         &self,
         session_handle: ObjectPath<'_>,
-        _options: HashMap<String, OwnedValue>,
+        _options: HashMap<String, OwnedVariant>,
         #[zbus(header)] header: zbus::message::Header<'_>,
     ) {
         if !self.called_by_frontend(&header) {
@@ -1528,7 +1531,7 @@ impl Clipboard {
     async fn set_selection(
         &self,
         session_handle: ObjectPath<'_>,
-        options: HashMap<String, OwnedValue>,
+        options: HashMap<String, OwnedVariant>,
         #[zbus(header)] header: zbus::message::Header<'_>,
         #[zbus(object_server)] server: &zbus::ObjectServer,
     ) {
@@ -1608,7 +1611,7 @@ impl Clipboard {
         session_handle: ObjectPath<'_>,
         _mime_type: &str,
         #[zbus(header)] header: zbus::message::Header<'_>,
-    ) -> zbus::fdo::Result<zvariant::OwnedFd> {
+    ) -> zbus::fdo::Result<zbus::OwnedFd> {
         if !self.called_by_frontend(&header) {
             return Err(zbus::fdo::Error::AccessDenied(
                 "that is not the portal frontend".to_owned(),
@@ -1641,7 +1644,7 @@ impl Clipboard {
         let (read, write) = smithay::reexports::rustix::pipe::pipe()
             .map_err(|e| zbus::fdo::Error::Failed(format!("no pipe for the clipboard: {e}")))?;
         crate::clipboard::serve(text, write);
-        Ok(zvariant::OwnedFd::from(read))
+        Ok(zbus::OwnedFd::from(read))
     }
 
     /// The application is answering a `SelectionTransfer`; hand it a pipe to
@@ -1657,7 +1660,7 @@ impl Clipboard {
         serial: u32,
         #[zbus(header)] header: zbus::message::Header<'_>,
         #[zbus(object_server)] server: &zbus::ObjectServer,
-    ) -> zbus::fdo::Result<zvariant::OwnedFd> {
+    ) -> zbus::fdo::Result<zbus::OwnedFd> {
         if !self.called_by_frontend(&header) {
             return Err(zbus::fdo::Error::AccessDenied(
                 "that is not the portal frontend".to_owned(),
@@ -1749,7 +1752,7 @@ impl Clipboard {
                 "could not start a reader".to_owned(),
             ));
         }
-        Ok(zvariant::OwnedFd::from(write))
+        Ok(zbus::OwnedFd::from(write))
     }
 
     /// The application has finished writing the selection, or failed to.
@@ -1792,7 +1795,7 @@ impl Clipboard {
     async fn selection_owner_changed(
         emitter: &zbus::object_server::SignalEmitter<'_>,
         session_handle: ObjectPath<'_>,
-        options: HashMap<String, Value<'_>>,
+        options: HashMap<String, Variant<'_>>,
     ) -> zbus::Result<()>;
 
     /// Ask the frontend to transfer a remote session's selection to us.
@@ -1809,7 +1812,7 @@ impl Clipboard {
     ) -> zbus::Result<()>;
 }
 
-fn mime_types(options: &HashMap<String, OwnedValue>) -> Vec<String> {
+fn mime_types(options: &HashMap<String, OwnedVariant>) -> Vec<String> {
     options
         .get("mime_types")
         .and_then(|value| <Vec<String>>::try_from(value.clone()).ok())
@@ -1873,9 +1876,9 @@ async fn emit_owner_changed(
     let Ok(interface) = server.interface::<_, Clipboard>(OBJECT_PATH).await else {
         return;
     };
-    let mut options: HashMap<String, Value<'_>> = HashMap::new();
-    options.insert("mime_types".to_owned(), Value::from(mimes.to_vec()));
-    options.insert("session_is_owner".to_owned(), Value::from(owner));
+    let mut options: HashMap<String, Variant<'_>> = HashMap::new();
+    options.insert("mime_types".to_owned(), Variant::from(mimes.to_vec()));
+    options.insert("session_is_owner".to_owned(), Variant::from(owner));
     if let Err(e) =
         Clipboard::selection_owner_changed(interface.signal_emitter(), session.as_ref(), options)
             .await
@@ -1978,10 +1981,10 @@ mod tests {
         // `SetSelection` puts them under `mime_types`, as an array of strings.
         // Anything else — absent, the wrong type — is a session offering
         // nothing, which is not an error and not worth refusing the call over.
-        let mut options: HashMap<String, OwnedValue> = HashMap::new();
+        let mut options: HashMap<String, OwnedVariant> = HashMap::new();
         options.insert(
             "mime_types".to_owned(),
-            Value::from(vec![
+            Variant::from(vec![
                 "text/plain;charset=utf-8".to_owned(),
                 "UTF8_STRING".to_owned(),
             ])
@@ -1994,8 +1997,8 @@ mod tests {
         );
         assert!(mime_types(&HashMap::new()).is_empty());
 
-        let mut wrong: HashMap<String, OwnedValue> = HashMap::new();
-        wrong.insert("mime_types".to_owned(), OwnedValue::from(7u32));
+        let mut wrong: HashMap<String, OwnedVariant> = HashMap::new();
+        wrong.insert("mime_types".to_owned(), OwnedVariant::from(7u32));
         assert!(mime_types(&wrong).is_empty());
     }
 

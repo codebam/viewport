@@ -1,3 +1,4 @@
+use crate::dbus::sync::connection::BuildBlocking as _;
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // Notifications. Ports src/notification.c.
@@ -24,6 +25,8 @@
 // those three agree, the service owns a thread and talks to the compositor
 // through a channel, which is the only shared state.
 
+use crate::dbus::sync::EmitSignalExt as _;
+use crate::dbus::sync::NameRequestExt as _;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
@@ -97,7 +100,7 @@ pub const MAX_PENDING_NOTIFICATIONS: usize = 256;
 /// The half of the service the compositor keeps.
 pub struct Notifications {
     /// Signals back to D-Bus: a notification the user acted on or dismissed.
-    outbound: Option<zbus::blocking::Connection>,
+    outbound: Option<crate::dbus::sync::Connection>,
     /// The last id handed out, shared with the D-Bus thread because both ends
     /// allocate them.
     next: Arc<AtomicU32>,
@@ -154,9 +157,9 @@ impl Notifications {
             player: crate::sound::Player::new(),
         };
 
-        let connection = zbus::blocking::connection::Builder::session()?
-            .serve_at("/org/freedesktop/Notifications", server)?
-            .build()?;
+        let connection = crate::dbus::sync::connection::Builder::session()
+            .serve_at("/org/freedesktop/Notifications", server)
+            .build_blocking()?;
 
         // The name, asked for with flags of our own rather than the
         // builder's `.name()`, which uses zbus's defaults. See
@@ -166,10 +169,8 @@ impl Notifications {
         // Asked for at all only by the session's own compositor — see
         // `crate::dbus::may_claim`, the rule this obeys like every other name.
         if crate::dbus::may_claim(session_compositor) {
-            let reply = connection.request_name_with_flags(
-                "org.freedesktop.Notifications",
-                crate::dbus::name_flags(),
-            );
+            let reply =
+                connection.take_name("org.freedesktop.Notifications", crate::dbus::name_flags());
             crate::dbus::log_name_reply("org.freedesktop.Notifications", reply);
         } else {
             crate::dbus::log_name_skipped("org.freedesktop.Notifications");
@@ -221,7 +222,7 @@ impl Notifications {
     /// An owner this process does not know — one from before a restart, say —
     /// falls back to broadcasting, which is what every version of this did
     /// and what keeps the ordinary case working across a reload.
-    fn emit_to_owner<T: serde::Serialize + zvariant::DynamicType>(
+    fn emit_to_owner<T: serde::Serialize + zbus::DynamicType>(
         &self,
         id: u32,
         signal: &str,
@@ -235,7 +236,7 @@ impl Notifications {
         self.emit(destination.as_deref(), signal, body);
     }
 
-    fn emit<T: serde::Serialize + zvariant::DynamicType>(
+    fn emit<T: serde::Serialize + zbus::DynamicType>(
         &self,
         destination: Option<&str>,
         signal: &str,
@@ -244,7 +245,7 @@ impl Notifications {
         let Some(connection) = self.outbound.as_ref() else {
             return;
         };
-        if let Err(e) = connection.emit_signal(
+        if let Err(e) = connection.emit_blocking(
             destination,
             "/org/freedesktop/Notifications",
             "org.freedesktop.Notifications",
@@ -341,7 +342,7 @@ impl Server {
         summary: String,
         body: String,
         actions: Vec<String>,
-        hints: HashMap<String, zvariant::OwnedValue>,
+        hints: HashMap<String, zbus::OwnedVariant>,
         expire_timeout: i32,
         #[zbus(header)] header: zbus::message::Header<'_>,
     ) -> Result<u32, zbus::fdo::Error> {
@@ -720,7 +721,7 @@ fn parse_actions(flat: &[String]) -> Vec<NotificationAction> {
 ///
 /// The hint is a byte in the specification, but senders have been seen using
 /// other integer types, so anything that converts is accepted.
-fn urgency(hints: &HashMap<String, zvariant::OwnedValue>) -> u8 {
+fn urgency(hints: &HashMap<String, zbus::OwnedVariant>) -> u8 {
     hints
         .get("urgency")
         .and_then(|value| {
@@ -747,7 +748,7 @@ fn urgency(hints: &HashMap<String, zvariant::OwnedValue>) -> u8 {
 /// * the configured default when a sender names neither, which is the case for
 ///   almost every notification on a desktop.
 fn sound(
-    hints: &HashMap<String, zvariant::OwnedValue>,
+    hints: &HashMap<String, zbus::OwnedVariant>,
     default: Option<crate::sound::Sound>,
 ) -> Option<crate::sound::Sound> {
     if suppress_sound(hints) {
@@ -758,7 +759,7 @@ fn sound(
 }
 
 /// A string hint, or nothing if it is absent or of another type.
-fn hint_str<'a>(hints: &'a HashMap<String, zvariant::OwnedValue>, key: &str) -> Option<&'a str> {
+fn hint_str<'a>(hints: &'a HashMap<String, zbus::OwnedVariant>, key: &str) -> Option<&'a str> {
     hints
         .get(key)
         .and_then(|value| <&str>::try_from(value).ok())
@@ -769,7 +770,7 @@ fn hint_str<'a>(hints: &'a HashMap<String, zvariant::OwnedValue>, key: &str) -> 
 /// A boolean in the specification, and read leniently for the same reason
 /// [`urgency`] is: senders do send the other spellings, and the cost of
 /// refusing them is a sender that asked for silence getting two sounds.
-fn suppress_sound(hints: &HashMap<String, zvariant::OwnedValue>) -> bool {
+fn suppress_sound(hints: &HashMap<String, zbus::OwnedVariant>) -> bool {
     hints
         .get("suppress-sound")
         .and_then(|value| {
@@ -968,13 +969,11 @@ mod tests {
     /// here is what lets these tests exercise ownership without a bus. The
     /// message leaks so the header can borrow from it for `'static`.
     fn header(sender: Option<&str>) -> zbus::message::Header<'static> {
-        let builder = zbus::Message::method_call("/org/freedesktop/Notifications", "Notify")
-            .and_then(|builder| match sender {
-                Some(sender) => builder.sender(sender),
-                None => Ok(builder),
-            })
-            .and_then(|builder| builder.build(&()))
-            .expect("a message to hang a header off");
+        let mut builder = zbus::Message::method_call("/org/freedesktop/Notifications", "Notify");
+        if let Some(sender) = sender {
+            builder = builder.sender(sender);
+        }
+        let builder = builder.build(&()).expect("a message to hang a header off");
         Box::leak(Box::new(builder)).header()
     }
 
@@ -1135,7 +1134,7 @@ mod tests {
     #[test]
     fn urgency_is_read_from_the_hint() {
         let mut hints = HashMap::new();
-        hints.insert("urgency".to_owned(), zvariant::OwnedValue::from(2u8));
+        hints.insert("urgency".to_owned(), zbus::OwnedVariant::from(2u8));
         assert_eq!(urgency(&hints), 2);
     }
 
@@ -1144,7 +1143,7 @@ mod tests {
         Some(crate::sound::Sound::File("/sounds/bark.ogg".to_owned()))
     }
 
-    fn hints(pairs: &[(&str, zvariant::OwnedValue)]) -> HashMap<String, zvariant::OwnedValue> {
+    fn hints(pairs: &[(&str, zbus::OwnedVariant)]) -> HashMap<String, zbus::OwnedVariant> {
         pairs
             .iter()
             .map(|(key, value)| ((*key).to_owned(), value.try_clone().unwrap()))
@@ -1167,7 +1166,7 @@ mod tests {
     fn a_sound_file_hint_is_played_instead_of_the_default() {
         let hints = hints(&[(
             "sound-file",
-            zvariant::OwnedValue::from(zvariant::Str::from("/sounds/chime.ogg")),
+            zbus::OwnedVariant::from(zbus::Str::from("/sounds/chime.ogg")),
         )]);
         assert_eq!(
             sound(&hints, default_sound()),
@@ -1179,7 +1178,7 @@ mod tests {
     fn a_sound_name_hint_is_played_instead_of_the_default() {
         let hints = hints(&[(
             "sound-name",
-            zvariant::OwnedValue::from(zvariant::Str::from("message-new-instant")),
+            zbus::OwnedVariant::from(zbus::Str::from("message-new-instant")),
         )]);
         assert_eq!(
             sound(&hints, default_sound()),
@@ -1195,11 +1194,11 @@ mod tests {
         let hints = hints(&[
             (
                 "sound-file",
-                zvariant::OwnedValue::from(zvariant::Str::from("/sounds/chime.ogg")),
+                zbus::OwnedVariant::from(zbus::Str::from("/sounds/chime.ogg")),
             ),
             (
                 "sound-name",
-                zvariant::OwnedValue::from(zvariant::Str::from("bell")),
+                zbus::OwnedVariant::from(zbus::Str::from("bell")),
             ),
         ]);
         assert_eq!(
@@ -1212,7 +1211,7 @@ mod tests {
     fn suppress_sound_silences_the_configured_default() {
         // The whole point of the hint: the sender is playing its own, and a
         // server that plays anyway is two sounds for one event.
-        let hints = hints(&[("suppress-sound", zvariant::OwnedValue::from(true))]);
+        let hints = hints(&[("suppress-sound", zbus::OwnedVariant::from(true))]);
         assert_eq!(sound(&hints, default_sound()), None);
     }
 
@@ -1221,10 +1220,10 @@ mod tests {
         // Senders do send both — a library sets `sound-name` and the
         // application then asks for quiet.
         let hints = hints(&[
-            ("suppress-sound", zvariant::OwnedValue::from(true)),
+            ("suppress-sound", zbus::OwnedVariant::from(true)),
             (
                 "sound-name",
-                zvariant::OwnedValue::from(zvariant::Str::from("bell")),
+                zbus::OwnedVariant::from(zbus::Str::from("bell")),
             ),
         ]);
         assert_eq!(sound(&hints, None), None);
@@ -1232,7 +1231,7 @@ mod tests {
 
     #[test]
     fn suppress_sound_set_false_leaves_the_sound_alone() {
-        let hints = hints(&[("suppress-sound", zvariant::OwnedValue::from(false))]);
+        let hints = hints(&[("suppress-sound", zbus::OwnedVariant::from(false))]);
         assert_eq!(sound(&hints, default_sound()), default_sound());
     }
 
@@ -1241,7 +1240,7 @@ mod tests {
         // As with urgency: the specification says boolean and senders send
         // integers. Refusing means a sender that asked for silence gets two
         // sounds, which is the failure the hint exists to prevent.
-        let hints = hints(&[("suppress-sound", zvariant::OwnedValue::from(1u32))]);
+        let hints = hints(&[("suppress-sound", zbus::OwnedVariant::from(1u32))]);
         assert_eq!(sound(&hints, default_sound()), None);
     }
 
@@ -1249,7 +1248,7 @@ mod tests {
     fn a_sound_hint_of_the_wrong_type_falls_back_rather_than_failing() {
         // A number where a path belongs is a broken sender, not a reason to
         // drop the notification's sound entirely.
-        let hints = hints(&[("sound-file", zvariant::OwnedValue::from(7u32))]);
+        let hints = hints(&[("sound-file", zbus::OwnedVariant::from(7u32))]);
         assert_eq!(sound(&hints, default_sound()), default_sound());
     }
 
@@ -1259,7 +1258,7 @@ mod tests {
         // refusing would silently make every one of their notifications
         // normal.
         let mut hints = HashMap::new();
-        hints.insert("urgency".to_owned(), zvariant::OwnedValue::from(2u32));
+        hints.insert("urgency".to_owned(), zbus::OwnedVariant::from(2u32));
         assert_eq!(urgency(&hints), 2);
     }
 

@@ -33,13 +33,14 @@
 // over a channel, an answer over a one-shot reply channel, and the chooser in
 // between.
 
+use crate::dbus::sync::EmitSignalExt as _;
 use std::collections::HashMap;
 use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use smithay::input::keyboard::Keysym;
-use zvariant::{ObjectPath, OwnedObjectPath, OwnedValue, Value};
+use zbus::{ObjectPath, OwnedObjectPath, OwnedVariant, Variant};
 
 use crate::screencast::portal::{called_by_frontend, Sessions};
 
@@ -147,7 +148,7 @@ impl Granted {
     /// `trigger_description` is what the application shows in its own
     /// settings, so it is the chord spelled the way the desktop spells it —
     /// the same string the dialogue showed the person who agreed to it.
-    pub fn described(&self) -> HashMap<String, OwnedValue> {
+    pub fn described(&self) -> HashMap<String, OwnedVariant> {
         HashMap::from([
             ("description".to_owned(), owned(self.description.as_str())),
             ("trigger_description".to_owned(), owned(self.chord.as_str())),
@@ -209,10 +210,10 @@ pub enum Message {
 /// clones it out and lets the lock go first: an emit is socket I/O, and this
 /// runs on the event loop.
 #[derive(Clone, Default)]
-pub struct Signals(Arc<Mutex<Option<zbus::blocking::Connection>>>);
+pub struct Signals(Arc<Mutex<Option<crate::dbus::sync::Connection>>>);
 
 impl Signals {
-    pub fn set_connection(&self, connection: zbus::blocking::Connection) {
+    pub fn set_connection(&self, connection: crate::dbus::sync::Connection) {
         *self.0.lock().unwrap() = Some(connection);
     }
 
@@ -239,8 +240,8 @@ impl Signals {
         } else {
             "Deactivated"
         };
-        let options: HashMap<String, OwnedValue> = HashMap::new();
-        if let Err(e) = connection.emit_signal(
+        let options: HashMap<String, OwnedVariant> = HashMap::new();
+        if let Err(e) = connection.emit_blocking(
             None::<&str>,
             OBJECT_PATH,
             INTERFACE,
@@ -425,7 +426,7 @@ impl GlobalShortcuts {
 
 /// What a granted list looks like on the wire: `a(sa{sv})`, the shortcut's own
 /// id beside what it is and what fires it.
-type Described = Vec<(String, HashMap<String, OwnedValue>)>;
+type Described = Vec<(String, HashMap<String, OwnedVariant>)>;
 
 fn describe(shortcuts: &[Granted]) -> Described {
     shortcuts
@@ -459,10 +460,10 @@ impl GlobalShortcuts {
         _handle: ObjectPath<'_>,
         session_handle: ObjectPath<'_>,
         app_id: &str,
-        _options: HashMap<String, OwnedValue>,
+        _options: HashMap<String, OwnedVariant>,
         #[zbus(object_server)] server: &zbus::ObjectServer,
         #[zbus(header)] header: zbus::message::Header<'_>,
-    ) -> (u32, HashMap<String, OwnedValue>) {
+    ) -> (u32, HashMap<String, OwnedVariant>) {
         if !self.called_by_frontend(&header) {
             return (RESPONSE_FAILED, HashMap::new());
         }
@@ -496,11 +497,11 @@ impl GlobalShortcuts {
         &self,
         _handle: ObjectPath<'_>,
         session_handle: ObjectPath<'_>,
-        shortcuts: Vec<(String, HashMap<String, OwnedValue>)>,
+        shortcuts: Vec<(String, HashMap<String, OwnedVariant>)>,
         _parent_window: &str,
-        _options: HashMap<String, OwnedValue>,
+        _options: HashMap<String, OwnedVariant>,
         #[zbus(header)] header: zbus::message::Header<'_>,
-    ) -> (u32, HashMap<String, OwnedValue>) {
+    ) -> (u32, HashMap<String, OwnedVariant>) {
         if !self.called_by_frontend(&header) {
             return (RESPONSE_FAILED, HashMap::new());
         }
@@ -567,7 +568,7 @@ impl GlobalShortcuts {
         _handle: ObjectPath<'_>,
         session_handle: ObjectPath<'_>,
         #[zbus(header)] header: zbus::message::Header<'_>,
-    ) -> (u32, HashMap<String, OwnedValue>) {
+    ) -> (u32, HashMap<String, OwnedVariant>) {
         if !self.called_by_frontend(&header) {
             return (RESPONSE_FAILED, HashMap::new());
         }
@@ -594,7 +595,7 @@ impl GlobalShortcuts {
         session_handle: ObjectPath<'_>,
         shortcut_id: &str,
         timestamp: u64,
-        options: HashMap<String, Value<'_>>,
+        options: HashMap<String, Variant<'_>>,
     ) -> zbus::Result<()>;
 
     #[zbus(signal)]
@@ -603,17 +604,17 @@ impl GlobalShortcuts {
         session_handle: ObjectPath<'_>,
         shortcut_id: &str,
         timestamp: u64,
-        options: HashMap<String, Value<'_>>,
+        options: HashMap<String, Variant<'_>>,
     ) -> zbus::Result<()>;
 }
 
-fn owned_shortcuts(described: Described) -> OwnedValue {
-    Value::from(described)
+fn owned_shortcuts(described: Described) -> OwnedVariant {
+    Variant::from(described)
         .try_to_owned()
         .expect("a shortcut list is never a file descriptor")
 }
 
-fn string(options: &HashMap<String, OwnedValue>, key: &str) -> String {
+fn string(options: &HashMap<String, OwnedVariant>, key: &str) -> String {
     options
         .get(key)
         .and_then(|value| <&str>::try_from(value).ok())

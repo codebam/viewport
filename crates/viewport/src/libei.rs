@@ -56,7 +56,7 @@ use smithay::backend::libei::{EiInput, EiInputConnection, EiInputEvent, EiInputS
 use smithay::input::keyboard::{Keycode, Keysym, XkbConfig};
 use smithay::reexports::calloop::RegistrationToken;
 use smithay::reexports::reis::eis;
-use zvariant::OwnedObjectPath;
+use zbus::OwnedObjectPath;
 
 use crate::screencast::remote::{DEVICE_KEYBOARD, DEVICE_POINTER, DEVICE_TOUCHSCREEN};
 use crate::state::ViewportState;

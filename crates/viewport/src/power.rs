@@ -1,3 +1,4 @@
+use crate::dbus::sync::connection::BuildBlocking as _;
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // Battery, lid and power profiles, for the bar and for the session.
@@ -12,6 +13,8 @@
 // promptly on a healthy machine and not at all on one whose daemon has
 // wedged; a compositor that waited on it would drop frames for a percentage.
 
+use crate::dbus::sync::proxy::BuildBlocking as _;
+use crate::dbus::sync::ProxyExt as _;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
@@ -282,8 +285,9 @@ fn start(
         .spawn({
             let commands = commands.clone();
             move || {
-                let connection = match zbus::blocking::connection::Builder::system()
-                    .and_then(|builder| builder.method_timeout(CALL_TIMEOUT).build())
+                let connection = match crate::dbus::sync::connection::Builder::system()
+                    .method_timeout(CALL_TIMEOUT)
+                    .build_blocking()
                 {
                     Ok(connection) => connection,
                     Err(e) => {
@@ -315,7 +319,7 @@ fn start(
 /// it: registering a match rule is another blocking round trip to the bus
 /// daemon, and the worker has suspend requests waiting behind it.
 fn pump(
-    connection: zbus::blocking::Connection,
+    connection: crate::dbus::sync::Connection,
     commands: mpsc::Sender<Command>,
     rule: String,
 ) -> anyhow::Result<()> {
@@ -323,14 +327,15 @@ fn pump(
         .name("power-signals".to_owned())
         .spawn(move || {
             let parsed = match zbus::MatchRule::try_from(rule.as_str()) {
-                Ok(parsed) => parsed,
+                Ok(parsed) => parsed.to_owned(),
                 Err(e) => {
                     tracing::warn!("power: unreadable match rule {rule:?}: {e}");
                     return;
                 }
             };
             let messages =
-                match zbus::blocking::MessageIterator::for_match_rule(parsed, &connection, None) {
+                match crate::dbus::sync::MessageIterator::for_match_rule(parsed, &connection, None)
+                {
                     Ok(messages) => messages,
                     Err(e) => {
                         tracing::warn!("power: could not subscribe to {rule:?}: {e}");
@@ -345,7 +350,7 @@ fn pump(
 }
 
 struct Worker {
-    connection: zbus::blocking::Connection,
+    connection: crate::dbus::sync::Connection,
     events: smithay::reexports::calloop::channel::Sender<Message>,
     last: PowerSnapshot,
     enabled: bool,
@@ -353,7 +358,7 @@ struct Worker {
 
 impl Worker {
     fn new(
-        connection: zbus::blocking::Connection,
+        connection: crate::dbus::sync::Connection,
         events: smithay::reexports::calloop::channel::Sender<Message>,
     ) -> Self {
         Self {
@@ -466,7 +471,7 @@ impl Worker {
             tracing::warn!("power: no power-profiles daemon");
             return;
         };
-        if let Err(e) = proxy.set_property("ActiveProfile", profile) {
+        if let Err(e) = proxy.put_property("ActiveProfile", profile) {
             tracing::debug!("power: setting profile {profile:?} failed: {e}");
         }
     }
@@ -482,7 +487,7 @@ impl Worker {
             tracing::warn!("power: logind is unavailable; cannot {verb}");
             return;
         };
-        if let Err(e) = proxy.call::<&str, (bool,), ()>(method, &(false,)) {
+        if let Err(e) = proxy.method::<(bool,), ()>(method, &(false,)) {
             tracing::warn!("power: {verb} failed: {e}");
         }
     }
@@ -504,7 +509,7 @@ impl Worker {
         destination: &str,
         path: &str,
         interface: &str,
-    ) -> Option<zbus::blocking::Proxy<'static>> {
+    ) -> Option<crate::dbus::sync::Proxy<'static>> {
         proxy(&self.connection, destination, path, interface)
     }
 }
@@ -515,20 +520,17 @@ impl Worker {
 /// thread [`crate::dbus_util::with_deadline`] hands it, where there is a
 /// connection and no worker.
 fn proxy(
-    connection: &zbus::blocking::Connection,
+    connection: &crate::dbus::sync::Connection,
     destination: &str,
     path: &str,
     interface: &str,
-) -> Option<zbus::blocking::Proxy<'static>> {
-    zbus::blocking::proxy::Builder::new(connection)
+) -> Option<crate::dbus::sync::Proxy<'static>> {
+    crate::dbus::sync::proxy::Builder::new(connection)
         .destination(destination.to_owned())
-        .ok()?
         .path(path.to_owned())
-        .ok()?
         .interface(interface.to_owned())
-        .ok()?
         .cache_properties(zbus::proxy::CacheProperties::No)
-        .build()
+        .build_blocking()
         .ok()
 }
 
@@ -542,7 +544,7 @@ fn battery_state(state: u32) -> &'static str {
     }
 }
 
-fn read_snapshot(connection: &zbus::blocking::Connection) -> PowerSnapshot {
+fn read_snapshot(connection: &crate::dbus::sync::Connection) -> PowerSnapshot {
     let manager = proxy(
         connection,
         "org.freedesktop.UPower",
@@ -558,22 +560,22 @@ fn read_snapshot(connection: &zbus::blocking::Connection) -> PowerSnapshot {
 
     let on_battery = manager
         .as_ref()
-        .and_then(|p| p.get_property::<bool>("OnBattery").ok())
+        .and_then(|p| p.property::<bool>("OnBattery").ok())
         .unwrap_or(false);
     let lid_closed = manager
         .as_ref()
-        .and_then(|p| p.get_property::<bool>("LidIsClosed").ok())
+        .and_then(|p| p.property::<bool>("LidIsClosed").ok())
         .unwrap_or(false);
 
     let mut batteries = Vec::new();
     if let Some(device) = device.as_ref() {
-        let present = device.get_property::<bool>("IsPresent").unwrap_or(true);
+        let present = device.property::<bool>("IsPresent").unwrap_or(true);
         if present {
-            let percentage = device.get_property::<f64>("Percentage").unwrap_or(-1.0);
+            let percentage = device.property::<f64>("Percentage").unwrap_or(-1.0);
             if percentage >= 0.0 {
-                let state = device.get_property::<u32>("State").unwrap_or(0);
-                let time_to_empty = device.get_property::<i64>("TimeToEmpty").ok();
-                let time_to_full = device.get_property::<i64>("TimeToFull").ok();
+                let state = device.property::<u32>("State").unwrap_or(0);
+                let time_to_empty = device.property::<i64>("TimeToEmpty").ok();
+                let time_to_full = device.property::<i64>("TimeToFull").ok();
                 batteries.push(PowerBattery {
                     percentage,
                     state: battery_state(state).to_owned(),
@@ -594,7 +596,7 @@ fn read_snapshot(connection: &zbus::blocking::Connection) -> PowerSnapshot {
     }
 }
 
-fn profiles(connection: &zbus::blocking::Connection) -> (Option<String>, Vec<String>) {
+fn profiles(connection: &crate::dbus::sync::Connection) -> (Option<String>, Vec<String>) {
     let proxy = proxy(
         connection,
         "org.freedesktop.UPower.PowerProfiles",
@@ -612,9 +614,9 @@ fn profiles(connection: &zbus::blocking::Connection) -> (Option<String>, Vec<Str
     let Some(proxy) = proxy else {
         return (None, Vec::new());
     };
-    let profile = proxy.get_property::<String>("ActiveProfile").ok();
-    let rows: Vec<HashMap<String, zvariant::OwnedValue>> =
-        proxy.get_property("Profiles").unwrap_or_default();
+    let profile = proxy.property::<String>("ActiveProfile").ok();
+    let rows: Vec<HashMap<String, zbus::OwnedVariant>> =
+        proxy.property("Profiles").unwrap_or_default();
     let profiles = rows
         .iter()
         .filter_map(|row| {

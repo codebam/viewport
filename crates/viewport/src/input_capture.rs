@@ -2,16 +2,17 @@
 //
 // org.freedesktop.impl.portal.InputCapture and its receiver-side EI transport.
 
+use crate::dbus::sync::EmitSignalExt as _;
 use std::{
     collections::{HashMap, HashSet},
     os::fd::OwnedFd,
     sync::{Arc, Mutex},
 };
 
-use enumflags2::BitFlags;
 use reis::{
     calloop::{EisRequestSource, EisRequestSourceEvent},
     eis,
+    enumflags2::BitFlags,
     request::{Device, DeviceCapability, EisRequest},
 };
 use smithay::{
@@ -23,7 +24,7 @@ use smithay::{
     reexports::calloop::{PostAction, RegistrationToken},
     utils::{Logical, Point, SERIAL_COUNTER},
 };
-use zvariant::{ObjectPath, OwnedObjectPath, OwnedValue};
+use zbus::{ObjectPath, OwnedObjectPath, OwnedVariant};
 
 use crate::screencast::portal::{Message, SessionObject, Sessions};
 
@@ -126,17 +127,22 @@ impl Shared {
 }
 
 #[derive(Clone, Default)]
-pub struct Signals(Arc<Mutex<Option<zbus::blocking::Connection>>>);
+pub struct Signals(Arc<Mutex<Option<crate::dbus::sync::Connection>>>);
 
 impl Signals {
-    pub fn set_connection(&self, connection: zbus::blocking::Connection) {
+    pub fn set_connection(&self, connection: crate::dbus::sync::Connection) {
         *self.0.lock().unwrap() = Some(connection);
     }
 
-    fn emit(&self, member: &str, session: &OwnedObjectPath, options: HashMap<String, OwnedValue>) {
+    fn emit(
+        &self,
+        member: &str,
+        session: &OwnedObjectPath,
+        options: HashMap<String, OwnedVariant>,
+    ) {
         let connection = self.0.lock().unwrap().clone();
         let Some(connection) = connection else { return };
-        if let Err(error) = connection.emit_signal(
+        if let Err(error) = connection.emit_blocking(
             None::<&str>,
             OBJECT_PATH,
             INTERFACE,
@@ -163,12 +169,12 @@ impl Signals {
         barrier_id: u32,
     ) {
         let mut options = HashMap::new();
-        options.insert("activation_id".into(), OwnedValue::from(activation_id));
+        options.insert("activation_id".into(), OwnedVariant::from(activation_id));
         options.insert(
             "cursor_position".into(),
-            OwnedValue::try_from(zvariant::Value::from((cursor.x, cursor.y))).expect("tuple"),
+            OwnedVariant::try_from(zbus::Variant::from((cursor.x, cursor.y))).expect("tuple"),
         );
-        options.insert("barrier_id".into(), OwnedValue::from(barrier_id));
+        options.insert("barrier_id".into(), OwnedVariant::from(barrier_id));
         self.emit("Activated", session, options);
     }
 
@@ -179,10 +185,10 @@ impl Signals {
         cursor: Point<f64, Logical>,
     ) {
         let mut options = HashMap::new();
-        options.insert("activation_id".into(), OwnedValue::from(activation_id));
+        options.insert("activation_id".into(), OwnedVariant::from(activation_id));
         options.insert(
             "cursor_position".into(),
-            OwnedValue::try_from(zvariant::Value::from((cursor.x, cursor.y))).expect("tuple"),
+            OwnedVariant::try_from(zbus::Variant::from((cursor.x, cursor.y))).expect("tuple"),
         );
         self.emit("Deactivated", session, options);
     }
@@ -294,7 +300,7 @@ impl InputCapture {
         path: &OwnedObjectPath,
         app_id: &str,
         capabilities: u32,
-    ) -> (u32, HashMap<String, OwnedValue>) {
+    ) -> (u32, HashMap<String, OwnedVariant>) {
         let capabilities = capabilities & SUPPORTED_CAPABILITIES;
         if capabilities == 0 {
             return (RESPONSE_FAILED, HashMap::new());
@@ -326,8 +332,8 @@ impl InputCapture {
         session.started = true;
         session.capabilities = granted;
         let mut results = HashMap::new();
-        results.insert("capabilities".into(), OwnedValue::from(granted));
-        results.insert("clipboard_enabled".into(), OwnedValue::from(false));
+        results.insert("capabilities".into(), OwnedVariant::from(granted));
+        results.insert("clipboard_enabled".into(), OwnedVariant::from(false));
         (RESPONSE_SUCCESS, results)
     }
 
@@ -336,7 +342,7 @@ impl InputCapture {
         path: OwnedObjectPath,
         app_id: &str,
         enabled: bool,
-    ) -> (u32, HashMap<String, OwnedValue>) {
+    ) -> (u32, HashMap<String, OwnedVariant>) {
         let mut state = self.shared.0.lock().unwrap();
         let Some(session) = state.sessions.get_mut(&path) else {
             return (RESPONSE_FAILED, HashMap::new());
@@ -376,10 +382,10 @@ impl InputCapture {
         session_handle: ObjectPath<'_>,
         app_id: &str,
         _parent_window: &str,
-        options: HashMap<String, OwnedValue>,
+        options: HashMap<String, OwnedVariant>,
         #[zbus(object_server)] server: &zbus::ObjectServer,
         #[zbus(header)] header: zbus::message::Header<'_>,
-    ) -> (u32, HashMap<String, OwnedValue>) {
+    ) -> (u32, HashMap<String, OwnedVariant>) {
         if !self.authenticated(&header) {
             return (RESPONSE_FAILED, HashMap::new());
         }
@@ -407,10 +413,10 @@ impl InputCapture {
         &self,
         session_handle: ObjectPath<'_>,
         app_id: &str,
-        _options: HashMap<String, OwnedValue>,
+        _options: HashMap<String, OwnedVariant>,
         #[zbus(object_server)] server: &zbus::ObjectServer,
         #[zbus(header)] header: zbus::message::Header<'_>,
-    ) -> zbus::fdo::Result<HashMap<String, OwnedValue>> {
+    ) -> zbus::fdo::Result<HashMap<String, OwnedVariant>> {
         if !self.authenticated(&header) {
             return Err(zbus::fdo::Error::AccessDenied(
                 "not the portal frontend".into(),
@@ -434,9 +440,9 @@ impl InputCapture {
         session_handle: ObjectPath<'_>,
         app_id: &str,
         _parent_window: &str,
-        options: HashMap<String, OwnedValue>,
+        options: HashMap<String, OwnedVariant>,
         #[zbus(header)] header: zbus::message::Header<'_>,
-    ) -> (u32, HashMap<String, OwnedValue>) {
+    ) -> (u32, HashMap<String, OwnedVariant>) {
         if !self.authenticated(&header) {
             return (RESPONSE_FAILED, HashMap::new());
         }
@@ -453,9 +459,9 @@ impl InputCapture {
         _handle: ObjectPath<'_>,
         session_handle: ObjectPath<'_>,
         app_id: &str,
-        _options: HashMap<String, OwnedValue>,
+        _options: HashMap<String, OwnedVariant>,
         #[zbus(header)] header: zbus::message::Header<'_>,
-    ) -> (u32, HashMap<String, OwnedValue>) {
+    ) -> (u32, HashMap<String, OwnedVariant>) {
         if !self.authenticated(&header) {
             return (RESPONSE_FAILED, HashMap::new());
         }
@@ -472,9 +478,9 @@ impl InputCapture {
         let mut results = HashMap::new();
         results.insert(
             "zones".into(),
-            OwnedValue::try_from(zvariant::Value::from(zones)).expect("zones"),
+            OwnedVariant::try_from(zbus::Variant::from(zones)).expect("zones"),
         );
-        results.insert("zone_set".into(), OwnedValue::from(state.zone_set));
+        results.insert("zone_set".into(), OwnedVariant::from(state.zone_set));
         (RESPONSE_SUCCESS, results)
     }
 
@@ -484,11 +490,11 @@ impl InputCapture {
         _handle: ObjectPath<'_>,
         session_handle: ObjectPath<'_>,
         app_id: &str,
-        _options: HashMap<String, OwnedValue>,
-        barriers: Vec<HashMap<String, OwnedValue>>,
+        _options: HashMap<String, OwnedVariant>,
+        barriers: Vec<HashMap<String, OwnedVariant>>,
         zone_set: u32,
         #[zbus(header)] header: zbus::message::Header<'_>,
-    ) -> (u32, HashMap<String, OwnedValue>) {
+    ) -> (u32, HashMap<String, OwnedVariant>) {
         if !self.authenticated(&header) {
             return (RESPONSE_FAILED, HashMap::new());
         }
@@ -546,7 +552,7 @@ impl InputCapture {
         let mut results = HashMap::new();
         results.insert(
             "failed_barriers".into(),
-            OwnedValue::try_from(zvariant::Value::from(failed)).expect("ids"),
+            OwnedVariant::try_from(zbus::Variant::from(failed)).expect("ids"),
         );
         (RESPONSE_SUCCESS, results)
     }
@@ -555,9 +561,9 @@ impl InputCapture {
         &self,
         session: ObjectPath<'_>,
         app_id: &str,
-        _options: HashMap<String, OwnedValue>,
+        _options: HashMap<String, OwnedVariant>,
         #[zbus(header)] header: zbus::message::Header<'_>,
-    ) -> (u32, HashMap<String, OwnedValue>) {
+    ) -> (u32, HashMap<String, OwnedVariant>) {
         if !self.authenticated(&header) {
             return (RESPONSE_FAILED, HashMap::new());
         }
@@ -568,9 +574,9 @@ impl InputCapture {
         &self,
         session: ObjectPath<'_>,
         app_id: &str,
-        _options: HashMap<String, OwnedValue>,
+        _options: HashMap<String, OwnedVariant>,
         #[zbus(header)] header: zbus::message::Header<'_>,
-    ) -> (u32, HashMap<String, OwnedValue>) {
+    ) -> (u32, HashMap<String, OwnedVariant>) {
         if !self.authenticated(&header) {
             return (RESPONSE_FAILED, HashMap::new());
         }
@@ -581,9 +587,9 @@ impl InputCapture {
         &self,
         session: ObjectPath<'_>,
         app_id: &str,
-        options: HashMap<String, OwnedValue>,
+        options: HashMap<String, OwnedVariant>,
         #[zbus(header)] header: zbus::message::Header<'_>,
-    ) -> (u32, HashMap<String, OwnedValue>) {
+    ) -> (u32, HashMap<String, OwnedVariant>) {
         if !self.authenticated(&header) {
             return (RESPONSE_FAILED, HashMap::new());
         }
@@ -617,9 +623,9 @@ impl InputCapture {
         &self,
         session: ObjectPath<'_>,
         app_id: &str,
-        _options: HashMap<String, OwnedValue>,
+        _options: HashMap<String, OwnedVariant>,
         #[zbus(header)] header: zbus::message::Header<'_>,
-    ) -> zbus::fdo::Result<zvariant::OwnedFd> {
+    ) -> zbus::fdo::Result<zbus::OwnedFd> {
         if !self.authenticated(&header) {
             return Err(zbus::fdo::Error::AccessDenied(
                 "not the portal frontend".into(),
@@ -667,7 +673,7 @@ impl InputCapture {
                 "the compositor is not listening".into(),
             ));
         }
-        Ok(zvariant::OwnedFd::from(OwnedFd::from(theirs)))
+        Ok(zbus::OwnedFd::from(OwnedFd::from(theirs)))
     }
 
     // Declared here for D-Bus introspection; compositor-side `Signals` emits
@@ -676,28 +682,28 @@ impl InputCapture {
     async fn disabled(
         emitter: &zbus::object_server::SignalEmitter<'_>,
         session_handle: ObjectPath<'_>,
-        options: HashMap<String, zvariant::Value<'_>>,
+        options: HashMap<String, zbus::Variant<'_>>,
     ) -> zbus::Result<()>;
 
     #[zbus(signal)]
     async fn activated(
         emitter: &zbus::object_server::SignalEmitter<'_>,
         session_handle: ObjectPath<'_>,
-        options: HashMap<String, zvariant::Value<'_>>,
+        options: HashMap<String, zbus::Variant<'_>>,
     ) -> zbus::Result<()>;
 
     #[zbus(signal)]
     async fn deactivated(
         emitter: &zbus::object_server::SignalEmitter<'_>,
         session_handle: ObjectPath<'_>,
-        options: HashMap<String, zvariant::Value<'_>>,
+        options: HashMap<String, zbus::Variant<'_>>,
     ) -> zbus::Result<()>;
 
     #[zbus(signal)]
     async fn zones_changed(
         emitter: &zbus::object_server::SignalEmitter<'_>,
         session_handle: ObjectPath<'_>,
-        options: HashMap<String, zvariant::Value<'_>>,
+        options: HashMap<String, zbus::Variant<'_>>,
     ) -> zbus::Result<()>;
 }
 

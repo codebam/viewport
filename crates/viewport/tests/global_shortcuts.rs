@@ -77,32 +77,40 @@ fn compositor_on(bus: &Bus, tag: &str) -> Compositor {
         .start()
 }
 
-fn connect(bus: &Bus) -> zbus::blocking::Connection {
-    zbus::blocking::connection::Builder::address(bus.address.as_str())
-        .expect("a bus address")
-        .build()
-        .expect("connecting to the test bus")
+fn connect(bus: &Bus) -> zbus::Connection {
+    zbus::block_on(async {
+        zbus::connection::Builder::address(bus.address.as_str())
+            .build()
+            .await
+            .expect("connecting to the test bus")
+    })
 }
 
-fn proxy(connection: &zbus::blocking::Connection) -> zbus::blocking::Proxy<'static> {
-    zbus::blocking::Proxy::new(connection, BUS_NAME, OBJECT_PATH, INTERFACE).expect("a proxy")
+fn proxy(connection: &zbus::Connection) -> zbus::Proxy<'static> {
+    zbus::block_on(zbus::Proxy::new(
+        connection,
+        BUS_NAME,
+        OBJECT_PATH,
+        INTERFACE,
+    ))
+    .expect("a proxy")
 }
 
-fn no_options() -> HashMap<String, zvariant::Value<'static>> {
+fn no_options() -> HashMap<String, zbus::Variant<'static>> {
     HashMap::new()
 }
 
 /// One shortcut as the frontend passes it on: an id, and the options carrying
 /// what it is for and what should fire it.
-fn shortcut(id: &str, trigger: &str) -> (String, HashMap<String, zvariant::Value<'static>>) {
-    let mut options: HashMap<String, zvariant::Value<'static>> = HashMap::new();
+fn shortcut(id: &str, trigger: &str) -> (String, HashMap<String, zbus::Variant<'static>>) {
+    let mut options: HashMap<String, zbus::Variant<'static>> = HashMap::new();
     options.insert(
         "description".to_owned(),
-        zvariant::Value::from("talk to people"),
+        zbus::Variant::from("talk to people"),
     );
     options.insert(
         "preferred_trigger".to_owned(),
-        zvariant::Value::from(trigger.to_owned()),
+        zbus::Variant::from(trigger.to_owned()),
     );
     (id.to_owned(), options)
 }
@@ -111,18 +119,17 @@ fn shortcut(id: &str, trigger: &str) -> (String, HashMap<String, zvariant::Value
 /// is: it follows NameOwnerChanged on a connection of its own, and a call that
 /// overtakes that signal is refused for a reason that has already gone away.
 fn create_session(
-    proxy: &zbus::blocking::Proxy<'_>,
-    request: &zvariant::ObjectPath<'_>,
-    session: &zvariant::ObjectPath<'_>,
+    proxy: &zbus::Proxy<'_>,
+    request: &zbus::ObjectPath<'_>,
+    session: &zbus::ObjectPath<'_>,
 ) -> u32 {
     let mut response = RESPONSE_FAILED;
     for _ in 0..100 {
-        let (answer, _): (u32, HashMap<String, zvariant::OwnedValue>) = proxy
-            .call(
-                "CreateSession",
-                &(request, session, "org.example.talker", no_options()),
-            )
-            .expect("CreateSession");
+        let (answer, _): (u32, HashMap<String, zbus::OwnedVariant>) = zbus::block_on(proxy.call(
+            "CreateSession",
+            &(request, session, "org.example.talker", no_options()),
+        ))
+        .expect("CreateSession");
         response = answer;
         if response == RESPONSE_SUCCESS {
             break;
@@ -132,12 +139,10 @@ fn create_session(
     response
 }
 
-fn paths() -> (zvariant::ObjectPath<'static>, zvariant::ObjectPath<'static>) {
+fn paths() -> (zbus::ObjectPath<'static>, zbus::ObjectPath<'static>) {
     (
-        zvariant::ObjectPath::try_from("/org/freedesktop/portal/desktop/request/1")
-            .expect("a path"),
-        zvariant::ObjectPath::try_from("/org/freedesktop/portal/desktop/session/1")
-            .expect("a path"),
+        zbus::ObjectPath::try_from("/org/freedesktop/portal/desktop/request/1").expect("a path"),
+        zbus::ObjectPath::try_from("/org/freedesktop/portal/desktop/session/1").expect("a path"),
     )
 }
 
@@ -156,17 +161,17 @@ fn the_interface_is_on_the_bus() {
     let _compositor = compositor_on(&bus, "present");
 
     let connection = connect(&bus);
-    let properties = zbus::blocking::fdo::PropertiesProxy::builder(&connection)
-        .destination(BUS_NAME)
-        .unwrap()
-        .path(OBJECT_PATH)
-        .unwrap()
-        .build()
-        .expect("a properties proxy");
+    let properties = zbus::block_on(async {
+        zbus::fdo::PropertiesProxy::builder(&connection)
+            .destination(BUS_NAME)
+            .path(OBJECT_PATH)
+            .build()
+            .await
+            .expect("a properties proxy")
+    });
 
-    let version = properties
-        .get(INTERFACE.try_into().unwrap(), "version")
-        .expect("version");
+    let version =
+        zbus::block_on(properties.get(INTERFACE.try_into().unwrap(), "version")).expect("version");
     assert_eq!(u32::try_from(&version).expect("a number"), 1);
 }
 
@@ -188,12 +193,11 @@ fn a_stranger_cannot_ask_for_a_shortcut() {
     let proxy = proxy(&connection);
     let (request, session) = paths();
 
-    let (response, _): (u32, HashMap<String, zvariant::OwnedValue>) = proxy
-        .call(
-            "CreateSession",
-            &(&request, &session, "org.example.intruder", no_options()),
-        )
-        .expect("CreateSession");
+    let (response, _): (u32, HashMap<String, zbus::OwnedVariant>) = zbus::block_on(proxy.call(
+        "CreateSession",
+        &(&request, &session, "org.example.intruder", no_options()),
+    ))
+    .expect("CreateSession");
     assert_eq!(response, RESPONSE_FAILED);
     assert!(
         compositor.saw("refusing a call from", Duration::from_secs(2)),
@@ -218,15 +222,13 @@ fn a_shortcut_is_refused_with_no_desktop_to_ask_through() {
     let compositor = compositor_on(&bus, "noshell");
 
     let connection = connect(&bus);
-    connection
-        .request_name(FRONTEND_NAME)
-        .expect("claiming the frontend name");
+    zbus::block_on(connection.request_name(FRONTEND_NAME)).expect("claiming the frontend name");
     let proxy = proxy(&connection);
     let (request, session) = paths();
     assert_eq!(create_session(&proxy, &request, &session), RESPONSE_SUCCESS);
 
-    let (response, results): (u32, HashMap<String, zvariant::OwnedValue>) = proxy
-        .call(
+    let (response, results): (u32, HashMap<String, zbus::OwnedVariant>) =
+        zbus::block_on(proxy.call(
             "BindShortcuts",
             &(
                 &request,
@@ -235,7 +237,7 @@ fn a_shortcut_is_refused_with_no_desktop_to_ask_through() {
                 "",
                 no_options(),
             ),
-        )
+        ))
         .expect("BindShortcuts");
     assert_eq!(response, RESPONSE_CANCELLED);
     assert!(
@@ -267,25 +269,22 @@ fn a_trigger_this_keymap_cannot_read_is_refused_without_asking() {
     let compositor = compositor_on(&bus, "badtrigger");
 
     let connection = connect(&bus);
-    connection
-        .request_name(FRONTEND_NAME)
-        .expect("claiming the frontend name");
+    zbus::block_on(connection.request_name(FRONTEND_NAME)).expect("claiming the frontend name");
     let proxy = proxy(&connection);
     let (request, session) = paths();
     assert_eq!(create_session(&proxy, &request, &session), RESPONSE_SUCCESS);
 
-    let (response, _): (u32, HashMap<String, zvariant::OwnedValue>) = proxy
-        .call(
-            "BindShortcuts",
-            &(
-                &request,
-                &session,
-                vec![shortcut("talk", "HYPER+NotAKey")],
-                "",
-                no_options(),
-            ),
-        )
-        .expect("BindShortcuts");
+    let (response, _): (u32, HashMap<String, zbus::OwnedVariant>) = zbus::block_on(proxy.call(
+        "BindShortcuts",
+        &(
+            &request,
+            &session,
+            vec![shortcut("talk", "HYPER+NotAKey")],
+            "",
+            no_options(),
+        ),
+    ))
+    .expect("BindShortcuts");
     assert_eq!(response, RESPONSE_CANCELLED);
     assert!(
         compositor.saw("which is not a chord here", Duration::from_secs(2)),
@@ -316,9 +315,7 @@ fn an_unknown_session_holds_nothing() {
     let _compositor = compositor_on(&bus, "unknown");
 
     let connection = connect(&bus);
-    connection
-        .request_name(FRONTEND_NAME)
-        .expect("claiming the frontend name");
+    zbus::block_on(connection.request_name(FRONTEND_NAME)).expect("claiming the frontend name");
     let proxy = proxy(&connection);
     let (request, session) = paths();
 
@@ -326,18 +323,17 @@ fn an_unknown_session_holds_nothing() {
     // have noticed who the frontend is before it answers at all.
     let mut answer = (RESPONSE_FAILED, HashMap::new());
     for _ in 0..100 {
-        answer = proxy
-            .call("ListShortcuts", &(&request, &session))
+        answer = zbus::block_on(proxy.call("ListShortcuts", &(&request, &session)))
             .expect("ListShortcuts");
         if answer.0 == RESPONSE_SUCCESS {
             break;
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-    let (response, results): (u32, HashMap<String, zvariant::OwnedValue>) = answer;
+    let (response, results): (u32, HashMap<String, zbus::OwnedVariant>) = answer;
     assert_eq!(response, RESPONSE_SUCCESS);
     let shortcuts = results.get("shortcuts").expect("a list, even an empty one");
-    let shortcuts: Vec<(String, HashMap<String, zvariant::OwnedValue>)> = shortcuts
+    let shortcuts: Vec<(String, HashMap<String, zbus::OwnedVariant>)> = shortcuts
         .try_to_owned()
         .unwrap()
         .try_into()

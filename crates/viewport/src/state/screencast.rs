@@ -1703,7 +1703,7 @@ impl ViewportState {
     /// taken from the window under it.
     pub fn grant_shortcuts(
         &mut self,
-        session: &zvariant::OwnedObjectPath,
+        session: &zbus::OwnedObjectPath,
         app_id: &str,
         shortcuts: &[crate::shortcuts::Granted],
     ) {

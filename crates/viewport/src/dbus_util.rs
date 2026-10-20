@@ -11,13 +11,13 @@
 
 use std::sync::mpsc;
 
-use zvariant::{OwnedValue, Value};
+use zbus::{OwnedVariant, Variant};
 
 /// A value the way D-Bus carries it.
 ///
 /// Infallible for everything here: only file descriptors can fail to be owned,
 /// and a setting, a shortcut description, or a signal body is never one.
-pub fn owned<'a, T: Into<Value<'a>>>(value: T) -> OwnedValue {
+pub fn owned<'a, T: Into<Variant<'a>>>(value: T) -> OwnedVariant {
     value
         .into()
         .try_to_owned()
@@ -54,14 +54,14 @@ pub fn with_deadline<T: Send + 'static>(
 /// associating with an access point — and a signal that arrives during one of
 /// those must not be dropped.
 pub fn pump<C: Send + 'static>(
-    connection: zbus::blocking::Connection,
+    connection: crate::dbus::sync::Connection,
     commands: mpsc::Sender<C>,
     thread: &str,
     rule: String,
     handle: fn(&zbus::Message, &mpsc::Sender<C>),
 ) -> anyhow::Result<()> {
-    let rule = zbus::MatchRule::try_from(rule.as_str())?;
-    let messages = zbus::blocking::MessageIterator::for_match_rule(rule, &connection, None)?;
+    let rule = zbus::MatchRule::try_from(rule.as_str())?.to_owned();
+    let messages = crate::dbus::sync::MessageIterator::for_match_rule(rule, &connection, None)?;
     std::thread::Builder::new()
         .name(thread.to_owned())
         .spawn(move || {

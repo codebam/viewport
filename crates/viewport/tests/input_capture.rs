@@ -64,11 +64,13 @@ fn compositor_on(bus: &Bus, tag: &str) -> Compositor {
         .start()
 }
 
-fn connect(bus: &Bus) -> zbus::blocking::Connection {
-    zbus::blocking::connection::Builder::address(bus.address.as_str())
-        .expect("bus address")
-        .build()
-        .expect("private bus connection")
+fn connect(bus: &Bus) -> zbus::Connection {
+    zbus::block_on(async {
+        zbus::connection::Builder::address(bus.address.as_str())
+            .build()
+            .await
+            .expect("private bus connection")
+    })
 }
 
 #[test]
@@ -79,31 +81,31 @@ fn interface_advertises_only_implemented_capabilities() {
     };
     let _compositor = compositor_on(&bus, "properties");
     let connection = connect(&bus);
-    let properties = zbus::blocking::fdo::PropertiesProxy::builder(&connection)
-        .destination(BUS_NAME)
-        .unwrap()
-        .path(OBJECT_PATH)
-        .unwrap()
-        .build()
-        .unwrap();
+    let properties = zbus::block_on(async {
+        zbus::fdo::PropertiesProxy::builder(&connection)
+            .destination(BUS_NAME)
+            .path(OBJECT_PATH)
+            .build()
+            .await
+            .unwrap()
+    });
 
-    let capabilities = properties
-        .get(INTERFACE.try_into().unwrap(), "SupportedCapabilities")
-        .expect("SupportedCapabilities");
+    let capabilities =
+        zbus::block_on(properties.get(INTERFACE.try_into().unwrap(), "SupportedCapabilities"))
+            .expect("SupportedCapabilities");
     assert_eq!(u32::try_from(&capabilities).unwrap(), 3);
-    let version = properties
-        .get(INTERFACE.try_into().unwrap(), "version")
-        .expect("version");
+    let version =
+        zbus::block_on(properties.get(INTERFACE.try_into().unwrap(), "version")).expect("version");
     assert_eq!(u32::try_from(&version).unwrap(), 2);
 
-    let introspection = zbus::blocking::Proxy::new(
+    let introspection = zbus::block_on(zbus::Proxy::new(
         &connection,
         BUS_NAME,
         OBJECT_PATH,
         "org.freedesktop.DBus.Introspectable",
-    )
+    ))
     .unwrap();
-    let xml: String = introspection.call("Introspect", &()).unwrap();
+    let xml: String = zbus::block_on(introspection.call("Introspect", &())).unwrap();
     for member in [
         "CreateSession",
         "CreateSession2",
@@ -134,17 +136,22 @@ fn peer_without_frontend_name_cannot_create_session() {
     };
     let compositor = compositor_on(&bus, "stranger");
     let connection = connect(&bus);
-    let proxy = zbus::blocking::Proxy::new(&connection, BUS_NAME, OBJECT_PATH, INTERFACE).unwrap();
-    let request = zvariant::ObjectPath::try_from("/org/example/request/1").unwrap();
-    let session = zvariant::ObjectPath::try_from("/org/example/session/1").unwrap();
-    let options = HashMap::from([("capabilities", zvariant::Value::from(3u32))]);
+    let proxy = zbus::block_on(zbus::Proxy::new(
+        &connection,
+        BUS_NAME,
+        OBJECT_PATH,
+        INTERFACE,
+    ))
+    .unwrap();
+    let request = zbus::ObjectPath::try_from("/org/example/request/1").unwrap();
+    let session = zbus::ObjectPath::try_from("/org/example/session/1").unwrap();
+    let options = HashMap::from([("capabilities", zbus::Variant::from(3u32))]);
 
-    let (response, _): (u32, HashMap<String, zvariant::OwnedValue>) = proxy
-        .call(
-            "CreateSession",
-            &(&request, &session, "org.example.intruder", "", options),
-        )
-        .expect("CreateSession response");
+    let (response, _): (u32, HashMap<String, zbus::OwnedVariant>) = zbus::block_on(proxy.call(
+        "CreateSession",
+        &(&request, &session, "org.example.intruder", "", options),
+    ))
+    .expect("CreateSession response");
     assert_eq!(response, RESPONSE_FAILED);
     assert!(compositor.saw("refusing a call from", Duration::from_secs(2)));
 }
@@ -157,19 +164,24 @@ fn start_fails_closed_without_consent_ui() {
     };
     let _compositor = compositor_on(&bus, "consent");
     let connection = connect(&bus);
-    connection.request_name(FRONTEND_NAME).unwrap();
-    let proxy = zbus::blocking::Proxy::new(&connection, BUS_NAME, OBJECT_PATH, INTERFACE).unwrap();
-    let session = zvariant::ObjectPath::try_from(
-        "/org/freedesktop/portal/desktop/session/input_capture_test",
-    )
+    zbus::block_on(connection.request_name(FRONTEND_NAME)).unwrap();
+    let proxy = zbus::block_on(zbus::Proxy::new(
+        &connection,
+        BUS_NAME,
+        OBJECT_PATH,
+        INTERFACE,
+    ))
     .unwrap();
+    let session =
+        zbus::ObjectPath::try_from("/org/freedesktop/portal/desktop/session/input_capture_test")
+            .unwrap();
 
     let mut created = false;
     for _ in 0..100 {
-        let result: zbus::Result<HashMap<String, zvariant::OwnedValue>> = proxy.call(
+        let result: zbus::Result<HashMap<String, zbus::OwnedVariant>> = zbus::block_on(proxy.call(
             "CreateSession2",
             &(&session, "org.example.capture", no_options()),
-        );
+        ));
         if result.is_ok() {
             created = true;
             break;
@@ -178,20 +190,18 @@ fn start_fails_closed_without_consent_ui() {
     }
     assert!(created, "frontend session was never accepted");
 
-    let request = zvariant::ObjectPath::try_from(
-        "/org/freedesktop/portal/desktop/request/input_capture_test",
-    )
+    let request =
+        zbus::ObjectPath::try_from("/org/freedesktop/portal/desktop/request/input_capture_test")
+            .unwrap();
+    let options = HashMap::from([("capabilities", zbus::Variant::from(3u32))]);
+    let (response, _): (u32, HashMap<String, zbus::OwnedVariant>) = zbus::block_on(proxy.call(
+        "Start",
+        &(&request, &session, "org.example.capture", "", options),
+    ))
     .unwrap();
-    let options = HashMap::from([("capabilities", zvariant::Value::from(3u32))]);
-    let (response, _): (u32, HashMap<String, zvariant::OwnedValue>) = proxy
-        .call(
-            "Start",
-            &(&request, &session, "org.example.capture", "", options),
-        )
-        .unwrap();
     assert_eq!(response, RESPONSE_CANCELLED);
 }
 
-fn no_options() -> HashMap<String, zvariant::Value<'static>> {
+fn no_options() -> HashMap<String, zbus::Variant<'static>> {
     HashMap::new()
 }

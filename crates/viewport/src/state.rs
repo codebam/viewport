@@ -396,14 +396,14 @@ pub struct ViewportState {
     /// shortcuts one. The session handle is not something the person has to
     /// read, so it travels here rather than on the `Picker` beside the chords
     /// and the application name, which are.
-    pub pending_shortcuts: Option<(zvariant::OwnedObjectPath, String)>,
+    pub pending_shortcuts: Option<(zbus::OwnedObjectPath, String)>,
     /// What was agreed to in earlier sessions.
     pub shortcuts_store: crate::shortcuts::Store,
     /// How the `Activated` and `Deactivated` signals get out.
     pub shortcut_signals: crate::shortcuts::Signals,
     /// The `org.freedesktop.ScreenSaver` connection, kept because dropping it
     /// takes the interface off the bus. Nothing else reads it.
-    pub screensaver: Option<zbus::blocking::Connection>,
+    pub screensaver: Option<crate::dbus::sync::Connection>,
     /// Everything holding idle off from the session bus.
     ///
     /// Separate from `idle_inhibitors`, which is the Wayland protocol's list

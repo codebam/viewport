@@ -1,3 +1,4 @@
+use crate::dbus::sync::connection::BuildBlocking as _;
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // Dark mode, via the desktop settings portal. Ports src/appearance.c.
@@ -19,10 +20,12 @@
 // channel: everything here is answered from state the object already holds, so
 // nothing has to reach the compositor to reply.
 
+use crate::dbus::sync::EmitSignalExt as _;
+use crate::dbus::sync::NameRequestExt as _;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use zvariant::{OwnedValue, Value};
+use zbus::{OwnedVariant, Variant};
 
 const BUS_NAME: &str = "org.freedesktop.impl.portal.desktop.viewport";
 const OBJECT_PATH: &str = "/org/freedesktop/portal/desktop";
@@ -74,7 +77,7 @@ pub use crate::dbus_util::owned;
 ///
 /// The values are conventional defaults rather than anything clever — the point
 /// is that every key a toolkit asks for gets a usable answer.
-pub fn gnome_settings(settings: &Settings) -> HashMap<String, OwnedValue> {
+pub fn gnome_settings(settings: &Settings) -> HashMap<String, OwnedVariant> {
     let dark = settings.color_scheme == PREFER_DARK;
     let mut keys = HashMap::new();
     keys.insert(
@@ -100,7 +103,7 @@ pub fn gnome_settings(settings: &Settings) -> HashMap<String, OwnedValue> {
 }
 
 /// The `org.freedesktop.appearance` keys.
-pub fn appearance_settings(settings: &Settings) -> HashMap<String, OwnedValue> {
+pub fn appearance_settings(settings: &Settings) -> HashMap<String, OwnedVariant> {
     let mut keys = HashMap::new();
     keys.insert("color-scheme".to_owned(), owned(settings.color_scheme));
     // Documented in the same namespace, and clients read both.
@@ -113,7 +116,7 @@ pub fn appearance_settings(settings: &Settings) -> HashMap<String, OwnedValue> {
 /// Unknown has to stay distinguishable from absent: the specification requires
 /// an error for a key that does not exist, and clients fall back cleanly on it
 /// where they would take a zero at face value.
-pub fn lookup(settings: &Settings, namespace: &str, key: &str) -> Option<OwnedValue> {
+pub fn lookup(settings: &Settings, namespace: &str, key: &str) -> Option<OwnedVariant> {
     match namespace {
         APPEARANCE => appearance_settings(settings).remove(key),
         GNOME => gnome_settings(settings).remove(key),
@@ -127,7 +130,7 @@ pub fn lookup(settings: &Settings, namespace: &str, key: &str) -> Option<OwnedVa
 /// asking for one namespace and being given two has what it asked for, and
 /// matching the specification's glob syntax here would be a parser whose only
 /// effect is to withhold answers.
-pub fn read_all(settings: &Settings) -> HashMap<String, HashMap<String, OwnedValue>> {
+pub fn read_all(settings: &Settings) -> HashMap<String, HashMap<String, OwnedVariant>> {
     HashMap::from([
         (APPEARANCE.to_owned(), appearance_settings(settings)),
         (GNOME.to_owned(), gnome_settings(settings)),
@@ -140,7 +143,7 @@ pub struct Appearance {
     settings: Arc<Mutex<Settings>>,
     /// Kept to emit `SettingChanged`, and `None` when the name could not be
     /// claimed.
-    connection: Option<zbus::blocking::Connection>,
+    connection: Option<crate::dbus::sync::Connection>,
 }
 
 impl Appearance {
@@ -203,16 +206,16 @@ impl Appearance {
             input_capture_shared,
         );
 
-        let connection = zbus::blocking::connection::Builder::session()?
-            .serve_at(OBJECT_PATH, portal)?
-            .serve_at(OBJECT_PATH, screencast)?
-            .serve_at(OBJECT_PATH, remote)?
-            .serve_at(OBJECT_PATH, clipboard)?
-            .serve_at(OBJECT_PATH, input_capture)?
-            .serve_at(OBJECT_PATH, screenshot)?
-            .serve_at(OBJECT_PATH, inhibit)?
-            .serve_at(OBJECT_PATH, shortcuts)?
-            .build()?;
+        let connection = crate::dbus::sync::connection::Builder::session()
+            .serve_at(OBJECT_PATH, portal)
+            .serve_at(OBJECT_PATH, screencast)
+            .serve_at(OBJECT_PATH, remote)
+            .serve_at(OBJECT_PATH, clipboard)
+            .serve_at(OBJECT_PATH, input_capture)
+            .serve_at(OBJECT_PATH, screenshot)
+            .serve_at(OBJECT_PATH, inhibit)
+            .serve_at(OBJECT_PATH, shortcuts)
+            .build_blocking()?;
 
         // Asked for with `crate::dbus::name_flags` rather than the builder's
         // `.name()`, which is what made the paragraph above false: zbus's
@@ -222,7 +225,7 @@ impl Appearance {
         // Asked for at all only by the session's own compositor — see
         // `crate::dbus::may_claim`, the rule this obeys like every other name.
         if crate::dbus::may_claim(session_compositor) {
-            let reply = connection.request_name_with_flags(BUS_NAME, crate::dbus::name_flags());
+            let reply = connection.take_name(BUS_NAME, crate::dbus::name_flags());
             crate::dbus::log_name_reply(BUS_NAME, reply);
         } else {
             crate::dbus::log_name_skipped(BUS_NAME);
@@ -261,10 +264,10 @@ impl Appearance {
         // In the GNOME namespace, which is where both keys live — the
         // freedesktop one carries only the colour scheme and the contrast.
         for (key, value) in [
-            ("cursor-theme", Value::from(theme.to_owned())),
-            ("cursor-size", Value::from(size)),
+            ("cursor-theme", Variant::from(theme.to_owned())),
+            ("cursor-size", Variant::from(size)),
         ] {
-            if let Err(e) = connection.emit_signal(
+            if let Err(e) = connection.emit_blocking(
                 None::<&str>,
                 OBJECT_PATH,
                 INTERFACE,
@@ -283,7 +286,7 @@ impl Appearance {
     /// behind by a frontend that crashed — the one piece of cleanup that needs
     /// the connection from outside this file. `None` when the name could not
     /// be claimed, in which case nothing was published on it either.
-    pub fn connection(&self) -> Option<zbus::blocking::Connection> {
+    pub fn connection(&self) -> Option<crate::dbus::sync::Connection> {
         self.connection.clone()
     }
 
@@ -329,7 +332,7 @@ impl Appearance {
         // being announced as one thing and read back as another.
         let announced = announced(&self.settings.lock().unwrap());
         for (namespace, key, value) in announced {
-            if let Err(e) = connection.emit_signal(
+            if let Err(e) = connection.emit_blocking(
                 None::<&str>,
                 OBJECT_PATH,
                 INTERFACE,
@@ -355,7 +358,7 @@ impl Appearance {
 /// Read out of `appearance_settings` and `gnome_settings` rather than written
 /// again, so the value announced is the value the next `ReadAll` will answer
 /// with.
-fn announced(settings: &Settings) -> Vec<(&'static str, &'static str, Value<'static>)> {
+fn announced(settings: &Settings) -> Vec<(&'static str, &'static str, Variant<'static>)> {
     let appearance = appearance_settings(settings);
     let gnome = gnome_settings(settings);
     [
@@ -370,7 +373,7 @@ fn announced(settings: &Settings) -> Vec<(&'static str, &'static str, Value<'sta
         } else {
             gnome.get(key)
         }?;
-        Some((namespace, key, Value::from(value.clone())))
+        Some((namespace, key, Variant::from(value.clone())))
     })
     .collect()
 }
@@ -382,11 +385,11 @@ struct Portal {
 
 #[zbus::interface(name = "org.freedesktop.impl.portal.Settings")]
 impl Portal {
-    fn read_all(&self, _namespaces: Vec<String>) -> HashMap<String, HashMap<String, OwnedValue>> {
+    fn read_all(&self, _namespaces: Vec<String>) -> HashMap<String, HashMap<String, OwnedVariant>> {
         read_all(&self.settings.lock().unwrap())
     }
 
-    fn read(&self, namespace: &str, key: &str) -> zbus::fdo::Result<OwnedValue> {
+    fn read(&self, namespace: &str, key: &str) -> zbus::fdo::Result<OwnedVariant> {
         lookup(&self.settings.lock().unwrap(), namespace, key).ok_or_else(|| {
             // This specific error, because it is what a client checks for
             // before falling back to its own default.
@@ -405,7 +408,7 @@ impl Portal {
         emitter: &zbus::object_server::SignalEmitter<'_>,
         namespace: &str,
         key: &str,
-        value: Value<'_>,
+        value: Variant<'_>,
     ) -> zbus::Result<()>;
 
     // Lower case, and named explicitly because zbus would otherwise publish it
@@ -501,7 +504,7 @@ mod tests {
                     lookup(&settings, namespace, key).expect("an announced key is a readable key");
                 assert_eq!(
                     value,
-                    Value::from(answered),
+                    Variant::from(answered),
                     "{namespace}/{key} is announced as something else"
                 );
             }

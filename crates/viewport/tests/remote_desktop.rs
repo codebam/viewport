@@ -105,20 +105,28 @@ fn compositor_on(bus: &Bus, tag: &str) -> Compositor {
 }
 
 /// A connection to that bus.
-fn connect(bus: &Bus) -> zbus::blocking::Connection {
-    zbus::blocking::connection::Builder::address(bus.address.as_str())
-        .expect("a bus address")
-        .build()
-        .expect("connecting to the test bus")
+fn connect(bus: &Bus) -> zbus::Connection {
+    zbus::block_on(async {
+        zbus::connection::Builder::address(bus.address.as_str())
+            .build()
+            .await
+            .expect("connecting to the test bus")
+    })
 }
 
 /// A proxy for the interface under test.
-fn proxy(connection: &zbus::blocking::Connection) -> zbus::blocking::Proxy<'static> {
-    zbus::blocking::Proxy::new(connection, BUS_NAME, OBJECT_PATH, INTERFACE).expect("a proxy")
+fn proxy(connection: &zbus::Connection) -> zbus::Proxy<'static> {
+    zbus::block_on(zbus::Proxy::new(
+        connection,
+        BUS_NAME,
+        OBJECT_PATH,
+        INTERFACE,
+    ))
+    .expect("a proxy")
 }
 
 /// An empty options dictionary, which most of these calls take.
-fn no_options() -> HashMap<String, zvariant::Value<'static>> {
+fn no_options() -> HashMap<String, zbus::Variant<'static>> {
     HashMap::new()
 }
 
@@ -129,18 +137,17 @@ fn no_options() -> HashMap<String, zvariant::Value<'static>> {
 /// and a call that overtakes that signal is refused for a reason that has gone
 /// away by the time the refusal is read.
 fn create_session(
-    proxy: &zbus::blocking::Proxy<'_>,
-    request: &zvariant::ObjectPath<'_>,
-    session: &zvariant::ObjectPath<'_>,
+    proxy: &zbus::Proxy<'_>,
+    request: &zbus::ObjectPath<'_>,
+    session: &zbus::ObjectPath<'_>,
 ) -> u32 {
     let mut response = RESPONSE_FAILED;
     for _ in 0..100 {
-        let (answer, _): (u32, HashMap<String, zvariant::OwnedValue>) = proxy
-            .call(
-                "CreateSession",
-                &(request, session, "org.example.remote", no_options()),
-            )
-            .expect("CreateSession");
+        let (answer, _): (u32, HashMap<String, zbus::OwnedVariant>) = zbus::block_on(proxy.call(
+            "CreateSession",
+            &(request, session, "org.example.remote", no_options()),
+        ))
+        .expect("CreateSession");
         response = answer;
         if response == RESPONSE_SUCCESS {
             break;
@@ -166,17 +173,18 @@ fn the_interface_is_on_the_bus() {
     let _compositor = compositor_on(&bus, "present");
 
     let connection = connect(&bus);
-    let properties = zbus::blocking::fdo::PropertiesProxy::builder(&connection)
-        .destination(BUS_NAME)
-        .unwrap()
-        .path(OBJECT_PATH)
-        .unwrap()
-        .build()
-        .expect("a properties proxy");
+    let properties = zbus::block_on(async {
+        zbus::fdo::PropertiesProxy::builder(&connection)
+            .destination(BUS_NAME)
+            .path(OBJECT_PATH)
+            .build()
+            .await
+            .expect("a properties proxy")
+    });
 
-    let devices = properties
-        .get(INTERFACE.try_into().unwrap(), "AvailableDeviceTypes")
-        .expect("AvailableDeviceTypes");
+    let devices =
+        zbus::block_on(properties.get(INTERFACE.try_into().unwrap(), "AvailableDeviceTypes"))
+            .expect("AvailableDeviceTypes");
     assert_eq!(u32::try_from(&devices).expect("a number"), ALL_DEVICES);
 
     // Version two, which is the version that promises ConnectToEIS. There is
@@ -184,9 +192,8 @@ fn the_interface_is_on_the_bus() {
     // the number is what a frontend reads to decide whether to offer an
     // application the socket at all, so a compositor that had one and said
     // "1" would never be asked for it.
-    let version = properties
-        .get(INTERFACE.try_into().unwrap(), "version")
-        .expect("version");
+    let version =
+        zbus::block_on(properties.get(INTERFACE.try_into().unwrap(), "version")).expect("version");
     assert_eq!(u32::try_from(&version).expect("a number"), 2);
 }
 
@@ -205,17 +212,16 @@ fn a_stranger_cannot_start_a_session() {
 
     let connection = connect(&bus);
     let proxy = proxy(&connection);
-    let request = zvariant::ObjectPath::try_from("/org/example/request/1").unwrap();
-    let session = zvariant::ObjectPath::try_from("/org/example/session/1").unwrap();
+    let request = zbus::ObjectPath::try_from("/org/example/request/1").unwrap();
+    let session = zbus::ObjectPath::try_from("/org/example/session/1").unwrap();
 
     // Not retried, unlike the frontend's own call: this one is expected to
     // fail and retrying it would only be waiting for it to keep failing.
-    let (response, _): (u32, HashMap<String, zvariant::OwnedValue>) = proxy
-        .call(
-            "CreateSession",
-            &(&request, &session, "org.example.intruder", no_options()),
-        )
-        .expect("CreateSession");
+    let (response, _): (u32, HashMap<String, zbus::OwnedVariant>) = zbus::block_on(proxy.call(
+        "CreateSession",
+        &(&request, &session, "org.example.intruder", no_options()),
+    ))
+    .expect("CreateSession");
     assert_eq!(response, RESPONSE_FAILED);
     assert!(
         compositor.saw("refusing a call from", Duration::from_secs(2)),
@@ -242,32 +248,29 @@ fn a_session_is_refused_with_no_desktop_to_ask_through() {
 
     let connection = connect(&bus);
     // The compositor answers nothing to a peer that does not own this.
-    connection
-        .request_name(FRONTEND_NAME)
-        .expect("claiming the frontend name");
+    zbus::block_on(connection.request_name(FRONTEND_NAME)).expect("claiming the frontend name");
     let proxy = proxy(&connection);
 
-    let request = zvariant::ObjectPath::try_from("/org/freedesktop/portal/desktop/request/1")
-        .expect("a path");
-    let session = zvariant::ObjectPath::try_from("/org/freedesktop/portal/desktop/session/1")
-        .expect("a path");
+    let request =
+        zbus::ObjectPath::try_from("/org/freedesktop/portal/desktop/request/1").expect("a path");
+    let session =
+        zbus::ObjectPath::try_from("/org/freedesktop/portal/desktop/session/1").expect("a path");
     assert_eq!(create_session(&proxy, &request, &session), RESPONSE_SUCCESS);
 
-    let mut devices: HashMap<String, zvariant::Value<'_>> = HashMap::new();
-    devices.insert("types".to_owned(), zvariant::Value::from(ALL_DEVICES));
-    let (response, _): (u32, HashMap<String, zvariant::OwnedValue>) = proxy
-        .call(
-            "SelectDevices",
-            &(&request, &session, "org.example.remote", devices),
-        )
-        .expect("SelectDevices");
+    let mut devices: HashMap<String, zbus::Variant<'_>> = HashMap::new();
+    devices.insert("types".to_owned(), zbus::Variant::from(ALL_DEVICES));
+    let (response, _): (u32, HashMap<String, zbus::OwnedVariant>) = zbus::block_on(proxy.call(
+        "SelectDevices",
+        &(&request, &session, "org.example.remote", devices),
+    ))
+    .expect("SelectDevices");
     assert_eq!(response, RESPONSE_SUCCESS);
 
-    let (response, results): (u32, HashMap<String, zvariant::OwnedValue>) = proxy
-        .call(
+    let (response, results): (u32, HashMap<String, zbus::OwnedVariant>) =
+        zbus::block_on(proxy.call(
             "Start",
             &(&request, &session, "org.example.remote", "", no_options()),
-        )
+        ))
         .expect("Start");
     assert_eq!(response, RESPONSE_CANCELLED);
     assert!(
@@ -298,33 +301,29 @@ fn a_session_that_wants_no_devices_is_refused() {
     let compositor = compositor_on(&bus, "nodevices");
 
     let connection = connect(&bus);
-    connection
-        .request_name(FRONTEND_NAME)
-        .expect("claiming the frontend name");
+    zbus::block_on(connection.request_name(FRONTEND_NAME)).expect("claiming the frontend name");
     let proxy = proxy(&connection);
 
-    let request = zvariant::ObjectPath::try_from("/org/freedesktop/portal/desktop/request/2")
-        .expect("a path");
-    let session = zvariant::ObjectPath::try_from("/org/freedesktop/portal/desktop/session/2")
-        .expect("a path");
+    let request =
+        zbus::ObjectPath::try_from("/org/freedesktop/portal/desktop/request/2").expect("a path");
+    let session =
+        zbus::ObjectPath::try_from("/org/freedesktop/portal/desktop/session/2").expect("a path");
     assert_eq!(create_session(&proxy, &request, &session), RESPONSE_SUCCESS);
 
-    let mut devices: HashMap<String, zvariant::Value<'_>> = HashMap::new();
-    devices.insert("types".to_owned(), zvariant::Value::from(0u32));
-    let (response, _): (u32, HashMap<String, zvariant::OwnedValue>) = proxy
-        .call(
-            "SelectDevices",
-            &(&request, &session, "org.example.remote", devices),
-        )
-        .expect("SelectDevices");
+    let mut devices: HashMap<String, zbus::Variant<'_>> = HashMap::new();
+    devices.insert("types".to_owned(), zbus::Variant::from(0u32));
+    let (response, _): (u32, HashMap<String, zbus::OwnedVariant>) = zbus::block_on(proxy.call(
+        "SelectDevices",
+        &(&request, &session, "org.example.remote", devices),
+    ))
+    .expect("SelectDevices");
     assert_eq!(response, RESPONSE_SUCCESS);
 
-    let (response, _): (u32, HashMap<String, zvariant::OwnedValue>) = proxy
-        .call(
-            "Start",
-            &(&request, &session, "org.example.remote", "", no_options()),
-        )
-        .expect("Start");
+    let (response, _): (u32, HashMap<String, zbus::OwnedVariant>) = zbus::block_on(proxy.call(
+        "Start",
+        &(&request, &session, "org.example.remote", "", no_options()),
+    ))
+    .expect("Start");
     assert_eq!(response, RESPONSE_CANCELLED);
     assert!(
         compositor.saw("which asked for no devices", Duration::from_secs(2)),
@@ -349,44 +348,41 @@ fn an_ungranted_session_injects_nothing() {
     let compositor = compositor_on(&bus, "ungranted");
 
     let connection = connect(&bus);
-    connection
-        .request_name(FRONTEND_NAME)
-        .expect("claiming the frontend name");
+    zbus::block_on(connection.request_name(FRONTEND_NAME)).expect("claiming the frontend name");
     let proxy = proxy(&connection);
 
-    let request = zvariant::ObjectPath::try_from("/org/freedesktop/portal/desktop/request/3")
-        .expect("a path");
-    let session = zvariant::ObjectPath::try_from("/org/freedesktop/portal/desktop/session/3")
-        .expect("a path");
+    let request =
+        zbus::ObjectPath::try_from("/org/freedesktop/portal/desktop/request/3").expect("a path");
+    let session =
+        zbus::ObjectPath::try_from("/org/freedesktop/portal/desktop/session/3").expect("a path");
     assert_eq!(create_session(&proxy, &request, &session), RESPONSE_SUCCESS);
 
     // No Start, so nothing was granted. One of each kind, because the grant is
     // per device and a hole in one of the three is a hole.
-    proxy
-        .call_noreply(
-            "NotifyKeyboardKeycode",
-            &(&session, no_options(), 30i32, 1u32),
-        )
-        .expect("NotifyKeyboardKeycode");
-    proxy
-        .call_noreply("NotifyPointerMotion", &(&session, no_options(), 10.0, 10.0))
-        .expect("NotifyPointerMotion");
-    proxy
-        .call_noreply("NotifyTouchUp", &(&session, no_options(), 0u32))
+    zbus::block_on(proxy.call_noreply(
+        "NotifyKeyboardKeycode",
+        &(&session, no_options(), 30i32, 1u32),
+    ))
+    .expect("NotifyKeyboardKeycode");
+    zbus::block_on(
+        proxy.call_noreply("NotifyPointerMotion", &(&session, no_options(), 10.0, 10.0)),
+    )
+    .expect("NotifyPointerMotion");
+    zbus::block_on(proxy.call_noreply("NotifyTouchUp", &(&session, no_options(), 0u32)))
         .expect("NotifyTouchUp");
 
     // Still answering afterwards, which is the other half of what is being
     // checked: an injection path that panicked on the bus thread would take
     // the settings portal down with it and leave nothing in the log to say so.
-    let properties = zbus::blocking::fdo::PropertiesProxy::builder(&connection)
-        .destination(BUS_NAME)
-        .unwrap()
-        .path(OBJECT_PATH)
-        .unwrap()
-        .build()
-        .expect("a properties proxy");
-    let version = properties
-        .get(INTERFACE.try_into().unwrap(), "version")
+    let properties = zbus::block_on(async {
+        zbus::fdo::PropertiesProxy::builder(&connection)
+            .destination(BUS_NAME)
+            .path(OBJECT_PATH)
+            .build()
+            .await
+            .expect("a properties proxy")
+    });
+    let version = zbus::block_on(properties.get(INTERFACE.try_into().unwrap(), "version"))
         .expect("the portal is still answering");
     assert_eq!(u32::try_from(&version).expect("a number"), 2);
 
@@ -420,34 +416,31 @@ fn an_ungranted_session_is_refused_an_ei_socket() {
     let compositor = compositor_on(&bus, "noeis");
 
     let connection = connect(&bus);
-    connection
-        .request_name(FRONTEND_NAME)
-        .expect("claiming the frontend name");
+    zbus::block_on(connection.request_name(FRONTEND_NAME)).expect("claiming the frontend name");
     let proxy = proxy(&connection);
 
-    let request = zvariant::ObjectPath::try_from("/org/freedesktop/portal/desktop/request/4")
-        .expect("a path");
-    let session = zvariant::ObjectPath::try_from("/org/freedesktop/portal/desktop/session/4")
-        .expect("a path");
+    let request =
+        zbus::ObjectPath::try_from("/org/freedesktop/portal/desktop/request/4").expect("a path");
+    let session =
+        zbus::ObjectPath::try_from("/org/freedesktop/portal/desktop/session/4").expect("a path");
     assert_eq!(create_session(&proxy, &request, &session), RESPONSE_SUCCESS);
 
-    let mut devices: HashMap<String, zvariant::Value<'_>> = HashMap::new();
-    devices.insert("types".to_owned(), zvariant::Value::from(ALL_DEVICES));
-    let (response, _): (u32, HashMap<String, zvariant::OwnedValue>) = proxy
-        .call(
-            "SelectDevices",
-            &(&request, &session, "org.example.remote", devices),
-        )
-        .expect("SelectDevices");
+    let mut devices: HashMap<String, zbus::Variant<'_>> = HashMap::new();
+    devices.insert("types".to_owned(), zbus::Variant::from(ALL_DEVICES));
+    let (response, _): (u32, HashMap<String, zbus::OwnedVariant>) = zbus::block_on(proxy.call(
+        "SelectDevices",
+        &(&request, &session, "org.example.remote", devices),
+    ))
+    .expect("SelectDevices");
     assert_eq!(response, RESPONSE_SUCCESS);
 
     // No Start, so nothing was granted. An error rather than a file
     // descriptor: unlike the Notify calls this one has a return value, so the
     // refusal can be said out loud.
-    let answer: zbus::Result<zvariant::OwnedFd> = proxy.call(
+    let answer: zbus::Result<zbus::OwnedFd> = zbus::block_on(proxy.call(
         "ConnectToEIS",
         &(&session, "org.example.remote", no_options()),
-    );
+    ));
     assert!(
         answer.is_err(),
         "a session that was granted nothing was handed an EI socket"
@@ -474,17 +467,15 @@ fn an_invented_session_is_refused_an_ei_socket() {
     let _compositor = compositor_on(&bus, "eisinvented");
 
     let connection = connect(&bus);
-    connection
-        .request_name(FRONTEND_NAME)
-        .expect("claiming the frontend name");
+    zbus::block_on(connection.request_name(FRONTEND_NAME)).expect("claiming the frontend name");
     let proxy = proxy(&connection);
 
-    let session = zvariant::ObjectPath::try_from("/org/freedesktop/portal/desktop/session/99")
-        .expect("a path");
-    let answer: zbus::Result<zvariant::OwnedFd> = proxy.call(
+    let session =
+        zbus::ObjectPath::try_from("/org/freedesktop/portal/desktop/session/99").expect("a path");
+    let answer: zbus::Result<zbus::OwnedFd> = zbus::block_on(proxy.call(
         "ConnectToEIS",
         &(&session, "org.example.remote", no_options()),
-    );
+    ));
     assert!(
         answer.is_err(),
         "a session that does not exist was handed an EI socket"
@@ -507,13 +498,13 @@ fn a_stranger_cannot_ask_for_an_ei_socket() {
 
     let connection = connect(&bus);
     let proxy = proxy(&connection);
-    let session = zvariant::ObjectPath::try_from("/org/freedesktop/portal/desktop/session/5")
-        .expect("a path");
+    let session =
+        zbus::ObjectPath::try_from("/org/freedesktop/portal/desktop/session/5").expect("a path");
 
-    let answer: zbus::Result<zvariant::OwnedFd> = proxy.call(
+    let answer: zbus::Result<zbus::OwnedFd> = zbus::block_on(proxy.call(
         "ConnectToEIS",
         &(&session, "org.example.intruder", no_options()),
-    );
+    ));
     assert!(
         answer.is_err(),
         "a peer that is not the frontend was handed an EI socket"

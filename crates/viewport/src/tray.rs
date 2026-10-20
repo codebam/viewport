@@ -1,3 +1,4 @@
+use crate::dbus::sync::connection::BuildBlocking as _;
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // The system tray.
@@ -31,6 +32,9 @@
 // minutes by one wedged application is only a smaller version of the same
 // problem.
 
+use crate::dbus::sync::proxy::BuildBlocking as _;
+use crate::dbus::sync::NameRequestExt as _;
+use crate::dbus::sync::ProxyExt as _;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -284,7 +288,7 @@ fn path_registration(sender: &str, service: &str) -> Option<(String, String)> {
     if sender.is_empty() || service.len() > MAX_PATH {
         return None;
     }
-    zvariant::ObjectPath::try_from(service).ok()?;
+    zbus::ObjectPath::try_from(service).ok()?;
     Some((sender.to_owned(), service.to_owned()))
 }
 
@@ -385,7 +389,7 @@ enum Command {
 /// subscription is made here, on the caller's thread, before the reader starts
 /// — the same order the shared helper uses.
 fn pump_signals<F>(
-    connection: zbus::blocking::Connection,
+    connection: crate::dbus::sync::Connection,
     commands: mpsc::Sender<Command>,
     rule: String,
     handle: F,
@@ -393,8 +397,8 @@ fn pump_signals<F>(
 where
     F: Fn(&zbus::Message, &mpsc::Sender<Command>) + Send + 'static,
 {
-    let parsed = zbus::MatchRule::try_from(rule.as_str())?;
-    let messages = zbus::blocking::MessageIterator::for_match_rule(parsed, &connection, None)?;
+    let parsed = zbus::MatchRule::try_from(rule.as_str())?.to_owned();
+    let messages = crate::dbus::sync::MessageIterator::for_match_rule(parsed, &connection, None)?;
     std::thread::Builder::new()
         .name("tray-signals".to_owned())
         .spawn(move || {
@@ -437,27 +441,25 @@ fn start(
             // The watcher object answers on zbus's own executor and does no
             // work: it records nothing, and hands every registration to the
             // worker, which is the one place the item list lives.
-            let connection =
-                match zbus::blocking::connection::Builder::session().and_then(|builder| {
-                    builder
-                        .method_timeout(CALL_TIMEOUT)
-                        .serve_at(
-                            WATCHER_PATH,
-                            Watcher {
-                                commands: worker_commands.clone(),
-                                items: items.clone(),
-                                pending: pending.clone(),
-                            },
-                        )
-                        .and_then(|builder| builder.build())
-                }) {
-                    Ok(connection) => connection,
-                    Err(e) => {
-                        tracing::warn!("the system tray is unavailable: {e:#}");
-                        let _ = worker_events.send(Message::Items(Vec::new()));
-                        return;
-                    }
-                };
+            let connection = match crate::dbus::sync::connection::Builder::session()
+                .method_timeout(CALL_TIMEOUT)
+                .serve_at(
+                    WATCHER_PATH,
+                    Watcher {
+                        commands: worker_commands.clone(),
+                        items: items.clone(),
+                        pending: pending.clone(),
+                    },
+                )
+                .build_blocking()
+            {
+                Ok(connection) => connection,
+                Err(e) => {
+                    tracing::warn!("the system tray is unavailable: {e:#}");
+                    let _ = worker_events.send(Message::Items(Vec::new()));
+                    return;
+                }
+            };
 
             // Signals from every tray item on the bus, on one match rule rather
             // than a subscription per item: an item that changes its icon does
@@ -611,6 +613,9 @@ impl Watcher {
             // any session client could register another application's name —
             // or invent names that are never released — and fill the tray,
             // and the shell, with rows that never go away.
+            // Awaited rather than blocked on: this is a method zbus is
+            // dispatching, and the connection it asks only makes progress on
+            // the thread that would be waiting.
             let Ok(proxy) = zbus::fdo::DBusProxy::new(emitter.connection()).await else {
                 return;
             };
@@ -734,13 +739,13 @@ struct Fetched {
     title: String,
     theme_path: String,
     icon_name: String,
-    pixmap: Option<zvariant::OwnedValue>,
+    pixmap: Option<zbus::OwnedVariant>,
     /// The plain icon of an item in attention, which is what it falls back to
     /// when it publishes no attention icon of its own. Empty when it is not
     /// in attention at all.
     plain_icon_name: String,
-    plain_pixmap: Option<zvariant::OwnedValue>,
-    tooltip: Option<zvariant::OwnedValue>,
+    plain_pixmap: Option<zbus::OwnedVariant>,
+    tooltip: Option<zbus::OwnedVariant>,
     is_menu: bool,
     menu: Option<String>,
 }
@@ -756,7 +761,7 @@ fn with_deadline<T: Send + 'static>(io: impl FnOnce() -> T + Send + 'static) -> 
 
 /// The thread that owns the item list and does every call an item answers.
 struct Worker {
-    connection: zbus::blocking::Connection,
+    connection: crate::dbus::sync::Connection,
     events: smithay::reexports::calloop::channel::Sender<Message>,
     entries: Vec<Entry>,
     /// The watcher's half of the registry, shared so that a name the worker
@@ -794,7 +799,7 @@ struct Worker {
 
 impl Worker {
     fn new(
-        connection: zbus::blocking::Connection,
+        connection: crate::dbus::sync::Connection,
         events: smithay::reexports::calloop::channel::Sender<Message>,
         registry: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
         pending: PendingItems,
@@ -940,7 +945,7 @@ impl Worker {
             // tray. See `crate::dbus::name_flags`.
             let reply = self
                 .connection
-                .request_name_with_flags(name.as_str(), crate::dbus::name_flags());
+                .take_name(name.as_str(), crate::dbus::name_flags());
             crate::dbus::log_name_reply(&name, reply);
         }
         self.enabled = true;
@@ -958,7 +963,7 @@ impl Worker {
         }
         let host = format!("org.kde.StatusNotifierHost-{}", std::process::id());
         for name in [WATCHER_NAME.to_owned(), host] {
-            if let Err(e) = self.connection.release_name(name.as_str()) {
+            if let Err(e) = self.connection.drop_name(name.as_str()) {
                 tracing::warn!("could not release {name}: {e}");
             }
         }
@@ -1153,10 +1158,9 @@ impl Worker {
         };
         let proxy = self.proxy(&service, &path)?;
         with_deadline(move || {
-            let get =
-                |name: &str| -> Option<zvariant::OwnedValue> { proxy.get_property(name).ok() };
+            let get = |name: &str| -> Option<zbus::OwnedVariant> { proxy.property(name).ok() };
             let text =
-                |name: &str| -> String { proxy.get_property::<String>(name).unwrap_or_default() };
+                |name: &str| -> String { proxy.property::<String>(name).unwrap_or_default() };
 
             let status = match text("Status").to_lowercase().as_str() {
                 "passive" => "passive".to_owned(),
@@ -1199,7 +1203,7 @@ impl Worker {
             // publishes — a valid path pointing at nothing, which every
             // toolkit sends rather than leaving the property out.
             let menu = proxy
-                .get_property::<zvariant::OwnedObjectPath>("Menu")
+                .property::<zbus::OwnedObjectPath>("Menu")
                 .ok()
                 .map(|path| path.as_str().to_owned())
                 .filter(|path| path != "/");
@@ -1213,7 +1217,7 @@ impl Worker {
                 plain_icon_name,
                 plain_pixmap,
                 tooltip: get("ToolTip"),
-                is_menu: proxy.get_property::<bool>("ItemIsMenu").unwrap_or(false),
+                is_menu: proxy.property::<bool>("ItemIsMenu").unwrap_or(false),
                 menu,
             }
         })
@@ -1263,12 +1267,12 @@ impl Worker {
         // worst case.
         let (fetching, announcing) = (proxy.clone(), proxy);
         let layout: Option<zbus::Result<(u32, MenuNode)>> = with_deadline(move || {
-            let _ = fetching.call::<_, _, bool>("AboutToShow", &(0i32));
+            let _ = fetching.method::<_, bool>("AboutToShow", &(0i32));
 
             // Depth -1 is the whole tree, and the empty list of property
             // names means every property rather than none — both are the
             // specification's spelling, and both read backwards.
-            fetching.call("GetLayout", &(0i32, -1i32, Vec::<&str>::new()))
+            fetching.method("GetLayout", &(0i32, -1i32, Vec::<&str>::new()))
         });
         let items = match layout {
             Some(Ok((_revision, root))) => self.menu_items(&root.2),
@@ -1299,10 +1303,7 @@ impl Worker {
             self.menu_event(id, 0, "closed");
             self.open_menus.retain(|open| open != id);
         }
-        let _ = announcing.call_noreply(
-            "Event",
-            &(0i32, "opened", zvariant::Value::from(0i32), 0u32),
-        );
+        let _ = announcing.notify("Event", &(0i32, "opened", zbus::Variant::from(0i32), 0u32));
         self.open_menus.push(id.to_owned());
 
         let _ = self.events.send(Message::Menu {
@@ -1330,9 +1331,7 @@ impl Worker {
         // Zero for the timestamp: the specification wants the moment the user
         // acted, and what this has is a message from a page that has no clock
         // the application shares. Every implementation sends zero here.
-        if let Err(e) =
-            proxy.call_noreply("Event", &(item, event, zvariant::Value::from(0i32), 0u32))
-        {
+        if let Err(e) = proxy.notify("Event", &(item, event, zbus::Variant::from(0i32), 0u32)) {
             tracing::debug!("{id}: menu {event} on {item} failed: {e}");
         }
     }
@@ -1340,7 +1339,7 @@ impl Worker {
     /// One level of a menu, and everything under it.
     fn menu_items(
         &mut self,
-        children: &[zvariant::OwnedValue],
+        children: &[zbus::OwnedVariant],
     ) -> Vec<viewport_ipc::event::TrayMenuItem> {
         children
             .iter()
@@ -1415,16 +1414,13 @@ impl Worker {
     }
 
     /// A proxy onto one item's menu object.
-    fn menu_proxy(&self, service: &str, path: &str) -> Option<zbus::blocking::Proxy<'static>> {
-        zbus::blocking::proxy::Builder::new(&self.connection)
+    fn menu_proxy(&self, service: &str, path: &str) -> Option<crate::dbus::sync::Proxy<'static>> {
+        crate::dbus::sync::proxy::Builder::new(&self.connection)
             .destination(service.to_owned())
-            .ok()?
             .path(path.to_owned())
-            .ok()?
             .interface(MENU)
-            .ok()?
             .cache_properties(zbus::proxy::CacheProperties::No)
-            .build()
+            .build_blocking()
             .ok()
     }
 
@@ -1493,7 +1489,7 @@ impl Worker {
     /// waited for at all.
     fn call<B>(&self, id: &str, method: &str, body: &B)
     where
-        B: serde::Serialize + zvariant::DynamicType,
+        B: serde::Serialize + zbus::DynamicType,
     {
         let Some(index) = self.index_of(id) else {
             return_missing(id);
@@ -1503,7 +1499,7 @@ impl Worker {
         let Some(proxy) = self.proxy(&entry.service.clone(), &entry.path.clone()) else {
             return;
         };
-        if let Err(e) = proxy.call_noreply(method, body) {
+        if let Err(e) = proxy.notify(method, body) {
             // Not a warning. Items answer `UnknownMethod` for the calls they
             // do not implement — `SecondaryActivate` especially — and a middle
             // click on one of those is not a fault.
@@ -1517,16 +1513,13 @@ impl Worker {
     /// that most items never send: this specification has its own signals for
     /// what changed, which is what the pump above listens to. A cached proxy
     /// here would be a tray that updates only for the toolkits that send both.
-    fn proxy(&self, service: &str, path: &str) -> Option<zbus::blocking::Proxy<'static>> {
-        zbus::blocking::proxy::Builder::new(&self.connection)
+    fn proxy(&self, service: &str, path: &str) -> Option<crate::dbus::sync::Proxy<'static>> {
+        crate::dbus::sync::proxy::Builder::new(&self.connection)
             .destination(service.to_owned())
-            .ok()?
             .path(path.to_owned())
-            .ok()?
             .interface(ITEM)
-            .ok()?
             .cache_properties(zbus::proxy::CacheProperties::No)
-            .build()
+            .build_blocking()
             .ok()
     }
 
@@ -1559,12 +1552,12 @@ fn icon_cache_key(path: &Path) -> Option<IconCacheKey> {
 ///
 /// `GetLayout` answers `(ia{sv}av)` — and the children are variants, which is
 /// what makes the recursion fall out: every level below the root converts from
-/// an `OwnedValue` into this same type. Only the root arrives as a bare
+/// an `OwnedVariant` into this same type. Only the root arrives as a bare
 /// structure, which is why it is named here at all.
 type MenuNode = (
     i32,
-    HashMap<String, zvariant::OwnedValue>,
-    Vec<zvariant::OwnedValue>,
+    HashMap<String, zbus::OwnedVariant>,
+    Vec<zbus::OwnedVariant>,
 );
 
 /// A label with its keyboard mnemonic taken out.
@@ -1603,7 +1596,7 @@ fn return_missing(id: &str) {
 /// with a newline because that is what they are: a heading and the text under
 /// it, and a shell that gets one string can style the two halves apart if it
 /// wants to.
-fn tooltip(value: &zvariant::OwnedValue) -> String {
+fn tooltip(value: &zbus::OwnedVariant) -> String {
     let Ok((_, _, title, body)) =
         <(String, Vec<(i32, i32, Vec<u8>)>, String, String)>::try_from(value.clone())
     else {
@@ -1618,7 +1611,7 @@ fn tooltip(value: &zvariant::OwnedValue) -> String {
 }
 
 /// The pixmaps an item published, as a data URL.
-fn pixmap_url(value: &zvariant::OwnedValue) -> Option<String> {
+fn pixmap_url(value: &zbus::OwnedVariant) -> Option<String> {
     let raw = <Vec<(i32, i32, Vec<u8>)>>::try_from(value.clone()).ok()?;
     let pixmaps: Vec<crate::icon::Pixmap> = raw
         .into_iter()
@@ -1667,7 +1660,7 @@ mod tests {
     #[test]
     fn a_tooltip_is_its_title_and_its_body() {
         let value = |title: &str, body: &str| {
-            zvariant::OwnedValue::try_from(zvariant::Value::from((
+            zbus::OwnedVariant::try_from(zbus::Variant::from((
                 String::new(),
                 Vec::<(i32, i32, Vec<u8>)>::new(),
                 title.to_owned(),
@@ -1689,7 +1682,7 @@ mod tests {
     /// malformed one still has an icon worth drawing.
     #[test]
     fn a_malformed_tooltip_is_no_tooltip() {
-        let value = zvariant::OwnedValue::try_from(zvariant::Value::from(1u32)).expect("a value");
+        let value = zbus::OwnedVariant::try_from(zbus::Variant::from(1u32)).expect("a value");
         assert_eq!(tooltip(&value), "");
     }
 

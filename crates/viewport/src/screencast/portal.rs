@@ -1,3 +1,4 @@
+use crate::dbus::sync::ObjectServerExt as _;
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // org.freedesktop.impl.portal.ScreenCast.
@@ -20,7 +21,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use zvariant::{ObjectPath, OwnedObjectPath, OwnedValue, Value};
+use zbus::{ObjectPath, OwnedObjectPath, OwnedVariant, Variant};
 
 use super::Remembered;
 
@@ -597,10 +598,10 @@ impl ScreenCast {
         _handle: ObjectPath<'_>,
         session_handle: ObjectPath<'_>,
         app_id: &str,
-        _options: HashMap<String, OwnedValue>,
+        _options: HashMap<String, OwnedVariant>,
         #[zbus(object_server)] server: &zbus::ObjectServer,
         #[zbus(header)] header: zbus::message::Header<'_>,
-    ) -> (u32, HashMap<String, OwnedValue>) {
+    ) -> (u32, HashMap<String, OwnedVariant>) {
         if !self.called_by_frontend(&header) {
             return (RESPONSE_FAILED, HashMap::new());
         }
@@ -657,9 +658,9 @@ impl ScreenCast {
         _handle: ObjectPath<'_>,
         session_handle: ObjectPath<'_>,
         _app_id: &str,
-        options: HashMap<String, OwnedValue>,
+        options: HashMap<String, OwnedVariant>,
         #[zbus(header)] header: zbus::message::Header<'_>,
-    ) -> (u32, HashMap<String, OwnedValue>) {
+    ) -> (u32, HashMap<String, OwnedVariant>) {
         if !self.called_by_frontend(&header) {
             return (RESPONSE_FAILED, HashMap::new());
         }
@@ -731,9 +732,9 @@ impl ScreenCast {
     fn open_pipe_wire_remote(
         &self,
         _session_handle: ObjectPath<'_>,
-        _options: HashMap<String, OwnedValue>,
+        _options: HashMap<String, OwnedVariant>,
         #[zbus(header)] header: zbus::message::Header<'_>,
-    ) -> zbus::fdo::Result<zvariant::OwnedFd> {
+    ) -> zbus::fdo::Result<zbus::OwnedFd> {
         if !self.called_by_frontend(&header) {
             return Err(zbus::fdo::Error::AccessDenied(
                 "that is not the portal frontend".to_owned(),
@@ -745,7 +746,7 @@ impl ScreenCast {
         let stream = std::os::unix::net::UnixStream::connect(&socket).map_err(|e| {
             zbus::fdo::Error::Failed(format!("connecting to {}: {e}", socket.display()))
         })?;
-        Ok(zvariant::OwnedFd::from(std::os::fd::OwnedFd::from(stream)))
+        Ok(zbus::OwnedFd::from(std::os::fd::OwnedFd::from(stream)))
     }
 
     /// Pick a source and hand back the stream.
@@ -755,9 +756,9 @@ impl ScreenCast {
         session_handle: ObjectPath<'_>,
         _app_id: &str,
         _parent_window: &str,
-        _options: HashMap<String, OwnedValue>,
+        _options: HashMap<String, OwnedVariant>,
         #[zbus(header)] header: zbus::message::Header<'_>,
-    ) -> (u32, HashMap<String, OwnedValue>) {
+    ) -> (u32, HashMap<String, OwnedVariant>) {
         if !self.called_by_frontend(&header) {
             return (RESPONSE_FAILED, HashMap::new());
         }
@@ -843,16 +844,16 @@ impl ScreenCast {
 
         // One stream, described the way the interface wants it: the node to
         // connect to, and a dictionary the application reads for its size.
-        let mut properties: HashMap<String, Value<'static>> = HashMap::new();
+        let mut properties: HashMap<String, Variant<'static>> = HashMap::new();
         properties.insert(
             "size".to_owned(),
-            Value::from((started.width, started.height)),
+            Variant::from((started.width, started.height)),
         );
-        properties.insert("source_type".to_owned(), Value::from(started.source_type));
+        properties.insert("source_type".to_owned(), Variant::from(started.source_type));
         let streams = vec![(started.node, properties)];
 
-        let mut results: HashMap<String, OwnedValue> = HashMap::new();
-        match OwnedValue::try_from(Value::from(streams)) {
+        let mut results: HashMap<String, OwnedVariant> = HashMap::new();
+        match OwnedVariant::try_from(Variant::from(streams)) {
             Ok(value) => {
                 results.insert("streams".to_owned(), value);
                 tracing::debug!(
@@ -885,7 +886,7 @@ impl ScreenCast {
             match token.as_deref().map(encode) {
                 Some(Ok(data)) => {
                     results.insert("restore_data".to_owned(), data);
-                    results.insert("persist_mode".to_owned(), OwnedValue::from(persist));
+                    results.insert("persist_mode".to_owned(), OwnedVariant::from(persist));
                 }
                 // Nothing to restore from, either because writing it down
                 // failed or because the compositor shared something it cannot
@@ -897,7 +898,7 @@ impl ScreenCast {
                     if let Some(Err(e)) = other {
                         tracing::warn!("screencast: could not write down what was shared: {e}");
                     }
-                    results.insert("persist_mode".to_owned(), OwnedValue::from(PERSIST_NONE));
+                    results.insert("persist_mode".to_owned(), OwnedVariant::from(PERSIST_NONE));
                 }
             }
         }
@@ -931,12 +932,12 @@ fn mint() -> Option<String> {
 ///
 /// A dictionary inside rather than a bare string, because a reader of the next
 /// version has to be able to skip what it does not know.
-fn encode(token: &str) -> zvariant::Result<OwnedValue> {
-    let mut fields: HashMap<String, Value<'static>> = HashMap::new();
-    fields.insert("token".to_owned(), Value::from(token.to_owned()));
+fn encode(token: &str) -> zbus::Result<OwnedVariant> {
+    let mut fields: HashMap<String, Variant<'static>> = HashMap::new();
+    fields.insert("token".to_owned(), Variant::from(token.to_owned()));
 
-    let data = Value::Value(Box::new(Value::from(zvariant::Dict::from(fields))));
-    OwnedValue::try_from(Value::from((RESTORE_VENDOR, RESTORE_VERSION, data)))
+    let data = Variant::Variant(Box::new(Variant::from(zbus::Dict::from(fields))));
+    OwnedVariant::try_from(Variant::from((RESTORE_VENDOR, RESTORE_VERSION, data)))
 }
 
 /// Read one back, if it is one of ours.
@@ -947,14 +948,14 @@ fn encode(token: &str) -> zvariant::Result<OwnedValue> {
 /// is asked, which is what would have happened without a token at all. So is a
 /// token this end no longer has a row for, which is every token from before the
 /// compositor was restarted.
-fn decode(value: &OwnedValue) -> Option<String> {
-    let Value::Structure(structure) = &**value else {
+fn decode(value: &OwnedVariant) -> Option<String> {
+    let Variant::Structure(structure) = &**value else {
         return None;
     };
     let [vendor, version, data] = structure.fields() else {
         return None;
     };
-    let (Value::Str(vendor), Value::U32(version)) = (inside(vendor), inside(version)) else {
+    let (Variant::Str(vendor), Variant::U32(version)) = (inside(vendor), inside(version)) else {
         return None;
     };
     if vendor.as_str() != RESTORE_VENDOR || *version != RESTORE_VERSION {
@@ -962,13 +963,13 @@ fn decode(value: &OwnedValue) -> Option<String> {
         return None;
     }
 
-    let Value::Dict(dict) = inside(data) else {
+    let Variant::Dict(dict) = inside(data) else {
         return None;
     };
     let field = |wanted: &str| -> Option<String> {
         dict.iter().find_map(|(key, value)| match inside(key) {
-            Value::Str(key) if key.as_str() == wanted => match inside(value) {
-                Value::Str(value) => Some(value.as_str().to_owned()),
+            Variant::Str(key) if key.as_str() == wanted => match inside(value) {
+                Variant::Str(value) => Some(value.as_str().to_owned()),
                 _ => None,
             },
             _ => None,
@@ -983,9 +984,9 @@ fn decode(value: &OwnedValue) -> Option<String> {
 /// A dictionary of `a{sv}` is one wrapper deep when it comes off the wire and
 /// none at all when it was built in this process, and a reader that assumes
 /// either one is a reader that works in the tests and not on the bus.
-fn inside<'v>(value: &'v Value<'v>) -> &'v Value<'v> {
+fn inside<'v>(value: &'v Variant<'v>) -> &'v Variant<'v> {
     let mut value = value;
-    while let Value::Value(inner) = value {
+    while let Variant::Variant(inner) = value {
         value = inner;
     }
     value
@@ -1061,33 +1062,37 @@ fn pipewire_socket() -> Option<std::path::PathBuf> {
 /// merely paused looks identical, and killing one the user is still holding
 /// open is worse than leaking one they are not.
 pub fn watch_frontend(
-    connection: zbus::blocking::Connection,
+    connection: crate::dbus::sync::Connection,
     sessions: Sessions,
     sender: smithay::reexports::calloop::channel::Sender<Message>,
 ) {
     std::thread::Builder::new()
         .name("viewport-portal-watch".to_owned())
         .spawn(move || {
-            let proxy = match zbus::blocking::fdo::DBusProxy::new(&connection) {
+            let proxy = match crate::dbus::sync::bus_proxy(&connection) {
                 Ok(proxy) => proxy,
                 Err(e) => {
                     tracing::warn!("could not watch the portal frontend: {e}");
                     return;
                 }
             };
-            let changes = match proxy.receive_name_owner_changed() {
+            let changes = match crate::dbus::sync::block_on(proxy.receive_name_owner_changed()) {
                 Ok(changes) => changes,
                 Err(e) => {
                     tracing::warn!("could not watch the portal frontend: {e}");
                     return;
                 }
             };
+            let mut changes = changes;
 
             // Who has the name already. Subscribed to first, so a frontend that
             // arrives between the two is seen by the signal rather than missed
             // by both — the other way round is a window in which every call is
             // refused because nobody has said who the frontend is.
-            match proxy.get_name_owner(FRONTEND_NAME.try_into().expect("a valid bus name")) {
+            match crate::dbus::sync::DBusProxyExt::get_name_owner(
+                &proxy,
+                FRONTEND_NAME.try_into().expect("a valid bus name"),
+            ) {
                 Ok(owner) => {
                     tracing::info!("the portal frontend is {owner}");
                     sessions.lock().unwrap().owner = Some(owner.to_string());
@@ -1097,7 +1102,7 @@ pub fn watch_frontend(
                 Err(e) => tracing::debug!("no portal frontend yet: {e}"),
             }
 
-            for change in changes {
+            while let Some(change) = crate::dbus::sync::next_signal(&mut changes) {
                 let Ok(args) = change.args() else { continue };
                 // Who this compositor answers to, as that changes. Every call
                 // on the screencast interface is checked against it: the
@@ -1139,7 +1144,10 @@ pub fn watch_frontend(
                     // machine with no portal left to stop it. See
                     // [`release_session`].
                     release_session(&session, &path, &sender);
-                    if let Err(e) = connection.object_server().remove::<SessionObject, _>(&path) {
+                    if let Err(e) = connection
+                        .object_server()
+                        .remove_blocking::<SessionObject>(path.clone())
+                    {
                         tracing::warn!("could not take an abandoned session off the bus: {e}");
                     }
                 }
@@ -1162,12 +1170,12 @@ mod tests {
     /// `encode` to `decode` would prove nothing about the case that happens.
     fn round_trip(token: &str) -> Option<String> {
         let encoded = encode(token).expect("writing it down");
-        let context = zvariant::serialized::Context::new_dbus(zvariant::Endian::Little, 0);
-        let bytes = zvariant::to_bytes(context, &encoded).expect("serialising it");
+        let context = zbus::wire::serialized::Context::new(zbus::wire::Endian::Little, 0);
+        let bytes = zbus::wire::to_bytes(context, &encoded).expect("serialising it");
         let (value, _) = bytes
-            .deserialize::<zvariant::Value<'_>>()
+            .deserialize::<zbus::Variant<'_>>()
             .expect("parsing it");
-        decode(&OwnedValue::try_from(value).expect("owning it"))
+        decode(&OwnedVariant::try_from(value).expect("owning it"))
     }
 
     /// A token survives the frontend. One that did not is a share OBS has to
@@ -1261,11 +1269,11 @@ mod tests {
     /// mean something else.
     #[test]
     fn another_compositors_token_is_ignored() {
-        let mut fields: HashMap<String, Value<'static>> = HashMap::new();
-        fields.insert("token".to_owned(), Value::from("abc123"));
-        let data = Value::Value(Box::new(Value::from(zvariant::Dict::from(fields))));
-        let foreign =
-            OwnedValue::try_from(Value::from(("someone-else", 1u32, data))).expect("building it");
+        let mut fields: HashMap<String, Variant<'static>> = HashMap::new();
+        fields.insert("token".to_owned(), Variant::from("abc123"));
+        let data = Variant::Variant(Box::new(Variant::from(zbus::Dict::from(fields))));
+        let foreign = OwnedVariant::try_from(Variant::from(("someone-else", 1u32, data)))
+            .expect("building it");
         assert_eq!(decode(&foreign), None);
     }
 
@@ -1274,11 +1282,12 @@ mod tests {
     /// two must not be read by version one.
     #[test]
     fn a_later_version_is_ignored() {
-        let mut fields: HashMap<String, Value<'static>> = HashMap::new();
-        fields.insert("token".to_owned(), Value::from("abc123"));
-        let data = Value::Value(Box::new(Value::from(zvariant::Dict::from(fields))));
-        let later = OwnedValue::try_from(Value::from((RESTORE_VENDOR, RESTORE_VERSION + 1, data)))
-            .expect("building it");
+        let mut fields: HashMap<String, Variant<'static>> = HashMap::new();
+        fields.insert("token".to_owned(), Variant::from("abc123"));
+        let data = Variant::Variant(Box::new(Variant::from(zbus::Dict::from(fields))));
+        let later =
+            OwnedVariant::try_from(Variant::from((RESTORE_VENDOR, RESTORE_VERSION + 1, data)))
+                .expect("building it");
         assert_eq!(decode(&later), None);
     }
 
@@ -1286,11 +1295,11 @@ mod tests {
     /// row, which is exactly the data anybody on the bus could compose.
     #[test]
     fn the_self_describing_version_is_ignored() {
-        let mut fields: HashMap<String, Value<'static>> = HashMap::new();
-        fields.insert("kind".to_owned(), Value::from("all-outputs"));
-        let data = Value::Value(Box::new(Value::from(zvariant::Dict::from(fields))));
-        let old =
-            OwnedValue::try_from(Value::from((RESTORE_VENDOR, 1u32, data))).expect("building it");
+        let mut fields: HashMap<String, Variant<'static>> = HashMap::new();
+        fields.insert("kind".to_owned(), Variant::from("all-outputs"));
+        let data = Variant::Variant(Box::new(Variant::from(zbus::Dict::from(fields))));
+        let old = OwnedVariant::try_from(Variant::from((RESTORE_VENDOR, 1u32, data)))
+            .expect("building it");
         assert_eq!(decode(&old), None);
     }
 
@@ -1300,15 +1309,15 @@ mod tests {
     #[test]
     fn nonsense_is_not_a_restore() {
         for value in [
-            OwnedValue::from(7u32),
-            OwnedValue::try_from(Value::from("not a structure")).expect("building it"),
+            OwnedVariant::from(7u32),
+            OwnedVariant::try_from(Variant::from("not a structure")).expect("building it"),
             // The shape is right and the dictionary says nothing.
-            OwnedValue::try_from(Value::from((
+            OwnedVariant::try_from(Variant::from((
                 RESTORE_VENDOR,
                 RESTORE_VERSION,
-                Value::Value(Box::new(Value::from(zvariant::Dict::from(HashMap::<
+                Variant::Variant(Box::new(Variant::from(zbus::Dict::from(HashMap::<
                     String,
-                    Value<'static>,
+                    Variant<'static>,
                 >::new(
                 ))))),
             )))

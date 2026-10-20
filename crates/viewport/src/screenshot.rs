@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 
 use smithay::output::Output;
-use zvariant::{ObjectPath, OwnedValue};
+use zbus::{ObjectPath, OwnedVariant};
 
 const RESPONSE_SUCCESS: u32 = 0;
 const RESPONSE_CANCELLED: u32 = 1;
@@ -45,7 +45,7 @@ pub enum Message {
 /// The options are advisory and the portal frontend is trusted for their
 /// shape, so a wrong D-Bus type reads as an absent option rather than a
 /// failure.
-fn capture_options(options: &HashMap<String, OwnedValue>) -> Option<(bool, bool)> {
+fn capture_options(options: &HashMap<String, OwnedVariant>) -> Option<(bool, bool)> {
     let interactive = options
         .get("interactive")
         .and_then(|v| bool::try_from(v).ok())
@@ -89,9 +89,9 @@ impl Screenshot {
         _session_handle: ObjectPath<'_>,
         _app_id: &str,
         _parent_window: &str,
-        options: HashMap<String, OwnedValue>,
+        options: HashMap<String, OwnedVariant>,
         #[zbus(header)] header: zbus::message::Header<'_>,
-    ) -> (u32, HashMap<String, OwnedValue>) {
+    ) -> (u32, HashMap<String, OwnedVariant>) {
         if !crate::screencast::portal::called_by_frontend(&self.sessions, "screenshot", &header) {
             return (RESPONSE_CANCELLED, HashMap::new());
         }
@@ -117,7 +117,7 @@ impl Screenshot {
         match reply_rx.recv().await {
             Ok(Ok(uri)) => {
                 let mut results = HashMap::new();
-                results.insert("uri".to_owned(), OwnedValue::from(zvariant::Str::from(uri)));
+                results.insert("uri".to_owned(), OwnedVariant::from(zbus::Str::from(uri)));
                 (RESPONSE_SUCCESS, results)
             }
             Ok(Err(_)) => (RESPONSE_CANCELLED, HashMap::new()),
@@ -130,7 +130,7 @@ impl Screenshot {
 mod tests {
     use super::*;
 
-    fn options(entries: &[(&str, OwnedValue)]) -> HashMap<String, OwnedValue> {
+    fn options(entries: &[(&str, OwnedVariant)]) -> HashMap<String, OwnedVariant> {
         entries
             .iter()
             .map(|(key, value)| ((*key).to_owned(), value.clone()))
@@ -141,13 +141,13 @@ mod tests {
     fn an_interactive_request_is_refused_rather_than_downgraded() {
         // The caller asked to choose; the whole output is not that request.
         assert_eq!(
-            capture_options(&options(&[("interactive", OwnedValue::from(true))])),
+            capture_options(&options(&[("interactive", OwnedVariant::from(true))])),
             None
         );
         assert_eq!(
             capture_options(&options(&[
-                ("interactive", OwnedValue::from(true)),
-                ("modal", OwnedValue::from(true)),
+                ("interactive", OwnedVariant::from(true)),
+                ("modal", OwnedVariant::from(true)),
             ])),
             None
         );
@@ -157,7 +157,7 @@ mod tests {
     fn a_plain_or_modal_request_is_an_output_capture() {
         assert_eq!(capture_options(&HashMap::new()), Some((false, false)));
         assert_eq!(
-            capture_options(&options(&[("modal", OwnedValue::from(true))])),
+            capture_options(&options(&[("modal", OwnedVariant::from(true))])),
             Some((false, true))
         );
     }
@@ -166,7 +166,7 @@ mod tests {
     fn a_wrongly_typed_option_is_ignored_like_a_missing_one() {
         // Advisory options; a non-bool must not read as "interactive".
         assert_eq!(
-            capture_options(&options(&[("interactive", OwnedValue::from(1u32))])),
+            capture_options(&options(&[("interactive", OwnedVariant::from(1u32))])),
             Some((false, false))
         );
     }

@@ -1,3 +1,5 @@
+use crate::dbus::sync::connection::BuildBlocking as _;
+use crate::dbus::sync::ObjectServerExt as _;
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // Keeping the screen awake for the programs that ask over D-Bus.
@@ -31,10 +33,11 @@
 // bus service here: zbus wants an async runtime and this loop is GLib with
 // calloop nested inside it.
 
+use crate::dbus::sync::NameRequestExt as _;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use zvariant::{ObjectPath, OwnedObjectPath, OwnedValue};
+use zbus::{ObjectPath, OwnedObjectPath, OwnedVariant};
 
 use crate::text::truncate;
 
@@ -115,7 +118,7 @@ struct Inner {
     requests: HashMap<OwnedObjectPath, Held>,
     /// The portal connection, once there is one, so a request abandoned by a
     /// dead frontend can be taken off the bus as well as out of this table.
-    portal: Option<zbus::blocking::Connection>,
+    portal: Option<crate::dbus::sync::Connection>,
 }
 
 /// Everything holding idle off, shared between the two interfaces.
@@ -273,11 +276,11 @@ impl Registry {
 
     /// Remember the portal connection, so abandoned requests can be removed
     /// from it. Set once the portal object is actually on the bus.
-    pub fn set_portal_connection(&self, connection: zbus::blocking::Connection) {
+    pub fn set_portal_connection(&self, connection: crate::dbus::sync::Connection) {
         self.inner().portal = Some(connection);
     }
 
-    fn portal_connection(&self) -> Option<zbus::blocking::Connection> {
+    fn portal_connection(&self) -> Option<crate::dbus::sync::Connection> {
         self.inner().portal.clone()
     }
 
@@ -382,6 +385,9 @@ async fn called_by_frontend(
     header: &zbus::message::Header<'_>,
 ) -> bool {
     let sender = header.sender().map(|name| name.as_str());
+    // Awaited, not blocked on: this runs inside a method zbus is dispatching,
+    // and the connection it would wait for only makes progress on the thread
+    // doing the dispatching.
     let owner = match zbus::fdo::DBusProxy::new(connection).await {
         Ok(proxy) => match zbus::names::BusName::try_from(FRONTEND_NAME) {
             Ok(name) => proxy
@@ -445,7 +451,7 @@ impl PortalInhibit {
         handle: ObjectPath<'_>,
         app_id: &str,
         _window: &str,
-        options: HashMap<String, OwnedValue>,
+        options: HashMap<String, OwnedVariant>,
         #[zbus(object_server)] server: &zbus::ObjectServer,
         #[zbus(signal_emitter)] emitter: zbus::object_server::SignalEmitter<'_>,
         #[zbus(header)] header: zbus::message::Header<'_>,
@@ -554,8 +560,8 @@ pub fn start(
     registry: Registry,
     sender: smithay::reexports::calloop::channel::Sender<Message>,
     session_compositor: bool,
-) -> anyhow::Result<zbus::blocking::Connection> {
-    let mut builder = zbus::blocking::connection::Builder::session()?;
+) -> anyhow::Result<crate::dbus::sync::Connection> {
+    let mut builder = crate::dbus::sync::connection::Builder::session();
     for path in SCREENSAVER_PATHS {
         builder = builder.serve_at(
             path,
@@ -563,9 +569,9 @@ pub fn start(
                 registry: registry.clone(),
                 sender: sender.clone(),
             },
-        )?;
+        );
     }
-    let connection = builder.build()?;
+    let connection = builder.build_blocking()?;
 
     // With `crate::dbus::name_flags`, like every other name here: queued for
     // rather than taken, so a screensaver daemon somebody started on purpose
@@ -573,7 +579,7 @@ pub fn start(
     // Asked for at all only by the session's own compositor — see
     // `crate::dbus::may_claim`, the rule this obeys like every other name.
     if crate::dbus::may_claim(session_compositor) {
-        let reply = connection.request_name_with_flags(SCREENSAVER_NAME, crate::dbus::name_flags());
+        let reply = connection.take_name(SCREENSAVER_NAME, crate::dbus::name_flags());
         crate::dbus::log_name_reply(SCREENSAVER_NAME, reply);
     } else {
         crate::dbus::log_name_skipped(SCREENSAVER_NAME);
@@ -589,26 +595,27 @@ pub fn start(
 /// have to be a timeout — "no application holds the screen awake for more than
 /// an hour" — which is wrong in both directions: it cuts off a long film and
 /// it still leaves an hour of lit screen after a crash.
-fn watch_owners(connection: zbus::blocking::Connection, registry: Registry) {
+fn watch_owners(connection: crate::dbus::sync::Connection, registry: Registry) {
     std::thread::Builder::new()
         .name("viewport-inhibit-watch".to_owned())
         .spawn(move || {
-            let proxy = match zbus::blocking::fdo::DBusProxy::new(&connection) {
+            let proxy = match crate::dbus::sync::bus_proxy(&connection) {
                 Ok(proxy) => proxy,
                 Err(e) => {
                     tracing::warn!("inhibit: could not watch for departures: {e}");
                     return;
                 }
             };
-            let changes = match proxy.receive_name_owner_changed() {
+            let changes = match crate::dbus::sync::block_on(proxy.receive_name_owner_changed()) {
                 Ok(changes) => changes,
                 Err(e) => {
                     tracing::warn!("inhibit: could not watch for departures: {e}");
                     return;
                 }
             };
+            let mut changes = changes;
 
-            for change in changes {
+            while let Some(change) = crate::dbus::sync::next_signal(&mut changes) {
                 let Ok(args) = change.args() else { continue };
                 // A name that moved to a new owner is a service restarting,
                 // not a client that went away.
@@ -624,7 +631,10 @@ fn watch_owners(connection: zbus::blocking::Connection, registry: Registry) {
                 }
                 if let Some(portal) = registry.portal_connection() {
                     for path in &abandoned {
-                        if let Err(e) = portal.object_server().remove::<RequestObject, _>(path) {
+                        if let Err(e) = portal
+                            .object_server()
+                            .remove_blocking::<RequestObject>(path.clone())
+                        {
                             tracing::warn!("inhibit: could not take {path} off the bus: {e}");
                         }
                     }
