@@ -232,6 +232,9 @@ run xwayland-clipboard "$root/tests/xwayland-clipboard.test.sh" "$VIEWPORT"
 run xwayland-fullscreen "$root/tests/xwayland-fullscreen.test.sh" \
 	"$VIEWPORT" "$work/foreign-toplevel-client"
 run xwayland-warp-hint "$root/tests/xwayland-warp-hint.test.sh" "$VIEWPORT"
+# The other half of the same dance: a capture that is still held while the
+# shell changes what it draws. Pressing Mod4 must not reach the game as aim.
+run xwayland-capture-overlay "$root/tests/xwayland-capture-overlay.test.sh" "$VIEWPORT"
 run xwayland-xtest-portal "$root/tests/xwayland-xtest-portal.test.sh" "$VIEWPORT"
 
 exit "$failed"

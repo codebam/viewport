@@ -46,9 +46,27 @@ separately so a game can apply its own sensitivity. A constraint belongs to a
 surface, so it lapses when that surface loses the pointer — otherwise a game
 would keep the mouse captured after you focused something else.
 
+Nothing else in the compositor may move a captured pointer either, and that is
+a rule with teeth: a lock means the client owns where the cursor is. Anything
+that re-hit-tests the pointer — the shell floating something over a window, a
+menu opening, a button press, the overview coming up — normally sends a motion
+to the surface now under the pointer so the client sees the leave it is owed.
+For a locked client that is an absolute position in its own coordinates, and a
+game reads every one of those as aim. So the re-hit-test is answered without
+being dispatched while the surface under the pointer holds a lock; see
+`ViewportState::refresh_pointer_focus`. The symptom when this is wrong is a
+camera that twitches when nothing touched the mouse: pressing Mod4 under
+`bar: auto` reveals a bar, which is a `shell.overlay` change, which re-runs the
+hit test. `tests/xwayland-capture-overlay.test.sh` is the guard.
+
 This covers X11 games too. `XGrabPointer` has no direct equivalent on Wayland;
 Xwayland implements it by taking out these same two protocols on the client's
-behalf, so a native game and CS2 under Proton reach identical code.
+behalf, so a native game and CS2 under Proton reach identical code. Xwayland's
+hint and the client's own coordinates are not quite the same space when the
+window carries `_GTK_FRAME_EXTENTS`: the hint is surface-local and the frame
+extents sit between it and the content, which is why a hint anchored at the
+content origin lands one margin right and down — measured (408, 308) for a
+(400, 300) warp.
 
 ### XWayland
 

@@ -2686,6 +2686,34 @@ impl ViewportState {
         let pointer = self.seat.get_pointer()?;
         let location = pointer.current_location();
         let under = self.surface_under(location);
+
+        // A captured pointer is never re-aimed, whatever the stack did.
+        //
+        // The motion below is the composer's way of saying "the same pointer,
+        // somewhere else in the stack": it is dispatched to the surface now
+        // under `location`, and that surface is a client. For a client that
+        // asked for a lock, that motion is an absolute position in its own
+        // coordinates — and a game reads every absolute position as aim. So
+        // every unrelated change to the shell's stack became camera motion:
+        // pressing Mod4 makes the bar appear, and the bar appearing is an
+        // overlay rectangle changing, which lands here (`set_shell_overlays`),
+        // and the game under the cursor got a motion event out of a keystroke
+        // that never touched the mouse. Measured on an X11 client with
+        // `_GTK_FRAME_EXTENTS`: the window's own warp says (400, 300) and the
+        // synthetic motion said (408, 308) — the frame extents, because the
+        // hint is surface-local and the game's coordinates are not — which
+        // the game credits as a shot that landed right and then down.
+        //
+        // The focus the lock holds does not need this: a lock is a capture of
+        // a pointer that is not moving, so "what is under the pointer" is the
+        // client's question to ask, not the shell's, and a leave/enter caused
+        // by the shell would end the capture (`ConstraintRemove::PointerLeave`)
+        // — the very churn that hands a game a recenter error. Skipped, and
+        // the hit test is still answered for the callers that need it.
+        if self.pointer_locked(&pointer, under.as_ref()) {
+            return under;
+        }
+
         let serial = smithay::utils::SERIAL_COUNTER.next_serial();
         let time = smithay::backend::input::InputTime::now();
         pointer.motion(
@@ -2699,6 +2727,29 @@ impl ViewportState {
         );
         pointer.frame(self);
         under
+    }
+
+    /// Whether the surface under the pointer holds it locked.
+    ///
+    /// The same question [`Self::pointer_constraint`] answers for the motion
+    /// paths, reduced to the one bit a caller that only has to decide "may I
+    /// send this client a position" needs. Kept next to `refresh_pointer_focus`
+    /// rather than reached for through `input`, which owns the confinement
+    /// arithmetic this has no use for.
+    fn pointer_locked(
+        &self,
+        pointer: &smithay::input::pointer::PointerHandle<Self>,
+        under: Option<&(WlSurface, Point<f64, Logical>)>,
+    ) -> bool {
+        use smithay::wayland::pointer_constraints::{with_pointer_constraint, PointerConstraint};
+
+        let Some((surface, _)) = under else {
+            return false;
+        };
+        with_pointer_constraint(surface, pointer, |constraint| {
+            matches!(constraint.as_deref(), Some(PointerConstraint::Locked(_)))
+                && constraint.is_some_and(|constraint| constraint.is_active())
+        })
     }
 
     /// Longest a shell may go without a sample when nothing it draws changed.
