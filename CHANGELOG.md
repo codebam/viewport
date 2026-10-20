@@ -11,6 +11,8 @@ to summarise rather than to duplicate.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-20
+
 ### Added
 - An X client's emulated input now reaches the desktop. Xwayland ≥ 23.2 can
   hand a client's XTEST calls to libei and negotiate the session through the
@@ -1803,7 +1805,8 @@ deleted C compositor and the tree stopped carrying two implementations.
   missing — WebKit treated such pages as empty documents (see the `wpe`
   PKGBUILD's notes on `shared-mime-info`).
 
-[Unreleased]: https://github.com/codebam/viewport/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/codebam/viewport/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/codebam/viewport/releases/tag/v0.4.0
 [0.3.0]: https://github.com/codebam/viewport/releases/tag/v0.3.0
 [0.2.0]: https://github.com/codebam/viewport/releases/tag/v0.2.0
 [0.1.8]: https://github.com/codebam/viewport/releases/tag/v0.1.8
