@@ -238,5 +238,7 @@ run xwayland-capture-overlay "$root/tests/xwayland-capture-overlay.test.sh" "$VI
 run xwayland-xtest-portal "$root/tests/xwayland-xtest-portal.test.sh" "$VIEWPORT"
 run view-ipc "$root/tests/view-ipc.test.sh" \
 	"$VIEWPORT" "$work/paint-client" "$work/foreign-toplevel-client"
+run shell-session-ipc "$root/tests/shell-session-ipc.test.sh" \
+	"$VIEWPORT" "$work/paint-client"
 
 exit "$failed"
