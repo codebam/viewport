@@ -52,7 +52,9 @@ use smithay::backend::input::{
     AbsolutePositionEvent as _, Event as _, InputEvent, KeyState, KeyboardKeyEvent as _,
     PointerButtonEvent as _, TouchEvent as _,
 };
-use smithay::backend::libei::{EiInput, EiInputConnection, EiInputEvent, EiInputSeat, EiRegion};
+use smithay::backend::libei::{
+    EiInput, EiInputConnection, EiInputEvent, EiInputSeat, EiRegion, SpecialEvent,
+};
 use smithay::input::keyboard::{Keycode, Keysym, XkbConfig};
 use smithay::reexports::calloop::RegistrationToken;
 use smithay::reexports::reis::eis;
@@ -303,10 +305,6 @@ impl ViewportState {
         match event {
             EiInputEvent::Connected => self.eis_connected(session, connection),
             EiInputEvent::Event(event) => self.eis_input(session, event),
-            EiInputEvent::TextKeysym { keysym, state } => {
-                self.eis_text_keysym(session, keysym, state == KeyState::Pressed)
-            }
-            EiInputEvent::TextUtf8 { text } => self.eis_text(&text),
             // The source takes itself out of the loop when it produces this,
             // so the token must not be removed again — a token is an index
             // into calloop's own table and one that has been freed may name
@@ -409,6 +407,15 @@ impl ViewportState {
     /// other arm ends in — see [`ViewportState::pointer_absolute_to`].
     fn eis_input(&mut self, session: &OwnedObjectPath, event: InputEvent<EiInput>) {
         match event {
+            // Text injected through the client's `ei_text` device — keymap-
+            // independent keysyms and UTF-8 text, which Smithay delivers as a
+            // special input event rather than as its own `EiInputEvent` arm.
+            InputEvent::Special(SpecialEvent::TextKeysym(text)) => self.eis_text_keysym(
+                session,
+                text.keysym,
+                text.state == eis::keyboard::KeyState::Press,
+            ),
+            InputEvent::Special(SpecialEvent::TextUtf8(text)) => self.eis_text(&text.text),
             InputEvent::Keyboard { event } => {
                 let code = event.key_code();
                 let pressed = event.state() == KeyState::Pressed;

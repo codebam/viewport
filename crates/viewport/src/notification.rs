@@ -709,7 +709,9 @@ impl crate::state::ViewportState {
 }
 
 fn parse_actions(flat: &[String]) -> Vec<NotificationAction> {
-    flat.chunks_exact(2)
+    flat.as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| NotificationAction {
             key: truncate(&pair[0], MAX_ACTION_KEY, "notification action key"),
             label: truncate(&pair[1], MAX_ACTION_LABEL, "notification action label"),

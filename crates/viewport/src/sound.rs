@@ -405,7 +405,9 @@ fn stream(path: &Path, pcm: &Arc<Pcm>) -> anyhow::Result<()> {
             let taking = remaining.min(wanted);
 
             for (out, sample) in slice
-                .chunks_exact_mut(std::mem::size_of::<f32>())
+                .as_chunks_mut::<{ std::mem::size_of::<f32>() }>()
+                .0
+                .iter_mut()
                 .zip(&audio.samples[start..start + taking])
             {
                 out.copy_from_slice(&sample.to_le_bytes());

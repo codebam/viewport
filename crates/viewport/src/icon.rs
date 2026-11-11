@@ -96,7 +96,7 @@ fn avif_magic(bytes: &[u8]) -> bool {
     let brand = |b: &[u8]| b == b"avif" || b == b"avis";
     // The major brand, or any compatible brand: a file written as `mif1`
     // with `avif` in its compatible list is a valid AVIF.
-    brand(&bytes[8..12]) || bytes[16..].chunks_exact(4).any(brand)
+    brand(&bytes[8..12]) || bytes[16..].as_chunks::<4>().0.iter().any(|b| brand(b))
 }
 
 /// Whether text looks like an SVG document rather than a renamed secret.
@@ -563,7 +563,7 @@ fn downscale(rgba: &[u8], width: usize, height: usize, limit: usize) -> (usize, 
 /// every implementation sends — rearranged into the RGBA a PNG stores.
 fn argb_to_rgba(argb: &[u8], pixels: usize) -> Vec<u8> {
     let mut out = Vec::with_capacity(pixels * 4);
-    for pixel in argb.chunks_exact(4).take(pixels) {
+    for pixel in argb.as_chunks::<4>().0.iter().take(pixels) {
         out.extend_from_slice(&[pixel[1], pixel[2], pixel[3], pixel[0]]);
     }
     out

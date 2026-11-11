@@ -2007,7 +2007,7 @@ impl ViewportState {
                 // itself defers one — nothing does today — cannot alias the
                 // vector it is being read from.
                 if !self.deferred_bindings.is_empty() {
-                    let deferred: Vec<_> = self.deferred_bindings.drain(..).collect();
+                    let deferred: Vec<_> = std::mem::take(&mut self.deferred_bindings);
                     for action in deferred {
                         self.run_binding(action);
                     }
@@ -4414,7 +4414,7 @@ impl smithay::wayland::virtual_keyboard::VirtualKeyboardHandler for ViewportStat
                     return;
                 };
                 self.virtual_keyboard_replaced_keymap = true;
-                if let Err(err) = keyboard.set_keymap_from_string(self, keymap.to_string()) {
+                if let Err(err) = keyboard.set_keymap_from_keymap_file(self, keymap) {
                     tracing::warn!(?err, "virtual keyboard: keymap not applied");
                 }
             }

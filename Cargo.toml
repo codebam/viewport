@@ -62,7 +62,7 @@ viewport-web = { path = "crates/viewport-web" }
 # there, one bumping the revision here — and `cargo test --workspace` no longer
 # runs its tests, which run in its own CI instead. See the `[patch]` at the
 # bottom of this file for the other half of the arrangement.
-viewport-vulkan = { git = "https://github.com/codebam/viewport-vulkan.git", rev = "ab93b4c4ea7a507da9e5890040afe5b244fdd40e" }
+viewport-vulkan = { git = "https://github.com/codebam/viewport-vulkan.git", rev = "0d926ebfd1371be5b2e08535796ed250ec9f6282" }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -104,13 +104,19 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # lost. The two virtual_keyboard patches went the same way in this pass: see
 # below.
 #
-# The previous tip is tagged pre-rebase-9d0e3650 over there, because a revision
+# The previous tip is tagged pre-rebase-fdb4a860 over there, because a revision
 # no ref reaches is one GitHub may collect, and older checkouts of this
-# compositor pin it. (pre-rebase-d64a9abe, pre-rebase-b2cc4c51,
-# pre-rebase-b98f667e, pre-rebase-09de0d99, pre-rebase-b6e5bf02 and
-# pre-rebase-a8f1c00 are the ones before that.)
+# compositor pin it. (pre-rebase-9d0e3650, pre-rebase-d64a9abe,
+# pre-rebase-b2cc4c51, pre-rebase-b98f667e, pre-rebase-09de0d99,
+# pre-rebase-b6e5bf02 and pre-rebase-a8f1c00 are the ones before that.)
 #
-# This pass rebased onto upstream cf43a02a, 29 commits on from the last base,
+# This pass rebased onto upstream 8fd9fe0, 51 commits on from the last base
+# (cf43a02a), with `git range-diff` showing `=` for all four patches. The
+# renderer followed to the same commit in its own repository, so the two pins
+# agree again.
+#
+# The pass before that rebased onto upstream cf43a02a, 29 commits on from the
+# last base,
 # and it is more than a bump: upstream's own virtual-keyboard rework
 # (7454d68a, 2bf8be86) landed the same idea the fork's two virtual_keyboard
 # patches carried — a key from `zwp_virtual_keyboard_v1` reaching the
@@ -122,7 +128,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # three patches — the new `_NET_WM_STATE` read-back included — applied with
 # `git range-diff` showing `=` for each.
 git = "https://github.com/codebam/smithay.git"
-rev = "fdb4a8606af042557d014b578c99cff52af6e3f3"
+rev = "d44f753b823f9abbe18970f3a7651e76dfb28d65"
 default-features = false
 
 # The other half of moving the renderer out of this workspace.
@@ -147,7 +153,7 @@ default-features = false
 # is what makes this a redirect and not a downgrade — rebase the fork before
 # bumping either pin, not after.
 [patch."https://github.com/Smithay/smithay"]
-smithay = { git = "https://github.com/codebam/smithay.git", rev = "fdb4a8606af042557d014b578c99cff52af6e3f3" }
+smithay = { git = "https://github.com/codebam/smithay.git", rev = "d44f753b823f9abbe18970f3a7651e76dfb28d65" }
 
 [profile.release]
 debug = 1

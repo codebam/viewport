@@ -275,7 +275,7 @@ fn write_ppm(path: &std::path::Path, width: u32, height: u32, pixels: &[u8]) -> 
     out.extend_from_slice(format!("P6\n{width} {height}\n255\n").as_bytes());
     // ARGB8888 is named from the least significant byte up, so in memory the
     // order is B, G, R, A.
-    for chunk in pixels.chunks_exact(4) {
+    for chunk in pixels.as_chunks::<4>().0 {
         out.extend_from_slice(&[chunk[2], chunk[1], chunk[0]]);
     }
 

@@ -1215,8 +1215,12 @@ mod tests {
 
     /// A scratch directory of this test's own, for the paths below to sit in.
     fn scratch() -> PathBuf {
+        // Kept short: unix socket paths are capped at 107 bytes, and a long
+        // TMPDIR (nix develop's) plus the staging directory's suffix used to
+        // push `viewport-trust.sock` one or two bytes past it, depending on
+        // how many digits the thread id happened to have.
         let dir = std::env::temp_dir().join(format!(
-            "viewport-ipc-test-{}-{:?}",
+            "v-ipc-{}-{:?}",
             std::process::id(),
             std::thread::current().id()
         ));
