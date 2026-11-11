@@ -9,6 +9,6 @@
     "test": "node tests/shell.test.js data/shell tiling && node tests/shell.test.js data/shell scrolling && node tests/shell.test.js data/shell matrix && node tests/shell.test.js data/shell canvas"
   },
   "dependencies": {
-    "gsap": "^3.15.0"
+    "gsap": "^3.15.1"
   }
 }
