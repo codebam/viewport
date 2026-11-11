@@ -64,7 +64,7 @@
         # ships the GTK port only (no Source/WebKit/UIProcess/API/wpe, no
         # Source/cmake/OptionsWPE.cmake). WPE is a separate upstream release.
         #
-        # So: same WebKit base version as nixpkgs' webkitgtk (2.52.5), but the
+        # So: same WebKit base version as nixpkgs' webkitgtk (2.54.2), but the
         # WPE tarball, and we inherit nixpkgs' dependency closure rather than
         # re-deriving ~40 buildInputs by hand.
         #
@@ -76,9 +76,9 @@
           # nixpkgs sets `name` directly (with an +abi= suffix), and `name`
           # wins over pname/version — so it has to be overridden explicitly or
           # the store path still claims to be webkitgtk.
-          name = "wpewebkit-2.52.5";
+          name = "wpewebkit-2.54.2";
           pname = "wpewebkit";
-          version = "2.52.5";
+          version = "2.54.2";
 
           # nixpkgs declares a devdoc output, populated by gi-docgen under
           # ENABLE_DOCUMENTATION. We build with documentation off, so nothing
@@ -90,8 +90,8 @@
           outputs = [ "out" "dev" ];
 
           src = pkgs.fetchurl {
-            url = "https://wpewebkit.org/releases/wpewebkit-2.52.5.tar.xz";
-            hash = "sha256-vPxskdt2WdzyT2/3mtJ6werhvGHcoNv+4VRwaSZ0Czs=";
+            url = "https://wpewebkit.org/releases/wpewebkit-2.54.2.tar.xz";
+            hash = "sha256-8yhOGeR/y1rIxjwuHBE9vWWyQj64pUX1s0VweCkAT1Y=";
           };
 
           # Most of nixpkgs' webkitgtk patches target the GTK port's layout,
