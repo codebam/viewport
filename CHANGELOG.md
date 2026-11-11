@@ -11,6 +11,40 @@ to summarise rather than to duplicate.
 
 ## [Unreleased]
 
+### Changed
+- The Smithay fork is rebased onto upstream master (`8fd9fe0`), 51 commits on
+  from `cf43a02a`, with `git range-diff` showing `=` for all four patches; the
+  fork's `master` (a plain upstream mirror) is fast-forwarded to match, and the
+  old tip is tagged `pre-rebase-fdb4a860`. The renderer followed to the same
+  commit in its own repository, so the two pins agree again. Two compositor
+  call sites moved with upstream's API: text injected through a client's
+  `ei_text` device now arrives as `InputEvent::Special` rather than as its own
+  `EiInputEvent` arm, and a virtual keyboard's keymap is applied with
+  `set_keymap_from_keymap_file` rather than by stringifying the `KeymapFile`
+  (which no longer implements `Display`).
+- Crates.io dependencies refreshed to the latest versions their requirements
+  allow (zbus 6.2, ureq 3.5, cc 1.11, gtk4/webkit6 0.11.5/0.6.1, and the rest
+  of the lock file's patch bumps), in the compositor's workspace and in the
+  CEF shell's own lock file.
+- Flake inputs updated to their latest heads (nixpkgs to 2026-11-07, crane,
+  rust-overlay, flake-utils). That moves the pinned stable Rust toolchain to
+  1.99 and nixpkgs' WebKit to 2.54.2, so the WPE backend's WebKit follows to
+  2.54.2 — nixpkgs' `fix-bubblewrap-paths` patch was re-verified against the
+  2.54.2 tree before the bump. The CEF backend is unaffected: nixpkgs'
+  `cef-binary` is still on the 151 line, where the `cef` crate stays.
+- GSAP 3.15.0 to 3.15.1; the vendored file and its hash are refreshed and
+  verified against the npm tarball.
+
+### Fixed
+- `cargo clippy` under rustc 1.99 (which newly lints `chunks_exact` and
+  `drain(..).collect()`): six call sites moved to `as_chunks`/`as_chunks_mut`
+  and one to `std::mem::take`. Purely mechanical; no behaviour change.
+- The IPC tests' scratch directory shrank (`v-ipc-*`): with a long `TMPDIR`
+  (what `nix develop` sets) the control-socket path sat one byte past the
+  107-byte unix limit, depending on how many digits the thread id had, and
+  failed `cargo test --workspace` under `nix develop` while passing
+  elsewhere.
+
 ## [0.4.0] - 2026-10-20
 
 ### Added
