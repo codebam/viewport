@@ -240,5 +240,7 @@ run view-ipc "$root/tests/view-ipc.test.sh" \
 	"$VIEWPORT" "$work/paint-client" "$work/foreign-toplevel-client"
 run shell-session-ipc "$root/tests/shell-session-ipc.test.sh" \
 	"$VIEWPORT" "$work/paint-client"
+run config-output-ipc "$root/tests/config-output-ipc.test.sh" \
+	"$VIEWPORT"
 
 exit "$failed"
