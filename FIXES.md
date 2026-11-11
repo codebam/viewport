@@ -333,3 +333,43 @@ and the JavaScript shell suites under `tests/`.
   `.hermes/plans/2026-10-17_0012-steam-cursor-control.md`; the grant half —
   Enter, the EIS socket, the cursor moving — is the live acceptance run, since
   a headless shell cannot commit the DMA-BUF the chooser needs to exist.
+
+## IPC coverage (found while closing headless gaps, 2026-11-11)
+
+- [ ] **55. `config.gaps`/`config.border` apply before validating, so a
+  refused message partly applies silently.**
+  `crates/viewport/src/apply.rs` (the `ConfigGaps` arm around `:856` and the
+  `ConfigBorder` arm around `:900`) assigns each valid field to
+  `state.config` as it validates it, and returns on the first invalid field
+  (`inner -1`, `outer -9`, `radius`/`width` negative) without sending the
+  `config` event. A message such as `config.gaps inner 99 outer -9` is
+  therefore refused (exit 1, `config.gaps: outer -9`) while `inner` stays
+  99 in `state.config`: the shell still draws 12, the next `view.query`
+  reports 99, and the two copies diverge for the rest of the session. The
+  sibling `config.wallpaper` arm resolves both fields before mutating
+  anything, which is the shape these two arms do not copy. `config.gaps`
+  and `config.border` are also the only setters whose contract
+  ("only the fields given change") is read as atomic by callers.
+  `tests/config-output-ipc.test.sh` asserts the atomic outcome (the query
+  stays 12/7) as an expected failure. Fix: validate the whole message first
+  (collect, then apply), as `config.wallpaper` does, and only notify when
+  something actually changed.
+
+- [ ] **56. `viewport msg -t` cannot send five request types.**
+  `crates/viewport/src/msg.rs` `TYPES` (`:146`) lists 69 messages while
+  `viewport_ipc::Request` declares 74; `view.opacity_rule`, `view.tearing`,
+  `view.idle_inhibit`, `gesture.capture` and `ai.login` are missing, so
+  `viewport msg -t view.tearing ...` (and the other four) exit 2 with
+  `unknown message type` (``viewport msg --help` lists them``) without
+  sending anything, even though the compositor dispatches all five and
+  `viewport msg --raw` delivers them. The
+  `the_offered_types_are_the_whole_request_set` test (`:1849`) intends to
+  catch exactly this but asserts `TYPES.len() == 69` with a stale comment
+  ("`Request` has 69 variants"), so the drift is silent; the reverse
+  direction (every `Type` parses) *is* checked above it. Found by
+  `tests/view-ipc.test.sh`, `tests/shell-session-ipc.test.sh` and
+  `tests/services-ipc.test.sh` (each sends the affected type via `--raw`
+  and checks the `-t` form as an expected failure). Fix: add the five
+  `Type` entries (fields, hints, and the tray-style `strings` where
+  needed) and derive the count check from `Request` itself (as
+  `viewport-ipc`'s `declared_types` does) rather than pinning a literal.

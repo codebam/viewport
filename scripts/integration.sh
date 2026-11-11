@@ -236,6 +236,10 @@ run xwayland-warp-hint "$root/tests/xwayland-warp-hint.test.sh" "$VIEWPORT"
 # shell changes what it draws. Pressing Mod4 must not reach the game as aim.
 run xwayland-capture-overlay "$root/tests/xwayland-capture-overlay.test.sh" "$VIEWPORT"
 run xwayland-xtest-portal "$root/tests/xwayland-xtest-portal.test.sh" "$VIEWPORT"
+
+# Control-socket IPC gaps: messages with no headless test that sends them via
+# `viewport msg` and asserts the answer plus the state change. See
+# docs/ipc-coverage.md for the message -> test table.
 run view-ipc "$root/tests/view-ipc.test.sh" \
 	"$VIEWPORT" "$work/paint-client" "$work/foreign-toplevel-client"
 run shell-session-ipc "$root/tests/shell-session-ipc.test.sh" \
