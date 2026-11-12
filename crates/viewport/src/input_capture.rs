@@ -1315,6 +1315,64 @@ impl crate::state::ViewportState {
         self.sync_input_capture_modifiers();
     }
 
+    /// Whether a binding that asks to fire during capture matches this key.
+    ///
+    /// The event is offered to the bindings before the capture takes it: a
+    /// chord marked `allow_input_capture+` still belongs to the desk while a
+    /// client holds the input. Only a press is offered; a release reaches
+    /// the local path anyway, where a `release+` binding fires and a
+    /// suppressed press is swallowed.
+    ///
+    /// The keysym is read off the seat's xkb state the same way the seat
+    /// filter reads it — the unmodified symbol, so a chord is written
+    /// `Mod4+q` and still matches under Shift.
+    fn capture_allows_key<I: InputBackend>(&mut self, event: &I::KeyboardKeyEvent) -> bool {
+        if self.input_capture_connections.active.is_none() {
+            return false;
+        }
+        let Some(keyboard) = self.seat.get_keyboard() else {
+            return false;
+        };
+        let modifiers = keyboard.modifier_state();
+        let keysym = keyboard.with_xkb_state(self, |ctx| {
+            smithay::input::keyboard::KeysymHandle::new(ctx.xkb(), event.key_code())
+                .raw_latin_sym_or_raw_current_sym()
+                .map(|sym| sym.raw())
+        });
+        let Some(keysym) = keysym else {
+            return false;
+        };
+        crate::binding::find_binding(
+            &self.bindings,
+            &modifiers,
+            keysym,
+            &self.binding_mode,
+            false,
+            false,
+        )
+        .is_some_and(|bound| bound.allow_input_capture)
+    }
+
+    /// Whether a binding that asks to fire during capture matches this button.
+    fn capture_allows_button<I: InputBackend>(&mut self, event: &I::PointerButtonEvent) -> bool {
+        if self.input_capture_connections.active.is_none() {
+            return false;
+        }
+        let Some(keyboard) = self.seat.get_keyboard() else {
+            return false;
+        };
+        let modifiers = keyboard.modifier_state();
+        crate::binding::find_button(
+            &self.bindings,
+            &modifiers,
+            event.button_code(),
+            &self.binding_mode,
+            false,
+            false,
+        )
+        .is_some_and(|bound| bound.allow_input_capture)
+    }
+
     fn intercept_input_capture<I: InputBackend>(&mut self, event: &InputEvent<I>) -> bool {
         if self.locked {
             self.deactivate_input_capture();
@@ -1350,6 +1408,12 @@ impl crate::state::ViewportState {
                 29 | 97 => self.input_capture_connections.ctrl = pressed,
                 56 | 100 => self.input_capture_connections.alt = pressed,
                 _ => {}
+            }
+            // A chord that asks to fire during capture is handed back to the
+            // local path, which runs the binding and suppresses the key;
+            // the capture never sees it.
+            if pressed && self.capture_allows_key::<I>(event) {
+                return false;
             }
             if pressed {
                 self.input_capture_connections.down_keys.insert(code);
@@ -1396,6 +1460,11 @@ impl crate::state::ViewportState {
         if let InputEvent::PointerButton { event } = event {
             let button = event.button_code();
             let pressed = event.state() == ButtonState::Pressed;
+            // A button binding that asks to fire during capture is handed
+            // back to the local path, as for a key above.
+            if pressed && self.capture_allows_button::<I>(event) {
+                return false;
+            }
             if pressed {
                 self.input_capture_connections.down_buttons.insert(button);
             } else {

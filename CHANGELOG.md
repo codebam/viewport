@@ -36,6 +36,10 @@ to summarise rather than to duplicate.
   verified against the npm tarball.
 
 ### Added
+- Two more bind flags, the escape hatches: `dont_inhibit+` fires even while
+  a client holds an inhibitor, and `allow_input_capture+` fires even while
+  input is captured by a client. Both are pseudo-modifiers like `locked`,
+  and neither is shadowed by a plain binding on the same chord.
 - Input-capture sessions are offered the clipboard on the same terms as
   remote-desktop ones: `RequestClipboard` before `Start`, `clipboard_enabled`
   answered from that ask, and text bridged through the clipboard history in

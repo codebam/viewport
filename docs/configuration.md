@@ -302,7 +302,7 @@ chain: `locked+Mod4+q` and `Mod4+locked+q` are the same binding. A `locked`
 binding and a non-`locked` binding on the same chord do not shadow each other:
 one fires while locked, the other while unlocked.
 
-Eight more flags are written the same way, anywhere before the key:
+Ten more flags are written the same way, anywhere before the key:
 
 - `release+` fires on the key coming up rather than going down — Hyprland's
   `bindr`. The two halves do not shadow each other, so the same chord can do
@@ -329,6 +329,12 @@ Eight more flags are written the same way, anywhere before the key:
   than the press: `click+` only if the pointer moved at most `drag_threshold`
   logical pixels, `drag+` only if it moved further. Hyprland's `bindc` and a
   button `bindm`. The threshold is a top-level key, absent 5.
+- `dont_inhibit+` fires even while a client holds an inhibitor. A client
+  holding `idle-inhibit` gets every key except a VT switch; this is the
+  escape hatch for the keys that must work under a fullscreen film or game.
+- `allow_input_capture+` fires even while input is captured by a client. The
+  compositor's own release chord aside, a captured desk hands everything to
+  the capturing session; this is the chord that still belongs to it.
 
 ```json
 "binds": {

@@ -165,6 +165,18 @@ pub struct Binding {
     /// Fire on the release only if the pointer moved past the threshold.
     /// Hyprland's `bindm` as a button gesture rather than a window drag.
     pub drag: bool,
+    /// Fire even while a client holds an inhibitor.
+    ///
+    /// Written `dont_inhibit+`. A client holding `idle-inhibit` gets every
+    /// key except a VT switch and the chords that ask for this: the escape
+    /// hatch for the keys that must work under a fullscreen film or game.
+    pub dont_inhibit: bool,
+    /// Fire even while input is captured by a client.
+    ///
+    /// Written `allow_input_capture+`. The compositor's own release chord
+    /// aside, a captured desk hands everything to the capturing session;
+    /// this is the chord that still belongs to it.
+    pub allow_input_capture: bool,
 }
 
 /// The direction a scroll-wheel binding matches.
@@ -226,6 +238,12 @@ impl Binding {
         }
         if self.drag {
             chord.push_str("drag+");
+        }
+        if self.dont_inhibit {
+            chord.push_str("dont_inhibit+");
+        }
+        if self.allow_input_capture {
+            chord.push_str("allow_input_capture+");
         }
         if self.modifiers.logo {
             chord.push_str("Mod4+");
@@ -338,6 +356,8 @@ pub fn parse_chord(chord: &str) -> Option<Binding> {
     let mut universal = false;
     let mut click = false;
     let mut drag = false;
+    let mut dont_inhibit = false;
+    let mut allow_input_capture = false;
     let mut rest = chord;
 
     // Left to right, stopping at the last '+': the key may itself be '+'.
@@ -359,6 +379,8 @@ pub fn parse_chord(chord: &str) -> Option<Binding> {
             "universal" | "submap_universal" => universal = true,
             "click" => click = true,
             "drag" => drag = true,
+            "dont_inhibit" => dont_inhibit = true,
+            "allow_input_capture" => allow_input_capture = true,
             // An unknown modifier is not a key with a stray plus in front of
             // it; treating it as one would bind something arbitrary.
             _ => return None,
@@ -409,6 +431,8 @@ pub fn parse_chord(chord: &str) -> Option<Binding> {
         universal,
         click,
         drag,
+        dont_inhibit,
+        allow_input_capture,
     })
 }
 
@@ -1017,6 +1041,11 @@ fn shadows(earlier: &Binding, binding: &Binding) -> bool {
         && earlier.release == binding.release
         && (earlier.universal || earlier.mode == binding.mode)
         && (earlier.ignore_mods || earlier.modifiers == binding.modifiers)
+        // An escape-hatch flag the earlier binding lacks is a reach the
+        // later one has that this one does not: it fires where the earlier
+        // is forwarded, so the later is not shadowed.
+        && (earlier.dont_inhibit || !binding.dont_inhibit)
+        && (earlier.allow_input_capture || !binding.allow_input_capture)
         && earlier.keysym == binding.keysym
         && earlier.button.is_none()
         && earlier.wheel.is_none()
@@ -1147,6 +1176,8 @@ mod tests {
                 universal: false,
                 click: false,
                 drag: false,
+                dont_inhibit: false,
+                allow_input_capture: false,
             };
             assert_eq!(parse_action(&binding.action_text()), action);
         }
@@ -1367,7 +1398,9 @@ mod tests {
             "submap_universal+Mod4+q=close",
             "click+Mod4+Mouse1=close",
             "drag+Mod4+Mouse1=close",
-            "locked+release+non_consuming+ignore_mods+repeating+long_press+universal+click+Mod4+q=close",
+            "dont_inhibit+Mod4+q=close",
+            "allow_input_capture+Mod4+q=close",
+            "locked+release+non_consuming+ignore_mods+repeating+long_press+universal+click+dont_inhibit+allow_input_capture+Mod4+q=close",
         ] {
             let binding = parse(spec).expect(spec);
             let again = parse_chord(&binding.chord()).expect("round trip");
@@ -1380,6 +1413,11 @@ mod tests {
             assert_eq!(again.universal, binding.universal, "{spec}");
             assert_eq!(again.click, binding.click, "{spec}");
             assert_eq!(again.drag, binding.drag, "{spec}");
+            assert_eq!(again.dont_inhibit, binding.dont_inhibit, "{spec}");
+            assert_eq!(
+                again.allow_input_capture, binding.allow_input_capture,
+                "{spec}"
+            );
             assert_eq!(again.modifiers, binding.modifiers, "{spec}");
             assert_eq!(again.keysym, binding.keysym, "{spec}");
         }
@@ -2096,6 +2134,22 @@ mod exit_tests {
             reachable_exit(&bindings),
             "the only exit was behind an unbind"
         );
+    }
+
+    #[test]
+    fn an_escape_hatch_binding_is_not_shadowed_by_a_plain_one() {
+        // The exit behind a plain binding is still reachable where the
+        // plain one is forwarded — under an inhibitor, or under capture —
+        // so it does not count as shadowed.
+        let plain = parse("Mod4+q=none").unwrap();
+        let dont_inhibit = parse("dont_inhibit+Mod4+q=exit").unwrap();
+        assert!(!shadows(&plain, &dont_inhibit));
+        let capture = parse("allow_input_capture+Mod4+q=exit").unwrap();
+        assert!(!shadows(&plain, &capture));
+        // And the plainer reading the other way: a hatch in front does
+        // shadow a plain one behind it.
+        assert!(shadows(&dont_inhibit, &plain));
+        assert!(shadows(&capture, &plain));
     }
 
     #[test]

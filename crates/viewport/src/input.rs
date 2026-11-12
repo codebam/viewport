@@ -1774,7 +1774,26 @@ impl ViewportState {
                                         state.suppressed_keys.push(unmodified_sym);
                                         return FilterResult::Intercept(Some(action));
                                     }
-                                    _ => return FilterResult::Forward,
+                                    // A binding that asks to bypass the
+                                    // inhibitor falls through to the binding
+                                    // match below; everything else is the
+                                    // client's. The portal shortcuts below
+                                    // have no such flag, so they stay gated
+                                    // on `!inhibited` there.
+                                    _ => {
+                                        let bypasses = crate::binding::find_binding(
+                                            &state.bindings,
+                                            modifiers,
+                                            unmodified,
+                                            &state.binding_mode,
+                                            state.locked,
+                                            false,
+                                        )
+                                        .is_some_and(|bound| bound.dont_inhibit);
+                                        if !bypasses {
+                                            return FilterResult::Forward;
+                                        }
+                                    }
                                 }
                             }
                             // The chooser owns the keyboard while it is up.
@@ -1836,7 +1855,7 @@ impl ViewportState {
                             // the lock screen below, exactly as a non-`locked`
                             // binding does — the `match_binding` gate is not
                             // enough here because this path precedes it.
-                            if !state.locked {
+                            if !state.locked && !inhibited {
                                 if let Some(fired) = state.shortcut_for(modifiers, unmodified) {
                                     state.suppressed_keys.push(unmodified_sym);
                                     state.shortcuts_to_announce.push((true, fired.clone()));
