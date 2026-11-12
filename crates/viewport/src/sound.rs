@@ -236,9 +236,25 @@ struct Shared {
 }
 
 impl Player {
+    /// A player for a run, or no player when the run should be silent.
+    ///
+    /// Headless is silent. `--headless` is for tests and CI, and on a
+    /// desktop with a live PipeWire a headless compositor would otherwise
+    /// connect to the host's graph and play every notification sound out
+    /// loud — a test suite someone runs while listening to something else
+    /// must not make noise unasked. A nested or DRM session keeps its
+    /// sounds: there, a sound is the desktop working.
+    pub fn for_run(headless: bool) -> Option<Self> {
+        if headless {
+            tracing::info!("headless: notification sounds are off");
+            return None;
+        }
+        Self::new()
+    }
+
     /// Check that there is a sound server to play through, and start the worker.
     ///
-    /// `None` when there is not — a headless session, a machine with no
+    /// `None` when there is not — a machine with no
     /// PipeWire. That is a desktop that makes no noise, which is what it did
     /// before, so it is logged and not an error. The connection made here is
     /// only the question being asked; the worker opens the stream it plays
@@ -850,6 +866,15 @@ mod tests {
             Sound::from_config(Some(""), Some("bell")),
             Some(Sound::Name("bell".to_owned()))
         );
+    }
+
+    #[test]
+    fn a_headless_run_has_no_player() {
+        // `for_run(true)` returns before touching PipeWire, so this holds
+        // with or without a sound server — which is the point: a headless
+        // test compositor on a desktop with a live PipeWire must not play
+        // sounds through the host's graph.
+        assert!(Player::for_run(true).is_none());
     }
 
     #[test]

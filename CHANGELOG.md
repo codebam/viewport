@@ -36,11 +36,21 @@ to summarise rather than to duplicate.
   verified against the npm tarball.
 
 ### Fixed
+- A confined cursor no longer escapes at the output edge during
+  Xwayland's grab-mirror churn. The last resolved confinement is
+  remembered and held while the pointer stays inside its region, instead
+  of a rebuild-window motion resolving to no confinement and crossing onto
+  the next monitor. Cleared when the constraint is genuinely removed.
 - `config.gaps` and `config.border` refused messages used to partly apply:
   the valid field stayed in `state.config` while the invalid one was
   rejected and the shell was never told. Both setters now validate the whole
   message before changing anything, like `config.wallpaper` already did, so
   the next `view.query` agrees with what the shell draws.
+- A headless run no longer plays notification sounds. The sound player
+  connected to whatever PipeWire was reachable, which on a desktop is the
+  host's, so the integration suite's notification tests sounded through the
+  user's speakers; headless is now silent and a nested or DRM session keeps
+  its sounds.
 - `viewport msg -t` now offers all five request types it was missing —
   `view.opacity_rule`, `view.tearing`, `view.idle_inhibit`, `gesture.capture`
   and `ai.login` — which previously exited 2 with "unknown message type"

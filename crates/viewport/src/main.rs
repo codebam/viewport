@@ -825,7 +825,7 @@ fn run() -> Result<()> {
 
         // Not fatal: a session with no D-Bus, or one where mako already holds
         // the name, still has a working compositor.
-        if let Err(e) = state.notifications.start(sender, drm) {
+        if let Err(e) = state.notifications.start(sender, drm, headless) {
             tracing::warn!("notifications are unavailable: {e}");
         }
     }

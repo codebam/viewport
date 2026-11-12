@@ -144,6 +144,7 @@ impl Notifications {
         &mut self,
         sender: smithay::reexports::calloop::channel::SyncSender<Message>,
         session_compositor: bool,
+        headless: bool,
     ) -> anyhow::Result<()> {
         let next = self.next.clone();
         let owners = self.owners.clone();
@@ -152,9 +153,10 @@ impl Notifications {
             next: next.clone(),
             owners,
             default_sound: self.default_sound.clone(),
-            // A session with no sound server gets no sounds and every other
-            // part of a notification unchanged; see `sound::Player::new`.
-            player: crate::sound::Player::new(),
+            // A headless run, or one with no sound server, gets no sounds and
+            // every other part of a notification unchanged; see
+            // `sound::Player::for_run`.
+            player: crate::sound::Player::for_run(headless),
         };
 
         let connection = crate::dbus::sync::connection::Builder::session()

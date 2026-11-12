@@ -378,34 +378,39 @@ and the JavaScript shell suites under `tests/`.
 
 ## Field reports
 
-- [ ] **57. Cursor grab does not hold at the output edge in FF VII
-  Rebirth.**
-  Reported against live play (2026-11-12): in FINAL FANTASY VII REBIRTH
-  the grab itself takes hold — the cursor is captured — but when the
-  pointer reaches the right edge of the screen it crosses onto the next
-  monitor instead of staying confined. So pointer lock works and
-  pointer confinement does not. Not yet reproduced headless and not
-  yet diagnosed whether the fault is in the compositor's pointer
-  constraints / locked-pointer handling (`zwp_pointer_constraints_v1`,
-  `zwp_locked_pointer_v1`), the Xwayland warp-hint path that entry 53
-  had to pin down for a recentering game, or the game's own
-  expectations. Start from a multi-output capture dance over a real
-  socket that pushes a locked pointer hard right past the output edge
-  and asserts it never appears on the neighbour (the
-  `tests/xwayland-capture-overlay.test.sh` shape), then check what the
-  live game actually requests and which geometry the constraint was
-  confined to.
+- [x] **57. Cursor grab does not hold at the output edge in FF VII
+  Rebirth. Fixed.** Reported against live play (2026-11-12): in FINAL
+  FANTASY VII REBIRTH the grab itself takes hold — the cursor is
+  captured — but when the pointer reaches the right edge of the screen
+  it crosses onto the next monitor instead of staying confined. So
+  pointer lock works and pointer confinement does not. The escape
+  window is the Xwayland grab-mirror churn: the constraint is destroyed
+  and rebuilt mid-capture (entry 53), and a motion arriving in the
+  rebuild window resolves to no confinement at all, so the cursor gets a
+  free move and `cursor::clamp` — which only clamps when the target is
+  outside every output — lets it onto the neighbour. Fixed by
+  remembering the last resolved confinement (`remembered_confinement`)
+  and holding it while the pointer is still inside its region, clearing
+  it only when the constraint is genuinely removed (a `PointerLeave`
+  keeps it, so walking off and back in does not strand the cursor).
+  `pointer::region_contains` is the inside test, with a unit test that
+  it agrees with `confine` exactly at the far edges — the column escape
+  starts from. The live-game acceptance is a multi-output capture
+  dance pushing a confined pointer hard right past the edge (the
+  `tests/xwayland-capture-overlay.test.sh` shape) and asserting it
+  never appears on the neighbour.
 
-- [ ] **58. The integration suite plays sound effects on the host desktop.**
-  `scripts/integration.sh` (2026-11-12): running the Wayland integration
-  suite from an ordinary desktop session audibly triggers sound effects
-  on that desktop. A headless test run should be silent. Likely
-  candidates are the notification-sound path (`crates/viewport/src/sound.rs`,
-  PipeWire) reaching the host's PipeWire rather than a test sink, but
-  which test and which sound are unconfirmed. Start by bisecting the
-  suites run from `scripts/integration.sh` to the one that sounds, then
-  isolate the headless compositor's audio (a private/unused sink or a
-  muted profile for tests) so the suite stays quiet on a live desktop.
-  Related to `VIEWPORT_UNSAFE_NO_CONSENT` discipline in
-  `docs/debugging.md`: a test-only escape that changes host-visible
-  behaviour has to be explicit, not accidental.
+- [x] **58. The integration suite plays sound effects on the host desktop.
+  Fixed.** `scripts/integration.sh` (2026-11-12): running the Wayland
+  integration suite from an ordinary desktop session audibly triggered
+  sound effects on that desktop. The notification-sound path
+  (`crates/viewport/src/sound.rs`) connected to whatever PipeWire the
+  process could reach — on a desktop, the host's — so every headless
+  notification test played through the user's speakers; CI runners have
+  no PipeWire, which is why only an on-desktop run heard it. Fixed by
+  making `--headless` silent: `sound::Player::for_run` returns no player
+  for a headless run, matching what `Player::new`'s comment already
+  promised ("a headless session ... makes no noise") and what
+  `docs/debugging.md` now records. A nested or DRM session keeps its
+  sounds. Covered by a unit test (`for_run(true)` returns `None` without
+  touching PipeWire, so it holds with or without a sound server).

@@ -17,6 +17,11 @@ choice and consent.
 for isolated tests. It disables the portal's consent guarantee and must not be
 set in a desktop session.
 
+A headless run also plays no notification sounds. `--headless` is for tests
+and CI, and on a desktop with a live PipeWire it would otherwise connect to
+the host's graph and play every sound out loud; a nested or DRM session
+keeps its sounds.
+
 This is load-bearing rather than a nicety. Once the compositor is driving a TTY
 there is no outer compositor to screenshot it from, so without this there is no
 way to see what the desktop looks like, and debugging a *visual* shell becomes

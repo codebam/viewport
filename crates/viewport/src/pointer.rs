@@ -76,6 +76,21 @@ pub fn confine(
     best.map(|(_, point)| point)
 }
 
+/// Whether a layout position sits inside a surface-local region.
+///
+/// The region is surface-local and the position is not, so the surface's
+/// origin in layout coordinates is needed as well: the local point is the
+/// position minus the origin. Half-open like [`confine`] — a point on the
+/// far edge is outside, because that is where escape starts.
+pub fn region_contains(
+    region: &[Rectangle<i32, Logical>],
+    origin: Point<i32, Logical>,
+    at: Point<f64, Logical>,
+) -> bool {
+    let local = at - origin.to_f64();
+    region.iter().any(|rect| contains(*rect, local))
+}
+
 /// Whether `at` falls in something the shell drew above the windows.
 ///
 /// The shell names these rectangles so the compositor can draw its buffer
@@ -149,6 +164,24 @@ mod tests {
             confine(&region, (-10.0, -10.0).into()),
             Some(Point::from((0.0, 0.0)))
         );
+    }
+
+    #[test]
+    fn the_region_lookup_agrees_with_confine_at_the_edge() {
+        // The sticky-confinement fallback asks whether the pointer is still
+        // inside the region it was last confined to. It must agree with
+        // `confine` exactly at the far edges, or a pixel column exists that
+        // one treats as inside and the other as outside — and escape starts
+        // at exactly that column.
+        let region = [rect(0, 0, 100, 100)];
+        let origin: Point<i32, Logical> = (0, 0).into();
+        assert!(region_contains(&region, origin, (99.0, 50.0).into()));
+        assert!(!region_contains(&region, origin, (100.0, 50.0).into()));
+        // With an offset origin: layout right-edge 1100 is local 100.
+        let origin: Point<i32, Logical> = (1000, 0).into();
+        assert!(region_contains(&region, origin, (1099.0, 50.0).into()));
+        assert!(!region_contains(&region, origin, (1100.0, 50.0).into()));
+        assert!(!region_contains(&[], origin, (1050.0, 50.0).into()));
     }
 
     #[test]

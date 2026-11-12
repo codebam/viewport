@@ -938,6 +938,10 @@ impl smithay::wayland::pointer_constraints::PointerConstraintsHandler for Viewpo
         // under the crosshair the client was drawing rather than wherever it
         // was pinned when the lock started (`src/pointer.c:104`).
         tracing::info!("pointer: a capture ended");
+        // And the remembered confinement is over with it. A PointerLeave
+        // above keeps the memory because the pointer may walk off and back
+        // in; anything else is the capture ending for real.
+        self.remembered_confinement = None;
         self.apply_cursor_position_hint(surface, pointer);
     }
 

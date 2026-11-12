@@ -1271,7 +1271,7 @@ impl ViewportState {
         };
         let from = pointer.current_location();
         let under = self.surface_under(from);
-        let (locked, confine_to) = self.pointer_constraint(&pointer, under.as_ref());
+        let (locked, confine_to) = self.pointer_constraint(&pointer, under.as_ref(), from);
 
         let delta = (dx, dy).into();
         self.note_pointer_motion(from, delta, locked, confine_to.as_ref(), under.is_some());
@@ -2091,7 +2091,7 @@ impl ViewportState {
                 // What the client under the pointer has asked for, if
                 // anything. Read before the pointer moves, because a
                 // constraint applies to where it is now.
-                let (locked, confine_to) = self.pointer_constraint(&pointer, under.as_ref());
+                let (locked, confine_to) = self.pointer_constraint(&pointer, under.as_ref(), from);
                 self.note_pointer_motion(
                     from,
                     event.delta(),
@@ -3323,7 +3323,7 @@ impl ViewportState {
         // `Space` and clones each one it walks past, and asking the
         // same question of the same point twice costs that twice.
         let under = self.surface_under(from);
-        let (locked, confine_to) = self.pointer_constraint(&pointer, under.as_ref());
+        let (locked, confine_to) = self.pointer_constraint(&pointer, under.as_ref(), from);
         // Whether the pointer started over a surface, kept out of the hit
         // test: the relative event below consumes it, and the tail only
         // wants the answer.
@@ -3971,6 +3971,15 @@ type Confinement = (
     smithay::utils::Point<i32, smithay::utils::Logical>,
 );
 
+/// The last confinement a motion resolved: its surface, its origin in layout
+/// coordinates, and its surface-local region. The fallback for the window
+/// where a constraint is being rebuilt; see `ViewportState::pointer_constraint`.
+pub type RememberedConfinement = (
+    WlSurface,
+    smithay::utils::Point<i32, smithay::utils::Logical>,
+    Vec<Rectangle<i32, Logical>>,
+);
+
 impl ViewportState {
     /// Note a pointer motion in the capture narration, whatever moved it.
     ///
@@ -4236,19 +4245,21 @@ impl ViewportState {
     ///
     /// Returns whether the pointer is locked, and the region it is confined to
     /// with the surface's origin in layout coordinates — the region is
-    /// surface-local and the pointer is not.
+    /// surface-local and the pointer is not. `from` is where the pointer is,
+    /// needed for the remembered-confinement fallback below.
     fn pointer_constraint(
-        &self,
+        &mut self,
         pointer: &smithay::input::pointer::PointerHandle<Self>,
         under: Option<&(
             WlSurface,
             smithay::utils::Point<f64, smithay::utils::Logical>,
         )>,
+        from: smithay::utils::Point<f64, smithay::utils::Logical>,
     ) -> (bool, Option<Confinement>) {
         use smithay::wayland::pointer_constraints::{with_pointer_constraint, PointerConstraint};
 
         let Some((surface, origin)) = under else {
-            return (false, None);
+            return self.remembered_constraint(from);
         };
         let origin = origin.to_i32_round();
 
@@ -4304,7 +4315,56 @@ impl ViewportState {
             });
             (region, origin)
         });
-        (locked, confine)
+
+        if let Some((region, origin)) = confine.as_ref().filter(|(region, _)| !region.is_empty()) {
+            // Remember the last good confinement. Xwayland's grab mirror is
+            // destroyed and rebuilt mid-capture, and a motion landing in the
+            // rebuild window resolves to no confinement at all — which used
+            // to hand a confined cursor a free move and let it cross onto
+            // the next monitor at the output edge.
+            let remembered = self.remembered_confinement.as_ref().is_some_and(
+                |(remembered_surface, remembered_origin, _)| {
+                    remembered_surface == surface && *remembered_origin == *origin
+                },
+            );
+            if !remembered {
+                self.remembered_confinement = Some((surface.clone(), *origin, region.to_vec()));
+            }
+            (locked, confine)
+        } else {
+            let (_locked, remembered) = self.remembered_constraint(from);
+            (locked, remembered)
+        }
+    }
+
+    /// The confinement to hold when this motion resolves to none.
+    ///
+    /// The last region a motion confined to, while the pointer is still
+    /// inside it. Once the pointer has genuinely left that region — the
+    /// window moved, the cursor crossed outside by other means — the
+    /// memory stops applying on its own: freedom to leave is the normal
+    /// case, and this exists only for the brief window where the
+    /// constraint is being rebuilt, not as a second capture.
+    fn remembered_constraint(
+        &self,
+        from: smithay::utils::Point<f64, smithay::utils::Logical>,
+    ) -> (bool, Option<Confinement>) {
+        let Some((_surface, origin, region)) = self.remembered_confinement.as_ref() else {
+            return (false, None);
+        };
+        if !crate::pointer::region_contains(region, *origin, from) {
+            return (false, None);
+        }
+        // The memory is the answer the client last agreed to. A locked
+        // pointer never leaves this path carrying a lock — while locked the
+        // cursor does not move at all, which is the early return above this
+        // call — so reporting confinement here cannot turn a lock into a
+        // move.
+        let mut rects = ConfineRects::new();
+        for rect in region {
+            rects.push(*rect);
+        }
+        (false, Some((rects, *origin)))
     }
 }
 

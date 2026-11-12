@@ -878,6 +878,16 @@ pub struct ViewportState {
     /// on arrival would move the cursor — and send absolute motion to a
     /// client that asked for none — thousands of times a second.
     pub cursor_position_hint: Option<(WlSurface, Point<f64, Logical>)>,
+    /// The last confinement a motion resolved, with its surface and origin.
+    ///
+    /// Xwayland's grab mirror is destroyed and rebuilt mid-capture, so a
+    /// motion can arrive in the window between one constraint and the next
+    /// and resolve to no confinement at all. Falling back to the remembered
+    /// region keeps a confined cursor held at the output edge in that
+    /// window instead of letting it cross to the next monitor. Cleared when
+    /// the constraint is genuinely removed; see
+    /// `input::ViewportState::pointer_constraint`.
+    pub remembered_confinement: Option<crate::input::RememberedConfinement>,
     /// How many hints have arrived, for `VIEWPORT_POINTER_DEBUG` to report
     /// every hundredth rather than every one.
     pub cursor_position_hints: u64,
@@ -2009,6 +2019,7 @@ impl ViewportState {
             foreign_toplevel_state,
             pointer_constraints_state,
             cursor_position_hint: None,
+            remembered_confinement: None,
             cursor_position_hints: 0,
             pointer_motions: 0,
             pointer_capture: None,
