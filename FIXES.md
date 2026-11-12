@@ -447,4 +447,6 @@ and the JavaScript shell suites under `tests/`.
   the user taking the size back from the state the client chose — so the
   cycle reaches the window in the same step. Covered by a shell test
   asserting a client-maximized window loses both the class and the
-  compositor state when the width cycle fires.
+  compositor state when the width cycle fires. Confirmed live against
+  the Steam client (2026-11-12): Mod4+r drops maximize and cycles the
+  column.
