@@ -218,6 +218,11 @@ pub struct View {
     /// protocol and bus inhibitors.
     pub rule_idle_inhibit: bool,
 
+    /// Whether a matching rule asks for server decorations on this window,
+    /// Hyprland's `decorate` effect. `None` is the global policy; `Some`
+    /// overrides it for this window either way.
+    pub rule_decorate: Option<bool>,
+
     /// The last surface size that did not match the rectangle it was given,
     /// so the mismatch is said once rather than per frame.
     pub last_mismatch: Option<(i32, i32)>,
@@ -683,6 +688,7 @@ impl Views {
             rule_opacity: 1.0,
             rule_tearing: false,
             rule_idle_inhibit: false,
+            rule_decorate: None,
             configured: None,
             foreign: None,
         });

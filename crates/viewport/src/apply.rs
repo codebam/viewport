@@ -274,6 +274,21 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             }
         }
 
+        Request::ViewDecorations { id, decorate } => {
+            let changed = match state.views.get_mut(id) {
+                Some(view) if view.rule_decorate != decorate => {
+                    view.rule_decorate = decorate;
+                    true
+                }
+                _ => false,
+            };
+            if changed {
+                // The client must be told the moment the rule moves, not at
+                // the next new_decoration.
+                state.refresh_decoration(id);
+            }
+        }
+
         Request::ViewQuery => {
             state.notify_config();
             state.notify(&viewport_ipc::Event::ScreencastActive {

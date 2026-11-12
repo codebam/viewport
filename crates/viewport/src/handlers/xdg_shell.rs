@@ -379,18 +379,18 @@ impl XdgShellHandler for ViewportState {
 /// nothing here can stop it. Asking is all the protocol offers.
 impl XdgDecorationHandler for ViewportState {
     fn new_decoration(&mut self, toplevel: ToplevelSurface) {
-        let mode = self.decoration_mode();
+        let mode = self.decoration_mode_for(toplevel.wl_surface());
         answer_decoration(&toplevel, mode);
     }
 
     fn request_mode(&mut self, toplevel: ToplevelSurface, _mode: DecorationMode) {
         // The answer does not depend on what was asked for.
-        let mode = self.decoration_mode();
+        let mode = self.decoration_mode_for(toplevel.wl_surface());
         answer_decoration(&toplevel, mode);
     }
 
     fn unset_mode(&mut self, toplevel: ToplevelSurface) {
-        let mode = self.decoration_mode();
+        let mode = self.decoration_mode_for(toplevel.wl_surface());
         answer_decoration(&toplevel, mode);
     }
 }
@@ -416,22 +416,22 @@ impl smithay::wayland::shell::kde::decoration::KdeDecorationHandler for Viewport
 
     fn new_decoration(
         &mut self,
-        _surface: &WlSurface,
+        surface: &WlSurface,
         decoration: &smithay::reexports::wayland_protocols_misc::server_decoration::server::org_kde_kwin_server_decoration::OrgKdeKwinServerDecoration,
     ) {
-        answer_kde_decoration(decoration, self.decoration_mode());
+        answer_kde_decoration(decoration, self.decoration_mode_for(surface));
     }
 
     fn request_mode(
         &mut self,
-        _surface: &WlSurface,
+        surface: &WlSurface,
         decoration: &smithay::reexports::wayland_protocols_misc::server_decoration::server::org_kde_kwin_server_decoration::OrgKdeKwinServerDecoration,
         _mode: smithay::reexports::wayland_server::WEnum<
             smithay::reexports::wayland_protocols_misc::server_decoration::server::org_kde_kwin_server_decoration::Mode,
         >,
     ) {
         // The answer does not depend on what was asked for.
-        answer_kde_decoration(decoration, self.decoration_mode());
+        answer_kde_decoration(decoration, self.decoration_mode_for(surface));
     }
 }
 
@@ -511,13 +511,34 @@ impl ViewportState {
         );
     }
 
-    /// Server side unless the config file says `"decorations": "client"`.
-    fn decoration_mode(&self) -> DecorationMode {
-        if self.server_decorations {
+    /// Server side unless the config file says `"decorations": "client"` —
+    /// or a matching rule says otherwise for this window, Hyprland's
+    /// `decorate` effect, which overrides the global either way.
+    fn decoration_mode_for(&self, surface: &WlSurface) -> DecorationMode {
+        let server = self
+            .views
+            .find_by_surface(surface)
+            .and_then(|view| view.rule_decorate)
+            .unwrap_or(self.server_decorations);
+        if server {
             DecorationMode::ServerSide
         } else {
             DecorationMode::ClientSide
         }
+    }
+
+    /// Re-answer the decoration question for one window, for when a rule
+    /// starts or stops matching it. The client is told the same thing a
+    /// fresh `new_decoration` would answer, at the moment the rule moved.
+    pub(crate) fn refresh_decoration(&mut self, id: u32) {
+        let Some(view) = self.views.get(id) else {
+            return;
+        };
+        let Some(toplevel) = view.window.toplevel() else {
+            return;
+        };
+        let mode = self.decoration_mode_for(toplevel.wl_surface());
+        answer_decoration(toplevel, mode);
     }
 
     /// Tell the shell who this window belongs to now.

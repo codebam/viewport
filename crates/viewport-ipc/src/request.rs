@@ -205,6 +205,18 @@ pub enum Request {
         inhibit: bool,
     },
 
+    /// Whether the window is drawn with server decorations, Hyprland's
+    /// `decorate` effect. Optional, unlike its neighbours: absent is the
+    /// global policy, and `null` takes a rule back off — a rule that stopped
+    /// matching has to be able to hand the decision back.
+    #[serde(rename = "view.decorations")]
+    ViewDecorations {
+        #[serde(deserialize_with = "view_id")]
+        id: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        decorate: Option<bool>,
+    },
+
     /// Ask for `config` and one `view.added` per mapped window.
     #[serde(rename = "view.query")]
     ViewQuery,

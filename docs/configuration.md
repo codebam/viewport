@@ -2261,16 +2261,19 @@ and a rule that names one is only matched when the window's answer agrees.
 `"game"`, `"video"`, `"photo"` or `"none"` (`"image"` is accepted for
 `"photo"`). Unlike the others it can change while the window is open, and the
 compositor re-sends `view.props` when it does, so a game that starts playing
-is matched then rather than only at map time.
+is matched then rather than only at map time. `group` takes a boolean and
+matches a window inside a tabbed or stacked container; like `content` it is
+re-evaluated as the window moves in and out of a group, not only at map time.
 
 The effects this shell can apply are the workspace, floating and its rect,
 `pinned`, `pseudotile`, `swallow`, `capture`, `opacity`, `focus`, `animation`,
-`tearing`, `idle_inhibit` and a size floor and ceiling. `focus: false` opens a
-window without taking the keyboard — a launcher, or a picture-in-picture window
-that should appear without interrupting. `animation: false` gives it the
-reduced-motion treatment: no fade, but it still appears. `min_width` /
-`min_height` raise the client's own floor and `max_width` / `max_height` cap
-it, all in logical pixels; zero or absent leaves the client's answer.
+`tearing`, `idle_inhibit`, `decorate` and a size floor and ceiling. `focus:
+false` opens a window without taking the keyboard — a launcher, or a
+picture-in-picture window that should appear without interrupting. `animation:
+false` gives it the reduced-motion treatment: no fade, but it still appears.
+`min_width` / `min_height` raise the client's own floor and `max_width` /
+`max_height` cap it, all in logical pixels; zero or absent leaves the client's
+answer.
 
 `tearing: true` asks the compositor to present the window as soon as a frame
 is ready, the same as `wp-tearing-control-v1` does when the client asks; it is
@@ -2278,7 +2281,10 @@ granted only when the window covers its output and nothing is layered over it,
 and never while the session is locked or the overview is up. `idle_inhibit:
 true` keeps the session awake for as long as the window is mapped, beside the
 protocol and `org.freedesktop.ScreenSaver` inhibitors the compositor already
-honours.
+honours. `decorate: false` hands this window's frame to the client — the same
+answer the global `"decorations": "client"` gives, but for one window — and
+`decorate: true` keeps the compositor's frame even when the global policy is
+client-side. Removing the rule hands the decision back to the global policy.
 
 Rules may be named for runtime control. A rule with a `name` field can be
 toggled from a keybinding or from the socket:

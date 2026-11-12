@@ -896,6 +896,14 @@ function ruleFor(appId, title, tag, openingWorkspace = null, extra = {}) {
         matched = true;
         if (Boolean(rule.match.modal) !== Boolean(extra.modal)) return false;
       }
+      /* `group` is Hyprland's grouped-window matcher: a window inside a
+         tabbed or stacked container. At open time nothing is placed yet, so
+         the caller passes false; re-evaluation happens on view.props, when
+         the tree knows where the window sits. */
+      if (rule.match.group !== undefined) {
+        matched = true;
+        if (Boolean(rule.match.group) !== Boolean(extra.group)) return false;
+      }
       /* `content` is `wp_content_type_v1`: game, video, photo or none.
          Hyprland spells photo `image`, so both are accepted. */
       if (rule.match.content !== undefined) {

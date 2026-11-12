@@ -415,7 +415,17 @@ else
 fi
 check "view.idle_inhibit is offerable with -t" "0" \
 	"$(msg -t view.idle_inhibit --id "$VID" --inhibit true >/dev/null 2>&1; echo "$?")"
-check "and the window is still listed after all four" "$VID" \
+# The decoration effect is render-only state with no socket answer of its
+# own, so the observable is acceptance plus liveness, like the four above.
+check "view.decorations is offerable with -t" "0" \
+	"$(msg -t view.decorations --id "$VID" --decorate false >/dev/null 2>&1; echo "$?")"
+if msg --raw "{\"type\":\"view.decorations\",\"id\":$VID}" >/dev/null 2>&1; then
+	echo "ok: view.decorations (null) was accepted"
+else
+	echo "FAIL: view.decorations (null) was refused" >&2
+	failures=$((failures + 1))
+fi
+check "and the window is still listed after all five" "$VID" \
 	"$(view_id_for "viewport-view-ipc")"
 
 # --- view.props, from an identity change ----------------------------------

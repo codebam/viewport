@@ -330,7 +330,8 @@ function addView({ id, title, app_id, tag, output: outputName, min_width, min_he
      the window goes straight where it belongs rather than appearing in one
      place and jumping to another. */
   const rule = ruleFor(app_id, title, tag, openingWorkspace,
-    { xwayland: Boolean(xwayland), modal: Boolean(parent) && floating, content });
+    { xwayland: Boolean(xwayland), modal: Boolean(parent) && floating, content,
+      group: false });
   const view = views.get(id);
   /* Hyprland's `animation` rule effect: this window opens and closes without
      the fade every other one gets. Kept on the view because fadeIn is also
@@ -359,6 +360,10 @@ function addView({ id, title, app_id, tag, output: outputName, min_width, min_he
      policy, resolved whenever a rule matches, the same as capture. */
   send({ type: 'view.tearing', id, tearing: rule?.tearing === true });
   send({ type: 'view.idle_inhibit', id, inhibit: rule?.idle_inhibit === true });
+  /* And `decorate`: null hands the decision back to the global policy, so a
+     rule that stopped matching takes its override with it. */
+  send({ type: 'view.decorations', id,
+    decorate: typeof rule?.decorate === 'boolean' ? rule.decorate : null });
   const ruleOpacity = Number.isFinite(rule?.opacity) && rule.opacity >= 0
     ? rule.opacity : 1;
   view.ruleOpacity = ruleOpacity;
@@ -489,7 +494,7 @@ function reapplyWindowRule(id) {
   if (!view) return;
   const rule = ruleFor(view.app_id, view.title, view.tag, view.openingWorkspace,
     { xwayland: view.xwayland, modal: view.parent != null && isFloating(id),
-      content: view.content });
+      content: view.content, group: isGroup(findLeaf(id)?.parent) });
   const capture = typeof rule?.capture === 'boolean' ? rule.capture : true;
   if (view.ruleCapture !== capture) {
     view.ruleCapture = capture;
@@ -505,6 +510,8 @@ function reapplyWindowRule(id) {
      rule that stopped matching has to be able to turn it back off. */
   send({ type: 'view.tearing', id, tearing: rule?.tearing === true });
   send({ type: 'view.idle_inhibit', id, inhibit: rule?.idle_inhibit === true });
+  send({ type: 'view.decorations', id,
+    decorate: typeof rule?.decorate === 'boolean' ? rule.decorate : null });
 
   const signature = JSON.stringify(rule ?? null);
   if (signature === view.ruleSignature) return;

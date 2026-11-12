@@ -2671,6 +2671,22 @@ check('windows laid out', new Set(layouts.map((m) => m.id)).size === 4);
       && m.id === 69 && m.capture === true));
   for (const id of [64, 65, 66, 67, 68, 69]) emit({ type: 'view.removed', id });
 
+  /* Hyprland's `decorate` rule effect: a rule asks for client frames on its
+     window, and no rule hands the decision back to the global policy. */
+  emit({ type: 'config', layout: mode, rules: [
+    { app_id: 'no-frames', decorate: false },
+  ] });
+  const decorateMark = sent.length;
+  open(70, 'no-frames');
+  open(71, 'ordinary');
+  check('a decorate:false rule sends view.decorations false',
+    sent.slice(decorateMark).some((m) => m.type === 'view.decorations'
+      && m.id === 70 && m.decorate === false));
+  check('and an unmatched window hands the decision to the global policy',
+    sent.slice(decorateMark).some((m) => m.type === 'view.decorations'
+      && m.id === 71 && m.decorate === null));
+  for (const id of [70, 71]) emit({ type: 'view.removed', id });
+
   const richRules = [
     { match: { app_id: { equals: 'dropterm' }, title: { contains: 'console' },
       tag: { regex: '^drop-[0-9]+$' } }, workspace: 'scratchpad',
@@ -7652,6 +7668,56 @@ if (mode !== 'scrolling') {
     findGroup(globalThis.__shell.workspaces.get(home))?.children.length === 2);
 
   emit({ type: 'config', layout: mode, rules: HARNESS_RULES, group: {} });
+}
+
+/* --- group rule matcher -------------------------------------------------
+ *
+ * Hyprland's `group` matcher: grouped windows only — windows inside a
+ * tabbed or stacked container. Re-evaluated on view.props, when the tree
+ * knows where the window sits; at open time nothing is placed yet, so it
+ * matches nothing there. */
+if (mode !== 'scrolling') {
+  const views = globalThis.__shell.views;
+  const outs = globalThis.__shell.outputs;
+  const workspaceOf = globalThis.__shell.workspaceOfForTest;
+  const busy = new Set([...views.keys()].map((id) => workspaceOf(id)));
+  const shown = new Set([...outs.values()].map((o) => o.workspace));
+  const free = [1, 2, 3, 4, 5, 6, 7, 8, 9]
+    .filter((n) => !busy.has(n) && !shown.has(n));
+  const home = free[0];
+
+  const open = (id, app) => emit({ type: 'view.added', id, title: app,
+    app_id: app, output: 'DP-1', min_width: 0, min_height: 0,
+    floating: false, width: 800, height: 600 });
+  emit({ type: 'shell.command', command: 'workspace.switch',
+    args: [String(home)] });
+  emit({ type: 'config', layout: mode, rules: HARNESS_RULES,
+    group: { auto_group: true } });
+  open(104, 'tab-one');
+  emit({ type: 'view.focused', id: 104 });
+  emit({ type: 'shell.command', command: 'layout.tabbed', args: [] });
+  open(105, 'tab-two');
+
+  /* The config handler reapplies to every window itself, so the denial
+     arrives with it — mark before it goes out. */
+  let mark = sent.length;
+  emit({ type: 'config', layout: mode, rules: [
+    { match: { group: true }, capture: false },
+  ] });
+  check('a grouped window matches the group matcher',
+    sent.slice(mark).some((m) => m.type === 'view.capture'
+      && m.id === 105 && m.capture === false));
+
+  mark = sent.length;
+  emit({ type: 'config', layout: mode, rules: [
+    { match: { group: false }, capture: false },
+  ] });
+  check('a grouped window does not match group:false',
+    !sent.slice(mark).some((m) => m.type === 'view.capture'
+      && m.id === 105 && m.capture === false));
+
+  emit({ type: 'config', layout: mode, rules: HARNESS_RULES, group: {} });
+  for (const id of [104, 105]) emit({ type: 'view.removed', id });
 }
 
 /* --- named specials -----------------------------------------------------

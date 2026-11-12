@@ -36,6 +36,12 @@ to summarise rather than to duplicate.
   verified against the npm tarball.
 
 ### Added
+- The window-rule `group` matcher (grouped windows only) and the `decorate`
+  effect (per-window server/client frames), the last two mechanical pieces of
+  the Hyprland rule vocabulary. `group` is re-evaluated as a window moves in
+  and out of a tabbed or stacked container; `decorate` overrides the global
+  decorations policy for one window and hands the decision back when the rule
+  stops matching, over a new `view.decorations` message.
 - Two more bind flags, the escape hatches: `dont_inhibit+` fires even while
   a client holds an inhibitor, and `allow_input_capture+` fires even while
   input is captured by a client. Both are pseudo-modifiers like `locked`,

@@ -237,6 +237,12 @@ const TYPES: &[Type] = &[
         hint: "--id N --inhibit BOOL",
     },
     Type {
+        name: "view.decorations",
+        fields: &["id", "decorate"],
+        strings: &[],
+        hint: "--id N --decorate BOOL   (null hands the decision back to the global policy)",
+    },
+    Type {
         name: "view.query",
         fields: &[],
         strings: &[],
