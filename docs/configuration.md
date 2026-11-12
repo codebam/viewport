@@ -121,14 +121,21 @@ command-line flags win for the variables they own, because those validate and a
 typo there should be a message rather than a session on the wrong card.
 
 **Runtime** — the control socket. `config.gaps`, `config.border`,
-`config.wallpaper`, `config.dark_mode`, `config.cursor` and
-`output.configure` change the
+`config.wallpaper`, `config.dark_mode`, `config.cursor`, `config.motion`,
+`config.group`, `config.clock`, `config.bar`, `config.bar_blur`,
+`config.bar_widgets`, `config.bar_items`, `config.logo`, `config.tutorial`,
+`config.tiling_mode`, `config.layout`, `config.layout_extensions`,
+`config.focus_crosses_outputs`, `config.osk`, `config.tray`,
+`config.clipboard_history`, `config.icon_theme`, `config.theme`,
+`config.rules`, `config.layer_rules`, `config.decorations`, `config.workspaces`,
+`config.opacity` and `output.configure` change the
 compositor's copy of the configuration and re-announce it, without touching
 any file. That is the tier a wallpaper cycler runs on, and the tier the
 settings panel runs on: a value applies the moment it is set and is gone at
-the next restart, which is exactly what "let me try this" means. Which keys
-have a runtime setter is tracked in `docs/roadmap.md` — the aim is every
-setting, and the ones that do not have one yet are listed there by name.
+the next restart, which is exactly what "let me try this" means. `docs/ipc.md`
+has the shape of each message; which keys still lack a setter is tracked in
+`docs/roadmap.md` — the aim is every setting, and the ones that do not have
+one yet are listed there by name.
 
 **Saved** — `~/.config/viewport/settings.json`, beside the bootstrap file and
 written only by `config.save`. It holds whatever the runtime tier was last
@@ -498,7 +505,7 @@ Only the drawn image goes. The pointer has not moved, keeps its focus, and
 clients are told nothing, so a hidden cursor cannot make a page think the mouse
 left it.
 
-**At runtime.** `config.cursor` on the control socket sets the hide trio
+**At runtime.** `config.cursor` on the control socket sets the whole block
 without touching the file on disk — for a keybinding, for a verification
 tool that needs the pointer drawn in every capture, and for the settings
 panel, which sends exactly this:
@@ -507,13 +514,15 @@ panel, which sends exactly this:
 viewport msg -t config.cursor --hide_after_ms 0
 ```
 
-Each field is optional; only the ones given change — `--hide-after-ms`,
-`--hide-on-key-press` and `--hide-on-touch` mirror the three file keys.
-Zero is off, as in the file; a negative value is refused whole. A bare
-`viewport msg -t config.cursor` toggles the deadline between never (`0`)
-and the shipped `2000`, which is what a keybinding wants. Turning the
-deadline off while the image is hidden draws it again at once, and turning
-it on arms the countdown. The current value is in the `config` event's
+Each field is optional; only the ones given change. Zero is off, as in the
+file; a negative deadline, a zero size or a negative threshold is refused
+whole. A bare `viewport msg -t config.cursor` — no fields at all — toggles
+the deadline between never (`0`) and the shipped `2000`, which is what a
+keybinding wants; naming any field instead leaves the deadline alone.
+Turning the deadline off while the image is hidden draws it again at
+once, and turning it on arms the countdown. A new `theme` or `size` reloads
+the cursor images immediately, and `follow_mouse` with its threshold applies
+the way the file's does. The current value is in the `config` event's
 `cursor`, and `config.save` writes it beside the other runtime settings.
 
 `cursor.follow_mouse` makes keyboard focus follow the pointer: moving the
@@ -1241,6 +1250,16 @@ absence, keeps the frame here — which is what the shell's border is. Both
 protocols are answered with the same setting, since a client that probes the
 manager and one that asks per surface must not be told different things.
 
+**At runtime.** `config.decorations` flips the policy without touching the
+file:
+
+```sh
+viewport msg -t config.decorations --mode client
+```
+
+Anything but `client` keeps the frame here, as in the file. The advertised
+default moves with it, and the frames repaint.
+
 ## Motion
 
 ```jsonc
@@ -1270,10 +1289,18 @@ user who has asked their whole desktop for less motion. Absent fields leave the
 stylesheet's values; a negative or non-finite duration is refused and the
 previous value kept, with a line in the log naming the key.
 
-**At runtime.** There is no `config.motion` setter yet; edit the file and
-`reload`. The shell reapplies the whole block, and the read-once timing cache
-is cleared with it, so a changed pace takes effect on the next transition
-rather than at the next restart.
+**At runtime.** `config.motion` on the control socket sets the block
+without touching the file — a wallpaper cycler's cousin for animation, and
+what the settings panel sends:
+
+```sh
+viewport msg -t config.motion --duration 120 --ease linear
+```
+
+Each field is optional; only the ones given change. A negative or
+non-finite duration or slow is refused whole. The shell reapplies the block
+from the re-announced config, so a changed pace takes effect on the next
+transition rather than at the next restart.
 
 ## Window opacity
 
@@ -1291,6 +1318,16 @@ value; all three start at `1`. Final alpha is clamped to `0..1`.
 Opacity policy multiplies, rather than replaces, opacity supplied by a layout or
 fade animation. This matters for layouts such as solar: an inactive multiplier
 of `0.9` applied to a layout opacity of `0.4` produces `0.36`, not `0.9`.
+
+**At runtime.** `config.opacity` on the control socket sets the three
+multipliers without touching the file:
+
+```sh
+viewport msg -t config.opacity --inactive 0.85
+```
+
+Each field is optional; only the ones given change. A negative or
+non-finite value is refused whole.
 
 ## Bar widgets
 
@@ -1440,6 +1477,18 @@ local, user-authored code at the same trust level as a layout extension.
 [docs/custom-widgets.md](custom-widgets.md) has the descriptor, the context a
 widget receives, the load and reload rules, and a worked example.
 
+**At runtime.** `config.bar_widgets` on the control socket replaces the whole
+extra-widget list, in the file's own JSON:
+
+```sh
+viewport msg -t config.bar_widgets --widgets '[{"type":"disk","path":"/home"},{"type":"volume"}]'
+```
+
+An empty array clears it back to the default bar. The status sampler is
+reconfigured for what the new list draws, so a widget taken off the bar
+stops costing samples — and an override in `bar_items`, as here, keeps its
+precedence over whatever is set.
+
 ## Overriding the whole bar
 
 `bar_widgets` adds to the shipped set, but it cannot move a widget into the
@@ -1470,6 +1519,15 @@ default plus any `bar_widgets`.
 `bar_items` supersedes `bar_widgets` when both are present: the override wins,
 and the widget list drives the same status sampling (mounts and volume) as the
 additions would have.
+
+**At runtime.** `config.bar_items` on the control socket replaces the whole
+right side, in the file's own JSON:
+
+```sh
+viewport msg -t config.bar_items --items '["clock","net"]'
+```
+
+An empty array draws an empty right side rather than changing nothing.
 
 ## Interacting with the bar
 
@@ -1518,6 +1576,16 @@ the only way a bar that is up only while Mod4 is held can show what is under it
 rather than an opaque strip. `"bar_blur": false` leaves it flat instead — the
 windows stay sharp and no framebuffer effect is drawn for it. The key does
 nothing to a docked or hidden bar, which have no windows behind them to blur.
+
+**At runtime.** `config.bar` sets the mode and `config.bar_blur` the glass,
+without touching the file:
+
+```sh
+viewport msg -t config.bar --mode docked
+viewport msg -t config.bar_blur --enabled false   # a bare message toggles
+```
+
+A bare `config.bar_blur` flips the switch, which is what a keybinding wants.
 
 ## The clock, and the calendar under it
 
@@ -1574,6 +1642,16 @@ clock without it. The conversions that name something still go through
 
 Anything else is left in the string with its percent sign, so a typo shows up
 as `%Q` rather than quietly eating the character after it.
+
+**At runtime.** `config.clock` on the control socket sets the locale and
+format without touching the file:
+
+```sh
+viewport msg -t config.clock --locale de-DE
+```
+
+Only the fields given change; naming one of them leaves the rest as they
+were.
 
 **The calendar.** Clicking the clock opens a month grid under it — on the
 monitor whose clock was clicked, since the shell is one page across all of
@@ -1755,6 +1833,18 @@ bus names are released, the bar empties, and applications see the tray go away
 exactly as they would if this program had exited. Turning it back on claims
 them again.
 
+**At runtime.** `config.tray` flips the claim at once (a bare message
+toggles), and `config.icon_theme` changes the theme the icons resolve
+against:
+
+```sh
+viewport msg -t config.tray --enabled false
+viewport msg -t config.icon_theme --theme Breeze
+```
+
+A new icon theme empties the caches immediately, which is what installing
+icons and wanting to see them asks for.
+
 Even with it on, a KDE session or a GNOME extension that already holds the
 watcher name keeps it — the name is queued for, never taken, and the log says
 which happened. What that means in practice is that running this beside another
@@ -1869,6 +1959,13 @@ a session that would rather run cliphist or one that does not want a copy of
 every password that passes through the clipboard. The setting applies on
 reload, and turning it off empties what was already there.
 
+**At runtime.** `config.clipboard_history` sets how much the compositor
+keeps, with the same immediate effect:
+
+```sh
+viewport msg -t config.clipboard_history --limit 50
+```
+
 ## Wi-Fi and Bluetooth
 
 `Mod4+Shift+n` opens the Wi-Fi picker and `Mod4+Shift+t` the Bluetooth one;
@@ -1961,6 +2058,16 @@ itself — because a tap is `pressed: true` immediately followed by
 `pressed: false`, and a key held down is `true` once and `false` on release,
 exactly like a real one.
 
+**At runtime.** `config.osk` sets the raising policy — `auto`, `manual` or
+`off` — with effect right away, including dropping a keyboard pinned open
+by hand:
+
+```sh
+viewport msg -t config.osk --mode off
+```
+
+Anything else is refused.
+
 ## Layer-surface rules
 
 ```jsonc
@@ -2023,6 +2130,16 @@ surface (or fail-closed black) and pointer can appear.
 Namespaces are client-chosen labels, not authenticated application identities.
 Rules are reliable policy for configured clients, but a hostile client can
 choose another namespace; do not treat a namespace match as a sandbox boundary.
+
+**At runtime.** `config.layer_rules` replaces the set in the file's own
+JSON:
+
+```sh
+viewport msg -t config.layer_rules --rules '[]'   # an empty array clears it
+```
+
+The set is compiled before anything changes, so one that does not compile
+leaves the old one standing.
 
 ## Window rules
 
@@ -2173,6 +2290,17 @@ again. An explicit `view.capture` — the shell's reply, or one sent by hand wit
 `viewport msg -t view.capture` — stands until the next one, so a later title,
 app ID or tag change does not re-derive a denial over a grant.
 
+**At runtime.** `config.rules` replaces the whole set in the file's own
+JSON:
+
+```sh
+viewport msg -t config.rules --value '[{"app_id":"firefox","capture":false}]'
+```
+
+An empty array clears it. A window still awaiting its resolved capture
+answer is tightened the way a reload tightens it; one that already carries
+an explicit answer keeps it.
+
 ## Groups
 
 A tabbed or stacked container is a group: one window on screen, the rest behind
@@ -2203,6 +2331,12 @@ Hyprland's `deny_from_group` said once for the whole container. Nothing happens
 on a plain split, which has no tabs to protect. The lock is not saved across a
 reload: it is a property of the container, and the tree is rebuilt from the
 session file.
+
+**At runtime.** `config.group` sets `auto_group` without touching the file:
+
+```sh
+viewport msg -t config.group --auto_group true
+```
 
 ## Layout models
 
@@ -2323,6 +2457,18 @@ switches at runtime, with a name or with no argument to cycle:
 
 Adding a sixth model is [docs/layout-extension.md](layout-extension.md).
 
+**At runtime.** `config.layout` picks the model without touching the file,
+and `config.layout_extensions` replaces the user script registry — the
+resolved list, not the file's paths:
+
+```sh
+viewport msg -t config.layout --layout scrolling
+viewport msg -t config.layout_extensions --extensions '[{"name":"mine","url":"file:///mine.js"}]'
+```
+
+An unknown name is refused rather than matching no model; clearing the
+registry under a layout that names one of its scripts falls back to
+`tiling`, as a reload faced with a typo does.
 
 ## Dynamic tiling arrangements
 
@@ -2372,6 +2518,16 @@ Solar and the matrix in particular have no sub-arrangements: where a window
 goes is decided by its position in the order and nothing else — and on the
 canvas by nothing but where you put it.
 
+**At runtime.** `config.tiling_mode` picks the arrangement without touching
+the file. It takes effect the same way `layout.mode` does — on the next
+change of the window set, not instantly:
+
+```sh
+viewport msg -t config.tiling_mode --mode bsp
+```
+
+An unknown mode is refused here rather than silently leaving the tree
+manual, which is what the file's typo does (the file can only warn).
 
 ## Focus at the edge of a monitor
 
@@ -2398,6 +2554,13 @@ the shell, because the column being reached for is usually scrolled off screen.
 So the setting travels to the shell with the rest of the config, and `false`
 stops both — otherwise the same keypress would cross in one layout and not the
 other.
+
+**At runtime.** `config.focus_crosses_outputs` flips it without touching
+the file. A bare message toggles:
+
+```sh
+viewport msg -t config.focus_crosses_outputs --enabled false
+```
 
 What it does not touch is asking for a monitor by name. A binding on
 `shell output.focus right` still moves there: the setting is about falling off

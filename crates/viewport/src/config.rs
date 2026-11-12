@@ -14,7 +14,7 @@
 
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// A single `outputs` entry.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
@@ -219,7 +219,7 @@ pub struct NotificationsConfig {
 ///
 /// The shell spaces windows with a pair of CSS custom properties: the inner
 /// gap between adjacent windows, and the outer gap at the edge of the output.
-#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GapsConfig {
     /// Pixels between adjacent windows, as sway's `gaps.inner`. Absent keeps
@@ -240,7 +240,7 @@ pub struct GapsConfig {
 }
 
 /// Policy for one of the shell's positive numbered workspaces.
-#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct WorkspaceConfig {
     /// Preferred output connector. The shell decides when that output exists.

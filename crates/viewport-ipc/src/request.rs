@@ -992,6 +992,361 @@ pub enum Request {
         /// Hide on the next touch, as `cursor.hide_on_touch`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         hide_on_touch: Option<bool>,
+        /// Which cursor theme to draw, as `cursor.theme`. Takes effect
+        /// immediately; the old images are thrown away.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        theme: Option<String>,
+        /// How large the cursor is drawn, in pixels, as `cursor.size`. Zero
+        /// is rejected: a cursor of no size is not a cursor.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        size: Option<u32>,
+        /// Whether keyboard focus follows the pointer, as
+        /// `cursor.follow_mouse`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        follow_mouse: Option<bool>,
+        /// How far the pointer must travel before focus changes while
+        /// following, as `cursor.follow_mouse_threshold`. Negative values
+        /// are rejected.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        follow_mouse_threshold: Option<f64>,
+    },
+
+    /// Set how the shell animates at runtime, as the `motion` block in the
+    /// config file.
+    ///
+    /// The same path as `config.gaps`: the compositor's `Config` is updated
+    /// and re-sent, and the shell lands the pace on `--anim`, `--anim-slow`
+    /// and `--ease`. The compositor draws no transitions of its own, so
+    /// nothing here needs a redraw.
+    ///
+    /// Every field is optional; only the ones given are changed. A duration
+    /// that is not a finite non-negative number is rejected.
+    #[serde(rename = "config.motion")]
+    ConfigMotion {
+        /// Whether anything animates. `false` is the system's
+        /// reduced-motion setting in another form.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        enabled: Option<bool>,
+        /// The ordinary transition, in milliseconds. Negative and
+        /// non-finite values are rejected.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        duration: Option<f64>,
+        /// The slower transition — entrances and larger moves. Negative and
+        /// non-finite values are rejected.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        slow: Option<f64>,
+        /// The easing, as any CSS timing function.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ease: Option<String>,
+    },
+
+    /// Set how tabbed and stacked containers take new windows at runtime, as
+    /// the `group` block in the config file.
+    ///
+    /// The shell owns the tree, so this is carried across the same way the
+    /// gaps are: the compositor's `Config` is updated and re-sent, nothing
+    /// here is drawn.
+    #[serde(rename = "config.group")]
+    ConfigGroup {
+        /// Whether a window opened from inside a group joins it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        auto_group: Option<bool>,
+    },
+
+    /// Set the bar clock's locale and format at runtime, as the `clock`
+    /// block in the config file.
+    ///
+    /// Carried to the shell the same way the gaps are. Nothing beyond the
+    /// type is validated: a language tag the engine has no data for is the
+    /// engine's business, and a format string is a template the page
+    /// expands. Every field is optional; only the ones given are changed.
+    #[serde(rename = "config.clock")]
+    ConfigClock {
+        /// A BCP 47 language tag — `"de-DE"`, `"en-GB"` — for the month and
+        /// weekday names, the date order and the calendar's first day.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        locale: Option<String>,
+        /// True for a twelve-hour clock with AM/PM, false for twenty-four
+        /// hours. Absent leaves it to the locale.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hour12: Option<bool>,
+        /// A strftime-style template for the whole module.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        format: Option<String>,
+    },
+
+    /// Set the top bar's mode at runtime, as `bar` in the config file.
+    ///
+    /// `"auto"` floats the bar while Mod4 is held, `"docked"` pins it, and
+    /// `"hidden"` takes it away; the shell decides the rest from the mode
+    /// name, so this carries one string the same way `config.wallpaper`
+    /// carries its mode.
+    #[serde(rename = "config.bar")]
+    ConfigBar {
+        /// The bar mode, as `bar` in the config file.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mode: Option<String>,
+    },
+
+    /// Whether the floating `auto` bar blurs the windows behind it, as
+    /// `bar_blur` in the config file.
+    ///
+    /// A redraw is part of this one, unlike the gaps: the blur is a
+    /// compositor framebuffer effect, so turning it off leaves the bar flat
+    /// only once a frame is painted without it.
+    ///
+    /// Absent *toggles*, on the same terms as `config.dark_mode`.
+    #[serde(rename = "config.bar_blur")]
+    ConfigBarBlur {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        enabled: Option<bool>,
+    },
+
+    /// Replace the bar's extra widgets at runtime, as `bar_widgets` in the
+    /// config file.
+    ///
+    /// Carried as JSON because the widget vocabulary is the file's — the
+    /// same tagged objects `bar_widgets` takes. When `bar_items` is present
+    /// it wins outright, as in the file: setting the widgets replaces the
+    /// additions, and the items override is then left as it was. The status
+    /// sampler is reconfigured for what the new list draws, so a widget
+    /// taken off the bar stops costing samples.
+    #[serde(rename = "config.bar_widgets")]
+    ConfigBarWidgets {
+        /// The complete new list, in draw order; an empty array clears it
+        /// back to the default bar.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        widgets: Option<serde_json::Value>,
+    },
+
+    /// Replace the whole right side of the bar at runtime, as `bar_items`
+    /// in the config file.
+    ///
+    /// The same JSON the file takes: a bare string names a built-in module
+    /// and an object names a widget. When present — even empty — the list
+    /// replaces the default modules and `bar_widgets` entirely, so an empty
+    /// array draws an empty right side rather than changing nothing.
+    #[serde(rename = "config.bar_items")]
+    ConfigBarItems {
+        /// The complete new list, in draw order.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        items: Option<serde_json::Value>,
+    },
+
+    /// Show or hide the welcome logo at runtime, as `logo` in the config
+    /// file. Absent *toggles*, on the same terms as `config.dark_mode`.
+    #[serde(rename = "config.logo")]
+    ConfigLogo {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        enabled: Option<bool>,
+    },
+
+    /// Show or hide the first-session tutorial at runtime, as `tutorial` in
+    /// the config file. Absent *toggles*, on the same terms as
+    /// `config.dark_mode`.
+    #[serde(rename = "config.tutorial")]
+    ConfigTutorial {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        enabled: Option<bool>,
+    },
+
+    /// Set how the tiling tree arranges itself at runtime, as `tiling_mode`
+    /// in the config file.
+    ///
+    /// Carried to the shell rather than acted on: the compositor has no
+    /// layout. An unknown mode is rejected rather than landing on the shell
+    /// to match nothing and leave the tree manual in silence.
+    #[serde(rename = "config.tiling_mode")]
+    ConfigTilingMode {
+        /// `"manual"`, `"master-stack"`, `"spiral"`, `"bsp"` or `"grid"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mode: Option<String>,
+    },
+
+    /// Set which layout the desktop uses at runtime, as `layout` in the
+    /// config file.
+    ///
+    /// An unknown name is rejected rather than landing on the shell to
+    /// match no model while the keymap was built for one that does not
+    /// exist. A name registered by a `layout_extensions` script is
+    /// accepted, as in the file.
+    #[serde(rename = "config.layout")]
+    ConfigLayout {
+        /// A built-in layout name or one a `layout_extensions` entry
+        /// registered.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        layout: Option<String>,
+    },
+
+    /// Replace the user layout scripts at runtime, as `layout_extensions`
+    /// in the config file.
+    ///
+    /// The runtime form is a list of `{"name": ..., "url": ...}` objects —
+    /// the file's map with the URLs already resolved, which is the form
+    /// the shell loads them in. An empty list clears the registry; if the
+    /// layout in use then names something no longer registered, it falls
+    /// back to `"tiling"`, as a reload faced with a typo does.
+    #[serde(rename = "config.layout_extensions")]
+    ConfigLayoutExtensions {
+        /// The complete new registry, in name order.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        extensions: Option<Vec<crate::event::LayoutExtension>>,
+    },
+
+    /// Whether directional focus may leave the monitor it is on, at
+    /// runtime, as `focus_crosses_outputs` in the config file.
+    ///
+    /// Both layouts read it, so it travels with the rest of the config
+    /// rather than living on one side. Absent *toggles*, on the same terms
+    /// as `config.dark_mode`.
+    #[serde(rename = "config.focus_crosses_outputs")]
+    ConfigFocusCrossesOutputs {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        enabled: Option<bool>,
+    },
+
+    /// Set the on-screen keyboard's raising policy at runtime, as `osk` in
+    /// the config file.
+    ///
+    /// `"auto"` lets it raise itself, `"manual"` keeps it down unless
+    /// `Mod4+Shift+k` asks, and `"off"` takes it away altogether. Takes
+    /// effect immediately, including dropping a keyboard that was pinned
+    /// open by hand.
+    #[serde(rename = "config.osk")]
+    ConfigOsk {
+        /// `"auto"`, `"manual"` or `"off"`. Anything else is rejected.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mode: Option<String>,
+    },
+
+    /// Whether the compositor claims the system tray, at runtime, as `tray`
+    /// in the config file.
+    ///
+    /// Applied immediately: turning it off releases the bus names and
+    /// empties the bar, so an application sees the tray go away exactly as
+    /// it would if the compositor had exited. Absent *toggles*, on the same
+    /// terms as `config.dark_mode`.
+    #[serde(rename = "config.tray")]
+    ConfigTray {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        enabled: Option<bool>,
+    },
+
+    /// How many clipboard entries the compositor keeps, at runtime, as
+    /// `clipboard_history` in the config file.
+    ///
+    /// Applied immediately: lowering it drops the oldest entries there and
+    /// then, and zero empties the history rather than leaving what is
+    /// already in it behind a setting that says it keeps nothing.
+    #[serde(rename = "config.clipboard_history")]
+    ConfigClipboardHistory {
+        /// Entries kept; zero keeps none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit: Option<usize>,
+    },
+
+    /// Which icon theme tray and launcher icons resolve against, at
+    /// runtime, as `icon_theme` in the config file.
+    ///
+    /// Applied immediately: the tray and launcher caches are emptied,
+    /// which is the same thing a reload does when the theme changes, and
+    /// what somebody wants after installing icons without restarting.
+    #[serde(rename = "config.icon_theme")]
+    ConfigIconTheme {
+        /// The theme name, searched before `hicolor` as in the file.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        theme: Option<String>,
+    },
+
+    /// Replace the desktop theme at runtime, as `theme` in the config file.
+    ///
+    /// Handed over as parsed JSON rather than re-serialised text so the
+    /// shell does not parse twice, exactly as the file provides it. Taken
+    /// whole: there is no per-key merge because the file does not merge
+    /// either.
+    #[serde(rename = "config.theme")]
+    ConfigTheme {
+        /// The new theme, as the file's `theme` value.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value: Option<serde_json::Value>,
+    },
+
+    /// Replace the window rules at runtime, as `rules` in the config file.
+    ///
+    /// Handed over as parsed JSON the same way `config.theme` is. Presence
+    /// replaces the whole set; an empty array clears it. A reload that
+    /// introduces a capture denial tightens windows still awaiting their
+    /// resolved capture answer, and this does the same — one that already
+    /// carries an explicit answer keeps it.
+    #[serde(rename = "config.rules")]
+    ConfigRules {
+        /// The new rule set, as the file's `rules` value.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value: Option<serde_json::Value>,
+    },
+
+    /// Replace the layer-shell rules at runtime, as `layer_rules` in the
+    /// config file.
+    ///
+    /// The same JSON the file takes, compiled before anything is changed:
+    /// a set that does not compile is rejected whole rather than leaving
+    /// the new opacity on the old capture policy. An empty array clears
+    /// the set.
+    #[serde(rename = "config.layer_rules")]
+    ConfigLayerRules {
+        /// The new ordered rule set, as the file's `layer_rules` value.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rules: Option<serde_json::Value>,
+    },
+
+    /// Set who draws the window frame at runtime, as `decorations` in the
+    /// config file.
+    ///
+    /// `"client"` hands the frame back to the application; anything else —
+    /// including a value nobody recognises — keeps it here, which is what
+    /// the file says. The desktop's advertised default moves with it, so a
+    /// client that probes the manager and one that asks per-surface still
+    /// get the same answer.
+    #[serde(rename = "config.decorations")]
+    ConfigDecorations {
+        /// `"client"` for client-side frames, anything else for server-side.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mode: Option<String>,
+    },
+
+    /// Replace the numbered-workspace rules at runtime, as `workspaces` in
+    /// the config file.
+    ///
+    /// The file's map form, number to rule. Validated the same way the file
+    /// is: an unknown layout or tiling mode on one workspace is dropped
+    /// to the global inheritance and a negative gap is ignored, rather
+    /// than the whole message refused — a typo on one line should not
+    /// take the other seven with it. An empty object clears the rules.
+    #[serde(rename = "config.workspaces")]
+    ConfigWorkspaces {
+        /// The new rule set, as the file's `workspaces` value.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rules: Option<serde_json::Value>,
+    },
+
+    /// Set the compositor-side opacity multipliers at runtime, as the
+    /// `opacity` block in the config file.
+    ///
+    /// Multiplied by the shell's own per-window opacity at render time, so
+    /// a redraw is part of this one. Every field is optional; only the
+    /// ones given are changed. A multiplier that is not a finite
+    /// non-negative number is rejected.
+    #[serde(rename = "config.opacity")]
+    ConfigOpacity {
+        /// Multiplier for the focused window.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        active: Option<f64>,
+        /// Multiplier for windows without keyboard focus.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        inactive: Option<f64>,
+        /// Multiplier used instead while fullscreen.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fullscreen: Option<f64>,
     },
 
     /// Write the runtime settings out, so they survive the next start.
@@ -2147,13 +2502,23 @@ mod tests {
             hide_after_ms,
             hide_on_key_press,
             hide_on_touch,
-        } = parse(r#"{"type":"config.cursor","hide_after_ms":0,"hide_on_key_press":true}"#)
+            theme,
+            size,
+            follow_mouse,
+            follow_mouse_threshold,
+        } = parse(
+            r#"{"type":"config.cursor","hide_after_ms":0,"hide_on_key_press":true,"theme":"Adwaita","size":24,"follow_mouse":true,"follow_mouse_threshold":1.5}"#,
+        )
         else {
             panic!("not a config.cursor message");
         };
         assert_eq!(hide_after_ms, Some(0));
         assert_eq!(hide_on_key_press, Some(true));
         assert_eq!(hide_on_touch, None);
+        assert_eq!(theme.as_deref(), Some("Adwaita"));
+        assert_eq!(size, Some(24));
+        assert_eq!(follow_mouse, Some(true));
+        assert_eq!(follow_mouse_threshold, Some(1.5));
 
         // Zero is off, not immediate — the value a verification tool sends
         // when it needs the cursor drawn in every capture.
@@ -2167,17 +2532,75 @@ mod tests {
         // Bare is the toggle: every field absent, the compositor flips the
         // deadline between never and the 2000ms default.
         let Request::ConfigCursor {
-            hide_after_ms,
-            hide_on_key_press,
-            hide_on_touch,
+            theme,
+            size,
+            follow_mouse,
+            follow_mouse_threshold,
+            ..
         } = parse(r#"{"type":"config.cursor"}"#)
         else {
             panic!("not a config.cursor message");
         };
         assert_eq!(
-            (hide_after_ms, hide_on_key_press, hide_on_touch),
-            (None, None, None)
+            (theme, size, follow_mouse, follow_mouse_threshold),
+            (None, None, None, None)
         );
+    }
+
+    /// The shell-carried setters carry their fields the way `config.gaps`
+    /// does: present fields set, absent ones leave what was standing.
+    #[test]
+    fn config_shell_setters_carry_their_fields() {
+        let Request::ConfigMotion {
+            enabled,
+            duration,
+            slow,
+            ease,
+        } = parse(r#"{"type":"config.motion","enabled":false,"duration":120.0,"ease":"linear"}"#)
+        else {
+            panic!("not a config.motion message");
+        };
+        assert_eq!(
+            (enabled, duration, slow, ease.as_deref()),
+            (Some(false), Some(120.0), None, Some("linear"))
+        );
+
+        // The bar widgets ride as JSON, in the file's tagged shape.
+        let Request::ConfigBarWidgets { widgets } = parse(
+            r#"{"type":"config.bar_widgets","widgets":[{"type":"disk","path":"/home"},{"type":"volume"}]}"#,
+        ) else {
+            panic!("not a config.bar_widgets message");
+        };
+        let widgets = widgets.expect("the widgets were given");
+        assert_eq!(widgets[0]["type"], "disk");
+        assert_eq!(widgets[1]["type"], "volume");
+
+        // The whole-item override, bare strings and widgets alike.
+        let Request::ConfigBarItems { items } =
+            parse(r#"{"type":"config.bar_items","items":["clock",{"type":"net"}]}"#)
+        else {
+            panic!("not a config.bar_items message");
+        };
+        let items = items.expect("the items were given");
+        assert_eq!(items[0], "clock");
+
+        // An empty workspaces object is the clear, not nothing.
+        let Request::ConfigWorkspaces { rules } =
+            parse(r#"{"type":"config.workspaces","rules":{}}"#)
+        else {
+            panic!("not a config.workspaces message");
+        };
+        assert_eq!(rules, Some(serde_json::json!({})));
+
+        // The layout registry takes the resolved list form.
+        let Request::ConfigLayoutExtensions { extensions } = parse(
+            r#"{"type":"config.layout_extensions","extensions":[{"name":"mine","url":"file:///mine.js"}]}"#,
+        ) else {
+            panic!("not a config.layout_extensions message");
+        };
+        let extensions = extensions.expect("the extensions were given");
+        assert_eq!(extensions[0].name, "mine");
+        assert_eq!(extensions[0].url, "file:///mine.js");
     }
 
     /// Absent toggles and present sets, which is the difference between a

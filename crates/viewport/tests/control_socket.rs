@@ -237,6 +237,87 @@ fn the_cursor_hide_deadline_is_announced_as_well_as_set() {
         2000,
         "the refused half got applied anyway"
     );
+
+    // The rest of the cursor block arrives the same way: only the fields
+    // given change.
+    client.send(
+        r#"{"type":"config.cursor","size":24,"follow_mouse":true,"follow_mouse_threshold":1.5}"#,
+    );
+    let config = client.wait_for("config");
+    assert_eq!(config["cursor"]["size"], 24);
+    assert_eq!(config["cursor"]["follow_mouse"], true);
+    assert_eq!(config["cursor"]["follow_mouse_threshold"], 1.5);
+    assert_eq!(config["cursor"]["hide_after_ms"], 2000);
+
+    // And a message that names only another field no longer toggles.
+    client.send(r#"{"type":"config.cursor","hide_after_ms":3000}"#);
+    assert_eq!(
+        client.wait_for("config")["cursor"]["hide_after_ms"],
+        3000,
+        "setting the deadline twice landed on the toggle"
+    );
+}
+
+#[test]
+fn the_shell_animation_pace_is_set_and_announced() {
+    let compositor = Compositor::start("motion");
+    let mut client = compositor.connect();
+
+    client.send(r#"{"type":"view.query"}"#);
+    assert!(client.wait_for("config")["motion"].is_null());
+
+    client.send(r#"{"type":"config.motion","duration":120.0,"ease":"linear"}"#);
+    let config = client.wait_for("config");
+    assert_eq!(config["motion"]["duration"], 120.0);
+    assert_eq!(config["motion"]["ease"], "linear");
+    assert!(config["motion"]["enabled"].is_null());
+    assert!(config["motion"]["slow"].is_null());
+
+    // Only the fields given change, so a switch that only speaks of on/off
+    // leaves the pace alone.
+    client.send(r#"{"type":"config.motion","enabled":false}"#);
+    let config = client.wait_for("config");
+    assert_eq!(config["motion"]["enabled"], false);
+    assert_eq!(config["motion"]["duration"], 120.0);
+
+    // A negative pace is refused whole: the prior value stands.
+    client.send(r#"{"type":"config.motion","duration":-1.0}"#);
+    let error = client.wait_for("error");
+    assert!(error.to_string().contains("config.motion"));
+    client.send(r#"{"type":"view.query"}"#);
+    assert_eq!(
+        client.wait_for("config")["motion"]["duration"],
+        120.0,
+        "the refused half got applied anyway"
+    );
+}
+
+#[test]
+fn unknown_names_over_the_socket_are_refused_not_warned() {
+    let compositor = Compositor::start("config-refusals");
+    let mut client = compositor.connect();
+
+    // These all warn-and-keep on the file path, which is right for a file a
+    // person wrote. Over the socket they are refused, which is what a tool
+    // that reported them needs.
+    client.send(r#"{"type":"config.tiling_mode","mode":"diagonal"}"#);
+    assert!(client
+        .wait_for("error")
+        .to_string()
+        .contains("config.tiling_mode"));
+    client.send(r#"{"type":"config.layout","layout":"nope"}"#);
+    assert!(client
+        .wait_for("error")
+        .to_string()
+        .contains("config.layout"));
+    client.send(r#"{"type":"config.osk","mode":"whenever"}"#);
+    assert!(client.wait_for("error").to_string().contains("config.osk"));
+
+    client.send(r#"{"type":"view.query"}"#);
+    let config = client.wait_for("config");
+    assert!(config["layout"] == "tiling");
+    assert!(config["tiling_mode"].is_null());
+    assert_eq!(config["osk"], "auto");
 }
 
 /// The whole of the persistence answer, end to end: set something at runtime,

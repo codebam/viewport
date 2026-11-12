@@ -1035,23 +1035,48 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             hide_after_ms,
             hide_on_key_press,
             hide_on_touch,
+            theme,
+            size,
+            follow_mouse,
+            follow_mouse_threshold,
         } => {
             // Validated as a whole before anything changes, like ConfigGaps:
-            // a negative deadline takes the whole message with it.
+            // a negative deadline, a zero size or a negative threshold takes
+            // the whole message with it.
             if let Some(v) = hide_after_ms {
                 if v < 0 {
                     reject(state, "config.cursor", &format!("hide_after_ms {v}"));
                     return;
                 }
             }
+            if size == Some(0) {
+                reject(state, "config.cursor", "size 0");
+                return;
+            }
+            if let Some(v) = follow_mouse_threshold {
+                if v < 0.0 {
+                    reject(
+                        state,
+                        "config.cursor",
+                        &format!("follow_mouse_threshold {v}"),
+                    );
+                    return;
+                }
+            }
             // A bare message toggles the deadline, on the same terms as
             // `config.dark_mode` — a keybinding wants to flip a switch without
             // knowing the number. On becomes never-hide (0) and off becomes
-            // the shipped 2000ms. A message naming only the booleans leaves
-            // the deadline alone, which is the panel's case.
+            // the shipped 2000ms. A message naming any other field leaves the
+            // deadline alone, which is the panel's case.
             let hide_after_ms = match hide_after_ms {
                 Some(v) => Some(v),
-                None if hide_on_key_press.is_none() && hide_on_touch.is_none() => {
+                None if hide_on_key_press.is_none()
+                    && hide_on_touch.is_none()
+                    && theme.is_none()
+                    && size.is_none()
+                    && follow_mouse.is_none()
+                    && follow_mouse_threshold.is_none() =>
+                {
                     Some(if state.cursor_hide.after().is_some() {
                         0
                     } else {
@@ -1060,12 +1085,39 @@ pub fn apply(state: &mut ViewportState, request: Request) {
                 }
                 None => None,
             };
+            let mut changed = false;
+            let mut needs_render = false;
+            // The compositor-side half first, before the Config copy is
+            // borrowed below: the theme reloads its images, which is a full
+            // borrow of the state. Both leave their own damage behind.
+            if theme.is_some() || size.is_some() {
+                let theme = theme
+                    .clone()
+                    .unwrap_or_else(|| state.cursor_theme.name().to_owned());
+                let size = size.unwrap_or_else(|| state.cursor_theme.size());
+                state.apply_cursor_theme(theme, size);
+                changed = true;
+            }
+            if let Some(on) = follow_mouse {
+                // The threshold resets when the feature is toggled, so the
+                // first motion after enabling does not have to re-cross the
+                // old distance — the same rule the reload path follows.
+                if state.follow_mouse != on {
+                    state.follow_mouse = on;
+                    state.follow_mouse_pos = None;
+                    changed = true;
+                }
+            }
+            if let Some(v) = follow_mouse_threshold {
+                if state.follow_mouse_threshold != v {
+                    state.follow_mouse_threshold = v;
+                    changed = true;
+                }
+            }
             let current = state
                 .config
                 .cursor
                 .get_or_insert_with(viewport_ipc::event::Cursor::default);
-            let mut changed = false;
-            let mut needs_render = false;
             if let Some(v) = hide_after_ms {
                 // `set_after_ms` returns whether a hidden cursor had to be
                 // drawn again — the deadline that hid it is gone, so nothing
@@ -1084,6 +1136,18 @@ pub fn apply(state: &mut ViewportState, request: Request) {
                 current.hide_on_touch = Some(on);
                 changed = true;
             }
+            if let Some(v) = theme {
+                current.theme = Some(v);
+            }
+            if let Some(v) = size {
+                current.size = Some(v);
+            }
+            if let Some(on) = follow_mouse {
+                current.follow_mouse = Some(on);
+            }
+            if let Some(v) = follow_mouse_threshold {
+                current.follow_mouse_threshold = Some(v);
+            }
             if changed {
                 // The shell draws nothing from this — the cursor is the
                 // compositor's — but the Config event carries it so the panel
@@ -1096,6 +1160,452 @@ pub fn apply(state: &mut ViewportState, request: Request) {
                 }
                 state.notify_config();
                 state.arm_cursor_hide();
+            }
+        }
+
+        Request::ConfigMotion {
+            enabled,
+            duration,
+            slow,
+            ease,
+        } => {
+            // Validated as a whole before anything changes, like ConfigGaps:
+            // a negative or non-finite pace takes the whole message with it.
+            for (name, value) in [("duration", duration), ("slow", slow)] {
+                if let Some(v) = value {
+                    if !(v.is_finite() && v >= 0.0) {
+                        reject(state, "config.motion", &format!("{name} {v}"));
+                        return;
+                    }
+                }
+            }
+            let current = state
+                .config
+                .motion
+                .get_or_insert_with(viewport_ipc::event::Motion::default);
+            let mut changed = false;
+            if let Some(v) = enabled {
+                current.enabled = Some(v);
+                changed = true;
+            }
+            if let Some(v) = duration {
+                current.duration = Some(v);
+                changed = true;
+            }
+            if let Some(v) = slow {
+                current.slow = Some(v);
+                changed = true;
+            }
+            if let Some(v) = ease {
+                current.ease = Some(v);
+                changed = true;
+            }
+            if changed {
+                // The shell owns every transition and lands the pace on
+                // `--anim`, `--anim-slow` and `--ease`; the page repaints
+                // itself, so there is no damage of the compositor's own to
+                // paint.
+                state.notify_config();
+            }
+        }
+
+        Request::ConfigGroup { auto_group } => {
+            // One boolean and nothing to validate: the shell decides what a
+            // group is, and the compositor has no groups at all.
+            if auto_group.is_some() {
+                let current = state
+                    .config
+                    .group
+                    .get_or_insert_with(viewport_ipc::event::Group::default);
+                current.auto_group = auto_group;
+                state.notify_config();
+            }
+        }
+
+        Request::ConfigClock {
+            locale,
+            hour12,
+            format,
+        } => {
+            // Forwarded whole, and only when the message names one of them:
+            // the shell's own answer to an absent block is the locale the
+            // engine runs under, which is not a value this side could write
+            // down. Nothing is validated beyond the type — a tag the engine
+            // has no data for is the engine's business.
+            if locale.is_some() || hour12.is_some() || format.is_some() {
+                let current = state
+                    .config
+                    .clock
+                    .get_or_insert_with(viewport_ipc::event::Clock::default);
+                if let Some(v) = locale {
+                    current.locale = Some(v);
+                }
+                if let Some(v) = hour12 {
+                    current.hour12 = Some(v);
+                }
+                if let Some(v) = format {
+                    current.format = Some(v);
+                }
+                state.notify_config();
+            }
+        }
+
+        Request::ConfigBar { mode } => {
+            if let Some(mode) = mode {
+                state.config.bar = Some(mode);
+                state.notify_config();
+            }
+        }
+
+        Request::ConfigBarBlur { enabled } => {
+            // Absent toggles, on the same terms as `config.dark_mode`.
+            let want = enabled.unwrap_or(!state.config.bar_blur);
+            if want != state.config.bar_blur {
+                state.config.bar_blur = want;
+                // The blur is a compositor framebuffer effect under the
+                // floating bar: without a new frame it keeps drawing for a
+                // bar that asked to be flat.
+                state.needs_render = true;
+                state.notify_config();
+            }
+        }
+
+        Request::ConfigBarWidgets { widgets } => {
+            if let Some(widgets) = widgets {
+                // Parsed into the file's own shape so the sampler prices it
+                // the same way a reload does; a list that does not parse is
+                // refused whole. The override keeps its precedence: what
+                // is in `bar_items_config` is still on the bar, so the
+                // additions wait for it to go.
+                let widgets: Vec<crate::config::BarWidgetConfig> =
+                    match serde_json::from_value(widgets) {
+                        Ok(widgets) => widgets,
+                        Err(e) => {
+                            reject(state, "config.bar_widgets", &format!("{e}"));
+                            return;
+                        }
+                    };
+                let items = state.bar_items_config.clone();
+                state.apply_bar_config(&widgets, items.as_deref());
+                state.notify_config();
+            }
+        }
+
+        Request::ConfigBarItems { items } => {
+            if let Some(items) = items {
+                let items: Vec<crate::config::BarItemConfig> = match serde_json::from_value(items) {
+                    Ok(items) => items,
+                    Err(e) => {
+                        reject(state, "config.bar_items", &format!("{e}"));
+                        return;
+                    }
+                };
+                // The widgets are superseded — the override draws exactly
+                // what it lists.
+                state.apply_bar_config(&[], Some(&items));
+                state.notify_config();
+            }
+        }
+
+        Request::ConfigLogo { enabled } => {
+            // Absent toggles, on the same terms as `config.dark_mode`.
+            let want = enabled.unwrap_or(!state.config.logo);
+            if want != state.config.logo {
+                state.config.logo = want;
+                state.notify_config();
+            }
+        }
+
+        Request::ConfigTutorial { enabled } => {
+            // Absent toggles, on the same terms as `config.dark_mode`.
+            let want = enabled.unwrap_or(!state.config.tutorial);
+            if want != state.config.tutorial {
+                state.config.tutorial = want;
+                state.notify_config();
+            }
+        }
+
+        Request::ConfigTilingMode { mode } => {
+            if let Some(mode) = mode {
+                // Checked here rather than in the shell, the same place the
+                // file is checked: an unknown mode would otherwise reach
+                // the shell, fail to match any arrangement, and leave the
+                // tree manual with nothing said.
+                const MODES: [&str; 5] = ["manual", "master-stack", "spiral", "bsp", "grid"];
+                if !MODES.contains(&mode.as_str()) {
+                    reject(
+                        state,
+                        "config.tiling_mode",
+                        &format!("unknown mode {mode:?}"),
+                    );
+                    return;
+                }
+                state.config.tiling_mode = Some(mode);
+                state.notify_config();
+            }
+        }
+
+        Request::ConfigLayout { layout } => {
+            if let Some(layout) = layout {
+                // Checked the same way the file is: an unknown name would
+                // otherwise leave the shell on the tiling default while the
+                // keymap was built for a layout that does not exist.
+                let extension = state
+                    .config
+                    .layout_extensions
+                    .iter()
+                    .any(|entry| entry.name == layout);
+                if !crate::config::BUILTIN_LAYOUTS.contains(&layout.as_str()) && !extension {
+                    reject(
+                        state,
+                        "config.layout",
+                        &format!("unknown layout {layout:?}"),
+                    );
+                    return;
+                }
+                state.config.layout = layout;
+                state.notify_config();
+            }
+        }
+
+        Request::ConfigLayoutExtensions { extensions } => {
+            if let Some(extensions) = extensions {
+                let mut extensions = extensions;
+                extensions.sort_by(|a, b| a.name.cmp(&b.name));
+                // If the layout in use names something no longer registered,
+                // it falls back to tiling — the same answer a reload gives a
+                // typo.
+                let kept = crate::config::BUILTIN_LAYOUTS.contains(&state.config.layout.as_str())
+                    || extensions
+                        .iter()
+                        .any(|entry| entry.name == state.config.layout);
+                if !kept {
+                    tracing::warn!(
+                        "unknown layout {:?}; falling back to tiling after layout_extensions changed",
+                        state.config.layout
+                    );
+                    state.config.layout = "tiling".to_owned();
+                }
+                state.config.layout_extensions = extensions;
+                state.notify_config();
+            }
+        }
+
+        Request::ConfigFocusCrossesOutputs { enabled } => {
+            // Absent toggles, on the same terms as `config.dark_mode`.
+            let want = enabled.unwrap_or(!state.config.focus_crosses_outputs);
+            if want != state.config.focus_crosses_outputs {
+                state.config.focus_crosses_outputs = want;
+                state.notify_config();
+            }
+        }
+
+        Request::ConfigOsk { mode } => {
+            if let Some(mode) = mode {
+                match crate::config::parse_osk_mode(&mode) {
+                    Ok(mode) => {
+                        state.osk_mode = mode;
+                        state.config.osk = mode.as_str().to_owned();
+                        // Recomputed right away, for the reason the reload
+                        // path gives: a text-input still enabled under a
+                        // turned-off keyboard is exactly what this has to
+                        // reach, and waiting for the next commit would leave
+                        // it up.
+                        state.sync_osk_wanted();
+                        state.notify_config();
+                    }
+                    Err(e) => {
+                        reject(state, "config.osk", &e.to_string());
+                    }
+                }
+            }
+        }
+
+        Request::ConfigTray { enabled } => {
+            // Absent toggles, on the same terms as `config.dark_mode`.
+            let want = enabled.unwrap_or(!state.tray_enabled);
+            if want != state.tray_enabled {
+                state.tray_enabled = want;
+                // Applied right away, for the reason the reload path gives:
+                // turning it off releases the names and empties the bar, so
+                // applications see the tray go away as if the compositor
+                // had exited.
+                state.tray.set_enabled(want);
+                state.config.tray = Some(want);
+                state.notify_config();
+            }
+        }
+
+        Request::ConfigClipboardHistory { limit } => {
+            if let Some(limit) = limit {
+                // Applied right away, for the reason the reload path gives:
+                // lowering it drops the oldest entries there and then, and
+                // zero empties the history rather than leaving them behind
+                // a setting that says it keeps nothing.
+                state.clipboard.set_limit(limit);
+                state.config.clipboard_history = Some(limit);
+                state.notify_config();
+            }
+        }
+
+        Request::ConfigIconTheme { theme } => {
+            if let Some(theme) = theme {
+                state.tray.set_icon_theme(theme.clone());
+                state.icon_theme = theme.clone();
+                // Applied right away, for the reason the reload path gives:
+                // the theme is what somebody reaches for when they install
+                // icons and want to see them without restarting, and the
+                // caches are the scanner's, so the emptying is a message.
+                state.launcher_scan.clear_icons();
+                state.config.icon_theme = Some(theme);
+                state.notify_config();
+            }
+        }
+
+        Request::ConfigTheme { value } => {
+            if let Some(value) = value {
+                // Taken whole, the way the file's `theme` is.
+                state.config.theme = Some(value);
+                state.notify_config();
+            }
+        }
+
+        Request::ConfigRules { value } => {
+            if let Some(value) = value {
+                state.config.rules = Some(value);
+                // The same tightening a reload does: a window still awaiting
+                // its resolved capture answer loses the capture the new
+                // rules deny, and one that already carries an explicit
+                // answer — the shell's, or a `view.capture`'s — keeps it.
+                let rules = state.config.rules.clone();
+                for view in state
+                    .views
+                    .views_mut()
+                    .filter(|view| view.mapped && !view.capture_resolved)
+                {
+                    if !crate::config::initially_allows_capture(
+                        rules.as_ref(),
+                        &view.app_id(),
+                        &view.title(),
+                        view.tag.as_deref(),
+                    ) {
+                        view.capture_allowed = false;
+                    }
+                }
+                state.notify_config();
+            }
+        }
+
+        Request::ConfigLayerRules { rules } => {
+            if let Some(rules) = rules {
+                // Compiled before anything changes, so a set that does not
+                // compile leaves the old one standing.
+                let configured: Vec<crate::layer::RuleConfig> =
+                    match serde_json::from_value(rules.clone()) {
+                        Ok(configured) => configured,
+                        Err(e) => {
+                            reject(state, "config.layer_rules", &format!("{e}"));
+                            return;
+                        }
+                    };
+                match crate::layer::Rules::compile(configured) {
+                    Ok(compiled) => {
+                        state.layer_rules = compiled;
+                        state.config.layer_rules = Some(rules);
+                        state.refresh_layer_policies();
+                        state.needs_render = true;
+                        state.notify_config();
+                    }
+                    Err(e) => {
+                        reject(state, "config.layer_rules", &format!("{e}"));
+                    }
+                }
+            }
+        }
+
+        Request::ConfigDecorations { mode } => {
+            if let Some(mode) = mode {
+                // "client" hands the frame back; anything else, including a
+                // value nobody recognises, keeps it here — what the file
+                // says, applied the same way. The advertised default moves
+                // with it, so a client probing the manager and one asking
+                // per-surface still get the same answer.
+                let server = mode != "client";
+                if server != state.server_decorations {
+                    state.server_decorations = server;
+                    use smithay::reexports::wayland_protocols_misc::server_decoration::server::org_kde_kwin_server_decoration_manager::Mode as KdeDefaultMode;
+                    state.kde_decoration_state.set_default_mode(if server {
+                        KdeDefaultMode::Server
+                    } else {
+                        KdeDefaultMode::Client
+                    });
+                    state.needs_render = true;
+                }
+                state.config.decorations = Some(mode);
+                state.notify_config();
+            }
+        }
+
+        Request::ConfigWorkspaces { rules } => {
+            if let Some(rules) = rules {
+                let rules: std::collections::HashMap<u32, crate::config::WorkspaceConfig> =
+                    match serde_json::from_value(rules) {
+                        Ok(rules) => rules,
+                        Err(e) => {
+                            reject(state, "config.workspaces", &format!("{e}"));
+                            return;
+                        }
+                    };
+                // Validated the same way the file is — one bad workspace
+                // degrades to the global inheritance, not the whole
+                // message.
+                state.config.workspaces = state.convert_workspace_rules(rules);
+                state.notify_config();
+            }
+        }
+
+        Request::ConfigOpacity {
+            active,
+            inactive,
+            fullscreen,
+        } => {
+            // Validated as a whole before anything changes, like ConfigGaps:
+            // a multiplier that is not a finite non-negative number takes
+            // the whole message with it.
+            for (name, value) in [
+                ("active", active),
+                ("inactive", inactive),
+                ("fullscreen", fullscreen),
+            ] {
+                if let Some(v) = value {
+                    if !(v.is_finite() && v >= 0.0) {
+                        reject(state, "config.opacity", &format!("{name} {v}"));
+                        return;
+                    }
+                }
+            }
+            let current = state
+                .config
+                .opacity
+                .get_or_insert_with(viewport_ipc::event::Opacity::default);
+            let mut changed = false;
+            if let Some(v) = active {
+                current.active = v;
+                changed = true;
+            }
+            if let Some(v) = inactive {
+                current.inactive = v;
+                changed = true;
+            }
+            if let Some(v) = fullscreen {
+                current.fullscreen = v;
+                changed = true;
+            }
+            if changed {
+                // Multiplied by the shell's per-window opacity at render
+                // time, so the new policy is not painted until a frame.
+                state.needs_render = true;
+                state.notify_config();
             }
         }
 
@@ -1327,6 +1837,69 @@ fn config_save(state: &mut ViewportState) {
         gaps: state.config.gaps.clone(),
         border: state.config.border.clone(),
         cursor: state.config.cursor.clone(),
+        motion: state.config.motion.clone(),
+        group: state.config.group.clone(),
+        clock: state.config.clock.clone(),
+        bar: state.config.bar.clone(),
+        bar_blur: Some(state.config.bar_blur),
+        bar_widgets: state.config.bar_widgets.clone(),
+        bar_items: state.config.bar_items.clone(),
+        logo: Some(state.config.logo),
+        tutorial: Some(state.config.tutorial),
+        tiling_mode: state.config.tiling_mode.clone(),
+        layout: Some(state.config.layout.clone()),
+        layout_extensions: if state.config.layout_extensions.is_empty() {
+            None
+        } else {
+            Some(
+                state
+                    .config
+                    .layout_extensions
+                    .iter()
+                    .map(|entry| (entry.name.clone(), entry.url.clone()))
+                    .collect(),
+            )
+        },
+        focus_crosses_outputs: Some(state.config.focus_crosses_outputs),
+        osk: Some(state.config.osk.clone()),
+        tray: state.config.tray,
+        clipboard_history: state.config.clipboard_history,
+        icon_theme: state.config.icon_theme.clone(),
+        theme: state.config.theme.clone(),
+        rules: state.config.rules.clone(),
+        layer_rules: state.config.layer_rules.clone(),
+        decorations: state.config.decorations.clone(),
+        workspaces: if state.config.workspaces.is_empty() {
+            None
+        } else {
+            // The shell's list back in the file's map form, so the overlay
+            // parses as the file's own keys.
+            let workspaces: std::collections::HashMap<u32, crate::config::WorkspaceConfig> = state
+                .config
+                .workspaces
+                .iter()
+                .map(|rule| {
+                    (
+                        rule.workspace,
+                        crate::config::WorkspaceConfig {
+                            output: rule.output.clone(),
+                            layout: rule.layout.clone(),
+                            tiling_mode: rule.tiling_mode.clone(),
+                            gaps: crate::config::GapsConfig {
+                                inner: rule.gaps.as_ref().and_then(|gaps| gaps.inner),
+                                outer: rule.gaps.as_ref().and_then(|gaps| gaps.outer),
+                                smart: rule.gaps.as_ref().and_then(|gaps| gaps.smart),
+                            },
+                            persistent: rule.persistent,
+                            default_name: rule.default_name.clone(),
+                            on_created_empty: rule.on_created_empty.clone(),
+                        },
+                    )
+                })
+                .collect();
+            serde_json::to_value(&workspaces).ok()
+        },
+        opacity: state.config.opacity.clone(),
         outputs: Default::default(),
     };
 

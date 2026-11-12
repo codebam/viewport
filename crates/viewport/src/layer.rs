@@ -14,7 +14,7 @@ use std::hash::{BuildHasher, Hash, Hasher};
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::Mutex;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use smithay::backend::renderer::element::Id;
 use smithay::backend::renderer::utils::RendererSurfaceStateUserData;
 use smithay::desktop::LayerSurface;
@@ -38,7 +38,7 @@ const MAX_HIT_TEST_REGION_OPERATIONS: usize = 1024;
 /// build does not know is no reason to refuse the whole file — fatal at
 /// startup and at every reload. See the contract at the top of
 /// [`crate::config`].
-#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RuleConfig {
     #[serde(rename = "match")]
@@ -53,14 +53,14 @@ pub struct RuleConfig {
     pub z_index: Option<i32>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MatchConfig {
     pub namespace: Option<NamespaceMatchConfig>,
 }
 
 /// The same string matcher shape rich window rules accept.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum NamespaceMatchConfig {
     /// A string is short for a case-insensitive `contains` match.
@@ -68,7 +68,7 @@ pub enum NamespaceMatchConfig {
     Rich(NamespaceMatch),
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct NamespaceMatch {
     pub contains: Option<String>,

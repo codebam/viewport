@@ -99,6 +99,92 @@ pub struct Overlay {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cursor: Option<viewport_ipc::event::Cursor>,
 
+    /// Spelled the way the `motion` block spells it, and parsed back the
+    /// same way.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub motion: Option<viewport_ipc::event::Motion>,
+
+    /// Spelled the way the `group` block spells it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group: Option<viewport_ipc::event::Group>,
+
+    /// Spelled the way the `clock` block spells it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clock: Option<viewport_ipc::event::Clock>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bar: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bar_blur: Option<bool>,
+
+    /// Spelled the way `bar_widgets` spells it — the same tagged objects
+    /// the file takes. The `ai` widget's credential env names do not
+    /// survive this trip: what was set lives in the compositor's copy of
+    /// the list, and only the provider reaches the shell.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bar_widgets: Option<Vec<viewport_ipc::event::BarWidget>>,
+
+    /// Spelled the way `bar_items` spells it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bar_items: Option<Vec<viewport_ipc::event::BarItem>>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logo: Option<bool>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tutorial: Option<bool>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tiling_mode: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub layout: Option<String>,
+
+    /// The file's map form — name to the URL already resolved — not the
+    /// shell's list, so what is written is what the config reader reads.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub layout_extensions: Option<BTreeMap<String, String>>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub focus_crosses_outputs: Option<bool>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub osk: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tray: Option<bool>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clipboard_history: Option<usize>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub icon_theme: Option<String>,
+
+    /// The file's `theme` value, as parsed JSON.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub theme: Option<serde_json::Value>,
+
+    /// The file's `rules` value, as parsed JSON.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rules: Option<serde_json::Value>,
+
+    /// The file's `layer_rules` value, as parsed JSON.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub layer_rules: Option<serde_json::Value>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decorations: Option<String>,
+
+    /// The file's `workspaces` value — number to rule — as parsed JSON, so
+    /// it parses back as the file's own keys.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspaces: Option<serde_json::Value>,
+
+    /// Spelled the way the `opacity` block spells it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub opacity: Option<viewport_ipc::event::Opacity>,
+
     /// The monitors, by connector name.
     ///
     /// A `BTreeMap` rather than a `HashMap` so the file comes out in the same
@@ -306,6 +392,57 @@ fn read_bounded(path: &Path) -> std::io::Result<String> {
     Ok(text)
 }
 
+/// The shell's copy of a bar widget back in the file's shape, for the
+/// overlay to carry.
+///
+/// The credential env names an `ai` widget names are not in it — the shell
+/// never sees them — so a saved `ai` widget reads the provider's default
+/// env name again. That is the compositor's own loss in `bar_widget_ipc`,
+/// predating this trip, rather than one this function adds.
+fn bar_widget_config(
+    widget: &viewport_ipc::event::BarWidget,
+) -> Option<crate::config::BarWidgetConfig> {
+    use crate::config::BarWidgetConfig as Config;
+    use viewport_ipc::event::BarWidget as Event;
+    Some(match widget {
+        Event::Disk { path } => Config::Disk { path: path.clone() },
+        Event::Weather { location } => Config::Weather {
+            location: location.clone(),
+        },
+        Event::Volume => Config::Volume,
+        Event::Mic => Config::Mic,
+        Event::Mpris => Config::Mpris,
+        Event::Battery => Config::Battery,
+        Event::Ai { provider } => {
+            let provider = match provider.as_str() {
+                "claude" => crate::config::AiProvider::Claude,
+                "openai" => crate::config::AiProvider::Openai,
+                "openrouter" => crate::config::AiProvider::Openrouter,
+                _ => return None,
+            };
+            Config::Ai {
+                provider,
+                token_env: None,
+                account_id_env: None,
+            }
+        }
+        Event::Custom { name, options } => Config::Custom {
+            name: name.clone(),
+            options: options.clone(),
+        },
+    })
+}
+
+/// The shell's copy of one bar item back in the file's shape.
+fn bar_item_config(item: &viewport_ipc::event::BarItem) -> Option<crate::config::BarItemConfig> {
+    use crate::config::BarItemConfig as Config;
+    use viewport_ipc::event::BarItem as Event;
+    Some(match item {
+        Event::Module(name) => Config::Module(name.clone()),
+        Event::Widget(widget) => Config::Widget(bar_widget_config(widget)?),
+    })
+}
+
 /// Lay the overlay's keys over a loaded config file.
 ///
 /// Only the keys the overlay holds: absence means "leave what the file said",
@@ -356,6 +493,125 @@ pub fn apply(into: &mut crate::config::File, overlay: &Overlay) {
         if let Some(value) = cursor.hide_on_touch {
             into.cursor.hide_on_touch = Some(value);
         }
+        if let Some(value) = cursor.theme.as_ref() {
+            into.cursor.theme = Some(value.clone());
+        }
+        if let Some(value) = cursor.size {
+            into.cursor.size = Some(value);
+        }
+        if let Some(value) = cursor.follow_mouse {
+            into.cursor.follow_mouse = Some(value);
+        }
+        if let Some(value) = cursor.follow_mouse_threshold {
+            into.cursor.follow_mouse_threshold = Some(value);
+        }
+    }
+    if let Some(motion) = overlay.motion.as_ref() {
+        if let Some(value) = motion.enabled {
+            into.motion.enabled = Some(value);
+        }
+        if let Some(value) = motion.duration {
+            into.motion.duration = Some(value);
+        }
+        if let Some(value) = motion.slow {
+            into.motion.slow = Some(value);
+        }
+        if let Some(value) = motion.ease.as_ref() {
+            into.motion.ease = Some(value.clone());
+        }
+    }
+    if let Some(group) = overlay.group.as_ref() {
+        if let Some(value) = group.auto_group {
+            into.group.auto_group = Some(value);
+        }
+    }
+    if let Some(clock) = overlay.clock.as_ref() {
+        if let Some(value) = clock.locale.as_ref() {
+            into.clock.locale = Some(value.clone());
+        }
+        if let Some(value) = clock.hour12 {
+            into.clock.hour12 = Some(value);
+        }
+        if let Some(value) = clock.format.as_ref() {
+            into.clock.format = Some(value.clone());
+        }
+    }
+    if let Some(value) = overlay.bar.as_ref() {
+        into.bar = Some(value.clone());
+    }
+    if let Some(value) = overlay.bar_blur {
+        into.bar_blur = Some(value);
+    }
+    if let Some(widgets) = overlay.bar_widgets.as_ref() {
+        into.bar_widgets = widgets.iter().filter_map(bar_widget_config).collect();
+    }
+    if let Some(items) = overlay.bar_items.as_ref() {
+        into.bar_items = Some(items.iter().filter_map(bar_item_config).collect());
+    }
+    if let Some(value) = overlay.logo {
+        into.logo = Some(value);
+    }
+    if let Some(value) = overlay.tutorial {
+        into.tutorial = Some(value);
+    }
+    if let Some(value) = overlay.tiling_mode.as_ref() {
+        into.tiling_mode = Some(value.clone());
+    }
+    if let Some(value) = overlay.layout.as_ref() {
+        into.layout = Some(value.clone());
+    }
+    if let Some(extensions) = overlay.layout_extensions.as_ref() {
+        into.layout_extensions = Some(
+            extensions
+                .iter()
+                .map(|(name, url)| (name.clone(), url.clone()))
+                .collect(),
+        );
+    }
+    if let Some(value) = overlay.focus_crosses_outputs {
+        into.focus_crosses_outputs = Some(value);
+    }
+    if let Some(value) = overlay.osk.as_ref() {
+        into.osk = Some(value.clone());
+    }
+    if let Some(value) = overlay.tray {
+        into.tray = Some(value);
+    }
+    if let Some(value) = overlay.clipboard_history {
+        into.clipboard_history = Some(value);
+    }
+    if let Some(value) = overlay.icon_theme.as_ref() {
+        into.icon_theme = Some(value.clone());
+    }
+    if let Some(value) = overlay.theme.as_ref() {
+        into.theme = Some(value.clone());
+    }
+    if let Some(value) = overlay.rules.as_ref() {
+        into.rules = Some(value.clone());
+    }
+    if let Some(value) = overlay.layer_rules.as_ref() {
+        // Parsed back as the file's own rules; a value that no longer
+        // parses leaves the file's standing, rather than refusing the
+        // whole overlay.
+        if let Ok(rules) = serde_json::from_value::<Vec<crate::layer::RuleConfig>>(value.clone()) {
+            into.layer_rules = Some(rules);
+        }
+    }
+    if let Some(value) = overlay.decorations.as_ref() {
+        into.decorations = Some(value.clone());
+    }
+    if let Some(value) = overlay.workspaces.as_ref() {
+        if let Ok(workspaces) = serde_json::from_value::<
+            std::collections::HashMap<u32, crate::config::WorkspaceConfig>,
+        >(value.clone())
+        {
+            into.workspaces = Some(workspaces);
+        }
+    }
+    if let Some(opacity) = overlay.opacity.as_ref() {
+        into.opacity.active = Some(opacity.active);
+        into.opacity.inactive = Some(opacity.inactive);
+        into.opacity.fullscreen = Some(opacity.fullscreen);
     }
     // Per monitor, not the whole map: the overlay holds only the monitors the
     // panel touched, and a config-file block for an untouched one has to
@@ -426,6 +682,70 @@ mod tests {
                 hide_after_ms: Some(0),
                 hide_on_key_press: Some(true),
                 hide_on_touch: None,
+                theme: Some("Adwaita".to_owned()),
+                size: Some(24),
+                follow_mouse: Some(true),
+                follow_mouse_threshold: Some(1.5),
+            }),
+            motion: Some(viewport_ipc::event::Motion {
+                enabled: Some(false),
+                duration: Some(120.0),
+                slow: None,
+                ease: Some("linear".to_owned()),
+            }),
+            group: Some(viewport_ipc::event::Group {
+                auto_group: Some(true),
+            }),
+            clock: Some(viewport_ipc::event::Clock {
+                locale: Some("de-DE".to_owned()),
+                hour12: None,
+                format: Some("%H:%M".to_owned()),
+            }),
+            bar: Some("docked".to_owned()),
+            bar_blur: Some(false),
+            bar_widgets: Some(vec![
+                viewport_ipc::event::BarWidget::Disk {
+                    path: Some("/home".to_owned()),
+                },
+                viewport_ipc::event::BarWidget::Volume,
+            ]),
+            bar_items: Some(vec![
+                viewport_ipc::event::BarItem::Module("clock".to_owned()),
+                viewport_ipc::event::BarItem::Widget(viewport_ipc::event::BarWidget::Mpris),
+            ]),
+            logo: Some(false),
+            tutorial: Some(true),
+            tiling_mode: Some("bsp".to_owned()),
+            layout: Some("scrolling".to_owned()),
+            layout_extensions: Some(
+                [("mine".to_owned(), "file:///mine.js".to_owned())]
+                    .into_iter()
+                    .collect(),
+            ),
+            focus_crosses_outputs: Some(false),
+            osk: Some("manual".to_owned()),
+            tray: Some(false),
+            clipboard_history: Some(10),
+            icon_theme: Some("Papirus".to_owned()),
+            theme: Some(serde_json::json!({"color": "red"})),
+            rules: Some(serde_json::json!([{"app_id": "mpv", "capture": false}])),
+            layer_rules: Some(serde_json::json!([{
+                "match": {"namespace": "bar"},
+                "opacity": 0.9,
+                "capture": null,
+                "blur": null,
+                "z_index": null,
+            }])),
+            decorations: Some("client".to_owned()),
+            workspaces: Some(serde_json::json!({
+                "2": {"output": "DP-1", "layout": null, "tiling_mode": null,
+                      "gaps": {"inner": 4, "outer": null, "smart": null},
+                      "persistent": true, "default_name": null, "on_created_empty": null},
+            })),
+            opacity: Some(viewport_ipc::event::Opacity {
+                active: 0.95,
+                inactive: 0.8,
+                fullscreen: 1.0,
             }),
             outputs,
         }
@@ -453,6 +773,65 @@ mod tests {
         assert_eq!(file.cursor.hide_after_ms, Some(0));
         assert_eq!(file.cursor.hide_on_key_press, Some(true));
         assert_eq!(file.cursor.hide_on_touch, None);
+        assert_eq!(file.cursor.theme.as_deref(), Some("Adwaita"));
+        assert_eq!(file.cursor.size, Some(24));
+        assert_eq!(file.cursor.follow_mouse, Some(true));
+        assert_eq!(file.cursor.follow_mouse_threshold, Some(1.5));
+        assert_eq!(file.motion.enabled, Some(false));
+        assert_eq!(file.motion.duration, Some(120.0));
+        assert_eq!(file.motion.slow, None);
+        assert_eq!(file.motion.ease.as_deref(), Some("linear"));
+        assert_eq!(file.group.auto_group, Some(true));
+        assert_eq!(file.clock.locale.as_deref(), Some("de-DE"));
+        assert_eq!(file.clock.hour12, None);
+        assert_eq!(file.clock.format.as_deref(), Some("%H:%M"));
+        assert_eq!(file.bar.as_deref(), Some("docked"));
+        assert_eq!(file.bar_blur, Some(false));
+        assert_eq!(file.bar_widgets.len(), 2);
+        assert!(matches!(
+            file.bar_widgets[0],
+            crate::config::BarWidgetConfig::Disk {
+                ref path
+            } if path.as_deref() == Some("/home")
+        ));
+        assert!(matches!(
+            file.bar_widgets[1],
+            crate::config::BarWidgetConfig::Volume
+        ));
+        assert_eq!(file.bar_items.as_ref().map(Vec::len), Some(2));
+        assert!(matches!(
+            file.bar_items.as_deref(),
+            Some([
+                crate::config::BarItemConfig::Module(ref name),
+                crate::config::BarItemConfig::Widget(crate::config::BarWidgetConfig::Mpris),
+            ]) if name == "clock"
+        ));
+        assert_eq!(file.logo, Some(false));
+        assert_eq!(file.tutorial, Some(true));
+        assert_eq!(file.tiling_mode.as_deref(), Some("bsp"));
+        assert_eq!(file.layout.as_deref(), Some("scrolling"));
+        assert_eq!(
+            file.layout_extensions
+                .as_ref()
+                .map(|m| m.get("mine").map(String::as_str)),
+            Some(Some("file:///mine.js"))
+        );
+        assert_eq!(file.focus_crosses_outputs, Some(false));
+        assert_eq!(file.osk.as_deref(), Some("manual"));
+        assert_eq!(file.tray, Some(false));
+        assert_eq!(file.clipboard_history, Some(10));
+        assert_eq!(file.icon_theme.as_deref(), Some("Papirus"));
+        assert_eq!(file.theme, Some(serde_json::json!({"color": "red"})));
+        assert!(file.rules.is_some());
+        assert_eq!(file.layer_rules.as_ref().map(Vec::len), Some(1));
+        assert_eq!(file.decorations.as_deref(), Some("client"));
+        let workspace = file.workspaces.as_ref().expect("workspaces saved");
+        let workspace = workspace.get(&2).expect("workspace 2 saved");
+        assert_eq!(workspace.output.as_deref(), Some("DP-1"));
+        assert_eq!(workspace.gaps.inner, Some(4));
+        assert_eq!(file.opacity.active, Some(0.95));
+        assert_eq!(file.opacity.inactive, Some(0.8));
+        assert_eq!(file.opacity.fullscreen, Some(1.0));
 
         let output = file
             .outputs

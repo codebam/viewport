@@ -257,6 +257,15 @@ pub struct ViewportState {
     /// What the shell is told on connect, and what the config file patches.
     /// The built-in values are C's (`src/main.c:61`).
     pub config: Config,
+    /// The bar's whole-override list in the file's own shape, next to the
+    /// shell's copy above.
+    ///
+    /// The runtime setters reach the bar through `apply_bar_config`, which
+    /// prices the samplers off the file shapes; keeping the override's
+    /// own shape is what lets a `config.bar_widgets` change leave the
+    /// override standing — which is the file's precedence — instead of
+    /// converting the shell's copy back. Set by every apply.
+    pub bar_items_config: Option<Vec<crate::config::BarItemConfig>>,
     /// Compiled compositor-side policy for layer-shell namespaces.
     pub layer_rules: crate::layer::Rules,
     /// Where the shell is loaded from, when the config names somewhere.
@@ -1815,7 +1824,21 @@ impl ViewportState {
                 // shell reads it back — see apply_config for where a config
                 // file overrides both this and osk_mode together.
                 osk: "auto".to_owned(),
+                // The compositor draws the frames until a config file or
+                // `config.decorations` says otherwise.
+                decorations: None,
+                // No layer policy until a config file or a runtime setter
+                // states one.
+                layer_rules: None,
+                // The tray is claimed until a config file or a setter turns
+                // it off.
+                tray: None,
+                // The compositor's own 25, until something says otherwise.
+                clipboard_history: None,
+                // Hicolor, until something names a theme.
+                icon_theme: None,
             },
+            bar_items_config: None,
             layer_rules: crate::layer::Rules::default(),
             shell_url: None,
             output_config: std::collections::HashMap::new(),

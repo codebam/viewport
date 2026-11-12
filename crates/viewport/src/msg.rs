@@ -555,9 +555,155 @@ const TYPES: &[Type] = &[
     },
     Type {
         name: "config.cursor",
-        fields: &["hide_after_ms", "hide_on_key_press", "hide_on_touch"],
+        fields: &[
+            "hide_after_ms",
+            "hide_on_key_press",
+            "hide_on_touch",
+            "theme",
+            "size",
+            "follow_mouse",
+            "follow_mouse_threshold",
+        ],
         strings: &[],
-        hint: "[--hide_after_ms N --hide_on_key_press BOOL --hide_on_touch BOOL]   (bare toggles hide_after_ms 0 <-> 2000)",
+        hint: "[--hide_after_ms N --theme NAME --size N --follow_mouse BOOL]   (bare toggles hide_after_ms 0 <-> 2000)",
+    },
+    Type {
+        name: "config.motion",
+        fields: &["enabled", "duration", "slow", "ease"],
+        strings: &[],
+        hint: "[--enabled BOOL --duration N --slow N --ease FUNCTION]   (set shell animation pace; each is optional)",
+    },
+    Type {
+        name: "config.group",
+        fields: &["auto_group"],
+        strings: &[],
+        hint: "[--auto_group BOOL]   (whether windows opened in a group join it)",
+    },
+    Type {
+        name: "config.clock",
+        fields: &["locale", "hour12", "format"],
+        strings: &[],
+        hint: "[--locale TAG --hour12 BOOL --format TEMPLATE]   (set the clock's locale and format; each is optional)",
+    },
+    Type {
+        name: "config.bar",
+        fields: &["mode"],
+        strings: &[],
+        hint: "--mode auto|docked|hidden   (set the top bar's mode)",
+    },
+    Type {
+        name: "config.bar_blur",
+        fields: &["enabled"],
+        strings: &[],
+        hint: "[--enabled BOOL]   (absent toggles; whether the floating bar blurs the windows behind it)",
+    },
+    Type {
+        name: "config.bar_widgets",
+        fields: &["widgets"],
+        strings: &[],
+        hint: "--widgets '[{\"type\":\"disk\"}]'   (replace the bar's extra widgets, as JSON)",
+    },
+    Type {
+        name: "config.bar_items",
+        fields: &["items"],
+        strings: &[],
+        hint: "--items '[\"clock\"]'   (replace the whole right side of the bar, as JSON)",
+    },
+    Type {
+        name: "config.logo",
+        fields: &["enabled"],
+        strings: &[],
+        hint: "[--enabled BOOL]   (absent toggles the welcome logo)",
+    },
+    Type {
+        name: "config.tutorial",
+        fields: &["enabled"],
+        strings: &[],
+        hint: "[--enabled BOOL]   (absent toggles the first-session tutorial)",
+    },
+    Type {
+        name: "config.tiling_mode",
+        fields: &["mode"],
+        strings: &[],
+        hint: "--mode manual|master-stack|spiral|bsp|grid   (set how the tiling tree arranges itself)",
+    },
+    Type {
+        name: "config.layout",
+        fields: &["layout"],
+        strings: &[],
+        hint: "--layout NAME   (set which layout the desktop uses)",
+    },
+    Type {
+        name: "config.layout_extensions",
+        fields: &["extensions"],
+        strings: &[],
+        hint: "--extensions '[{\"name\":\"mine\",\"url\":\"file:///mine.js\"}]'   (replace the user layout scripts, as JSON)",
+    },
+    Type {
+        name: "config.focus_crosses_outputs",
+        fields: &["enabled"],
+        strings: &[],
+        hint: "[--enabled BOOL]   (absent toggles whether directional focus may leave the monitor)",
+    },
+    Type {
+        name: "config.osk",
+        fields: &["mode"],
+        strings: &[],
+        hint: "--mode auto|manual|off   (set the on-screen keyboard's raising policy)",
+    },
+    Type {
+        name: "config.tray",
+        fields: &["enabled"],
+        strings: &[],
+        hint: "[--enabled BOOL]   (absent toggles whether the compositor claims the system tray)",
+    },
+    Type {
+        name: "config.clipboard_history",
+        fields: &["limit"],
+        strings: &[],
+        hint: "--limit N   (how many clipboard entries the compositor keeps)",
+    },
+    Type {
+        name: "config.icon_theme",
+        fields: &["theme"],
+        strings: &[],
+        hint: "--theme NAME   (the icon theme tray and launcher icons resolve against)",
+    },
+    Type {
+        name: "config.theme",
+        fields: &["value"],
+        strings: &[],
+        hint: "--value '{}'   (replace the desktop theme, as JSON)",
+    },
+    Type {
+        name: "config.rules",
+        fields: &["value"],
+        strings: &[],
+        hint: "--value '[]'   (replace the window rules, as JSON)",
+    },
+    Type {
+        name: "config.layer_rules",
+        fields: &["rules"],
+        strings: &[],
+        hint: "--rules '[]'   (replace the layer-shell rules, as JSON)",
+    },
+    Type {
+        name: "config.decorations",
+        fields: &["mode"],
+        strings: &[],
+        hint: "--mode client   (client-side frames; anything else keeps them server-side)",
+    },
+    Type {
+        name: "config.workspaces",
+        fields: &["rules"],
+        strings: &[],
+        hint: "--rules '{}'   (replace the numbered-workspace rules, as JSON)",
+    },
+    Type {
+        name: "config.opacity",
+        fields: &["active", "inactive", "fullscreen"],
+        strings: &[],
+        hint: "[--active N --inactive N --fullscreen N]   (set the compositor-side opacity multipliers; each is optional)",
     },
     Type {
         name: "config.save",
@@ -1589,6 +1735,86 @@ mod tests {
         assert_eq!(
             value(&["-t", "config.cursor"]),
             serde_json::json!({"type": "config.cursor"})
+        );
+        // The rest of the block rides the same way: strings as strings,
+        // numbers as numbers.
+        assert_eq!(
+            value(&[
+                "-t",
+                "config.cursor",
+                "--theme",
+                "Adwaita",
+                "--size",
+                "24",
+                "--follow_mouse",
+                "true",
+                "--follow_mouse_threshold",
+                "1.5",
+            ]),
+            serde_json::json!({
+                "type": "config.cursor",
+                "theme": "Adwaita",
+                "size": 24,
+                "follow_mouse": true,
+                "follow_mouse_threshold": 1.5,
+            })
+        );
+    }
+
+    /// The shell-carried setters build their fields like everything else:
+    /// numbers as numbers, booleans as booleans, and a list handed over as
+    /// a list is not wrapped in another one.
+    #[test]
+    fn config_shell_setters_build_their_fields() {
+        assert_eq!(
+            value(&[
+                "-t",
+                "config.motion",
+                "--enabled",
+                "false",
+                "--duration",
+                "120",
+                "--ease",
+                "linear",
+            ]),
+            serde_json::json!({
+                "type": "config.motion",
+                "enabled": false,
+                "duration": 120,
+                "ease": "linear",
+            })
+        );
+        assert_eq!(
+            value(&[
+                "-t",
+                "config.bar_widgets",
+                "--widgets",
+                r#"[{"type":"disk","path":"/home"},{"type":"volume"}]"#,
+            ]),
+            serde_json::json!({
+                "type": "config.bar_widgets",
+                "widgets": [{"type": "disk", "path": "/home"}, {"type": "volume"}],
+            })
+        );
+        assert_eq!(
+            value(&[
+                "-t",
+                "config.bar_items",
+                "--items",
+                r#"["clock",{"type":"mpris"}]"#,
+            ]),
+            serde_json::json!({
+                "type": "config.bar_items",
+                "items": ["clock", {"type": "mpris"}],
+            })
+        );
+        assert_eq!(
+            value(&["-t", "config.tray"]),
+            serde_json::json!({"type": "config.tray"})
+        );
+        assert_eq!(
+            value(&["-t", "config.opacity", "--active", "0.9"]),
+            serde_json::json!({"type": "config.opacity", "active": 0.9})
         );
     }
 

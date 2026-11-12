@@ -208,7 +208,30 @@ Also accepted on the UNIX socket, which speaks the same message set.
 | `config.border` | optional `radius`, optional `width`, optional `smart` — the same for the `border` block. Read by the compositor as well as the shell, since the client is cropped to the corner the shell draws. Zero is accepted, a negative value is refused |
 | `config.wallpaper` | optional `path` (a file or a URL, picture or video; the empty string removes the wallpaper), optional `mode` — set the desktop background at runtime, as `wallpaper` and `wallpaper_mode` in the config file. Only the fields given change; a path that is not there, or an unknown mode, comes back as an `error` and nothing is applied |
 | `config.dark_mode` | optional `enabled` (absent toggles) — what applications are told to draw themselves in, as `dark_mode` in the config file. Not a setting the shell paints: it goes out on the bus as `org.freedesktop.appearance`'s `color-scheme` and the GNOME theme name beside it, and what follows it is every toolkit application on the desk. The same `set_dark` the `appearance toggle` keybinding reaches, with the state named rather than flipped — which is what a switch on a panel needs and a key does not. The current value is in the `config` event's `dark_mode` |
-| `config.cursor` | optional `hide_after_ms` (a negative value is refused), optional `hide_on_key_press`, optional `hide_on_touch` — set when the pointer image leaves the screen, as the `cursor` block in the config file. Only the fields given change; zero is off. A bare `config.cursor` with no fields toggles the deadline: on becomes `0` (never hide) and off becomes `2000`. Turning the deadline off while the image is hidden draws it again at once, and arming starts the countdown; nothing is written to disk. The current value is in the `config` event's `cursor` |
+| `config.cursor` | optional `hide_after_ms` (a negative value is refused), optional `hide_on_key_press`, optional `hide_on_touch`, optional `theme`, optional `size` (zero is refused), optional `follow_mouse`, optional `follow_mouse_threshold` (a negative value is refused) — set the cursor, as the `cursor` block in the config file. Only the fields given change; zero hide time is off. A bare `config.cursor` with no fields at all toggles the deadline: on becomes `0` (never hide) and off becomes `2000`. Turning the deadline off while the image is hidden draws it again at once, and arming starts the countdown; a new theme or size reloads the images immediately; nothing is written to disk. The current value is in the `config` event's `cursor` |
+| `config.motion` | optional `enabled`, optional `duration`, optional `slow` (a negative or non-finite value is refused), optional `ease` — set how the shell animates at runtime, as the `motion` block in the config file. The compositor draws no transitions of its own, so this is the pace and the curve the shell lands on `--anim`, `--anim-slow` and `--ease`. Only the fields given change. The current value is in the `config` event's `motion` |
+| `config.group` | optional `auto_group` — set how tabbed and stacked containers take new windows at runtime, as the `group` block in the config file. The shell owns the tree; the compositor has none. The current value is in the `config` event's `group` |
+| `config.clock` | optional `locale`, optional `hour12`, optional `format` — set the bar clock's locale and format at runtime, as the `clock` block in the config file. Only the fields given change; nothing beyond the type is validated. The current value is in the `config` event's `clock` |
+| `config.bar` | optional `mode` — set the top bar's mode at runtime, as `bar` in the config file (`auto` floats the bar while Mod4 is held, `docked` pins it, `hidden` takes it away; the shell decides the rest from the mode name). The current value is in the `config` event's `bar` |
+| `config.bar_blur` | optional `enabled` (absent toggles) — set whether the floating `auto` bar blurs the windows behind it, as `bar_blur` in the config file. The blur is a compositor framebuffer effect, so a frame is repainted. The current value is in the `config` event's `bar_blur` |
+| `config.bar_widgets` | optional `widgets` (the full replacement list, as JSON, in the file's tagged shape; an empty array clears it) — replace the bar's extra widgets at runtime, as `bar_widgets` in the config file. The status sampler is reconfigured for what the new list draws. When a `bar_items` override is present it keeps its precedence, as in the file. The current value is in the `config` event's `bar_widgets` |
+| `config.bar_items` | optional `items` (the full replacement list, as JSON — bare strings are built-in modules and objects are widgets; an empty array draws an empty right side) — override the whole right side of the bar at runtime, as `bar_items` in the config file. The current value is in the `config` event's `bar_items` |
+| `config.logo` | optional `enabled` (absent toggles) — show or hide the welcome logo at runtime, as `logo` in the config file. The current value is in the `config` event's `logo` |
+| `config.tutorial` | optional `enabled` (absent toggles) — show or hide the first-session tutorial at runtime, as `tutorial` in the config file. The current value is in the `config` event's `tutorial` |
+| `config.tiling_mode` | optional `mode` (`manual`, `master-stack`, `spiral`, `bsp` or `grid`; anything else is refused) — set how the tiling tree arranges itself at runtime, as `tiling_mode` in the config file. Carried to the shell rather than acted on. The current value is in the `config` event's `tiling_mode` |
+| `config.layout` | optional `layout` (a built-in name, or one a `layout_extensions` script registered; anything else is refused) — set which layout the desktop uses at runtime, as `layout` in the config file. The current value is in the `config` event's `layout` |
+| `config.layout_extensions` | optional `extensions` (the full replacement list of `{"name": ..., "url": ...}` objects; an empty list clears the registry) — replace the user layout scripts at runtime, as `layout_extensions` in the config file. If the layout in use then names something no longer registered it falls back to `tiling`, as a reload faced with a typo does. The current value is in the `config` event's `layout_extensions` |
+| `config.focus_crosses_outputs` | optional `enabled` (absent toggles) — set whether directional focus may leave the monitor it is on, at runtime, as `focus_crosses_outputs` in the config file. The current value is in the `config` event's `focus_crosses_outputs` |
+| `config.osk` | optional `mode` (`auto`, `manual` or `off`; anything else is refused) — set the on-screen keyboard's raising policy at runtime, as `osk` in the config file. Takes effect immediately, including dropping a keyboard pinned open by hand. The current value is in the `config` event's `osk` |
+| `config.tray` | optional `enabled` (absent toggles) — set whether the compositor claims the system tray at runtime, as `tray` in the config file. Applied immediately: turning it off releases the bus names and empties the bar. The current value is in the `config` event's `tray` |
+| `config.clipboard_history` | optional `limit` — set how many clipboard entries the compositor keeps at runtime, as `clipboard_history` in the config file. Applied immediately: lowering it drops the oldest entries, and zero empties the history. The current value is in the `config` event's `clipboard_history` |
+| `config.icon_theme` | optional `theme` — set which icon theme tray and launcher icons resolve against at runtime, as `icon_theme` in the config file. The caches are emptied immediately, which is what installing icons and wanting to see them asks for. The current value is in the `config` event's `icon_theme` |
+| `config.theme` | optional `value` (the full replacement theme, as JSON) — replace the desktop theme at runtime, as `theme` in the config file. Taken whole, the way the file's is. The current value is in the `config` event's `theme` |
+| `config.rules` | optional `value` (the full replacement rule set, as JSON; an empty array clears it) — replace the window rules at runtime, as `rules` in the config file. Windows still awaiting their resolved capture answer are tightened the same way a reload tightens them; one that already carries an explicit answer keeps it. The current value is in the `config` event's `rules` |
+| `config.layer_rules` | optional `rules` (the full replacement rule set, as JSON; an empty array clears it) — replace the layer-shell rules at runtime, as `layer_rules` in the config file. Compiled before anything changes, so a set that does not compile is refused whole. The current value is in the `config` event's `layer_rules` |
+| `config.decorations` | optional `mode` (`client` hands the frame back to the application; anything else keeps it here) — set who draws the window frame at runtime, as `decorations` in the config file. The advertised default moves with it. The current value is in the `config` event's `decorations` |
+| `config.workspaces` | optional `rules` (the full replacement rule set, as JSON — the file's number-to-rule map; an empty object clears it) — replace the numbered-workspace rules at runtime, as `workspaces` in the config file. Validated the way the file is: one bad workspace degrades to the global inheritance rather than refusing the whole message. The current value is in the `config` event's `workspaces` |
+| `config.opacity` | optional `active`, optional `inactive`, optional `fullscreen` (a negative or non-finite value is refused) — set the compositor-side opacity multipliers at runtime, as the `opacity` block in the config file. Multiplied by the shell's per-window opacity at render time, so a frame is repainted. Only the fields given change. The current value is in the `config` event's `opacity` |
 | `config.save` | — write the runtime settings down so they survive a restart. Answers with `config.saved`, or an `error`. See below |
 | `shell.command` | `command`, optional `args[]` — re-emitted as the `shell.command` *event*; see below |
 | `quit` | — |
@@ -360,9 +383,8 @@ twelve seconds in.
 
 ### Saving the runtime settings
 
-`config.gaps`, `config.border`, `config.wallpaper`, `config.dark_mode` and
-`config.cursor`
-deliberately do not touch the disk — that is what makes them safe for a
+Every `config.*` setter above — `config.gaps` through `config.opacity` —
+deliberately does not touch the disk: that is what makes them safe for a
 wallpaper cycler and for trying a value out. `config.save` is the other half:
 it writes what is currently set into `settings.json` beside the config file,
 and that file is applied *over* the config file at the next start and at every
@@ -380,9 +402,16 @@ parser keeps its comments or its formatting. Delete `settings.json`, or a line
 out of it, to put the config file back in charge of that key.
 
 What is written: `dark_mode`, `wallpaper`, `wallpaper_mode`, `gaps`, `border`,
-and an `outputs` entry for each monitor that an `output.configure` has named
+`cursor`, `motion`, `group`, `clock`, `bar`, `bar_blur`, `bar_widgets`,
+`bar_items`, `logo`, `tutorial`, `tiling_mode`, `layout`, `layout_extensions`,
+`focus_crosses_outputs`, `osk`, `tray`, `clipboard_history`, `icon_theme`,
+`theme`, `rules`, `layer_rules`, `decorations`, `workspaces`, `opacity`, and
+an `outputs` entry for each monitor that an `output.configure` has named
 this session. Only those monitors — saving every head would freeze whatever
 mode the backend happened to pick for a screen nobody has an opinion about.
+One thing does not survive the trip by design: an `ai` bar widget's
+credential env names do not cross back from the compositor's copy of the
+list, so a saved `ai` widget reads its provider's default env name again.
 See `docs/configuration.md` for the file and the ordering, and
 `crates/viewport/src/settings.rs` for the reasoning.
 

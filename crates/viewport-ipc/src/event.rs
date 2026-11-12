@@ -902,6 +902,36 @@ pub struct Config {
     /// never been told starts on.
     #[serde(default = "yes")]
     pub dark_mode: bool,
+
+    /// `"client"` means applications draw their own window frames; anything
+    /// else, including absence, means the compositor draws them. Carried so
+    /// the panel can show and `config.save` can write the policy the
+    /// compositor is actually applying. Absent matches the compositor's own
+    /// default, which is server decorations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decorations: Option<String>,
+
+    /// Compositor-owned policy for wlr-layer-shell surfaces, as `layer_rules`
+    /// in the config file and handed over as parsed JSON the same way `theme`
+    /// is. Omitted entirely when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layer_rules: Option<serde_json::Value>,
+
+    /// Whether the compositor claims the system tray. Carried so the panel
+    /// shows the switch where it really is; the tray itself is reported over
+    /// `tray.update`. Absent is the compositor's answer, which is on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tray: Option<bool>,
+
+    /// How many clipboard entries the compositor keeps. Absent is 25, as
+    /// `clipboard_history` in the config file says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clipboard_history: Option<usize>,
+
+    /// Which icon theme tray and launcher icons resolve against. Absent is
+    /// `hicolor`, which is what the compositor searches when nothing is named.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon_theme: Option<String>,
 }
 
 /// Global multipliers applied to the shell-owned per-window opacity.
@@ -1010,17 +1040,30 @@ pub struct Border {
 /// carried so the panel can show and `config.save` can write the switch the
 /// compositor actually has.
 ///
-/// `hide_after_ms` is the idle deadline: zero or absent is off, which is the
-/// answer a remote-verification tool wants when it needs the cursor drawn in
-/// every capture. The two `hide_on_*` booleans are Hyprland's immediate
-/// triggers — while typing, and while touched. Optional so an absent field
-/// leaves what the compositor had standing.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// The whole `cursor` block, carried so the panel can show what it is and
+/// `config.save` can write it back. `hide_after_ms` is the idle deadline:
+/// zero or absent is off, which is the answer a remote-verification tool
+/// wants when it needs the cursor drawn in every capture. The two
+/// `hide_on_*` booleans are Hyprland's immediate triggers — while typing,
+/// and while touched. `theme` and `size` name the cursor images the
+/// compositor draws, and `follow_mouse` is whether keyboard focus follows
+/// the pointer with `follow_mouse_threshold` the travel before it changes.
+/// Every field optional so an absent one leaves what the compositor had
+/// standing.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Cursor {
     pub hide_after_ms: Option<i64>,
     pub hide_on_key_press: Option<bool>,
     pub hide_on_touch: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub follow_mouse: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub follow_mouse_threshold: Option<f64>,
 }
 
 /// How the shell animates, as `motion` in the config file, carried to the
@@ -1814,6 +1857,11 @@ mod tests {
             wallpaper_mode: None,
             osk: "auto".to_owned(),
             dark_mode: true,
+            decorations: None,
+            layer_rules: None,
+            tray: None,
+            clipboard_history: None,
+            icon_theme: None,
         })));
         assert!(value.get("bar").is_none());
         assert!(value.get("rules").is_none());
@@ -1997,6 +2045,11 @@ mod tests {
             wallpaper_mode: None,
             osk: "auto".to_owned(),
             dark_mode: true,
+            decorations: None,
+            layer_rules: None,
+            tray: None,
+            clipboard_history: None,
+            icon_theme: None,
         })));
         assert_eq!(value["border"]["radius"], 12);
         assert_eq!(value["border"]["width"], 3);
@@ -2056,6 +2109,11 @@ mod tests {
             wallpaper_mode: None,
             osk: "auto".to_owned(),
             dark_mode: true,
+            decorations: None,
+            layer_rules: None,
+            tray: None,
+            clipboard_history: None,
+            icon_theme: None,
         })));
         assert_eq!(value["gaps"]["inner"], 15);
         assert_eq!(value["gaps"]["outer"], 4);
@@ -2109,6 +2167,11 @@ mod tests {
             wallpaper_mode: None,
             osk: "auto".to_owned(),
             dark_mode: true,
+            decorations: None,
+            layer_rules: None,
+            tray: None,
+            clipboard_history: None,
+            icon_theme: None,
         })));
         assert_eq!(value["focus_crosses_outputs"], false);
     }
@@ -2143,6 +2206,11 @@ mod tests {
             wallpaper_mode: None,
             osk: "auto".to_owned(),
             dark_mode: true,
+            decorations: None,
+            layer_rules: None,
+            tray: None,
+            clipboard_history: None,
+            icon_theme: None,
         })));
         assert!(value["rules"].is_array(), "rules must not be a string");
         assert_eq!(value["rules"][0]["app_id"], "mpv");
@@ -2303,6 +2371,11 @@ mod tests {
                 wallpaper_mode: None,
                 osk: "auto".to_owned(),
                 dark_mode: true,
+                decorations: None,
+                layer_rules: None,
+                tray: None,
+                clipboard_history: None,
+                icon_theme: None,
             }))),
             json(&Event::WorkspaceRequest {
                 action: String::new(),

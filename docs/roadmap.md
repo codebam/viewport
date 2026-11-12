@@ -110,32 +110,45 @@ something; that is not pessimism, it is what an untested path is worth.
 ## Runtime-togglable settings
 
 The aim is that every setting in the config file can also be changed at
-runtime over the control socket — no file edit, no reload — the way
-`config.gaps`, `config.border`, `config.wallpaper`, `config.dark_mode` and
-`config.cursor` already are, persisting through `config.save` when wanted
-and re-announced in the `config` event. That is what a settings panel, a
-keybinding, a verification tool and a wallpaper cycler all want, and it is
-why the runtime tier sits between the bootstrap file and the overlay in
-`docs/configuration.md`.
+runtime over the control socket — no file edit, no reload — persisting
+through `config.save` when wanted and re-announced in the `config` event.
+That is what a settings panel, a keybinding, a verification tool and a
+wallpaper cycler all want, and it is why the runtime tier sits between the
+bootstrap file and the overlay in `docs/configuration.md`.
 
 This section is the list of what does not have a setter yet, grouped by
 what landing each one costs. When one lands it comes off this list and is
 documented where the rest of that subject is, exactly as the other entries
 in this file do.
 
-**Just another `config.*` setter — the `config.gaps` shape.** Shell-carried
-blocks whose file reader, `config::File`, and runtime handler all already
-exist; each is a request variant, an apply arm, a `Config` field and an
-overlay field. `config.motion` is the named one — `docs/configuration.md`
-already says there is no setter yet — and the rest of the shell-carried
-set belongs here: `group`, `clock`, `bar` (mode), `bar_blur`, `bar_widgets`
-and `bar_items`, `logo`, `tutorial`, `tiling_mode`, `layout` and its
-extensions, `focus_crosses_outputs`, `osk`, `tray`, `clipboard_history`,
-`icon_theme`, `theme`, `rules`, `layer_rules`, `decorations`, `workspaces`
-rules and `opacity`. The cursor's remaining keys — `theme`, `size`,
-`follow_mouse` and `follow_mouse_threshold` — are here too: the hide trio
-landed first because a tool that drives the pointer needs it before it
-needs a cursor theme.
+The first of the three groups below — "just another `config.*` setter, the
+`config.gaps` shape" — has come off whole. Every shell-carried block now has
+its setter: `config.motion` and `config.group`, `config.clock`, `config.bar`
+and `config.bar_blur`, `config.bar_widgets` and `config.bar_items`,
+`config.logo` and `config.tutorial`, `config.tiling_mode`, `config.layout`
+and `config.layout_extensions`, `config.focus_crosses_outputs`, `config.osk`,
+`config.tray`, `config.clipboard_history`, `config.icon_theme`,
+`config.theme`, `config.rules`, `config.layer_rules`, `config.decorations`,
+`config.workspaces` and `config.opacity`, plus the cursor's remaining keys
+(`theme`, `size`, `follow_mouse`, `follow_mouse_threshold`, on the same
+`config.cursor` message the hide trio landed on). Each is a request variant,
+an apply arm, a `Config` field and an overlay field, and each is documented
+in `docs/ipc.md` and beside its subject in `docs/configuration.md`. What
+went in that shaped like its own sentence: the booleans with a natural
+opposite (`config.bar_blur`, `config.logo`, `config.tutorial`,
+`config.focus_crosses_outputs`, `config.tray`) toggle on a bare message, the
+same terms `config.dark_mode` set; whole-list setters (`config.bar_widgets`,
+`config.bar_items`, `config.layout_extensions`, `config.rules`,
+`config.layer_rules`, `config.workspaces`, `config.theme`) take the file's
+own JSON and replace, so an empty value is a clear rather than a no-op; the
+validation a file only warns about (an unknown tiling mode, layout or osk
+policy) is refused over the socket instead. Two carry more than a value:
+`config.bar_widgets` and `config.bar_items` re-price the status sampler
+through the same `apply_bar_config` the file's reload uses, and
+`config.layer_rules` compiles before anything changes. One familiar loss
+came with the ride and is written down where it happens (`config.save` in
+`docs/ipc.md`): an `ai` bar widget's credential env names do not cross back
+into the overlay, because only the provider reaches the shell.
 
 **Input, idle and devices — a setter plus new machinery.** `idle`
 (`lock_after`, `blank_after`, `lock_delay`, `lock_command`) and `lid` need

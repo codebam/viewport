@@ -71,69 +71,7 @@ impl ViewportState {
             }
         }
         if let Some(workspaces) = file.workspaces {
-            const MODES: [&str; 5] = ["manual", "master-stack", "spiral", "bsp", "grid"];
-            let mut rules = Vec::with_capacity(workspaces.len());
-            for (workspace, rule) in workspaces {
-                if workspace == 0 {
-                    tracing::warn!("workspace numbers must be positive; ignoring workspace 0");
-                    continue;
-                }
-                let extension = |layout: &str| {
-                    self.config
-                        .layout_extensions
-                        .iter()
-                        .any(|entry| entry.name == layout)
-                };
-                let layout = rule.layout.filter(|layout| {
-                    let valid = crate::config::BUILTIN_LAYOUTS.contains(&layout.as_str())
-                        || extension(layout);
-                    if !valid {
-                        tracing::warn!(
-                            "workspace {workspace}: unknown layout {layout:?}; inheriting the global layout"
-                        );
-                    }
-                    valid
-                });
-                let tiling_mode = rule.tiling_mode.filter(|mode| {
-                    let valid = MODES.contains(&mode.as_str());
-                    if !valid {
-                        tracing::warn!(
-                            "workspace {workspace}: unknown tiling_mode {mode:?}; inheriting the global mode"
-                        );
-                    }
-                    valid
-                });
-                let mut gaps = viewport_ipc::event::Gaps {
-                    inner: rule.gaps.inner,
-                    outer: rule.gaps.outer,
-                    smart: rule.gaps.smart,
-                };
-                if gaps.inner.is_some_and(|value| value < 0) {
-                    tracing::warn!("workspace {workspace}: gaps.inner is negative; ignoring it");
-                    gaps.inner = None;
-                }
-                if gaps.outer.is_some_and(|value| value < 0) {
-                    tracing::warn!("workspace {workspace}: gaps.outer is negative; ignoring it");
-                    gaps.outer = None;
-                }
-                let gaps = (gaps != viewport_ipc::event::Gaps::default()).then_some(gaps);
-                rules.push(viewport_ipc::event::WorkspaceRule {
-                    workspace,
-                    output: rule.output.filter(|name| !name.trim().is_empty()),
-                    layout,
-                    tiling_mode,
-                    gaps,
-                    persistent: rule.persistent,
-                    default_name: rule
-                        .default_name
-                        .filter(|name| !name.trim().is_empty()),
-                    on_created_empty: rule
-                        .on_created_empty
-                        .filter(|command| !command.trim().is_empty()),
-                });
-            }
-            rules.sort_by_key(|rule| rule.workspace);
-            self.config.workspaces = rules;
+            self.config.workspaces = self.convert_workspace_rules(workspaces);
         }
         if let Some(tutorial) = file.tutorial {
             self.config.tutorial = tutorial;
@@ -145,6 +83,9 @@ impl ViewportState {
             self.config.bar_blur = bar_blur;
         }
         if let Some(configured) = file.layer_rules {
+            // Carried whole, so the panel reads what is in force and
+            // `config.save` writes it back.
+            self.config.layer_rules = serde_json::to_value(&configured).ok();
             match crate::layer::Rules::compile(configured) {
                 Ok(rules) => {
                     self.layer_rules = rules;
@@ -272,15 +213,20 @@ impl ViewportState {
         if file.cursor != crate::config::CursorConfig::default() {
             // Carried for the same reason the border is: the panel shows the
             // switch where it really is, and `config.save` writes what the
-            // file said. Only the hide trio the `config.cursor` message owns
-            // — theme and size are the loader's, follow_mouse is the state
-            // below. A negative deadline is a timer that fires at once, so it
-            // keeps what the compositor had, as the runtime message does.
+            // file said. The whole block travels — the `config.cursor`
+            // message owns all of it at runtime, and theme, size and
+            // follow_mouse are applied to live state below as well. A
+            // negative deadline is a timer that fires at once, so it keeps
+            // what the compositor had, as the runtime message does.
             let prior = self.config.cursor.clone().unwrap_or_default();
             let mut cursor = viewport_ipc::event::Cursor {
                 hide_after_ms: file.cursor.hide_after_ms,
                 hide_on_key_press: file.cursor.hide_on_key_press,
                 hide_on_touch: file.cursor.hide_on_touch,
+                theme: file.cursor.theme.clone(),
+                size: file.cursor.size,
+                follow_mouse: file.cursor.follow_mouse,
+                follow_mouse_threshold: file.cursor.follow_mouse_threshold,
             };
             if cursor.hide_after_ms.is_some_and(|v| v < 0) {
                 tracing::warn!(
@@ -358,110 +304,9 @@ impl ViewportState {
                 format: file.clock.format.clone(),
             });
         }
-        // The bar. Two ways to ask for it: `bar_widgets` adds widgets to the
-        // default module set; `bar_items` overrides the entire right side of
-        // the bar with an explicit, ordered list of modules and widgets. When
-        // `bar_items` is present (even empty) it wins outright — the shell
-        // draws exactly what it lists and nothing else.
-        //
-        // The status sampler is told the same what-to-read as the shell lists:
-        // which mounts to stat and whether to ask wpctl for the sink, so a bar
-        // that draws neither spawns nothing.
-        let bar_widgets: Vec<viewport_ipc::event::BarWidget> =
-            file.bar_widgets.iter().map(bar_widget_ipc).collect();
-
-        // The bar_items list, mapped to the IPC form. Bare strings are
-        // modules; objects are widgets.
-        let bar_items = file.bar_items.as_ref().map(|items| {
-            items
-                .iter()
-                .map(|item| match item {
-                    crate::config::BarItemConfig::Module(name) => {
-                        viewport_ipc::event::BarItem::Module(name.clone())
-                    }
-                    crate::config::BarItemConfig::Widget(w) => {
-                        viewport_ipc::event::BarItem::Widget(bar_widget_ipc(w))
-                    }
-                })
-                .collect()
-        });
-
-        // Which of those actually get drawn: the override's own widgets when
-        // present, else the bar_widgets additions. The sampler only pays for
-        // what will be on screen.
-        let drawn_widgets: Vec<&crate::config::BarWidgetConfig> =
-            if let Some(items) = &file.bar_items {
-                items
-                    .iter()
-                    .filter_map(|item| match item {
-                        crate::config::BarItemConfig::Widget(w) => Some(w),
-                        crate::config::BarItemConfig::Module(_) => None,
-                    })
-                    .collect()
-            } else {
-                file.bar_widgets.iter().collect()
-            };
-
-        // A `custom` widget names a script the shell loads from
-        // `widget_extensions`; one that names nothing known draws nothing, and
-        // the config that asked for it should say so rather than leave a gap.
-        for widget in &drawn_widgets {
-            if let crate::config::BarWidgetConfig::Custom { name, .. } = widget {
-                if !self
-                    .config
-                    .widget_extensions
-                    .iter()
-                    .any(|e| &e.name == name)
-                {
-                    tracing::warn!("bar widget references unknown widget extension {name:?}");
-                }
-            }
-        }
-
-        self.config.bar_widgets = if file.bar_items.is_some() {
-            // Superseded: the whole right side comes from bar_items, so the
-            // shell is told the override and not the additions it replaces.
-            None
-        } else if bar_widgets.is_empty() {
-            None
-        } else {
-            Some(bar_widgets)
-        };
-        self.config.bar_items = bar_items;
-        // One fold over what is drawn, and every sampler knows its job.
-        //
-        // With no `bar_items` the shipped cpu/memory/load/disk/net modules are
-        // always there; an override has to name one — or a status-reading
-        // widget — to keep the status sampler running at all.
-        let mut sampled = Sampling {
-            status: file
-                .bar_items
-                .as_deref()
-                .is_none_or(bar_items_need_status),
-            ..Sampling::default()
-        };
-        for widget in &drawn_widgets {
-            let costs = widget.sampling();
-            sampled.mounts.extend(costs.mounts);
-            sampled.volume |= costs.volume;
-            sampled.mic |= costs.mic;
-            sampled.players |= costs.players;
-            sampled.battery |= costs.battery;
-        }
-        self.status
-            .configure(sampled.mounts, sampled.volume, sampled.mic, sampled.status);
-        // Following every media player on the session is worth doing only for
-        // a bar that draws one, which is the same rule the audio sampling
-        // above follows. The battery likewise, on the power worker's own
-        // switch.
-        self.mpris.set_enabled(sampled.players);
-        self.power.set_widget(sampled.battery);
-        self.ai_usage.configure(
-            drawn_widgets
-                .iter()
-                .filter_map(|widget| crate::ai_usage::account(widget))
-                .collect(),
-        );
+        // The bar. See `apply_bar_config`, which `config.bar_widgets` and
+        // `config.bar_items` reach over the socket too.
+        self.apply_bar_config(&file.bar_widgets, file.bar_items.as_deref());
         if let Some(url) = file.url {
             self.shell_url = Some(url);
         }
@@ -626,6 +471,7 @@ impl ViewportState {
             // "client" hands the frame back; anything else, including a value
             // nobody recognises, keeps it here (`src/config.c:315`).
             self.server_decorations = mode != "client";
+            self.config.decorations = Some(mode.to_owned());
             // Keep the KDE manager's advertised default in step with the
             // per-surface answer in handlers/xdg_shell.rs::decoration_mode:
             // a client that probes the manager to decide whether to draw a
@@ -689,6 +535,13 @@ impl ViewportState {
             .icon_theme
             .clone()
             .unwrap_or_else(|| "hicolor".to_owned());
+        // The same three answers ride with the config event, on every load
+        // and not only when the file names them — there is always an
+        // effective value, and the panel shows the switch where it really
+        // is rather than guessing.
+        self.config.tray = Some(self.tray_enabled);
+        self.config.clipboard_history = Some(file.clipboard_history.unwrap_or(25));
+        self.config.icon_theme = Some(self.icon_theme.clone());
         // Applied on every load, so a reload that changes the theme empties
         // the cache then and there rather than at the next restart — the same
         // property the tray cache has, and the thing the user reaches for when
@@ -737,37 +590,19 @@ impl ViewportState {
         // than round-tripped through the process environment. Writing environ
         // on a process whose tray, status and notification threads are live
         // and reading it is undefined — glibc may free or rehash it under a
-        // concurrent getenv — and every reload used to do exactly that, twice,
-        // whether anything had changed or not.
+        // concurrent getenv — and every reload used to do exactly that,
+        // twice, whether anything had changed or not.
         let theme = file
             .cursor
             .theme
             .clone()
             .unwrap_or_else(|| self.cursor_theme.name().to_owned());
         let size = file.cursor.size.unwrap_or(self.cursor_theme.size());
-        // Only when one of those two moved, and only then: rebuilding on any
-        // change to the block would throw the loaded images away because a
-        // reload touched the hide deadline, which has nothing to do with what
-        // they look like.
-        if theme != self.cursor_theme.name() || size != self.cursor_theme.size() {
-            // Built straight from the pair above: `Theme::named` takes the
-            // values itself, so the loader never needs environ as a go-between.
-            // There was a time this wrote `XCURSOR_THEME` and `XCURSOR_SIZE`
-            // into the process environment for the old constructor to read
-            // straight back — a setenv on a live process, undefined against
-            // every thread that might be mid-getenv, run on every reload that
-            // touched the cursor block.
-            self.cursor_theme = crate::cursor::Theme::named(theme, size);
-            // And what the portal answers, or a toolkit keeps sizing its own
-            // cursors from the value it was told when it started — which is a
-            // pointer that changes size as it crosses into a window, and a
-            // setting that appears not to have been respected at all.
-            self.appearance
-                .set_cursor(self.cursor_theme.name(), self.cursor_theme.size() as i32);
-            // The pointer on screen is still the old image, and the compositor
-            // draws on damage: nothing else here is damage.
-            self.needs_render = true;
-        }
+        // Only when one of those two moved, and only then: rebuilding on
+        // any change to the block would throw the loaded images away
+        // because a reload touched the hide deadline, which has nothing to
+        // do with what they look like.
+        self.apply_cursor_theme(theme, size);
         // The magnifier's step and its ceiling. A reload that lowers the
         // ceiling below where the screen is brings the picture back down to
         // meet it, which is a repaint nothing else here would ask for.
@@ -985,6 +820,229 @@ impl ViewportState {
         let (xkb, delay, rate) = keyboard_settings(&self.keyboard_config);
         if let Err(err) = self.seat.add_keyboard(xkb, delay, rate) {
             tracing::warn!("the seat's keyboard could not be put back: {err}");
+        }
+    }
+
+    /// Validate the numbered-workspace rules and put them in the form the
+    /// shell reads.
+    ///
+    /// Shared by the file's reload and by `config.workspaces`, which is why
+    /// it takes the file's own map rather than the shell's list: a typo on
+    /// one workspace — an unknown layout or tiling mode, a negative gap —
+    /// degrades to the global inheritance and a warning, and the rest of
+    /// the set still applies, on both paths.
+    pub fn convert_workspace_rules(
+        &mut self,
+        workspaces: std::collections::HashMap<u32, crate::config::WorkspaceConfig>,
+    ) -> Vec<viewport_ipc::event::WorkspaceRule> {
+        const MODES: [&str; 5] = ["manual", "master-stack", "spiral", "bsp", "grid"];
+        let mut rules = Vec::with_capacity(workspaces.len());
+        for (workspace, rule) in workspaces {
+            if workspace == 0 {
+                tracing::warn!("workspace numbers must be positive; ignoring workspace 0");
+                continue;
+            }
+            let extension = |layout: &str| {
+                self.config
+                    .layout_extensions
+                    .iter()
+                    .any(|entry| entry.name == layout)
+            };
+            let layout = rule.layout.filter(|layout| {
+                let valid = crate::config::BUILTIN_LAYOUTS.contains(&layout.as_str())
+                    || extension(layout);
+                if !valid {
+                    tracing::warn!(
+                        "workspace {workspace}: unknown layout {layout:?}; inheriting the global layout"
+                    );
+                }
+                valid
+            });
+            let tiling_mode = rule.tiling_mode.filter(|mode| {
+                let valid = MODES.contains(&mode.as_str());
+                if !valid {
+                    tracing::warn!(
+                        "workspace {workspace}: unknown tiling_mode {mode:?}; inheriting the global mode"
+                    );
+                }
+                valid
+            });
+            let mut gaps = viewport_ipc::event::Gaps {
+                inner: rule.gaps.inner,
+                outer: rule.gaps.outer,
+                smart: rule.gaps.smart,
+            };
+            if gaps.inner.is_some_and(|value| value < 0) {
+                tracing::warn!("workspace {workspace}: gaps.inner is negative; ignoring it");
+                gaps.inner = None;
+            }
+            if gaps.outer.is_some_and(|value| value < 0) {
+                tracing::warn!("workspace {workspace}: gaps.outer is negative; ignoring it");
+                gaps.outer = None;
+            }
+            let gaps = (gaps != viewport_ipc::event::Gaps::default()).then_some(gaps);
+            rules.push(viewport_ipc::event::WorkspaceRule {
+                workspace,
+                output: rule.output.filter(|name| !name.trim().is_empty()),
+                layout,
+                tiling_mode,
+                gaps,
+                persistent: rule.persistent,
+                default_name: rule
+                    .default_name
+                    .filter(|name| !name.trim().is_empty()),
+                on_created_empty: rule
+                    .on_created_empty
+                    .filter(|command| !command.trim().is_empty()),
+            });
+        }
+        rules.sort_by_key(|rule| rule.workspace);
+        rules
+    }
+
+    /// Apply the bar's widget and item lists: store the shell's copy and
+    /// point the samplers at what the new bar draws.
+    ///
+    /// Shared by the file's reload and by `config.bar_widgets` and
+    /// `config.bar_items`, which is why it takes the file's own shapes
+    /// rather than the shell's. Two ways to ask for the bar: `widgets` adds
+    /// to the default module set, `items` overrides the entire right side
+    /// with an explicit ordered list. When `items` is present, even empty,
+    /// it wins outright — the shell draws exactly what it lists and
+    /// nothing else.
+    pub fn apply_bar_config(
+        &mut self,
+        widgets: &[crate::config::BarWidgetConfig],
+        items: Option<&[crate::config::BarItemConfig]>,
+    ) {
+        // The status sampler is told the same what-to-read as the shell
+        // lists: which mounts to stat and whether to ask wpctl for the
+        // sink, so a bar that draws neither spawns nothing.
+        let bar_widgets: Vec<viewport_ipc::event::BarWidget> =
+            widgets.iter().map(bar_widget_ipc).collect();
+
+        // The bar_items list, mapped to the IPC form. Bare strings are
+        // modules; objects are widgets.
+        let bar_items = items.map(|items| {
+            items
+                .iter()
+                .map(|item| match item {
+                    crate::config::BarItemConfig::Module(name) => {
+                        viewport_ipc::event::BarItem::Module(name.clone())
+                    }
+                    crate::config::BarItemConfig::Widget(w) => {
+                        viewport_ipc::event::BarItem::Widget(bar_widget_ipc(w))
+                    }
+                })
+                .collect()
+        });
+
+        // Which of those actually get drawn: the override's own widgets
+        // when present, else the bar_widgets additions. The sampler only
+        // pays for what will be on screen.
+        let drawn_widgets: Vec<&crate::config::BarWidgetConfig> = if let Some(items) = items {
+            items
+                .iter()
+                .filter_map(|item| match item {
+                    crate::config::BarItemConfig::Widget(w) => Some(w),
+                    crate::config::BarItemConfig::Module(_) => None,
+                })
+                .collect()
+        } else {
+            widgets.iter().collect()
+        };
+
+        // A `custom` widget names a script the shell loads from
+        // `widget_extensions`; one that names nothing known draws nothing,
+        // and the config that asked for it should say so rather than leave
+        // a gap.
+        for widget in &drawn_widgets {
+            if let crate::config::BarWidgetConfig::Custom { name, .. } = widget {
+                if !self
+                    .config
+                    .widget_extensions
+                    .iter()
+                    .any(|e| &e.name == name)
+                {
+                    tracing::warn!("bar widget references unknown widget extension {name:?}");
+                }
+            }
+        }
+
+        self.config.bar_widgets = if items.is_some() {
+            // Superseded: the whole right side comes from bar_items, so the
+            // shell is told the override and not the additions it replaces.
+            None
+        } else if bar_widgets.is_empty() {
+            None
+        } else {
+            Some(bar_widgets)
+        };
+        self.config.bar_items = bar_items;
+        // The same override in the shape the sampler prices from, so a
+        // runtime `config.bar_widgets` leaves it standing. `None` is a
+        // reload with no override, and it clears the mirror the same way.
+        self.bar_items_config = items.map(<[crate::config::BarItemConfig]>::to_vec);
+        // One fold over what is drawn, and every sampler knows its job.
+        //
+        // With no `bar_items` the shipped cpu/memory/load/disk/net modules
+        // are always there; an override has to name one — or a
+        // status-reading widget — to keep the status sampler running at
+        // all.
+        let mut sampled = Sampling {
+            status: items.is_none_or(bar_items_need_status),
+            ..Sampling::default()
+        };
+        for widget in &drawn_widgets {
+            let costs = widget.sampling();
+            sampled.mounts.extend(costs.mounts);
+            sampled.volume |= costs.volume;
+            sampled.mic |= costs.mic;
+            sampled.players |= costs.players;
+            sampled.battery |= costs.battery;
+        }
+        self.status
+            .configure(sampled.mounts, sampled.volume, sampled.mic, sampled.status);
+        // Following every media player on the session is worth doing only
+        // for a bar that draws one, which is the same rule the audio
+        // sampling above follows. The battery likewise, on the power
+        // worker's own switch.
+        self.mpris.set_enabled(sampled.players);
+        self.power.set_widget(sampled.battery);
+        self.ai_usage.configure(
+            drawn_widgets
+                .iter()
+                .filter_map(|widget| crate::ai_usage::account(widget))
+                .collect(),
+        );
+    }
+
+    /// Load a cursor theme and size, if either differs from what is
+    /// already up.
+    ///
+    /// Shared by the file's reload and by `config.cursor`, which is why
+    /// it takes resolved values rather than the block: only a moved theme
+    /// or size rebuilds, because the images are the cost. The portal is
+    /// told too, for toolkits that size their own cursors from what they
+    /// were told at startup — a pointer that changes size as it crosses
+    /// into a window is a setting that appears not to have been respected
+    /// at all.
+    pub fn apply_cursor_theme(&mut self, theme: String, size: u32) {
+        if theme != self.cursor_theme.name() || size != self.cursor_theme.size() {
+            // Built straight from the pair above: `Theme::named` takes the
+            // values itself, so the loader never needs environ as a
+            // go-between. There was a time this wrote `XCURSOR_THEME` and
+            // `XCURSOR_SIZE` into the process environment for the old
+            // constructor to read straight back — a setenv on a live
+            // process, undefined against every thread that might be
+            // mid-getenv, run on every change to the block whether it moved
+            // the cursor or only its hide deadline.
+            self.cursor_theme = crate::cursor::Theme::named(theme, size);
+            self.appearance
+                .set_cursor(self.cursor_theme.name(), self.cursor_theme.size() as i32);
+            // The pointer on screen is still the old image, and the compositor
+            // draws on damage: nothing else here is damage.
+            self.needs_render = true;
         }
     }
 }
