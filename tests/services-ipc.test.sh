@@ -85,15 +85,6 @@ check() {
 	fi
 }
 
-known_fail() {
-	local what=$1 expected=$2 got=$3 fix=$4
-	if [ "$expected" = "$got" ]; then
-		echo "FIXED (remove the FIXES entry): $what"
-	else
-		echo "KNOWN-FAIL ($fix): $what — wanted $expected, got $got"
-	fi
-}
-
 start_viewport() {
 	local config=$1 log=$2
 	"$viewport" --headless --config "$config" >"$log" 2>&1 &
@@ -354,9 +345,8 @@ check "osk.key without a keysym is a usage error" yes \
 # (The openai flow would reach the network, so it is not started here.)
 check "ai.login with an unknown provider is refused" yes \
 	"$(err --raw '{"type":"ai.login","provider":"bogus"}' | grep -q '^1 .*ai\.login: no OAuth login' && echo yes || echo no)"
-known_fail "ai.login is offerable with -t" "0" \
-	"$(err -t ai.login --provider bogus | grep -q "^2 .*unknown message type" && echo 2 || echo 0)" \
-	"FIXES.md (msg TYPES)"
+check "ai.login is offerable with -t" "0" \
+	"$(err -t ai.login --provider bogus | grep -q "ai\.login: no OAuth login" && echo 0 || echo nonzero)"
 
 kill "$EVENTS_PID" 2>/dev/null
 wait "$EVENTS_PID" 2>/dev/null

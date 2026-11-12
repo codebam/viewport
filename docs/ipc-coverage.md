@@ -31,17 +31,16 @@ side (`tests/shell.test.js` stubs the DOM — it never starts a compositor).
 - **New tests** are all shell tests sending via `viewport msg` (`-t` or
   `--raw`, which is still `viewport msg` through the compositor's own
   parser), following the existing conventions: private runtime/state dirs,
-  socket read from the log, `check`/`known_fail` helpers, PID-only cleanup.
+  socket read from the log, `check` helper, PID-only cleanup.
 
-Two live defects were found while covering the gaps. They are in
-`FIXES.md` as unfixed entries and the affected checks print `KNOWN-FAIL`;
-they do not fail the run until the defect is fixed, when the same checks
-print `FIXED`.
+Two defects were found while covering the gaps and are fixed in `FIXES.md`
+as entries 55 and 56. Each was first asserted as an expected failure
+(`known_fail`), and the expected failures are now plain `check`s.
 
 | # | Defect | Found by |
 | --- | --- | --- |
-| 55 | `config.gaps`/`config.border`: a partially invalid message (valid first field, negative second) reports the refusal but the valid half stays applied, silently diverging from what the shell was last told | `config-output-ipc` knows `'FIXES.md (config.gaps/border apply before validating)'` |
-| 56 | `viewport msg -t` omits five request types (`view.opacity_rule`, `view.tearing`, `view.idle_inhibit`, `gesture.capture`, `ai.login`): they exit 2 "unknown message type" without sending anything, while `--raw` delivers them | `view-ipc`, `shell-session-ipc`, `services-ipc` `KNOWN-FAIL (FIXES.md (msg TYPES))` |
+| 55 | `config.gaps`/`config.border`: a partially invalid message (valid first field, negative second) reported the refusal but the valid half stayed applied, silently diverging from what the shell was last told | `config-output-ipc` |
+| 56 | `viewport msg -t` omitted five request types (`view.opacity_rule`, `view.tearing`, `view.idle_inhibit`, `gesture.capture`, `ai.login`): they exited 2 "unknown message type" without sending anything, while `--raw` delivered them | `view-ipc`, `shell-session-ipc`, `services-ipc` |
 
 `viewport msg` itself validates before sending, which shapes the error
 paths below: parse-level failures (unknown type, missing field, wrong
@@ -65,10 +64,10 @@ acceptance plus liveness rather than an error.
 | `view.focus` | untrusted refusal only (`control_socket.rs`) | `view-ipc` (functional: `view.focused`) | pass |
 | `view.close` | — (foreign `close()` is protocol, not socket) | `view-ipc` (`view.removed` + client exits) | pass |
 | `view.opacity` | — | `view-ipc` (accept; render-only state; out-of-range clamped) | pass (acceptance) |
-| `view.opacity_rule` | — | `view-ipc` via `--raw`; `-t` is FIXES 56 | pass via `--raw`; `-t` known-fail |
+| `view.opacity_rule` | — | `view-ipc` (`-t` and `--raw`) | pass |
 | `view.capture` | `capture.test.sh` (private grant survives retitle) | — (reused: nonexistent-id silent case in `view-ipc`) | pass (existing) |
-| `view.tearing` | — | `view-ipc` via `--raw`; `-t` is FIXES 56 | pass via `--raw`; `-t` known-fail |
-| `view.idle_inhibit` | — | `view-ipc` via `--raw`; `-t` is FIXES 56 | pass via `--raw`; `-t` known-fail |
+| `view.tearing` | — | `view-ipc` (`-t` and `--raw`) | pass |
+| `view.idle_inhibit` | — | `view-ipc` (`-t` and `--raw`) | pass |
 | `view.query` | `control_socket`, `msg_cli`, `capture`, warp tests | helper in every new test | pass |
 | `background.focus` | `background.rs` (log: keyboard moves) | — | pass (existing) |
 | `shell.focus` | — | `shell-session-ipc` (`view.focused` 0) | pass |
@@ -91,7 +90,7 @@ acceptance plus liveness rather than an error.
 | `launcher.query` | — | `config-output-ipc` (`launcher.list` fields, filter, generation) | pass |
 | `launcher.launch` | — | `config-output-ipc` (stale/bad-id refusals + Foot launch → new view) | pass |
 | `mpris.control` | `mpris.test.sh` (play-pause/next + unknown no-op) | — | pass (existing) |
-| `ai.login` | — | `services-ipc` (bogus provider → `error`); `-t` is FIXES 56. The `openai` flow would reach the network, so it is not started. | pass (error path); `-t` known-fail |
+| `ai.login` | — | `services-ipc` (bogus provider → `error`, over `-t` and `--raw`). The `openai` flow would reach the network, so it is not started. | pass (error path) |
 | `power.profile` | — | `services-ipc` (unadvertised name dropped, acceptance). Standard names would switch the host profile, so they are not sent. | pass (acceptance) |
 | `power.action` | — | `services-ipc` (invalid verb refused). Valid verbs go to logind on the system bus and would suspend/reboot/power off the machine, so they are never sent. | pass (error path) |
 | `osk.key` | — | `services-ipc` (down/up acceptance) | pass (acceptance) |
@@ -112,7 +111,7 @@ acceptance plus liveness rather than an error.
 | `output.confirm` | `control_socket` | — | pass (existing) |
 | `output.revert` | `control_socket` | — | pass (existing) |
 | `output.active` | — | `config-output-ipc` (active flags; unknown refused) | pass |
-| `gesture.capture` | — | `shell-session-ipc` via `--raw`; `-t` is FIXES 56. Takes effect only at the next real `gesture.begin`. | pass via `--raw`; `-t` known-fail |
+| `gesture.capture` | — | `shell-session-ipc` (`-t` with and without `--gestures`, and `--raw`). Takes effect only at the next real `gesture.begin`. | pass |
 | `output.query` | `control_socket`, `output-order`, `msg_cli` | helper | pass |
 | `output.test_add` | `control_socket`, `output-order` | setup in `config-output-ipc` | pass |
 | `output.test_remove` | `control_socket` (mirror, churn) | `config-output-ipc` (remove + unknown) | pass |
@@ -126,8 +125,8 @@ acceptance plus liveness rather than an error.
 | `input.key` | — | `view-ipc` (press/release acceptance) | pass (acceptance) |
 | `input.scroll` | — | `view-ipc` (notch + empty no-op) | pass (acceptance) |
 | `quit` | `control_socket`, `msg_cli` | — | pass (existing) |
-| `config.gaps` | `control_socket` (persistence only) | `config-output-ipc` (next-config fields; partial refusal is FIXES 55) | pass; atomicity known-fail |
-| `config.border` | — | `config-output-ipc` (next-config fields; partial refusal is FIXES 55) | pass; atomicity known-fail |
+| `config.gaps` | `control_socket` (persistence only) | `config-output-ipc` (next-config fields; atomic refusal) | pass |
+| `config.border` | — | `config-output-ipc` (next-config fields; atomic refusal) | pass |
 | `config.wallpaper` | `wallpaper.rs` | `config-output-ipc` (shell parity: fields, atomic refusals, removal) | pass |
 | `config.dark_mode` | `control_socket` + `appearance.test.sh` | — | pass (existing) |
 | `config.save` | `control_socket` (persistence) | `config-output-ipc` (`config.saved` path, overlay contents, config untouched) | pass |
@@ -188,5 +187,6 @@ already covered in `control_socket.rs`; it cannot be produced through
 `docs/ipc.md` was missing rows for `ai.login`, `shell.exec`,
 `status.refresh`, `view.tearing`, `view.idle_inhibit` (shell →
 compositor) and `ai.auth`, `ai.usage`, `shell.reload` (compositor →
-shell); they have been added. `view.opacity_rule` and `gesture.capture`
-were documented but not offerable by `viewport msg -t` (FIXES 56).
+shell); they have been added. `view.opacity_rule`, `view.tearing`,
+`view.idle_inhibit`, `gesture.capture` and `ai.login` were documented
+but not offerable by `viewport msg -t` (FIXES 56, now fixed).

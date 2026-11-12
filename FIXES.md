@@ -336,8 +336,8 @@ and the JavaScript shell suites under `tests/`.
 
 ## IPC coverage (found while closing headless gaps, 2026-11-11)
 
-- [ ] **55. `config.gaps`/`config.border` apply before validating, so a
-  refused message partly applies silently.**
+- [x] **55. `config.gaps`/`config.border` apply before validating, so a
+  refused message partly applies silently. Fixed:**
   `crates/viewport/src/apply.rs` (the `ConfigGaps` arm around `:856` and the
   `ConfigBorder` arm around `:900`) assigns each valid field to
   `state.config` as it validates it, and returns on the first invalid field
@@ -350,12 +350,13 @@ and the JavaScript shell suites under `tests/`.
   anything, which is the shape these two arms do not copy. `config.gaps`
   and `config.border` are also the only setters whose contract
   ("only the fields given change") is read as atomic by callers.
-  `tests/config-output-ipc.test.sh` asserts the atomic outcome (the query
-  stays 12/7) as an expected failure. Fix: validate the whole message first
-  (collect, then apply), as `config.wallpaper` does, and only notify when
-  something actually changed.
+  `tests/config-output-ipc.test.sh` asserted the atomic outcome (the query
+  stays 12/7) as an expected failure. Fixed by validating the whole message
+  first (collect, then apply), as `config.wallpaper` does, and only
+  notifying when something actually changed; the expected failure is now a
+  plain `check` in that suite.
 
-- [ ] **56. `viewport msg -t` cannot send five request types.**
+- [x] **56. `viewport msg -t` cannot send five request types. Fixed:**
   `crates/viewport/src/msg.rs` `TYPES` (`:146`) lists 69 messages while
   `viewport_ipc::Request` declares 74; `view.opacity_rule`, `view.tearing`,
   `view.idle_inhibit`, `gesture.capture` and `ai.login` are missing, so
@@ -368,8 +369,43 @@ and the JavaScript shell suites under `tests/`.
   ("`Request` has 69 variants"), so the drift is silent; the reverse
   direction (every `Type` parses) *is* checked above it. Found by
   `tests/view-ipc.test.sh`, `tests/shell-session-ipc.test.sh` and
-  `tests/services-ipc.test.sh` (each sends the affected type via `--raw`
-  and checks the `-t` form as an expected failure). Fix: add the five
-  `Type` entries (fields, hints, and the tray-style `strings` where
-  needed) and derive the count check from `Request` itself (as
-  `viewport-ipc`'s `declared_types` does) rather than pinning a literal.
+  `tests/services-ipc.test.sh` (each sent the affected type via `--raw`
+  and checked the `-t` form as an expected failure). Fixed by adding the
+  five `Type` entries (fields, hints, `provider` in `STRING_FIELDS` and
+  `gestures` in `ARRAY_FIELDS`), deriving the set check from `Request`
+  itself (as `viewport-ipc`'s `declared_types` does) rather than pinning a
+  literal, and turning the expected failures into plain `check`s.
+
+## Field reports
+
+- [ ] **57. Cursor grab does not hold at the output edge in FF VII
+  Rebirth.**
+  Reported against live play (2026-11-12): in FINAL FANTASY VII REBIRTH
+  the grab itself takes hold — the cursor is captured — but when the
+  pointer reaches the right edge of the screen it crosses onto the next
+  monitor instead of staying confined. So pointer lock works and
+  pointer confinement does not. Not yet reproduced headless and not
+  yet diagnosed whether the fault is in the compositor's pointer
+  constraints / locked-pointer handling (`zwp_pointer_constraints_v1`,
+  `zwp_locked_pointer_v1`), the Xwayland warp-hint path that entry 53
+  had to pin down for a recentering game, or the game's own
+  expectations. Start from a multi-output capture dance over a real
+  socket that pushes a locked pointer hard right past the output edge
+  and asserts it never appears on the neighbour (the
+  `tests/xwayland-capture-overlay.test.sh` shape), then check what the
+  live game actually requests and which geometry the constraint was
+  confined to.
+
+- [ ] **58. The integration suite plays sound effects on the host desktop.**
+  `scripts/integration.sh` (2026-11-12): running the Wayland integration
+  suite from an ordinary desktop session audibly triggers sound effects
+  on that desktop. A headless test run should be silent. Likely
+  candidates are the notification-sound path (`crates/viewport/src/sound.rs`,
+  PipeWire) reaching the host's PipeWire rather than a test sink, but
+  which test and which sound are unconfirmed. Start by bisecting the
+  suites run from `scripts/integration.sh` to the one that sounds, then
+  isolate the headless compositor's audio (a private/unused sink or a
+  muted profile for tests) so the suite stays quiet on a live desktop.
+  Related to `VIEWPORT_UNSAFE_NO_CONSENT` discipline in
+  `docs/debugging.md`: a test-only escape that changes host-visible
+  behaviour has to be explicit, not accidental.

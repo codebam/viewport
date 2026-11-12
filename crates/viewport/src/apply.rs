@@ -861,24 +861,34 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             // Only the fields given change; the others keep whatever they are.
             // This is how a keybinding on `inner` does not clobber an `outer`
             // set from the config file or an earlier IPC call.
-            let current = state
-                .config
-                .gaps
-                .get_or_insert_with(viewport_ipc::event::Gaps::default);
-            let mut changed = false;
+            //
+            // The whole message is validated before anything is changed, so a
+            // refusal leaves every field alone — the shape ConfigWallpaper
+            // already takes. Validating and applying field by field left the
+            // valid half applied whenever a later field was refused, and the
+            // shell and the compositor diverged from that point on.
             if let Some(v) = inner {
                 if v < 0 {
                     reject(state, "config.gaps", &format!("inner {v}"));
                     return;
                 }
-                current.inner = Some(v);
-                changed = true;
             }
             if let Some(v) = outer {
                 if v < 0 {
                     reject(state, "config.gaps", &format!("outer {v}"));
                     return;
                 }
+            }
+            let current = state
+                .config
+                .gaps
+                .get_or_insert_with(viewport_ipc::event::Gaps::default);
+            let mut changed = false;
+            if let Some(v) = inner {
+                current.inner = Some(v);
+                changed = true;
+            }
+            if let Some(v) = outer {
                 current.outer = Some(v);
                 changed = true;
             }
@@ -902,24 +912,30 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             width,
             smart,
         } => {
-            let current = state
-                .config
-                .border
-                .get_or_insert_with(viewport_ipc::event::Border::default);
-            let mut changed = false;
+            // Validated as a whole before anything changes, like ConfigGaps
+            // above: a refused message must not leave its valid half applied.
             if let Some(v) = radius {
                 if v < 0 {
                     reject(state, "config.border", &format!("radius {v}"));
                     return;
                 }
-                current.radius = Some(v);
-                changed = true;
             }
             if let Some(v) = width {
                 if v < 0 {
                     reject(state, "config.border", &format!("width {v}"));
                     return;
                 }
+            }
+            let current = state
+                .config
+                .border
+                .get_or_insert_with(viewport_ipc::event::Border::default);
+            let mut changed = false;
+            if let Some(v) = radius {
+                current.radius = Some(v);
+                changed = true;
+            }
+            if let Some(v) = width {
                 current.width = Some(v);
                 changed = true;
             }

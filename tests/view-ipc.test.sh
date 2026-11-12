@@ -86,18 +86,6 @@ check() {
 	fi
 }
 
-# A known failure is a defect this test found but must not fix (tests and docs
-# only). It never fails the run while the bug stands; if the bug is fixed it
-# says so here, so the FIXES.md entry gets closed rather than going stale.
-known_fail() {
-	local what=$1 expected=$2 got=$3 fix=$4
-	if [ "$expected" = "$got" ]; then
-		echo "FIXED (remove the FIXES entry): $what"
-	else
-		echo "KNOWN-FAIL ($fix): $what — wanted $expected, got $got"
-	fi
-}
-
 # Off whatever session is already running: this starts its own compositor and
 # must not join, or be joined to, the one the developer is sitting in.
 unset WAYLAND_DISPLAY
@@ -406,32 +394,27 @@ else
 	echo "FAIL: view.opacity_rule (via --raw) was refused" >&2
 	failures=$((failures + 1))
 fi
-# FIXES.md: `viewport msg -t` omits view.opacity_rule, view.tearing and
-# view.idle_inhibit (and gesture.capture, checked in shell-session-ipc.test.sh,
-# and ai.login, checked in services-ipc.test.sh). Each -t form below should be
-# accepted; it is currently refused at the prompt with exit 2 without sending
-# anything. The functional checks use --raw, which is still `viewport msg`.
-known_fail "view.opacity_rule is offerable with -t" "0" \
-	"$(msg -t view.opacity_rule --id "$VID" --opacity 0.5 >/dev/null 2>&1; echo "$?")" \
-	"FIXES.md (msg TYPES)"
+# Each -t form below must be accepted; a type `msg -t` omits is refused at
+# the prompt with exit 2 without sending anything. The --raw checks exercise
+# the same handler without going through the typed table.
+check "view.opacity_rule is offerable with -t" "0" \
+	"$(msg -t view.opacity_rule --id "$VID" --opacity 0.5 >/dev/null 2>&1; echo "$?")"
 if msg --raw "{\"type\":\"view.tearing\",\"id\":$VID,\"tearing\":true}" >/dev/null 2>&1; then
 	echo "ok: view.tearing (via --raw) was accepted"
 else
 	echo "FAIL: view.tearing (via --raw) was refused" >&2
 	failures=$((failures + 1))
 fi
-known_fail "view.tearing is offerable with -t" "0" \
-	"$(msg -t view.tearing --id "$VID" --tearing true >/dev/null 2>&1; echo "$?")" \
-	"FIXES.md (msg TYPES)"
+check "view.tearing is offerable with -t" "0" \
+	"$(msg -t view.tearing --id "$VID" --tearing true >/dev/null 2>&1; echo "$?")"
 if msg --raw "{\"type\":\"view.idle_inhibit\",\"id\":$VID,\"inhibit\":true}" >/dev/null 2>&1; then
 	echo "ok: view.idle_inhibit (via --raw) was accepted"
 else
 	echo "FAIL: view.idle_inhibit (via --raw) was refused" >&2
 	failures=$((failures + 1))
 fi
-known_fail "view.idle_inhibit is offerable with -t" "0" \
-	"$(msg -t view.idle_inhibit --id "$VID" --inhibit true >/dev/null 2>&1; echo "$?")" \
-	"FIXES.md (msg TYPES)"
+check "view.idle_inhibit is offerable with -t" "0" \
+	"$(msg -t view.idle_inhibit --id "$VID" --inhibit true >/dev/null 2>&1; echo "$?")"
 check "and the window is still listed after all four" "$VID" \
 	"$(view_id_for "viewport-view-ipc")"
 

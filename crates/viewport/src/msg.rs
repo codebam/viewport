@@ -63,7 +63,7 @@ const BARRIER_CONTEXT: &str = "viewport.msg.barrier";
 
 /// The fields whose values are always a list, so that one `--args right`
 /// builds `["right"]` rather than `"right"`.
-const ARRAY_FIELDS: &[&str] = &["args", "rects", "workspaces"];
+const ARRAY_FIELDS: &[&str] = &["args", "rects", "workspaces", "gestures"];
 
 /// The fields the protocol types as a string, which are therefore never read
 /// as JSON.
@@ -118,6 +118,9 @@ const STRING_FIELDS: &[&str] = &[
     "filter",
     // A power profile, whose names are words with hyphens in them.
     "profile",
+    // An AI provider name, which is a word and must not be read as anything
+    // else a word could parse as.
+    "provider",
 ];
 
 struct Type {
@@ -195,10 +198,28 @@ const TYPES: &[Type] = &[
         hint: "--id N [--opacity 0..1]",
     },
     Type {
+        name: "view.opacity_rule",
+        fields: &["id", "opacity"],
+        strings: &[],
+        hint: "--id N [--opacity 0..1]   (the window-rule multiplier, not the animation)",
+    },
+    Type {
         name: "view.capture",
         fields: &["id", "capture"],
         strings: &[],
         hint: "--id N --capture BOOL",
+    },
+    Type {
+        name: "view.tearing",
+        fields: &["id", "tearing"],
+        strings: &[],
+        hint: "--id N --tearing BOOL",
+    },
+    Type {
+        name: "view.idle_inhibit",
+        fields: &["id", "inhibit"],
+        strings: &[],
+        hint: "--id N --inhibit BOOL",
     },
     Type {
         name: "view.query",
@@ -348,6 +369,12 @@ const TYPES: &[Type] = &[
         hint: "--action play-pause|next|previous|stop",
     },
     Type {
+        name: "ai.login",
+        fields: &["provider"],
+        strings: &[],
+        hint: "--provider NAME   (openai; unknown providers are refused)",
+    },
+    Type {
         name: "power.profile",
         fields: &["profile"],
         strings: &[],
@@ -471,6 +498,12 @@ const TYPES: &[Type] = &[
         fields: &["name"],
         strings: &[],
         hint: "--name NAME",
+    },
+    Type {
+        name: "gesture.capture",
+        fields: &["gestures"],
+        strings: &[],
+        hint: "--gestures JSON   (e.g. '[{\\\"kind\\\":\\\"swipe\\\",\\\"fingers\\\":3}]')",
     },
     Type {
         name: "output.query",
@@ -1847,10 +1880,48 @@ mod tests {
 
     #[test]
     fn the_offered_types_are_the_whole_request_set() {
-        // `viewport_ipc::Request` has 69 variants. A new one that is not listed
-        // here cannot be sent, and the only place that would show up is a
-        // prompt saying it is unknown.
-        assert_eq!(TYPES.len(), 69);
+        // `viewport_ipc::Request` has the number of variants it has, and a new
+        // one that is not listed here cannot be sent — the only place that
+        // would show up is a prompt saying it is unknown. The set is read off
+        // the enum rather than pinned to a literal, so the drift fails
+        // loudly instead of silently the way the 69 did: the five missing
+        // entries were found by the integration tests, not by this one.
+        let declared: Vec<&str> = request_type_names();
+        let offered: Vec<&str> = TYPES.iter().map(|entry| entry.name).collect();
+        let missing: Vec<&&str> = declared
+            .iter()
+            .filter(|name| !offered.contains(name))
+            .collect();
+        let unknown: Vec<&&str> = offered
+            .iter()
+            .filter(|name| !declared.contains(name))
+            .collect();
+        assert!(missing.is_empty(), "not offerable with -t: {missing:?}");
+        assert!(unknown.is_empty(), "not a Request type: {unknown:?}");
+    }
+
+    /// Every `#[serde(rename = "...")]` on a `viewport_ipc::Request` variant,
+    /// read off the enum's source the way `viewport_ipc`'s own tests do.
+    fn request_type_names() -> Vec<&'static str> {
+        const SOURCE: &str = include_str!("../../viewport-ipc/src/request.rs");
+        let mut names = Vec::new();
+        let mut lines = SOURCE.lines().peekable();
+        while let Some(line) = lines.next() {
+            let Some(rest) = line.trim().strip_prefix("#[serde(rename = \"") else {
+                continue;
+            };
+            let Some(name) = rest.split('"').next() else {
+                continue;
+            };
+            // A variant follows its rename, and a variant is capitalised
+            // where a field is not — the same distinction `declared_types`
+            // in `viewport-ipc/src/lib.rs` makes.
+            let follows = lines.peek().map(|l| l.trim()).unwrap_or_default();
+            if follows.starts_with(|c: char| c.is_ascii_uppercase()) {
+                names.push(name);
+            }
+        }
+        names
     }
 
     #[test]

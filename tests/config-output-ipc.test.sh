@@ -54,15 +54,6 @@ check() {
 	fi
 }
 
-known_fail() {
-	local what=$1 expected=$2 got=$3 fix=$4
-	if [ "$expected" = "$got" ]; then
-		echo "FIXED (remove the FIXES entry): $what"
-	else
-		echo "KNOWN-FAIL ($fix): $what — wanted $expected, got $got"
-	fi
-}
-
 unset WAYLAND_DISPLAY
 export XDG_RUNTIME_DIR="$WORK/run"
 export XDG_STATE_HOME="$WORK/state"
@@ -141,11 +132,11 @@ check "and the gaps are unchanged by the refusal" "12" "$(config_field gaps.inne
 
 # Partial rejection must apply nothing. The valid half here is `inner`,
 # the invalid half `outer`; what the next query says is what the shell
-# would draw. (It currently carries the valid half. See the known failure.)
+# would draw.
 check "a partially invalid config.gaps is refused" yes \
 	"$(err -t config.gaps --inner 99 --outer=-9 | grep -q "^1 .*config.gaps: outer" && echo yes || echo no)"
-known_fail "a partially invalid config.gaps applies nothing" "12" \
-	"$(config_field gaps.inner)" "FIXES.md (config.gaps/border apply before validating)"
+check "a partially invalid config.gaps applies nothing" "12" \
+	"$(config_field gaps.inner)"
 
 if msg -t config.gaps --inner 0 >/dev/null 2>&1; then
 	echo "ok: a zero inner gap was accepted (deliberate, not a refusal)"
@@ -169,12 +160,8 @@ check "and the width" "3" "$(config_field border.width)"
 check "a negative width is refused" yes \
 	"$(err -t config.border --width=-5 | grep -q "^1 .*config.border: width" && echo yes || echo no)"
 check "and the border is unchanged by the refusal" "7" "$(config_field border.radius)"
-known_fail "a partially invalid config.border applies nothing" "7" \
-	"$(err -t config.border --radius 99 --width=-5 >/dev/null 2>&1; config_field border.radius)" \
-	"FIXES.md (config.gaps/border apply before validating)"
-# Re-set the intended border after the known-failure probe above, which (while
-# the bug stands) lands the valid half.
-msg -t config.border --radius 7 --width 3 >/dev/null 2>&1
+check "a partially invalid config.border applies nothing" "7" \
+	"$(err -t config.border --radius 99 --width=-5 >/dev/null 2>&1; config_field border.radius)"
 
 # --- config.wallpaper -------------------------------------------------------
 # Unlike gaps/border, this one resolves the picture and the mode before

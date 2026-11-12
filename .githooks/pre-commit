@@ -34,10 +34,14 @@ touches() { printf '%s\n' "$staged" | grep -qE "$1"; }
 
 rust=false
 shell=false
+versions=false
 touches '^(crates/|Cargo\.(toml|lock)$|deny\.toml$|flake\.nix$)' && rust=true
 touches '^(data/shell/|examples/kiosk/|tests/.*\.(js|test\.js)$)' && shell=true
+# `package.json` carries a copy of the version too, and nothing above names
+# it, so a version-only bump there would run nothing.
+touches '^(package\.json$|scripts/check-versions\.sh$)' && versions=true
 
-if ! $rust && ! $shell; then
+if ! $rust && ! $shell && ! $versions; then
     exit 0
 fi
 
@@ -108,7 +112,15 @@ step() {
     fi
 }
 
+# The version is written in six places; this is what ties them together.
+# Text-only and instant, so it runs whenever anything the version touches
+# is staged rather than only when one half needs compiling.
+if $versions || $rust || $shell; then
+    step "version consistency" scripts/check-versions.sh
+fi
+
 if $shell; then
+    step "vendored shell dependencies" scripts/vendor-shell-deps.sh --check
     step "shell layout tests" bash -c '
         set -eu
         node tests/shell.test.js data/shell tiling

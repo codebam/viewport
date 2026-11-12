@@ -69,15 +69,6 @@ check() {
 	fi
 }
 
-known_fail() {
-	local what=$1 expected=$2 got=$3 fix=$4
-	if [ "$expected" = "$got" ]; then
-		echo "FIXED (remove the FIXES entry): $what"
-	else
-		echo "KNOWN-FAIL ($fix): $what — wanted $expected, got $got"
-	fi
-}
-
 unset WAYLAND_DISPLAY
 export XDG_RUNTIME_DIR="$WORK/run"
 export XDG_STATE_HOME="$WORK/state"
@@ -255,7 +246,7 @@ else
 	failures=$((failures + 1))
 fi
 
-# --- gesture.capture (via --raw; -t is missing, see view-ipc.test.sh) ------
+# --- gesture.capture --------------------------------------------------------
 if msg --raw '{"type":"gesture.capture","gestures":[{"kind":"swipe","fingers":3},{"kind":"pinch","fingers":2}]}' >/dev/null 2>&1; then
 	echo "ok: gesture.capture (via --raw) was accepted"
 else
@@ -268,9 +259,11 @@ else
 	echo "FAIL: an empty gesture.capture was refused" >&2
 	failures=$((failures + 1))
 fi
-known_fail "gesture.capture is offerable with -t" "0" \
-	"$(msg -t gesture.capture >/dev/null 2>&1; echo "$?")" \
-	"FIXES.md (msg TYPES)"
+check "gesture.capture is offerable with -t" "0" \
+	"$(msg -t gesture.capture >/dev/null 2>&1; echo "$?")"
+# The typed form carries the same list over --gestures, as JSON.
+check "gesture.capture carries gestures with -t" "0" \
+	"$(msg -t gesture.capture --gestures '[{"kind":"swipe","fingers":3}]' >/dev/null 2>&1; echo "$?")"
 if msg -t output.query >/dev/null 2>&1; then
 	echo "ok: and the compositor is still answering after gesture.capture"
 else

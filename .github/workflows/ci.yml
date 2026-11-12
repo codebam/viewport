@@ -85,6 +85,11 @@ jobs:
       - name: Verify vendored GSAP
         run: scripts/vendor-shell-deps.sh --check
 
+      # The version is written in six places because four of them cannot
+      # inherit it from the fifth; this is what ties them together.
+      - name: Verify versions agree
+        run: scripts/check-versions.sh
+
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'

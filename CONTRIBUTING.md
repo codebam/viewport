@@ -62,8 +62,10 @@ git config core.hooksPath .githooks
 
 After that, `git commit` runs against the staged changes only. It runs:
 
-- the shell layout tests, if anything under `data/shell`, `examples/kiosk`,
-  `tests/*.js` or `tests/*.test.js` is staged;
+- the version-consistency check (`scripts/check-versions.sh`), if anything
+  carrying a copy of the version is staged;
+- the vendored-dependency check and the shell layout tests, if anything under
+  `data/shell`, `examples/kiosk`, `tests/*.js` or `tests/*.test.js` is staged;
 - `cargo deny check`, `cargo fmt --all --check`, `cargo clippy --workspace
   --all-targets -- -D warnings` and `cargo test --workspace`, if anything under
   `crates/`, `Cargo.toml`, `Cargo.lock`, `deny.toml` or `flake.nix` is staged;

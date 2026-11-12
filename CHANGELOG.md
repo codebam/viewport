@@ -36,6 +36,17 @@ to summarise rather than to duplicate.
   verified against the npm tarball.
 
 ### Fixed
+- `config.gaps` and `config.border` refused messages used to partly apply:
+  the valid field stayed in `state.config` while the invalid one was
+  rejected and the shell was never told. Both setters now validate the whole
+  message before changing anything, like `config.wallpaper` already did, so
+  the next `view.query` agrees with what the shell draws.
+- `viewport msg -t` now offers all five request types it was missing —
+  `view.opacity_rule`, `view.tearing`, `view.idle_inhibit`, `gesture.capture`
+  and `ai.login` — which previously exited 2 with "unknown message type"
+  without sending anything while `--raw` delivered them. The completeness
+  test now reads the offered set off `viewport_ipc::Request` itself instead
+  of pinning the count to a literal, so the next missing type fails loudly.
 - `cargo clippy` under rustc 1.99 (which newly lints `chunks_exact` and
   `drain(..).collect()`): six call sites moved to `as_chunks`/`as_chunks_mut`
   and one to `std::mem::take`. Purely mechanical; no behaviour change.
