@@ -457,6 +457,18 @@ pub struct GroupConfig {
     /// a new window splits beside the group rather than becoming another tab.
     /// On, it joins — the behaviour `group:auto_group = true` asks for.
     pub auto_group: Option<bool>,
+    /// Whether dragging a window onto an unlocked group makes it one of the
+    /// group's windows. Hyprland's `group:drag_into_group`, whose default is
+    /// on; absent here leaves that default.
+    pub drag_into_group: Option<bool>,
+    /// Whether a group can be dragged onto another group to merge the two.
+    /// Hyprland's `group:merge_groups_on_drag`, on by default; the group's
+    /// tab strip is the groupbar it is dragged by.
+    pub merge_groups_on_drag: Option<bool>,
+    /// Whether moving a window to another workspace joins it to that
+    /// workspace's solitary unlocked group. Hyprland's
+    /// `group:group_on_movetoworkspace`, off by default.
+    pub group_on_movetoworkspace: Option<bool>,
 }
 
 /// Compositor-side opacity multipliers.
@@ -2513,6 +2525,25 @@ mod tests {
         let mut sorted = specs.clone();
         sorted.sort_by(|a, b| a.spec.cmp(&b.spec));
         assert_eq!(specs, sorted);
+    }
+
+    #[test]
+    fn the_group_block_carries_its_drag_and_follow_options() {
+        let file: File = serde_json::from_str(
+            r#"{
+                "group": {
+                    "auto_group": true,
+                    "drag_into_group": false,
+                    "merge_groups_on_drag": false,
+                    "group_on_movetoworkspace": true
+                }
+            }"#,
+        )
+        .expect("should parse");
+        assert_eq!(file.group.auto_group, Some(true));
+        assert_eq!(file.group.drag_into_group, Some(false));
+        assert_eq!(file.group.merge_groups_on_drag, Some(false));
+        assert_eq!(file.group.group_on_movetoworkspace, Some(true));
     }
 
     #[test]

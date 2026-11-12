@@ -1916,6 +1916,12 @@ html.behind .desktop {
 /* Mid-FLIP: the window has just been offset back to where it came from, and
    that jump must not itself animate. Cleared in the same frame, after a forced
    reflow, which is what starts the slide. */
+/* Dragging a group by its tab strip. The dragged group dims and the group it
+   would merge into is outlined: an outline and an opacity move no rectangle, so
+   the compositor is handed no new geometry for a drag that is not a move. */
+.split.dragging-group { opacity: .7; }
+.split.merge-target { outline: 2px solid var(--border-focus); outline-offset: -2px; }
+
 .window.flipping { transition: none; }
 
 /* A window being dragged must track the pointer exactly. Interpolating toward

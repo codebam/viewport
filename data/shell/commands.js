@@ -452,6 +452,10 @@ function handleShellCommand(command, args) {
        moves; what ends is the gesture, and with it the coalescing and the
        suppressed animations. */
     case 'layout.drag.end':
+      /* Before the layout is settled: a window dropped on a group joins it
+         instead of staying where the hand left it. Hyprland's
+         `group:drag_into_group`; a no-op when nothing was dragged. */
+      finishWindowDrag();
       endGesture();
       break;
     case 'layout.float.toggle':

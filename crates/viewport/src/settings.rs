@@ -840,6 +840,9 @@ mod tests {
             }),
             group: Some(viewport_ipc::event::Group {
                 auto_group: Some(true),
+                drag_into_group: Some(false),
+                merge_groups_on_drag: None,
+                group_on_movetoworkspace: Some(true),
             }),
             clock: Some(viewport_ipc::event::Clock {
                 locale: Some("de-DE".to_owned()),

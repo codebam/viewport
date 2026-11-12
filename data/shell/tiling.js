@@ -44,14 +44,189 @@ function workspaceRoot(n) {
  * the key is what changes anything. See insertLeaf. */
 let autoGroupEnabled = null;
 
+/* Hyprland's other group options, with Hyprland's own defaults: dragging a
+ * window onto a group joins it, dragging a group onto another merges the two,
+ * and moving a window to a workspace leaves it there as its own window unless
+ * the rule says otherwise. */
+let dragIntoGroupEnabled = true;
+let mergeGroupsOnDragEnabled = true;
+let groupOnMoveToWorkspaceEnabled = false;
+
 function applyGroup(group) {
   if (group === undefined || group === null) return;
   if (typeof group.auto_group === 'boolean') autoGroupEnabled = group.auto_group;
+  if (typeof group.drag_into_group === 'boolean') {
+    dragIntoGroupEnabled = group.drag_into_group;
+  }
+  if (typeof group.merge_groups_on_drag === 'boolean') {
+    mergeGroupsOnDragEnabled = group.merge_groups_on_drag;
+  }
+  if (typeof group.group_on_movetoworkspace === 'boolean') {
+    groupOnMoveToWorkspaceEnabled = group.group_on_movetoworkspace;
+  }
+}
+
+/* The element each group was rendered as, by node. Rebuilt every layout pass:
+ * the tree and its elements are both thrown away and made again, so a stale
+ * entry would be a rectangle nobody is drawing. */
+let groupEls = new Map();
+
+function resetGroupElements() {
+  groupEls = new Map();
+}
+
+/* Whether `node` is `target` or has it somewhere underneath. */
+function containsNode(node, target) {
+  if (node === target) return true;
+  if (!node || node.type === 'leaf') return false;
+  return node.children.some((child) => containsNode(child, target));
+}
+
+/* The workspace a node belongs to, or null when it is not in any of them. */
+function nodeWorkspace(node) {
+  for (const [n, root] of workspaces) {
+    if (containsNode(root, node)) return n;
+  }
+  return null;
+}
+
+/* The group under a point on a workspace — the element the group was rendered
+ * as, so the tab strip counts as well as the windows. `source` is the group
+ * being dragged: it and anything that contains or is contained by it are not
+ * candidates, and a locked group refuses like it does for everything else. */
+function groupAtPoint(x, y, workspace, source = null) {
+  let found = null;
+  for (const [node, el] of groupEls) {
+    if (node === source || node.locked) continue;
+    if (source && (containsNode(node, source) || containsNode(source, node))) {
+      continue;
+    }
+    if (workspace === null || nodeWorkspace(node) !== workspace) continue;
+    const rect = el.getBoundingClientRect();
+    if (x < rect.left || x >= rect.left + rect.width
+        || y < rect.top || y >= rect.top + rect.height) continue;
+    found = node;
+  }
+  return found;
+}
+
+/* Merge one group into another — Hyprland's `merge_groups_on_drag`.
+ *
+ * The source's windows are appended to the target's and the source container
+ * goes away, which is what a group merge is: one group with more tabs, not a
+ * group holding another group. A group nested in either direction is refused,
+ * and so is a locked one. */
+function mergeGroups(source, target) {
+  if (!isGroup(source) || !isGroup(target) || source === target) return false;
+  if (source.locked || target.locked) return false;
+  if (containsNode(source, target) || containsNode(target, source)) return false;
+  const workspace = nodeWorkspace(source);
+  if (workspace === null || nodeWorkspace(target) !== workspace) return false;
+  const root = workspaces.get(workspace);
+  const parent = findParentOf(root, source);
+  if (!parent) return false;
+
+  target.children.push(...source.children);
+  target.active = target.children.length - 1;
+  parent.children = parent.children.filter((child) => child !== source);
+  collapse(root, true, workspace);
+  treeGeneration++;
+  relayoutAll();
+  return true;
+}
+
+/* Drag a group by its tab strip and drop it on another to merge — the strip is
+ * the groupbar, and dragging it is how Hyprland moves a group. A click is not
+ * a drag: the hand has to move further than this before anything is merged. */
+const GROUP_DRAG_PX = 6;
+
+function beginGroupBarDrag(event, node) {
+  if (mergeGroupsOnDragEnabled !== true) return;
+  const startX = Number(event?.clientX);
+  const startY = Number(event?.clientY);
+  if (!Number.isFinite(startX) || !Number.isFinite(startY)) return;
+
+  const workspace = nodeWorkspace(node);
+  let dragging = false;
+  let candidate = null;
+  const clearCandidate = () => {
+    if (candidate) groupEls.get(candidate)?.classList.remove('merge-target');
+    candidate = null;
+  };
+  const onMove = (move) => {
+    const x = Number(move?.clientX);
+    const y = Number(move?.clientY);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    if (!dragging) {
+      if (Math.hypot(x - startX, y - startY) < GROUP_DRAG_PX) return;
+      dragging = true;
+      groupEls.get(node)?.classList.add('dragging-group');
+    }
+    const next = groupAtPoint(x, y, workspace, node);
+    if (next === candidate) return;
+    clearCandidate();
+    candidate = next;
+    if (candidate) groupEls.get(candidate)?.classList.add('merge-target');
+  };
+  const onUp = () => {
+    /* Taken before the highlight is cleared: clearCandidate is what forgets
+       which group was under the hand. */
+    const target = candidate;
+    window.removeEventListener('mousemove', onMove);
+    window.removeEventListener('mouseup', onUp);
+    groupEls.get(node)?.classList.remove('dragging-group');
+    clearCandidate();
+    if (dragging && target) mergeGroups(node, target);
+  };
+  window.addEventListener('mousemove', onMove);
+  window.addEventListener('mouseup', onUp);
+}
+
+/* A window drag ended. A floating window dropped on a group becomes one of its
+ * tabs — Hyprland's `group:drag_into_group`, and what makes dragging a window
+ * over a group do something other than leave it floating on top. */
+function finishWindowDrag() {
+  const id = draggedWindowId;
+  draggedWindowId = null;
+  if (id === null || dragIntoGroupEnabled !== true) return false;
+  if (!isFloating(id)) return false;
+  const view = views.get(id);
+  const workspace = workspaceOf(id);
+  if (!view || workspace === null) return false;
+
+  const rect = view.el.getBoundingClientRect();
+  const target = groupAtPoint(
+    rect.left + rect.width / 2, rect.top + rect.height / 2, workspace);
+  if (!target) return false;
+
+  /* Out of the floating plane and into the group, shown as its newest tab. */
+  view.floating = null;
+  Object.assign(view.el.style, { left: '', top: '', width: '', height: '' });
+  view.el.classList.remove('floating');
+  target.children.push(newLeaf(id));
+  target.active = target.children.length - 1;
+  treeGeneration++;
+  relayoutAll();
+  return true;
 }
 
 /* A tabbed or stacked container. The one child shown is `active`. */
 function isGroup(node) {
   return node != null && (node.layout === 'tabbed' || node.layout === 'stacked');
+}
+
+/* The leaves that are actually on screen in a tree: a group shows exactly one
+ * of its children, so everything behind it is hidden. What a workspace has on
+ * display is this, not every window in its tree. */
+function visibleLeaves(node) {
+  if (!node) return [];
+  if (node.type === 'leaf') return [node];
+  if (isGroup(node)) {
+    const active = node.children[Math.min(
+      Math.max(node.active ?? 0, 0), node.children.length - 1)];
+    return active ? visibleLeaves(active) : [];
+  }
+  return node.children.flatMap(visibleLeaves);
 }
 
 function* walk(node, parent = null) {
@@ -429,6 +604,10 @@ function renderTabbed(node) {
 
   const tabs = document.createElement('div');
   tabs.className = 'tabs';
+  /* Dragging the strip drags the group: dropping it on another group merges
+     the two. A click still selects a tab — see the threshold in
+     beginGroupBarDrag. */
+  tabs.addEventListener('mousedown', (event) => beginGroupBarDrag(event, node));
 
   children.forEach((child, i) => {
     const tab = document.createElement('button');
@@ -446,6 +625,7 @@ function renderTabbed(node) {
   });
 
   el.append(tabs);
+  groupEls.set(node, el);
 
   const body = document.createElement('div');
   body.className = 'tab-body';

@@ -1411,6 +1411,18 @@ pub struct MotionSpring {
 pub struct Group {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_group: Option<bool>,
+    /// Whether dragging a window onto an unlocked group joins it
+    /// (Hyprland's `group:drag_into_group`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drag_into_group: Option<bool>,
+    /// Whether dragging a group onto another group merges them
+    /// (Hyprland's `group:merge_groups_on_drag`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merge_groups_on_drag: Option<bool>,
+    /// Whether a window moved to another workspace joins that workspace's
+    /// solitary unlocked group (Hyprland's `group:group_on_movetoworkspace`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_on_movetoworkspace: Option<bool>,
 }
 
 /// The bar clock's locale and format, as `clock` in the config file, carried
@@ -2335,6 +2347,30 @@ mod tests {
                 "tiling_mode": "grid",
                 "gaps": { "inner": 12, "outer": null, "smart": true }
             })
+        );
+    }
+
+    #[test]
+    fn the_group_options_are_carried_to_the_shell() {
+        let group = Group {
+            auto_group: Some(true),
+            drag_into_group: Some(false),
+            merge_groups_on_drag: Some(false),
+            group_on_movetoworkspace: Some(true),
+        };
+        let value = serde_json::to_value(&group).expect("serialises");
+        assert_eq!(value["auto_group"], true);
+        assert_eq!(value["drag_into_group"], false);
+        assert_eq!(value["merge_groups_on_drag"], false);
+        assert_eq!(value["group_on_movetoworkspace"], true);
+        let sparse = Group {
+            auto_group: Some(false),
+            ..Default::default()
+        };
+        let sparse = serde_json::to_value(&sparse).expect("serialises");
+        assert!(
+            sparse.get("drag_into_group").is_none(),
+            "absent is not sent"
         );
     }
 

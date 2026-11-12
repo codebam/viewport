@@ -2511,7 +2511,12 @@ focused window is in.
 
 ```jsonc
 {
-  "group": { "auto_group": true }
+  "group": {
+    "auto_group": true,
+    "drag_into_group": true,
+    "merge_groups_on_drag": true,
+    "group_on_movetoworkspace": false
+  }
 }
 ```
 
@@ -2533,6 +2538,25 @@ Hyprland's `deny_from_group` said once for the whole container. Nothing happens
 on a plain split, which has no tabs to protect. The lock is not saved across a
 reload: it is a property of the container, and the tree is rebuilt from the
 session file.
+
+The three drag rules are Hyprland's, with its defaults:
+
+- `drag_into_group` (on): a window dragged over a group and released becomes one
+  of its tabs instead of staying floating on top of it. A locked group refuses,
+  exactly as it does for `auto_group`.
+- `merge_groups_on_drag` (on): dragging a group by its tab strip and dropping it
+  on another group merges the two — the dragged group's windows are appended to
+  the target's tabs and its container goes away. Clicking a tab still selects
+  it; only a hand that moves merges anything.
+- `group_on_movetoworkspace` (off): moving a window to another workspace joins
+  it to that workspace's solitary unlocked group. "Solitary" is counted in
+  windows on display, not in the tree: a group showing one tab is one window, so
+  a moved window can join it and a workspace holding a split of two windows
+  cannot.
+
+The tab strip is the groupbar: it is drawn by the shell, shows every member's
+title, and is what a group is dragged by. There is no separate floating bar and
+nothing compositor-side to configure.
 
 **At runtime.** `config.group` sets `auto_group` without touching the file:
 

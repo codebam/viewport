@@ -17,6 +17,11 @@
  * forth returns it to where it was. */
 const MAX_PSEUDO_DIMENSION = 32768;
 
+/* The window the compositor is dragging, while a `layout.move.delta` stream is
+ * running. The drag ends at `layout.drag.end`, which is when a drop on a group
+ * is decided — see finishWindowDrag in tiling.js. */
+let draggedWindowId = null;
+
 function safePseudoDimensions(value) {
   if (!value || typeof value !== 'object') return null;
   const width = Number(value.width);
@@ -214,6 +219,7 @@ function moveByDelta(id, dx, dy) {
 
   const floating = floatingOf(id);
   if (!floating) return;
+  draggedWindowId = id;
 
   /* Follow the pointer exactly for the duration of the drag; the class is
      dropped once the window stops moving. */

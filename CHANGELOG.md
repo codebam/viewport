@@ -25,6 +25,13 @@ to summarise rather than to duplicate.
   rather than a redraw per turn of the loop.
 
 ### Added
+- The rest of Hyprland's group rules: `group.drag_into_group` (a window dropped
+  on a group becomes one of its tabs), `group.merge_groups_on_drag` (drag a
+  group by its tab strip and drop it on another to merge the two), and
+  `group.group_on_movetoworkspace` (a window moved to a workspace whose only
+  window on display is a group joins it). The tab strip is the groupbar a group
+  is dragged by, and the dragged group and its drop target are shown while the
+  hand moves. `group.lock` refuses all of them the way it refuses `auto_group`.
 - Per-workspace `animation` and `layout_opts` rules. `animation` names the
   style a switch to that workspace runs (the `motion.workspaces` styles), and
   wins over the leaf's own style for that workspace only. `layout_opts` is the

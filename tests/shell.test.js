@@ -494,6 +494,9 @@ const EXPORTS = ';globalThis.__shell = { views, workspaces, outputs, scrollOffse
   + ' reducedMotionForTest: reducedMotion, motionEaseForTest: motionEase,'
   + ' motionLeafForTest: motionLeaf,'
   + ' fadeInForTest: fadeIn,'
+  + ' groupElementForTest: (node) => groupEls.get(node) ?? null,'
+  + ' finishWindowDragForTest: finishWindowDrag,'
+  + ' mergeGroupsForTest: mergeGroups,'
   + ' layoutContextForTest: layoutContext,'
   + ' workspaceLayoutOptsForTest: workspaceLayoutOpts,'
   + ' springAdvanceForTest: (state, spring, dt) => springAdvance(state, spring, dt),'
@@ -9505,6 +9508,170 @@ if (mode === 'scrolling') {
     delete out.windowsEl.replaceChildren;
     for (const id of busy) emit({ type: 'view.removed', id });
   }
+}
+
+if (mode === 'tiling') {
+  /* J7: Hyprland's group drag paths — a window dropped on a group joins it, a
+   * group dropped on another merges the two, and a window moved to a workspace
+   * holding one group joins it when the rule asks. */
+  const sh = globalThis.__shell;
+  const openWindow = (id) => emit({ type: 'view.added', id, title: `grp ${id}`,
+    app_id: 'grp', tag: null, output: 'DP-1', min_width: 0, min_height: 0,
+    floating: false, width: 400, height: 300 });
+  const leafParent = (node, id) => {
+    if (!node || node.type === 'leaf') return null;
+    for (const child of node.children) {
+      if (child.type === 'leaf' && child.id === id) return node;
+      const found = leafParent(child, id);
+      if (found) return found;
+    }
+    return null;
+  };
+
+  /* A window dragged over a group becomes one of its tabs. The workspace is
+     the one the windows land on, and the tree it had is put back at the end. */
+  for (const id of [970, 971, 972]) openWindow(id);
+  const ws = sh.workspaceOfForTest(970);
+  const savedTree = sh.workspaces.get(ws);
+  const groupTree = (extra) => ({
+    type: 'split', dir: 'horizontal', layout: 'split', active: 0, weight: 1,
+    children: [
+      { type: 'split', dir: 'vertical', layout: 'tabbed', active: 0, weight: 1,
+        children: [{ type: 'leaf', id: 970, weight: 1 },
+          { type: 'leaf', id: 971, weight: 1 }] },
+      extra ?? { type: 'leaf', id: 972, weight: 1 },
+    ],
+  });
+  sh.workspaces.set(ws, groupTree());
+  emit({ type: 'config', layout: mode, rules: HARNESS_RULES,
+    group: { drag_into_group: true } });
+  emit({ type: 'view.focused', id: 972 });
+  emit({ type: 'shell.command', command: 'layout.move.delta',
+    args: [972, 0, 0] });
+  check('a dragged window floats under the hand',
+    sh.floatingForTest(972) !== null);
+  emit({ type: 'shell.command', command: 'layout.drag.end', args: [] });
+  check('a window dropped on a group becomes one of its tabs',
+    leafParent(sh.workspaces.get(ws), 972)?.layout === 'tabbed'
+    && sh.floatingForTest(972) === null);
+
+  /* With the rule off, the same drop leaves the window floating. */
+  sh.workspaces.set(ws, groupTree());
+  emit({ type: 'config', layout: mode, rules: HARNESS_RULES,
+    group: { drag_into_group: false } });
+  emit({ type: 'view.focused', id: 972 });
+  emit({ type: 'shell.command', command: 'layout.move.delta',
+    args: [972, 0, 0] });
+  emit({ type: 'shell.command', command: 'layout.drag.end', args: [] });
+  check('drag_into_group off leaves the window floating',
+    sh.floatingForTest(972) !== null);
+  emit({ type: 'view.removed', id: 970 });
+  emit({ type: 'view.removed', id: 971 });
+  emit({ type: 'view.removed', id: 972 });
+
+  /* A group dragged by its tab strip onto another merges into it. */
+  for (const id of [973, 974, 975, 976]) openWindow(id);
+  sh.workspaces.set(ws, {
+    type: 'split', dir: 'horizontal', layout: 'split', active: 0, weight: 1,
+    children: [
+      { type: 'split', dir: 'vertical', layout: 'tabbed', active: 0, weight: 1,
+        children: [{ type: 'leaf', id: 973, weight: 1 },
+          { type: 'leaf', id: 974, weight: 1 }] },
+      { type: 'split', dir: 'vertical', layout: 'tabbed', active: 0, weight: 1,
+        children: [{ type: 'leaf', id: 975, weight: 1 },
+          { type: 'leaf', id: 976, weight: 1 }] },
+    ],
+  });
+  emit({ type: 'config', layout: mode, rules: HARNESS_RULES,
+    group: { drag_into_group: false, merge_groups_on_drag: true } });
+  emit({ type: 'view.focused', id: 973 });
+  const twoGroups = sh.workspaces.get(ws);
+  const sourceGroup = twoGroups?.children?.[0];
+  const sourceTabs = sh.groupElementForTest(sourceGroup)?.children?.[0];
+  check('a group is rendered with its own tab strip', sourceTabs != null);
+  for (const fn of sourceTabs.listeners.mousedown ?? []) {
+    fn({ clientX: 100, clientY: 100 });
+  }
+  window.dispatchEvent({ type: 'mousemove', clientX: 130, clientY: 130 });
+  window.dispatchEvent({ type: 'mouseup' });
+  const mergedRoot = sh.workspaces.get(ws);
+  const merged = mergedRoot?.children?.length === 1 ? mergedRoot.children[0] : null;
+  check('a group dropped on another merges into one',
+    merged?.layout === 'tabbed'
+      && merged.children.map((child) => child.id).join(',')
+        === '975,976,973,974');
+
+  /* With merging off, the same drag leaves the two groups apart. */
+  sh.workspaces.set(ws, {
+    type: 'split', dir: 'horizontal', layout: 'split', active: 0, weight: 1,
+    children: [
+      { type: 'split', dir: 'vertical', layout: 'tabbed', active: 0, weight: 1,
+        children: [{ type: 'leaf', id: 973, weight: 1 },
+          { type: 'leaf', id: 974, weight: 1 }] },
+      { type: 'split', dir: 'vertical', layout: 'tabbed', active: 0, weight: 1,
+        children: [{ type: 'leaf', id: 975, weight: 1 },
+          { type: 'leaf', id: 976, weight: 1 }] },
+    ],
+  });
+  emit({ type: 'config', layout: mode, rules: HARNESS_RULES,
+    group: { merge_groups_on_drag: false } });
+  emit({ type: 'view.focused', id: 973 });
+  const apart = sh.workspaces.get(ws);
+  const apartTabs = sh.groupElementForTest(apart?.children?.[0])?.children?.[0];
+  for (const fn of apartTabs.listeners.mousedown ?? []) {
+    fn({ clientX: 100, clientY: 100 });
+  }
+  window.dispatchEvent({ type: 'mousemove', clientX: 130, clientY: 130 });
+  window.dispatchEvent({ type: 'mouseup' });
+  check('merge_groups_on_drag off leaves the groups apart',
+    sh.workspaces.get(ws)?.children?.length === 2);
+  for (const id of [973, 974, 975, 976]) emit({ type: 'view.removed', id });
+
+  /* A window moved to a workspace whose only visible window is a group joins
+   * that group, when the rule asks for it. */
+  for (const id of [977, 978, 979]) openWindow(id);
+  const awayWorkspace = 8;
+  sh.workspaces.set(awayWorkspace, {
+    type: 'split', dir: 'horizontal', layout: 'split', active: 0, weight: 1,
+    children: [
+      { type: 'split', dir: 'vertical', layout: 'tabbed', active: 0, weight: 1,
+        children: [{ type: 'leaf', id: 977, weight: 1 },
+          { type: 'leaf', id: 978, weight: 1 }] },
+    ],
+  });
+  sh.workspaces.set(ws, {
+    type: 'split', dir: 'horizontal', layout: 'split', active: 0, weight: 1,
+    children: [{ type: 'leaf', id: 979, weight: 1 }],
+  });
+  emit({ type: 'config', layout: mode, rules: HARNESS_RULES,
+    group: { group_on_movetoworkspace: true } });
+  emit({ type: 'view.focused', id: 979 });
+  emit({ type: 'shell.command', command: 'workspace.move', args: [awayWorkspace] });
+  check('a window moved onto a group workspace joins the group',
+    leafParent(sh.workspaces.get(awayWorkspace), 979)?.layout === 'tabbed');
+  emit({ type: 'config', layout: mode, rules: HARNESS_RULES,
+    group: { group_on_movetoworkspace: false } });
+  sh.workspaces.set(ws, {
+    type: 'split', dir: 'horizontal', layout: 'split', active: 0, weight: 1,
+    children: [{ type: 'leaf', id: 979, weight: 1 }],
+  });
+  sh.workspaces.set(awayWorkspace, {
+    type: 'split', dir: 'horizontal', layout: 'split', active: 0, weight: 1,
+    children: [
+      { type: 'split', dir: 'vertical', layout: 'tabbed', active: 0, weight: 1,
+        children: [{ type: 'leaf', id: 977, weight: 1 },
+          { type: 'leaf', id: 978, weight: 1 }] },
+    ],
+  });
+  emit({ type: 'view.focused', id: 979 });
+  emit({ type: 'shell.command', command: 'workspace.move', args: [awayWorkspace] });
+  check('group_on_movetoworkspace off leaves it its own window',
+    leafParent(sh.workspaces.get(awayWorkspace), 979)?.layout !== 'tabbed');
+  for (const id of [977, 978, 979]) emit({ type: 'view.removed', id });
+  if (savedTree !== undefined) sh.workspaces.set(ws, savedTree);
+  emit({ type: 'config', layout: mode, rules: HARNESS_RULES,
+    group: { drag_into_group: true, merge_groups_on_drag: true,
+      group_on_movetoworkspace: false } });
 }
 
 emit({ type: 'view.removed', id: 1 });

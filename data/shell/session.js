@@ -991,7 +991,21 @@ function moveViewToWorkspace(id, n) {
     floating.workspace = n;
   } else {
     removeLeaf(id);
-    if (layoutModeOf(n) === 'scrolling') {
+    /* Arriving on a workspace whose only window is a group joins that group,
+       when the rule asks for it — Hyprland's `group:group_on_movetoworkspace`,
+       which is what makes a move into a workspace holding one tabbed container
+       become another tab of it rather than a window beside it. */
+    const arriving = workspaceRoot(n);
+    const visible = visibleLeaves(arriving)
+      .filter((leaf) => views.has(leaf.id) && !isMinimized(leaf.id));
+    const only = visible.length === 1 ? findLeaf(visible[0].id) : null;
+    if (groupOnMoveToWorkspaceEnabled === true && only
+        && isGroup(only.parent) && !only.parent.locked) {
+      const group = only.parent;
+      group.children.push(newLeaf(id));
+      group.active = group.children.length - 1;
+      treeGeneration++;
+    } else if (layoutModeOf(n) === 'scrolling') {
       const root = workspaceRoot(n);
       root.dir = 'horizontal';
       const leaf = newLeaf(id);

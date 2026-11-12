@@ -292,6 +292,9 @@ impl ViewportState {
             // shell had rather than resetting it.
             self.config.group = Some(viewport_ipc::event::Group {
                 auto_group: file.group.auto_group,
+                drag_into_group: file.group.drag_into_group,
+                merge_groups_on_drag: file.group.merge_groups_on_drag,
+                group_on_movetoworkspace: file.group.group_on_movetoworkspace,
             });
         }
         if file.opacity != crate::config::OpacityConfig::default() {

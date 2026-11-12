@@ -1011,6 +1011,9 @@ function relayoutAll() {
      collapsed tab, or a column scrolled off the strip, is on its workspace and
      still not shown. */
   renderedIds = new Set();
+  /* The groups are about to be rendered again; keep only this pass's
+     elements — see groupAtPoint. */
+  if (typeof resetGroupElements === 'function') resetGroupElements();
 
   if (overviewActive) {
     clearOverviewState();
