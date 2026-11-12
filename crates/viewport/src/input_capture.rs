@@ -329,11 +329,34 @@ impl InputCapture {
         if session.app_id != app_id || session.started || session.generation != generation {
             return (RESPONSE_FAILED, HashMap::new());
         }
+        // The clipboard answer, as on the remote-desktop side: what the
+        // session asked for through `RequestClipboard` before Start, frozen
+        // into the grant. Written down before the answer goes out, because
+        // the answer is what lets the application start using it and the
+        // checks are made against this row.
+        let clipboard = {
+            let mut shared = self.sessions.lock().unwrap();
+            match shared.sessions.get_mut(path) {
+                Some(portal) => {
+                    let asked = portal.clipboard_requested();
+                    if portal.record_input_capture_start(asked) {
+                        asked
+                    } else {
+                        tracing::warn!("input capture: refusing to start {path} a second time");
+                        return (RESPONSE_CANCELLED, HashMap::new());
+                    }
+                }
+                None => return (RESPONSE_CANCELLED, HashMap::new()),
+            }
+        };
         session.started = true;
         session.capabilities = granted;
         let mut results = HashMap::new();
         results.insert("capabilities".into(), OwnedVariant::from(granted));
-        results.insert("clipboard_enabled".into(), OwnedVariant::from(false));
+        // Said explicitly either way, as RemoteDesktop.Start says it: the
+        // difference between "no" and "this compositor did not think about
+        // it" matters for a session pasting into the machine.
+        results.insert("clipboard_enabled".into(), OwnedVariant::from(clipboard));
         (RESPONSE_SUCCESS, results)
     }
 

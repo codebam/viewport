@@ -49,16 +49,17 @@ inhibit interfaces:
 
 The sender EI server and the receiver used by InputCapture are both done —
 `crates/viewport/src/libei.rs`, `crates/viewport/src/input_capture.rs`, and
-`docs/protocols.md` for how their opposite directions differ. One piece around
-remote sessions is not.
+`docs/protocols.md` for how their opposite directions differ. The clipboard
+that belonged with them is in too.
 
-**The clipboard for a remote session is in, for remote desktop.** The
+**The clipboard for a remote session is in, for both.** The
 `org.freedesktop.impl.portal.Clipboard` interface is served, `RequestClipboard`
 is answered through `Start`'s `clipboard_enabled` field, and text is bridged
 through the compositor's clipboard history in both directions. It is still its
 own consent question — reading the desk's clipboard is not the same permission
-as typing into it — so a session only gets it when it asks, and an
-input-capture session is not offered it yet.
+as typing into it — so a session only gets it when it asks. Both RemoteDesktop
+and InputCapture sessions may ask; a plain screen share may not, since it has
+no input of its own to paste into.
 
 ## A protocol found by the same sweep
 

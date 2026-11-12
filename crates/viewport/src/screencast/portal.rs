@@ -369,11 +369,33 @@ impl Session {
     /// Start is the grant; a request arriving afterwards must not turn that
     /// no into a yes.
     pub(super) fn ask_for_clipboard(&mut self) -> bool {
-        if self.started || !self.remote {
+        if self.started || !(self.remote || self.input_capture) {
             return false;
         }
         self.clipboard = true;
         true
+    }
+
+    /// Record an input-capture grant as this session's one Start.
+    ///
+    /// Same one-shot rule as [`Self::record_remote_start`], and the same
+    /// reason. `clipboard` is the request flag as Start read it, frozen here
+    /// so a later request cannot widen what the application was told.
+    pub(crate) fn record_input_capture_start(&mut self, clipboard: bool) -> bool {
+        if self.started {
+            return false;
+        }
+        self.started = true;
+        self.clipboard_granted = clipboard;
+        true
+    }
+
+    /// Whether this session asked for clipboard access before Start.
+    ///
+    /// Read by the interface that answers Start, so the grant and the
+    /// `clipboard_enabled` answer come from the same flag.
+    pub(crate) fn clipboard_requested(&self) -> bool {
+        self.clipboard
     }
 }
 
@@ -1386,5 +1408,31 @@ mod tests {
         let mut share = Session::new("app", None, false);
         assert!(!share.ask_for_clipboard());
         assert!(!share.clipboard);
+    }
+
+    /// An input-capture session may ask too: it types into the machine
+    /// without necessarily seeing it, and pasting into it is the same
+    /// question as for a remote-desktop session — its own consent, asked
+    /// for before Start and frozen there.
+    #[test]
+    fn an_input_capture_session_may_ask_for_the_clipboard() {
+        let mut session = Session::new_input_capture("app", None, 1);
+        assert!(session.ask_for_clipboard());
+        assert!(session.record_input_capture_start(true));
+        assert!(session.clipboard_granted);
+        assert!(!session.ask_for_clipboard());
+        assert!(
+            session.clipboard_granted,
+            "a late request must not widen the grant"
+        );
+        // And a second Start is refused the same way.
+        assert!(!session.record_input_capture_start(false));
+
+        // Without asking, the answer is no — and the request is not on the
+        // record, so the Clipboard interface has nothing to grant.
+        let mut quiet = Session::new_input_capture("app", None, 2);
+        assert!(!quiet.clipboard_requested());
+        assert!(quiet.record_input_capture_start(false));
+        assert!(!quiet.clipboard_granted);
     }
 }

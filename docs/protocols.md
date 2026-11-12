@@ -521,6 +521,13 @@ fetch the current output zones, install barriers against that exact zone set,
 connect its receiver EI socket, and enable itself before a crossing can
 activate it. Output geometry changes invalidate the barriers.
 
+Like a RemoteDesktop session, an InputCapture session may ask for the
+clipboard through `org.freedesktop.impl.portal.Clipboard`'s
+`RequestClipboard` before `Start`; `Start` answers `clipboard_enabled` from
+that ask, and the same consent question applies — reading the desk's
+clipboard is not the same permission as typing into it, so it comes only
+when asked, and only what was asked is granted.
+
 Only local libinput or nested-backend events enter this path. RemoteDesktop EI
 events cannot be captured and reflected into another remote connection. Lock,
 VT pause, output topology changes, portal frontend loss, session close, and EI

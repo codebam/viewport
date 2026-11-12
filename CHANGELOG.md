@@ -36,6 +36,11 @@ to summarise rather than to duplicate.
   verified against the npm tarball.
 
 ### Added
+- Input-capture sessions are offered the clipboard on the same terms as
+  remote-desktop ones: `RequestClipboard` before `Start`, `clipboard_enabled`
+  answered from that ask, and text bridged through the clipboard history in
+  both directions. A plain screen share still may not ask — it has no input
+  of its own to paste into.
 - The remaining runtime config setters, the ones that needed new machinery
   rather than just a stored value: `config.idle` (with `config.lid`),
   `config.keyboard`, per-device `config.input`, `config.notifications` and
