@@ -1324,6 +1324,13 @@ fn run() -> Result<()> {
             state.settle_undrawn_views();
         }
 
+        // A window the shell faded to zero and never raised: the see-through
+        // hole with a frame around it. Same shape as the check above — a bool
+        // on the ordinary turn, a bounded scan when it is true.
+        if state.see_through_pending {
+            state.settle_see_through_views();
+        }
+
         if let Some(log) = state.udev.as_mut().and_then(|udev| udev.frame_log.as_mut()) {
             log.loop_turns += 1;
             log.render_nanos += rendered;

@@ -23,6 +23,16 @@ to summarise rather than to duplicate.
   and a client that had already painted had nothing left to commit. Bounded to
   three steps per placement, so a genuinely undrawable window costs log lines
   rather than a redraw per turn of the loop.
+- A window the shell faded to zero opacity and never raised again no longer
+  stays see-through with only its frame around it. Frames *do* carry such a
+  window, which is why the watchdog above never saw it: what they carry is a
+  fully transparent window, with the desktop showing through the hole where
+  its contents should be. The shell's fade is a debt — it sends
+  `view.opacity 0` and is expected to raise it frame by frame — so a visible,
+  placed window drawn at zero for longer than any fade takes is paid out
+  opaque, with a warning naming how long it waited. The watch survives a blank
+  or a lock rather than being lost with the screen. Dimming a layout does is
+  untouched: a window the shell means to keep dim rests above zero.
 
 ### Added
 - The rest of Hyprland's group rules: `group.drag_into_group` (a window dropped

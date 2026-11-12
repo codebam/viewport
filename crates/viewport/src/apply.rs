@@ -217,6 +217,12 @@ pub fn apply(state: &mut ViewportState, request: Request) {
                 let opacity = opacity.clamp(0.0, 1.0) as f32;
                 if view.opacity != opacity {
                     view.opacity = opacity;
+                    // A fade to zero is a debt: the shell must raise it again.
+                    // If it never does, the window is a see-through hole with
+                    // its frame around it — see `settle_see_through_views`.
+                    if opacity <= 0.001 {
+                        state.see_through_pending = true;
+                    }
                     // The drawn alpha of the window changes and nothing
                     // commits with it — no client knows its window faded — so
                     // this is the only mark the change gets. Without it the

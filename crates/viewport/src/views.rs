@@ -140,6 +140,17 @@ pub struct View {
     /// retried for ever.
     pub redraw_asks: u8,
 
+    /// When this window was first seen drawn at zero opacity while it was
+    /// visible and placed.
+    ///
+    /// The shell fades a new window in by sending `view.opacity 0` and raising
+    /// it a frame at a time. If that raise never comes the window is drawn as
+    /// a hole with its frame around it — the desktop showing through a window
+    /// that is otherwise there. A fade that has not finished after a beat is
+    /// therefore a fade that failed, and `settle_see_through_views` pays it
+    /// out rather than leaving the window empty.
+    pub zero_opacity_at: Option<std::time::Instant>,
+
     /// The last geometry the shell asked for. Absent fields in the next
     /// `view.layout` resolve against this (`src/ipc.c:833`).
     pub box_: Box,
@@ -690,6 +701,7 @@ impl Views {
             placed_at: None,
             drawn_at: None,
             redraw_asks: 0,
+            zero_opacity_at: None,
             box_: Box::new(0, 0, 0, 0),
             visible: true,
             minimized: false,

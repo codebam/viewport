@@ -777,6 +777,14 @@ pub struct ViewportState {
     /// which is where it is read.
     pub undrawn_pending: bool,
 
+    /// A window is waiting for the fade that put it at zero opacity to finish.
+    ///
+    /// Set when the shell sends `view.opacity 0`, cleared when
+    /// `settle_see_through_views` finds nothing left at zero. A bool for the
+    /// same reason as the one above: the scan behind it stays off the ordinary
+    /// turn of the loop.
+    pub see_through_pending: bool,
+
     /// The stack is owed a `restack`, and the colour-management clients are
     /// owed a look at whether their screen changed under them.
     ///
@@ -1984,6 +1992,7 @@ impl ViewportState {
             needs_render: false,
             dirty_outputs: std::collections::HashSet::new(),
             undrawn_pending: false,
+            see_through_pending: false,
             needs_restack: false,
             needs_colour_notify: false,
             foreign_outputs_dirty: Vec::new(),
@@ -4526,6 +4535,77 @@ impl ViewportState {
         self.undrawn_pending = watching;
     }
 
+    /// Pay out a fade that never finished.
+    ///
+    /// A new window is faded in by the shell over a handful of frames: it
+    /// sends `view.opacity 0`, then raises it. If the raise never arrives —
+    /// a page that stopped short, a fade cancelled by a relayout that rebuilt
+    /// the element under it — the window stays at zero: its frame is drawn by
+    /// the shell, the window's own surfaces are not, and the desktop shows
+    /// through the hole between them. That is the reported see-through window,
+    /// and it is invisible to the frame watchdog because frames *do* carry it:
+    /// what they carry is a fully transparent window.
+    ///
+    /// So a visible, placed window drawn at zero opacity gets a beat — long
+    /// enough for any fade the shell actually runs — and is then drawn opaque
+    /// with a warning naming how long it waited. A window the shell means to
+    /// keep dim rests somewhere above zero, so there is nothing legitimate to
+    /// preserve here; the alternative is a window nobody can read.
+    pub fn settle_see_through_views(&mut self) {
+        // While the lock screen is up, or the screens are dark, nothing is
+        // being drawn and nothing can be seen through — but the debt does not
+        // go away with the screen: a window left at zero before a blank is
+        // still at zero when the screen comes back, and clearing the watch here
+        // would be the one way to lose it. The flag stays set and this returns
+        // before the scan, which is the whole cost of it while it is dark.
+        if self.locked {
+            return;
+        }
+        if self.udev.as_ref().is_some_and(|udev| udev.blanked) {
+            return;
+        }
+        let now = std::time::Instant::now();
+        let ids: Vec<u32> = self.views.iter().map(|view| view.id).collect();
+        let mut pending = false;
+        let mut heal = false;
+        for id in ids {
+            let Some(view) = self.views.get_mut(id) else {
+                continue;
+            };
+            let drawn_empty =
+                view.visible && view.placed && !view.minimized && view.opacity <= 0.001;
+            if !drawn_empty {
+                view.zero_opacity_at = None;
+                continue;
+            }
+            match zero_opacity_action(view.zero_opacity_at, now) {
+                ZeroOpacityAction::Start => {
+                    view.zero_opacity_at = Some(now);
+                    pending = true;
+                }
+                ZeroOpacityAction::Wait => pending = true,
+                ZeroOpacityAction::Heal => {
+                    let waited = view
+                        .zero_opacity_at
+                        .map(|at| now.saturating_duration_since(at).as_millis())
+                        .unwrap_or(0);
+                    tracing::warn!(
+                        "view {id}: drawn see-through — its fade left it at opacity 0 for {waited}ms; \
+                         drawing it opaque"
+                    );
+                    view.opacity = 1.0;
+                    view.zero_opacity_at = None;
+                    heal = true;
+                }
+            }
+        }
+        if heal {
+            self.needs_render = true;
+            self.arm_frame_clock();
+        }
+        self.see_through_pending = pending;
+    }
+
     /// Which screens each window is on, to every foreign-toplevel client.
     ///
     /// A taskbar drawn per monitor can only put a window in its own list if it
@@ -5093,6 +5173,34 @@ enum UndrawnAction {
 /// before the watchdog acts. The later stages are multiples of it.
 const UNDRAWN_GRACE: std::time::Duration = std::time::Duration::from_millis(250);
 
+/// How long a visible window may be drawn at zero opacity before the fade that
+/// put it there is treated as lost.
+const SEE_THROUGH_GRACE: std::time::Duration = std::time::Duration::from_millis(750);
+
+/// What to do about a visible window drawn at zero opacity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ZeroOpacityAction {
+    /// First sighting: start the clock and keep watching.
+    Start,
+    /// Inside the grace period.
+    Wait,
+    /// The fade has had its beat and never finished.
+    Heal,
+}
+
+fn zero_opacity_action(
+    since: Option<std::time::Instant>,
+    now: std::time::Instant,
+) -> ZeroOpacityAction {
+    match since {
+        None => ZeroOpacityAction::Start,
+        Some(at) if now.saturating_duration_since(at) < SEE_THROUGH_GRACE => {
+            ZeroOpacityAction::Wait
+        }
+        Some(_) => ZeroOpacityAction::Heal,
+    }
+}
+
 /// The whole decision, kept out of `settle_undrawn_views` so it can be tested
 /// without a compositor: given when the window was placed, when a submitted
 /// frame last carried it and how many asks have already gone out, say what to
@@ -5120,6 +5228,22 @@ fn undrawn_action(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The see-through schedule: a fade gets its beat, then the window is paid
+    /// out. Nothing heals on the first sighting and nothing waits past the
+    /// grace.
+    #[test]
+    fn a_fade_that_never_finishes_is_paid_out() {
+        let now = std::time::Instant::now();
+        let fresh = now - std::time::Duration::from_millis(1);
+        assert_eq!(zero_opacity_action(None, now), ZeroOpacityAction::Start);
+        assert_eq!(
+            zero_opacity_action(Some(fresh), now),
+            ZeroOpacityAction::Wait
+        );
+        let old = now - std::time::Duration::from_millis(800);
+        assert_eq!(zero_opacity_action(Some(old), now), ZeroOpacityAction::Heal);
+    }
 
     fn at(x: f64, y: f64) -> Point<f64, Logical> {
         (x, y).into()
