@@ -1110,7 +1110,7 @@ pub fn apply(state: &mut ViewportState, request: Request) {
                     .clone()
                     .unwrap_or_else(|| state.cursor_theme.name().to_owned());
                 let size = size.unwrap_or_else(|| state.cursor_theme.size());
-                state.apply_cursor_theme(theme, size);
+                state.apply_cursor_theme(theme, size, state.cursor_theme.hyprcursor_enabled());
                 changed = true;
             }
             if let Some(on) = follow_mouse {

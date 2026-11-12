@@ -77,6 +77,18 @@ impl Cursor {
 pub struct Theme {
     name: String,
     size: u32,
+    /// Whether hyprcursor themes are consulted first, `cursor:enable_hyprcursor`.
+    ///
+    /// Kept on the theme rather than read from the configuration at lookup
+    /// time because lookup happens once per loaded cursor and the field is
+    /// what decides where the images come from.
+    hyprcursor: bool,
+    /// The hyprcursor theme `name` resolves to, read once at construction.
+    ///
+    /// `None` is the ordinary case on a machine with only XCursor themes
+    /// installed, and it is also what a theme that failed to parse leaves
+    /// behind — both fall through to the XCursor loader below.
+    hypr: Option<crate::hyprcursor::Theme>,
     loaded: HashMap<String, HashMap<i32, Option<Cursor>>>,
 }
 
@@ -88,10 +100,20 @@ impl Theme {
     /// writing `XCURSOR_THEME` and `XCURSOR_SIZE` into environ for
     /// [`Theme::new`] to read straight back — a setenv on a live process,
     /// undefined against every thread that might be mid-getenv.
-    pub fn named(name: impl Into<String>, size: u32) -> Self {
+    ///
+    /// `hyprcursor` is `cursor:enable_hyprcursor`: when false the theme is
+    /// loaded from the XCursor files under the same name, which is what a user
+    /// who turned the format off asked for.
+    pub fn named(name: impl Into<String>, size: u32, hyprcursor: bool) -> Self {
+        let name = name.into();
+        let hypr = hyprcursor
+            .then(|| crate::hyprcursor::named(&name))
+            .flatten();
         Self {
-            name: name.into(),
+            name,
             size,
+            hyprcursor,
+            hypr,
             loaded: HashMap::new(),
         }
     }
@@ -102,17 +124,39 @@ impl Theme {
     /// values are written once in `main`, before any thread exists to race
     /// the read, and never written again afterwards. A reload comes through
     /// [`Theme::named`] instead.
+    ///
+    /// Hyprland's pair comes first when it is set: `HYPRCURSOR_THEME` and
+    /// `HYPRCURSOR_SIZE` name the hyprcursor theme, `XCURSOR_THEME` and
+    /// `XCURSOR_SIZE` the XCursor one, and a session that exported both means
+    /// the former for the format this compositor reads first. The same pair is
+    /// what the two variables fall back to when only the XCursor ones are set.
     pub fn new() -> Self {
-        let name = std::env::var("XCURSOR_THEME").unwrap_or_else(|_| "default".to_owned());
-        let size = std::env::var("XCURSOR_SIZE")
-            .ok()
+        let hyprcursor = true;
+        let from_env = |hypr: &str, xcursor: &str| {
+            std::env::var(hypr)
+                .ok()
+                .or_else(|| std::env::var(xcursor).ok())
+        };
+        let name =
+            from_env("HYPRCURSOR_THEME", "XCURSOR_THEME").unwrap_or_else(|| "default".to_owned());
+        let size = from_env("HYPRCURSOR_SIZE", "XCURSOR_SIZE")
             .and_then(|s| s.parse().ok())
             .unwrap_or(24);
+        let hypr = hyprcursor
+            .then(|| crate::hyprcursor::named(&name))
+            .flatten();
         Self {
             name,
             size,
+            hyprcursor,
+            hypr,
             loaded: HashMap::new(),
         }
+    }
+
+    /// Whether this theme consults hyprcursor themes first.
+    pub fn hyprcursor_enabled(&self) -> bool {
+        self.hyprcursor
     }
 
     /// The theme's name, as the settings portal reports it. A toolkit that is
@@ -175,6 +219,14 @@ impl Theme {
     fn load_uncached(&self, name: &str, scale: i32) -> Option<Cursor> {
         let scale = scale.max(1);
         let wanted = wanted_size(self.size, scale);
+
+        // The hyprcursor theme first, when there is one and the format is
+        // enabled. A miss here — a shape the theme does not ship, or an SVG
+        // shape this compositor cannot render — falls through to the XCursor
+        // files under the same theme name rather than leaving no pointer.
+        if let Some(loaded) = self.load_hyprcursor(name, wanted, scale) {
+            return Some(loaded);
+        }
 
         let mut names = vec![name];
         for alias in ALIASES {
@@ -244,6 +296,66 @@ impl Theme {
         Some(Cursor { frames, duration })
     }
 
+    /// A cursor from the hyprcursor theme, at `wanted` physical pixels.
+    ///
+    /// The reference loader matches a shape by its directory name or its
+    /// `define_override` list; the alias groups here are the same ones the
+    /// XCursor path walks, on top of that, because a theme that ships only
+    /// `left_ptr` should still answer `default` and a theme that ships only
+    /// `default` should still answer `left_ptr`.
+    fn load_hyprcursor(&self, name: &str, wanted: u32, scale: i32) -> Option<Cursor> {
+        let theme = self.hypr.as_ref()?;
+        let mut names = vec![name];
+        for alias in ALIASES {
+            if alias.contains(&name) {
+                names.extend(alias.iter().copied());
+            }
+        }
+        let mut loaded = None;
+        for candidate in names {
+            if let Some(shape) = theme.shape(candidate, wanted) {
+                loaded = Some(shape);
+                break;
+            }
+        }
+        let loaded = loaded?;
+        let drawn = loaded.width;
+        let drawn_height = loaded.height;
+        tracing::debug!(
+            "cursor: hyprcursor theme {:?} answers {name} at {drawn}x{drawn_height}",
+            theme.name()
+        );
+        // The logical size is what the pointer is asked for; the buffer holds
+        // the pixels the theme (or the resampler) produced, drawn at that
+        // physical size by the renderer.
+        let logical = ((f64::from(drawn) / f64::from(scale.max(1))).round() as i32).max(1);
+        let frames: Vec<Frame> = loaded
+            .frames
+            .into_iter()
+            .map(|frame| Frame {
+                image: Image {
+                    buffer: MemoryRenderBuffer::from_slice(
+                        &premultiplied_bgra(&frame.pixels),
+                        Fourcc::Argb8888,
+                        (drawn as i32, drawn_height as i32),
+                        1,
+                        Transform::Normal,
+                        None,
+                    ),
+                    src: Rectangle::from_size((f64::from(drawn), f64::from(drawn_height)).into()),
+                    size: (logical, logical).into(),
+                    hotspot: loaded.hotspot.into(),
+                },
+                delay: frame.delay,
+            })
+            .collect();
+        if frames.is_empty() {
+            return None;
+        }
+        let duration = frames.iter().map(|frame| frame.delay).sum();
+        Some(Cursor { frames, duration })
+    }
+
     /// What to draw for `name` at `scale` and `millis`.
     pub fn image(&mut self, name: &str, scale: i32, millis: u32) -> Option<Image> {
         let cursor = self.load(name, scale)?;
@@ -285,6 +397,31 @@ fn wanted_size(size: u32, scale: i32) -> u32 {
     (size.min(i32::MAX as u32) as i32)
         .saturating_mul(scale)
         .max(1) as u32
+}
+
+/// Straight RGBA to the premultiplied BGRA byte order `Argb8888` names.
+///
+/// XCursor stores its pixels premultiplied already; hyprcursor's PNGs are
+/// straight alpha, which is what `png` decodes them to. The renderer draws the
+/// buffer through `Fourcc::Argb8888`, so the bytes are reordered to the order
+/// that format names from the low byte up and the colours are premultiplied
+/// here — the one conversion the format requires of a loader.
+pub(crate) fn premultiplied_bgra(pixels: &[u8]) -> Vec<u8> {
+    let mut out = vec![0u8; pixels.len()];
+    for (dst, src) in out
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(pixels.as_chunks::<4>().0)
+    {
+        let alpha = u32::from(src[3]);
+        let scale = |channel: u8| ((u32::from(channel) * alpha + 127) / 255) as u8;
+        dst[0] = scale(src[2]);
+        dst[1] = scale(src[1]);
+        dst[2] = scale(src[0]);
+        dst[3] = src[3];
+    }
+    out
 }
 
 /// Names that different themes use for the same cursor.
@@ -603,7 +740,7 @@ mod tests {
         // which is the whole of its contract and all that can be asserted
         // without depending on which themes this machine happens to have
         // installed.
-        let theme = Theme::named("Bibata Modern Classic", 48);
+        let theme = Theme::named("Bibata Modern Classic", 48, false);
         assert_eq!(theme.name(), "Bibata Modern Classic");
         assert_eq!(theme.size(), 48);
     }
@@ -613,11 +750,7 @@ mod tests {
         // XCURSOR_THEME is commonly set to a display name while the directory
         // on disk uses hyphens. Looking only for the literal value finds
         // nothing and the compositor draws no pointer at all.
-        let theme = Theme {
-            name: "Bibata Modern Classic".to_owned(),
-            size: 24,
-            loaded: HashMap::new(),
-        };
+        let theme = Theme::named("Bibata Modern Classic", 24, false);
         let names = theme.theme_names();
         assert_eq!(names[0], "Bibata Modern Classic");
         assert_eq!(names[1], "Bibata-Modern-Classic");
@@ -626,11 +759,7 @@ mod tests {
 
     #[test]
     fn the_fallbacks_are_not_duplicated() {
-        let theme = Theme {
-            name: "default".to_owned(),
-            size: 24,
-            loaded: HashMap::new(),
-        };
+        let theme = Theme::named("default", 24, false);
         let names = theme.theme_names();
         assert_eq!(names.iter().filter(|n| *n == "default").count(), 1);
     }

@@ -90,6 +90,13 @@ pub struct KeyboardConfig {
 pub struct CursorConfig {
     pub theme: Option<String>,
     pub size: Option<u32>,
+    /// Whether hyprcursor themes are consulted before XCursor ones, Hyprland's
+    /// `cursor:enable_hyprcursor`. Absent is on, as it is there.
+    ///
+    /// The format is read when a theme written in it answers to the configured
+    /// name; a name it does not answer still comes from the XCursor files, so
+    /// turning this on never leaves a name unanswered that was answered before.
+    pub enable_hyprcursor: Option<bool>,
     /// Milliseconds of no pointer input before the cursor is taken off the
     /// screen. Zero or absent is off, as for every other deadline here.
     ///
@@ -2427,7 +2434,7 @@ mod tests {
         let file: File = serde_json::from_str(
             r#"{
                 "keyboard": {"layout":"us","repeat_rate":25},
-                "cursor": {"theme":"Adwaita","size":32,"hide_after_ms":1500},
+                "cursor": {"theme":"Adwaita","size":32,"hide_after_ms":1500,"enable_hyprcursor":false},
                 "idle": {"lock_after":300,"lock_delay":10,"lock_command":"swaylock"},
                 "magnify": {"step":0.25,"max":6.0},
                 "outputs": {"DP-1":{"mode":"2560x1440@120","x":0,"hdr":true}}
@@ -2438,6 +2445,7 @@ mod tests {
         assert_eq!(file.keyboard.repeat_rate, Some(25));
         assert_eq!(file.cursor.size, Some(32));
         assert_eq!(file.cursor.hide_after_ms, Some(1500));
+        assert_eq!(file.cursor.enable_hyprcursor, Some(false));
         assert_eq!(file.idle.lock_after, Some(300));
         assert_eq!(file.idle.lock_delay, Some(10));
         assert_eq!(file.magnify.step, Some(0.25));

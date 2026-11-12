@@ -25,6 +25,14 @@ to summarise rather than to duplicate.
   rather than a redraw per turn of the loop.
 
 ### Added
+- `hyprcursor` themes are read: a manifest plus one zip per shape, per-size
+  images, per-cursor resize methods (`nearest`, `bilinear`, `none`), animation
+  delays, `define_override` aliases and `nominal_size`, from
+  `~/.local/share/icons`, `~/.icons` and `$XDG_DATA_DIRS/icons`. Enabled by
+  `cursor.enable_hyprcursor` (absent is on, Hyprland's default), named by
+  `HYPRCURSOR_THEME`/`HYPRCURSOR_SIZE` or the configured cursor theme, and
+  falling back to the XCursor theme of the same name for a shape hyprcursor
+  does not answer — SVG shapes are the one kind this does not render.
 - `keyboard.numlock_by_default` latches Num Lock on when the session starts
   (Hyprland's `input:numlock_by_default`). A startup setting applied once after
   the configured keymap is on the seat; a reload or a later `config.keyboard`

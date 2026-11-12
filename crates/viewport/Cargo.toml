@@ -58,6 +58,15 @@ async-channel = "2"
 # tree by way of `viewport-vulkan`.
 libc = "0.2"
 
+# hyprcursor themes. A theme is a manifest plus one zip archive per cursor
+# shape, and the images inside are PNGs, so reading one needs both a zip reader
+# and a PNG decoder. Both are reading-only and pulled with the smallest features
+# that decompress: `deflate-flate2` is flate2's pure-Rust backend, without the
+# writers' zopfli or the archive formats only a writer would need. See
+# src/hyprcursor.rs for the format and why it is worth a dependency.
+zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
+png = "0.18"
+
 # The one place this compositor is a Wayland *client*: nested, it asks its host
 # to hold its own keyboard shortcuts back while the nested window has the
 # keyboard. See src/capture.rs — without it a compositor inside a compositor

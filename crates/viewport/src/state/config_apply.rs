@@ -607,7 +607,7 @@ impl ViewportState {
         // any change to the block would throw the loaded images away
         // because a reload touched the hide deadline, which has nothing to
         // do with what they look like.
-        self.apply_cursor_theme(theme, size);
+        self.apply_cursor_theme(theme, size, file.cursor.enable_hyprcursor.unwrap_or(true));
         // The magnifier's step and its ceiling. A reload that lowers the
         // ceiling below where the screen is brings the picture back down to
         // meet it, which is a repaint nothing else here would ask for.
@@ -1157,8 +1157,11 @@ impl ViewportState {
     /// were told at startup — a pointer that changes size as it crosses
     /// into a window is a setting that appears not to have been respected
     /// at all.
-    pub fn apply_cursor_theme(&mut self, theme: String, size: u32) {
-        if theme != self.cursor_theme.name() || size != self.cursor_theme.size() {
+    pub fn apply_cursor_theme(&mut self, theme: String, size: u32, hyprcursor: bool) {
+        if theme != self.cursor_theme.name()
+            || size != self.cursor_theme.size()
+            || hyprcursor != self.cursor_theme.hyprcursor_enabled()
+        {
             // Built straight from the pair above: `Theme::named` takes the
             // values itself, so the loader never needs environ as a
             // go-between. There was a time this wrote `XCURSOR_THEME` and
@@ -1167,7 +1170,7 @@ impl ViewportState {
             // process, undefined against every thread that might be
             // mid-getenv, run on every change to the block whether it moved
             // the cursor or only its hide deadline.
-            self.cursor_theme = crate::cursor::Theme::named(theme, size);
+            self.cursor_theme = crate::cursor::Theme::named(theme, size, hyprcursor);
             self.appearance
                 .set_cursor(self.cursor_theme.name(), self.cursor_theme.size() as i32);
             // The pointer on screen is still the old image, and the compositor

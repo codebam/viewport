@@ -528,6 +528,20 @@ over a window and the one drawn over the desktop the same picture. A theme name
 with spaces is also looked for hyphenated, because the directory on disk
 usually is.
 
+`cursor.enable_hyprcursor` (absent is on, as in Hyprland) lets a
+[hyprcursor](https://github.com/hyprwm/hyprcursor) theme answer for the
+configured name first: hyprcursor themes are a manifest and one zip per shape,
+with per-size images, per-cursor resize methods and animation delays, and they
+are the only thing that ships a pointer at every size rather than a handful.
+The name is looked up in `~/.local/share/icons`, `~/.icons` and the `icons`
+directories of `$XDG_DATA_DIRS`, matching either the manifest's `name` or the
+directory's own; a name those themes do not answer falls through to the
+XCursor theme of the same name, so turning this on never takes a pointer away.
+`HYPRCURSOR_THEME` and `HYPRCURSOR_SIZE` name that theme at start-up the way
+`XCURSOR_THEME` and `XCURSOR_SIZE` name the XCursor one, with the hyprcursor
+pair winning when both are set. SVG shapes are the one unsupported part: the
+compositor has no SVG renderer, so those shapes are answered by XCursor instead.
+
 `cursor.hide_after_ms` takes the pointer off the screen once it has been still
 for that long — an arrow parked in the middle of a film. Zero or absent is off,
 which is the default. Any use of the pointer brings it straight back: motion, a
