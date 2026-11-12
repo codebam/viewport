@@ -40,6 +40,14 @@ to summarise rather than to duplicate.
   is drawn uncropped instead, with a warning naming the empty clip.
 
 ### Added
+- Per-window `tonemap` rules (Hyprland's rule of the same name): `on` (the
+  default) and `limited` fold the part of a window's range a dimmer output
+  cannot show into the headroom that is left, so highlights keep their detail
+  and mid-tones keep their slope; `clamp` scales the source peak onto the
+  target's and clips what remains; `off` leaves the clip. The mode rides on the
+  surface into the renderer, which carries it in the push block, so an SDR
+  window on an SDR screen takes the ordinary path and pays one comparison for
+  the feature existing.
 - `render:cm_sdr_eotf` — what SDR content is assumed to be encoded with when a
   client declares no image description: `default`/`srgb` (the protocol's
   answer), `gamma22` for undeclared buffers, or `gamma22force` which takes

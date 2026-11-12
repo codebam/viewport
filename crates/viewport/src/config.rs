@@ -1984,6 +1984,36 @@ pub fn rule_flag(
     answer
 }
 
+/// A string-valued window-rule key for a window with these facts.
+///
+/// The same matching and the same first-match order as the rest of the rules:
+/// the first rule that claims the window and names `key` answers.
+pub fn rule_text<'a>(
+    rules: Option<&'a serde_json::Value>,
+    key: &str,
+    app_id: &str,
+    title: &str,
+    tag: Option<&str>,
+) -> Option<&'a str> {
+    let rules = rules.and_then(serde_json::Value::as_array)?;
+    rules.iter().find_map(|rule| {
+        let value = rule.get(key).and_then(serde_json::Value::as_str)?;
+        rule_might_match(rule, app_id, title, tag).then_some(value)
+    })
+}
+
+/// Hyprland's `tonemap` rule values, in the renderer's terms.
+pub fn tonemap_mode(name: &str) -> Option<viewport_vulkan::color::TonemapMode> {
+    use viewport_vulkan::color::TonemapMode;
+    Some(match name {
+        "on" => TonemapMode::On,
+        "off" => TonemapMode::Off,
+        "clamp" => TonemapMode::Clamp,
+        "limited" => TonemapMode::Limited,
+        _ => return None,
+    })
+}
+
 fn rule_might_match(
     rule: &serde_json::Value,
     app_id: &str,
@@ -2120,6 +2150,33 @@ mod tests {
             super::rule_flag(Some(&off), "no_auto_hdr", "mpv", "", None),
             None
         );
+    }
+
+    #[test]
+    fn a_tonemap_rule_is_read_and_spelled_hyprlands_way() {
+        use viewport_vulkan::color::TonemapMode;
+        let rules = serde_json::json!([
+            {"app_id": "mpv", "tonemap": "limited"},
+            {"app_id": "foot", "tonemap": "off"},
+        ]);
+        assert_eq!(
+            super::rule_text(Some(&rules), "tonemap", "mpv", "", None),
+            Some("limited")
+        );
+        assert_eq!(
+            super::tonemap_mode("limited").unwrap(),
+            TonemapMode::Limited
+        );
+        assert_eq!(super::tonemap_mode("clamp").unwrap(), TonemapMode::Clamp);
+        assert_eq!(super::tonemap_mode("on").unwrap(), TonemapMode::On);
+        assert_eq!(super::tonemap_mode("off").unwrap(), TonemapMode::Off);
+        // A window the rules do not name has no opinion.
+        assert_eq!(
+            super::rule_text(Some(&rules), "tonemap", "kitty", "", None),
+            None
+        );
+        // A misspelt value is not a mode.
+        assert_eq!(super::tonemap_mode("compressed"), None);
     }
 
     #[test]

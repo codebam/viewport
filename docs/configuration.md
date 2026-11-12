@@ -2416,14 +2416,23 @@ re-evaluated as the window moves in and out of a group, not only at map time.
 
 The effects this shell can apply are the workspace, floating and its rect,
 `pinned`, `pseudotile`, `swallow`, `capture`, `opacity`, `focus`, `animation`,
-`tearing`, `idle_inhibit`, `decorate`, `no_auto_hdr` and a size floor and
-ceiling. `focus:
+`tearing`, `idle_inhibit`, `decorate`, `no_auto_hdr`, `tonemap` and a size
+floor and ceiling. `focus:
 false` opens a window without taking the keyboard — a launcher, or a
 picture-in-picture window that should appear without interrupting. `animation:
 false` gives it the reduced-motion treatment: no fade, but it still appears.
 `min_width` / `min_height` raise the client's own floor and `max_width` /
 `max_height` cap it, all in logical pixels; zero or absent leaves the client's
 answer.
+
+`tonemap` says what happens to a window whose content is brighter than the
+output can show — HDR content on an SDR screen, or on a dimmer HDR one.
+`on` (the default) folds everything above a knee into the headroom that is left,
+so mid-tones keep their slope and highlights keep their detail; `limited` does
+the same with an earlier knee, for a panel with less headroom; `clamp` scales
+the source peak onto the target's and clips what is left; `off` leaves the range
+to clip. Hyprland's values and Hyprland's default. Nothing moves on an SDR
+screen showing SDR content, because there the ratio of the two ranges is one.
 
 `no_auto_hdr: true` keeps the window from switching its output into HDR when it
 is fullscreen — see [Automatic HDR](#automatic-hdr) below. It is Hyprland's

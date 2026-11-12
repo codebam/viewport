@@ -404,7 +404,7 @@ impl ViewportState {
             .find_by_surface(surface)
             .map(|view| self.views.ancestor_ids_of(view))
             .unwrap_or_default();
-        let (capture_allowed, app_id, title) = self
+        let (capture_allowed, app_id, title, tonemap) = self
             .views
             .find_by_surface(surface)
             .map(|view| {
@@ -416,14 +416,48 @@ impl ViewportState {
                     &title,
                     view.tag.as_deref(),
                 );
-                (allowed, app_id, title)
+                // The per-window tone-mapping rule, resolved here with the
+                // others because this is map time: the facts the rules match
+                // on are settled, and it only has to be worked out once.
+                let tonemap = match crate::config::rule_text(
+                    self.config.rules.as_ref(),
+                    "tonemap",
+                    &app_id,
+                    &title,
+                    view.tag.as_deref(),
+                ) {
+                    Some(name) => crate::config::tonemap_mode(name),
+                    None => None,
+                };
+                (allowed, app_id, title, tonemap)
             })
-            .unwrap_or_else(|| (true, String::new(), String::new()));
+            .unwrap_or_else(|| (true, String::new(), String::new(), None));
         let Some(view) = self.views.find_by_surface_mut(surface) else {
             return;
         };
         view.mapped = true;
         view.capture_allowed = capture_allowed;
+        // The tone-mapping rule rides on the surface, not the view: the
+        // renderer is what applies it, and the renderer only ever sees
+        // surfaces — it reads this at import and stamps it on the texture,
+        // the same way the colour description travels. Absent leaves the
+        // surface unstamped, which the import takes as Hyprland's default,
+        // `on`.
+        if let Some(mode) = tonemap {
+            smithay::wayland::compositor::with_states(surface, |states| {
+                states
+                    .data_map
+                    .insert_if_missing_threadsafe(viewport_vulkan::color::SurfaceTonemap::default);
+                if let Some(held) = states
+                    .data_map
+                    .get::<viewport_vulkan::color::SurfaceTonemap>()
+                {
+                    if let Ok(mut held) = held.0.lock() {
+                        *held = Some(mode);
+                    }
+                }
+            });
+        }
         tracing::debug!(
             "view {}: initial capture policy is {capture_allowed} for app_id {app_id:?}, title {title:?}",
             view.id
