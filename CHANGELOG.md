@@ -47,8 +47,11 @@ to summarise rather than to duplicate.
   (`fade`, `slide`, `slidefade`), with a window's entrance scale composed onto
   the layout's own scale and reported to the compositor. Springs drive the
   frame-driven animations — entrances and the relayout slide; CSS flex
-  transitions keep their curve. `windowsOut`, `layers` and per-workspace
-  `animation` remain for a later change.
+  transitions keep their curve. `layers` and `border` leaves are there too: the
+  shell's own furniture (bar, notifications, panel and screen-share openings)
+  and a window's frame changing colour. `windowsOut` remains for a later
+  change — a closing window is unmapped before the shell hears about it, so the
+  fade has to be compositor-side.
 - Per-workspace `decorate` and `float_gaps` rules (Hyprland's workspace rules of
   the same names). `decorate: false` draws a workspace's windows bare — no
   border, shadow or groupbar — while rounding stays its own rule, and

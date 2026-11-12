@@ -395,6 +395,14 @@ pub struct MotionConfig {
     pub windows_move: Option<MotionCategory>,
     /// Workspaces arriving and leaving — what a switch animates.
     pub workspaces: Option<MotionCategory>,
+    /// The shell's own layers — the bar arriving, a notification, a panel or
+    /// the screen-share dialog opening. Hyprland's `layers` leaf, which on this
+    /// desktop is the shell drawing itself rather than a layer-shell client.
+    pub layers: Option<MotionCategory>,
+    /// The frame around a window changing colour — focus moving, in practice.
+    /// Hyprland's `border` leaf. A flat border has no angle to rotate, so
+    /// `borderangle` and `shadowangle` do not exist here.
+    pub border: Option<MotionCategory>,
 }
 
 /// One leaf of the motion tree.
@@ -2557,7 +2565,9 @@ mod tests {
                     "windows": {"duration": 120},
                     "windows_in": {"style": "popin", "spring": {"mass": 1, "stiffness": 400}},
                     "windows_move": {"duration": 75, "bezier": [0.4, 0, 0.2, 1]},
-                    "workspaces": {"style": "slidefade", "enabled": false}
+                    "workspaces": {"style": "slidefade", "enabled": false},
+                    "layers": {"duration": 200, "ease": "ease-out"},
+                    "border": {"duration": 150}
                 }
             }"#,
         )
@@ -2580,6 +2590,10 @@ mod tests {
         let workspaces = motion.workspaces.expect("workspaces");
         assert_eq!(workspaces.style.as_deref(), Some("slidefade"));
         assert_eq!(workspaces.enabled, Some(false));
+        let layers = motion.layers.expect("layers");
+        assert_eq!(layers.duration, Some(200.0));
+        assert_eq!(layers.ease.as_deref(), Some("ease-out"));
+        assert_eq!(motion.border.and_then(|leaf| leaf.duration), Some(150.0));
     }
 
     #[test]

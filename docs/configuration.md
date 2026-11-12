@@ -1441,7 +1441,9 @@ each:
       "spring": { "mass": 1, "stiffness": 400, "damping": 40 }
     },
     "windows_move": { "duration": 110, "bezier": [0.2, 1, 0.3, 1] },
-    "workspaces": { "style": "slidefade", "duration": 220 }
+    "workspaces": { "style": "slidefade", "duration": 220 },
+    "layers": { "duration": 200, "ease": "ease-out" },
+    "border": { "duration": 150 }
   }
 }
 ```
@@ -1460,6 +1462,15 @@ a fade) and `gnomed` (rises 24 pixels with a fade). `workspaces` styles:
 `fade`, `slide` and `slidefade`, which is what a workspace switch uses to
 bring its windows on screen — `slide` has no fade, `slidefade` is both.
 
+`layers` is the shell's own furniture — the bar arriving, a notification
+opening or leaving, the screen-share dialog — which on this desktop is the shell
+drawing itself rather than a layer-shell client. It accepts `fade` (the only
+style there is, since a measured layer may move no rectangles) and a pace.
+`border` is the frame around a window changing colour, which in practice is
+focus moving. Hyprland's `borderangle` and `shadowangle` do not exist here: the
+frame is a flat colour, not a rotating gradient, so there is no angle to
+animate. Both inherit the block's pace and curve, not `windows`'.
+
 `bezier` is the curve as four numbers — `x1, y1, x2, y2` — for a desk that
 would rather not write the function out; it wins over `ease` in the same
 block. A `spring` is the other way to write a curve: a physical spring that
@@ -1470,8 +1481,16 @@ default to 1, 400 and 40. A spring is honoured by the animations the shell
 drives frame by frame — window entrances and the slide a relayout animates;
 a container's own flex transition is CSS and runs on its curve.
 
-Not implemented yet: `windowsOut` (closing animations), `layers`, and the
-per-workspace `animation` rule, which wants the tree to be complete first.
+Per-workspace `animation` is on the workspace rule itself — see the workspace
+section above.
+
+Not implemented yet: `windowsOut`. A window closing is unmapped by the
+compositor before the shell hears about it, so there is no element to animate;
+making a close fade needs the compositor to keep drawing a surface it no longer
+owns, which is a change on that side of the IPC rather than a leaf here.
+`fadeDim` and `fadePopups` are absent for a similar reason: inactive-window
+dimming is a compositor-side multiplier applied without a transition, and
+popups are drawn by the compositor, not the page.
 
 **At runtime.** `config.motion` on the control socket sets the block
 without touching the file — a wallpaper cycler's cousin for animation, and

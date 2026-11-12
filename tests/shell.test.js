@@ -5737,6 +5737,8 @@ if (mode === 'scrolling') {
       windows_in: { style: 'popin' },
       windows_move: { duration: 75, bezier: [0.25, 0.1, 0.25, 1] },
       workspaces: { style: 'slidefade' },
+      layers: { duration: 140, ease: 'ease-out' },
+      border: { bezier: [0.3, 0, 0.7, 1] },
     } });
   const leafIn = globalThis.__shell.motionLeafForTest('windows_in');
   check('a windowsIn leaf inherits the windows pace',
@@ -5753,6 +5755,20 @@ if (mode === 'scrolling') {
   check('and inherits the root curve it did not name',
     globalThis.__shell.motionLeafForTest('workspaces')?.ease
       === 'cubic-bezier(0, 0, 1, 1)');
+  check('a layers leaf lands on its own properties',
+    motionStyle.getPropertyValue('--anim-layers') === '140ms'
+    && motionStyle.getPropertyValue('--ease-layers') === 'ease-out');
+  check('a border leaf inherits the block pace it did not name',
+    motionStyle.getPropertyValue('--anim-border') === '90ms'
+    && motionStyle.getPropertyValue('--ease-border')
+      === 'cubic-bezier(0.3, 0, 0.7, 1)');
+  emit({ type: 'config', layout: mode, rules: HARNESS_RULES,
+    motion: { enabled: false } });
+  check('turning motion off zeroes the layer and border categories too',
+    motionStyle.getPropertyValue('--anim-layers') === '0ms'
+    && motionStyle.getPropertyValue('--anim-border') === '0ms');
+  emit({ type: 'config', layout: mode, rules: HARNESS_RULES,
+    motion: { enabled: true } });
 
   /* A popin entrance is reported at a scale below one while it opens, so the
      compositor draws the client shrinking into place. */

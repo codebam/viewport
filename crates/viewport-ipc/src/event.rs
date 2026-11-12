@@ -1372,6 +1372,13 @@ pub struct Motion {
     pub windows_move: Option<MotionCategory>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspaces: Option<MotionCategory>,
+    /// The shell's own layers (Hyprland's `layers` leaf): the bar, a
+    /// notification, a panel opening.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layers: Option<MotionCategory>,
+    /// A window's frame changing colour (Hyprland's `border` leaf).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub border: Option<MotionCategory>,
 }
 
 /// One leaf of the motion tree, as the shell receives it.
@@ -2411,6 +2418,22 @@ mod tests {
                 spring: None,
                 enabled: Some(false),
             }),
+            layers: Some(MotionCategory {
+                style: Some("fade".into()),
+                duration: Some(200.0),
+                ease: None,
+                bezier: None,
+                spring: None,
+                enabled: None,
+            }),
+            border: Some(MotionCategory {
+                style: None,
+                duration: Some(150.0),
+                ease: None,
+                bezier: None,
+                spring: None,
+                enabled: None,
+            }),
         };
         let value = serde_json::to_value(&motion).expect("serialises");
         assert_eq!(value["bezier"], serde_json::json!([0.2, 0.9, 0.3, 1.0]));
@@ -2418,6 +2441,9 @@ mod tests {
         assert_eq!(value["windows_in"]["style"], "popin");
         assert_eq!(value["windows_in"]["spring"]["stiffness"], 400.0);
         assert_eq!(value["workspaces"]["enabled"], false);
+        assert_eq!(value["layers"]["style"], "fade");
+        assert_eq!(value["layers"]["duration"], 200.0);
+        assert_eq!(value["border"]["duration"], 150.0);
         assert!(
             value.get("windows_move").is_none(),
             "a leaf that says nothing is not sent"

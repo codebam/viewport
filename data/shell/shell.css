@@ -133,14 +133,16 @@
    off by name further down, because a zero-length animation can still show its
    from-state for the frame it occupies. */
 @media (prefers-reduced-motion: reduce) {
-  :root { --anim: 0ms; --anim-slow: 0ms; --anim-move: 0ms; }
+  :root { --anim: 0ms; --anim-slow: 0ms; --anim-move: 0ms;
+    --anim-layers: 0ms; --anim-border: 0ms; }
 }
 
 /* The same answer from the config file's `motion.enabled`. A class rather than
    an inline property because applyMotion has to be able to take the durations
    off again without leaving a zero behind when the setting is turned back on;
    the rule is written with the media query above for the same reason. */
-:root.motion-off { --anim: 0ms; --anim-slow: 0ms; --anim-move: 0ms; }
+:root.motion-off { --anim: 0ms; --anim-slow: 0ms; --anim-move: 0ms;
+  --anim-layers: 0ms; --anim-border: 0ms; }
 
 * { box-sizing: border-box; }
 
@@ -1909,8 +1911,10 @@ html.behind .desktop {
     top var(--anim) var(--ease),
     width var(--anim) var(--ease),
     height var(--anim) var(--ease),
-    outline-color var(--anim) var(--ease),
-    border-color var(--anim) var(--ease);
+    /* The frame changing colour — focus moving — is the one transition the
+       motion tree's `border` leaf owns. */
+    outline-color var(--anim-border, var(--anim)) var(--ease-border, var(--ease)),
+    border-color var(--anim-border, var(--anim)) var(--ease-border, var(--ease));
 }
 
 /* Mid-FLIP: the window has just been offset back to where it came from, and

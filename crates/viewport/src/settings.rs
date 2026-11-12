@@ -837,6 +837,8 @@ mod tests {
                 windows_in: None,
                 windows_move: None,
                 workspaces: None,
+                layers: None,
+                border: None,
             }),
             group: Some(viewport_ipc::event::Group {
                 auto_group: Some(true),

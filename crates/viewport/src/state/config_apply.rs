@@ -271,6 +271,16 @@ impl ViewportState {
                     file.motion.workspaces.as_ref(),
                     &MOTION_WORKSPACE_STYLES,
                 ),
+                layers: motion_category(
+                    "config.motion.layers",
+                    file.motion.layers.as_ref(),
+                    &MOTION_LAYER_STYLES,
+                ),
+                border: motion_category(
+                    "config.motion.border",
+                    file.motion.border.as_ref(),
+                    &[],
+                ),
             };
             for (name, value, fallback) in [
                 ("duration", &mut motion.duration, prior.duration),
@@ -1275,6 +1285,7 @@ pub(crate) fn input_event_map(
 /// config would look like it had been ignored, which it would have been.
 const MOTION_WINDOW_STYLES: [&str; 6] = ["fade", "popin", "zoom", "slide", "slidefade", "gnomed"];
 const MOTION_WORKSPACE_STYLES: [&str; 3] = ["fade", "slide", "slidefade"];
+const MOTION_LAYER_STYLES: [&str; 1] = ["fade"];
 
 /// One leaf of the motion tree, validated field by field.
 ///

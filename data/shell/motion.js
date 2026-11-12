@@ -199,14 +199,43 @@ function applyMotion(motion) {
      window's transform transition is the one CSS animation a motion leaf
      owns — see `.window` in shell.css. Everything else that springs or
      styles is driven from JavaScript. */
+  /* The leaves that are not about windows: the shell's own furniture and the
+     frame around a window. They inherit the block's pace and curve and nothing
+     from `windows`. */
+  for (const name of ['layers', 'border']) {
+    motionLeaves.set(name, resolveMotionLeaf(name, motion[name], null, treeRoot));
+  }
+
   const move = motionLeaves.get('windows_move');
+  const layers = motionLeaves.get('layers');
+  const border = motionLeaves.get('border');
   if (motion.enabled === false || systemReduced) {
-    root.style.setProperty('--anim-move', '0ms');
-    root.style.setProperty('--ease-move', 'linear');
+    for (const name of ['move', 'layers', 'border']) {
+      root.style.setProperty(`--anim-${name}`, '0ms');
+      root.style.setProperty(`--ease-${name}`, 'linear');
+    }
   } else {
     root.style.setProperty('--anim-move', `${leafDurationMs(move, '--anim')}ms`);
     root.style.setProperty('--ease-move', leafCurve(move));
+    root.style.setProperty('--anim-layers',
+      `${leafDurationMs(layers, '--anim-slow')}ms`);
+    root.style.setProperty('--ease-layers', leafCurve(layers));
+    root.style.setProperty('--anim-border',
+      `${leafDurationMs(border, '--anim')}ms`);
+    root.style.setProperty('--ease-border', leafCurve(border));
   }
+}
+
+/* The layers leaf's pace in seconds and its curve, for the tweens that
+   animate the shell's own furniture — the bar arriving, a notification, the
+   screen-share dialog. Read here rather than from the cascade so the leaf and
+   the CSS properties beside it are one answer. */
+function layerSeconds(fallback = '--anim-slow') {
+  return leafDurationMs(motionLeaf('layers'), fallback) / 1000;
+}
+
+function layerEase() {
+  return leafCurve(motionLeaf('layers'));
 }
 
 /* A number the config can prove: anything else is absent, not zero. */
@@ -459,7 +488,7 @@ function animateBarIn(output) {
      to reveal. */
   if (!motionAllowed() || !output.barEl) return;
 
-  const slow = motionSeconds('--anim-slow');
+  const slow = layerSeconds();
   const halves = [output.barEl.querySelector('.bar-left'),
     output.barEl.querySelector('.bar-right')].filter(Boolean);
   /* Only what is on screen. `.module:empty` collapses a status the compositor
@@ -471,7 +500,7 @@ function animateBarIn(output) {
 
   const timeline = gsap.timeline();
   timeline.fromTo(output.barEl, { opacity: 0 }, {
-    opacity: 1, duration: slow, ease: motionEase(), clearProps: 'opacity',
+    opacity: 1, duration: slow, ease: layerEase(), clearProps: 'opacity',
   });
   if (items.length > 0) {
     /* Four pixels, and not more. Under 'auto' the compositor draws the bar
@@ -483,7 +512,7 @@ function animateBarIn(output) {
       opacity: 1,
       y: 0,
       duration: slow,
-      ease: motionEase(),
+      ease: layerEase(),
       /* `amount`, not `each`: the whole sequence takes this long however many
          modules there are, so a bar with the network module showing does not
          take visibly longer to arrive than one without it. */
@@ -586,8 +615,8 @@ function animateNotificationIn(el) {
 
   gsap.from(el, {
     ...notificationCollapsed(),
-    duration: motionSeconds('--anim-slow'),
-    ease: motionEase(),
+    duration: layerSeconds(),
+    ease: layerEase(),
     clearProps: NOTIFICATION_BOX.join(','),
     /* The strip grew, and it is growing for the length of the tween. The
        overlay rect is measured off the container, so it has to be re-measured
@@ -631,8 +660,8 @@ function animateNotificationOut(el, remove) {
      computed values itself, which is why only the destination is named. */
   gsap.to(el, {
     ...notificationCollapsed(),
-    duration: motionSeconds('--anim'),
-    ease: motionEase(),
+    duration: layerSeconds('--anim'),
+    ease: layerEase(),
     onUpdate: reportNotificationRect,
     onComplete: done,
   });
@@ -656,17 +685,17 @@ function animateNotificationOut(el, remove) {
 function animateScreencastIn(dialog, rows) {
   if (!motionAllowed()) return;
 
-  const slow = motionSeconds('--anim-slow');
+  const slow = layerSeconds();
   const timeline = gsap.timeline();
   timeline.fromTo(dialog, { opacity: 0 }, {
-    opacity: 1, duration: slow, ease: motionEase(), clearProps: 'opacity',
+    opacity: 1, duration: slow, ease: layerEase(), clearProps: 'opacity',
   });
   if (rows.length > 0) {
     timeline.fromTo(rows, { opacity: 0, y: 8 }, {
       opacity: 1,
       y: 0,
       duration: slow,
-      ease: motionEase(),
+      ease: layerEase(),
       stagger: { amount: slow * 0.8 },
       clearProps: 'opacity,transform',
     }, slow * 0.25);
