@@ -33,6 +33,11 @@ to summarise rather than to duplicate.
   opaque, with a warning naming how long it waited. The watch survives a blank
   or a lock rather than being lost with the screen. Dimming a layout does is
   untouched: a window the shell means to keep dim rests above zero.
+- The other way the same symptom appears is now covered too: a `view.layout`
+  whose crop for the window has no area at all cuts every surface away while
+  the shell's frame stays drawn. That is never a crop worth honouring — it
+  means the shell's rectangle and its reserved area disagreed — so the window
+  is drawn uncropped instead, with a warning naming the empty clip.
 
 ### Added
 - The rest of Hyprland's group rules: `group.drag_into_group` (a window dropped

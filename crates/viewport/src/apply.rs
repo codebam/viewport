@@ -2350,6 +2350,36 @@ fn configure_size(box_: (i32, i32), min: (i32, i32)) -> (i32, i32) {
     (box_.0.max(min.0), box_.1.max(min.1))
 }
 
+/// Drop a clip that cuts everything away.
+///
+/// A window is cropped to the hole the shell drew for it so that a window
+/// scrolled half off its column, or mid-animation, cannot paint over its
+/// neighbours. A clip of zero area is that same idea taken to the point of
+/// drawing nothing: the frame remains, the contents do not, and the desktop
+/// shows through — the reported "window I can see the wallpaper through". The
+/// empty intersection means the shell's rectangle and its reserved area
+/// disagreed, not that somebody wanted a window cropped into nothing, so the
+/// window is drawn uncropped instead. At worst that is a rectangle standing a
+/// little proud of the area it should have been kept inside; at best it is the
+/// window somebody was looking for.
+fn usable_clip(
+    id: u32,
+    clip: Option<viewport_ipc::geometry::Box>,
+) -> Option<viewport_ipc::geometry::Box> {
+    let clip = clip?;
+    if clip.width > 0 && clip.height > 0 {
+        return Some(clip);
+    }
+    tracing::warn!(
+        "view {id}: the shell clipped it to nothing ({}x{} at {:+}{:+}); drawing it uncropped",
+        clip.width,
+        clip.height,
+        clip.x,
+        clip.y
+    );
+    None
+}
+
 fn view_layout(state: &mut ViewportState, mut layout: viewport_ipc::request::ViewLayout) {
     // Out of the page's coordinates and into the layout's, before anything is
     // resolved against a rectangle that is already in the layout's.
@@ -2389,10 +2419,18 @@ fn view_layout(state: &mut ViewportState, mut layout: viewport_ipc::request::Vie
     let Some(view) = state.views.get(layout.id) else {
         return;
     };
-    let Some(resolved) = layout.resolve(view.box_) else {
+    let Some(mut resolved) = layout.resolve(view.box_) else {
         // A degenerate box is dropped without an error, as in the C build.
         return;
     };
+    // A clip with no area in it cuts every surface the window has away. Its
+    // frame is the shell's and stays drawn, so what is left is exactly the
+    // reported see-through window: a frame with the desktop showing through it.
+    // It is never a crop worth honouring — the shell computes the clip from the
+    // hole it drew against the area reserved for windows, so an empty
+    // intersection means that area and the rectangle disagree, and cropping to
+    // it is the one answer that cannot be right.
+    resolved.clip = usable_clip(layout.id, resolved.clip);
 
     // Where the window ended up, in the layout's coordinates, and where the
     // page asked for it. The first question whenever a window is on the wrong
@@ -3199,6 +3237,21 @@ fn install_binding(bindings: &mut Vec<crate::binding::Binding>, chord: &str, act
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_clip_with_no_area_is_not_a_crop() {
+        let full = viewport_ipc::geometry::Box::new(10, 20, 300, 200);
+        assert_eq!(super::usable_clip(1, Some(full)), Some(full));
+        assert_eq!(
+            super::usable_clip(1, Some(viewport_ipc::geometry::Box::new(10, 20, 0, 200))),
+            None
+        );
+        assert_eq!(
+            super::usable_clip(1, Some(viewport_ipc::geometry::Box::new(10, 20, 300, 0))),
+            None
+        );
+        assert_eq!(super::usable_clip(1, None), None);
+    }
 
     #[test]
     fn a_client_is_never_configured_below_its_minimum() {
