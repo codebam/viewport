@@ -405,6 +405,29 @@ impl Captures for smithay::backend::renderer::gles::GlesRenderer {
     type Buffer = smithay::backend::renderer::gles::GlesRenderbuffer;
 }
 
+/// A renderer that can apply an output's display colour cube.
+///
+/// Vulkan samples one; GLES has no cube path and says so by doing nothing, so
+/// an output with a profile on GLES keeps the parametric conversion rather
+/// than being drawn wrongly.
+pub trait ColourCube {
+    /// Make the next frame be drawn in the output's colour space. `cube`
+    /// carries its token; a renderer already holding that cube does nothing.
+    fn set_colour_cube(&mut self, cube: Option<(u64, &[[f32; 4]])>);
+}
+
+impl ColourCube for VulkanRenderer {
+    fn set_colour_cube(&mut self, cube: Option<(u64, &[[f32; 4]])>) {
+        if let Err(e) = self.set_color_lut(cube) {
+            tracing::warn!("an output's ICC transform was refused: {e:#}");
+        }
+    }
+}
+
+impl ColourCube for smithay::backend::renderer::gles::GlesRenderer {
+    fn set_colour_cube(&mut self, _cube: Option<(u64, &[[f32; 4]])>) {}
+}
+
 /// Do the same thing with whichever renderer this is.
 ///
 /// The body is written once and compiled twice, which is what keeps the two
@@ -3514,6 +3537,7 @@ impl ViewportState {
             + smithay::backend::renderer::Bind<<R as Captures>::Buffer>
             + smithay::backend::renderer::Offscreen<<R as Captures>::Buffer>
             + Captures
+            + ColourCube
             + crate::background_effect::BackgroundEffectRenderer,
         <R as smithay::backend::renderer::RendererSuper>::TextureId: Clone + Send + Sync + 'static,
         <R as smithay::backend::renderer::RendererSuper>::Error: Send + Sync + 'static,
@@ -3684,6 +3708,14 @@ impl ViewportState {
         let mut submitted = false;
         // Whether the device refused it. See the error arms below.
         let mut failed = false;
+        // The output's colour transform: the cube its ICC profile was baked
+        // into. Stated before every frame because the renderer serves every
+        // output; the token makes it free while the profile has not changed.
+        // Beyond this point the frame is drawn in the panel's own space rather
+        // than sRGB.
+        let cube = self.icc_cube_for(&output.name());
+        renderer.set_colour_cube(cube);
+
         let result = surface.drm_output.render_frame(
             renderer,
             &elements,

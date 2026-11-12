@@ -999,19 +999,32 @@ impl ViewportState {
         match crate::icc::DisplayTransform::for_profile(&bytes) {
             Some(transform) => {
                 let grey = transform.map([0.5, 0.5, 0.5]);
+                let cube: Vec<[f32; 4]> = transform.lut().to_vec();
+                let token = self.next_icc_cube_token;
+                self.next_icc_cube_token = self.next_icc_cube_token.saturating_add(1);
                 tracing::info!(
                     "{name}: ICC colour transform ready — {} cube entries, sRGB grey \
                      becomes {:.3}, {:.3}, {:.3}",
-                    transform.lut().len(),
+                    cube.len(),
                     grey[0],
                     grey[1],
                     grey[2],
                 );
+                self.icc_cubes.insert(
+                    name.to_owned(),
+                    crate::icc::Cube {
+                        token,
+                        samples: std::sync::Arc::new(cube),
+                    },
+                );
             }
-            None => tracing::debug!(
-                "{name}: {path} describes no RGB matrix-and-curve transform; only its \
-                 calibration is used"
-            ),
+            None => {
+                tracing::debug!(
+                    "{name}: {path} describes no RGB matrix-and-curve transform; only its \
+                     calibration is used"
+                );
+                self.icc_cubes.remove(name);
+            }
         }
         match crate::icc::vcgt(&bytes) {
             Some(ramp) => {

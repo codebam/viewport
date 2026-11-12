@@ -987,3 +987,14 @@ mod transform_tests {
         assert!(DisplayTransform::for_profile(&profile(&singular, &srgb_curve())).is_none());
     }
 }
+
+/// A display transform, baked and ready for the renderer.
+///
+/// The token names this cube to the renderer, which skips uploading one it has
+/// already been given: a profile does not change between frames, and a
+/// compositor drawing two outputs with different profiles alternates between
+/// their cubes every frame.
+pub struct Cube {
+    pub token: u64,
+    pub samples: std::sync::Arc<Vec<[f32; 4]>>,
+}

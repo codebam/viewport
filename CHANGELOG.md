@@ -40,6 +40,15 @@ to summarise rather than to duplicate.
   is drawn uncropped instead, with a warning naming the empty clip.
 
 ### Added
+- ICC display profiles are applied, not just read. The transform a profile
+  describes is baked into a 33³ cube; the Vulkan renderer uploads it once per
+  profile and samples it after the parametric conversion, so each output is
+  drawn in its own panel's space rather than sRGB. A display without a profile
+  keeps exactly the pipelines it had — the cube variants are separate pipelines
+  built on demand, the compositor states the frame's cube before every draw,
+  and the renderer skips an upload for a cube it already holds. GLES and YCbCr
+  video keep the parametric path; both gaps are written down in the renderer's
+  README.
 - The rest of Hyprland's group rules: `group.drag_into_group` (a window dropped
   on a group becomes one of its tabs), `group.merge_groups_on_drag` (drag a
   group by its tab strip and drop it on another to merge the two), and

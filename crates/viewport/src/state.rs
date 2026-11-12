@@ -1134,6 +1134,16 @@ pub struct ViewportState {
     /// whatever a client asks for. Kept separately so a night-light client
     /// taking over — and letting go — does not lose the monitor profile.
     pub gamma_vcgt: std::collections::HashMap<String, crate::gamma::Ramp>,
+    /// The colour cube each output's ICC profile was baked into, with the
+    /// token that names it to the renderer.
+    ///
+    /// Kept here rather than baked per frame: the cube is a couple of hundred
+    /// kilobytes of floats, and the renderer skips the upload for a token it
+    /// already holds.
+    pub icc_cubes: std::collections::HashMap<String, crate::icc::Cube>,
+    /// The next token handed to a cube. Never reused, so replacing a profile
+    /// with an identical one is still a different cube to the renderer.
+    pub next_icc_cube_token: u64,
     /// wlr-output-management: what kanshi, wlr-randr and wdisplays speak.
     /// Smithay implements it nowhere, so the dispatch is in
     /// `output_management.rs`.
@@ -2051,6 +2061,8 @@ impl ViewportState {
             syncobj_state: None,
             gamma_ramps: std::collections::HashMap::new(),
             gamma_vcgt: std::collections::HashMap::new(),
+            icc_cubes: std::collections::HashMap::new(),
+            next_icc_cube_token: 1,
             _cursor_shape_state: cursor_shape_state,
             _content_type_state: content_type_state,
             _alpha_modifier_state: alpha_modifier_state,
@@ -4623,6 +4635,16 @@ impl ViewportState {
     /// path instead — see `settle` and `sync_foreign_outputs_for`.
     /// `set_outputs` diffs against what it last said, so an unchanged pass
     /// sends nothing.
+    /// The colour cube for an output, with the token that names it.
+    ///
+    /// `None` for an output whose profile describes no matrix-and-curve
+    /// transform, which is what leaves the parametric path in place.
+    pub fn icc_cube_for(&self, name: &str) -> Option<(u64, &[[f32; 4]])> {
+        self.icc_cubes
+            .get(name)
+            .map(|cube| (cube.token, cube.samples.as_slice()))
+    }
+
     pub fn sync_foreign_outputs(&mut self) {
         let ids: Vec<u32> = self.views.iter().map(|view| view.id).collect();
         self.sync_foreign_outputs_for(&ids);

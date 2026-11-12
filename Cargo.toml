@@ -62,7 +62,7 @@ viewport-web = { path = "crates/viewport-web" }
 # there, one bumping the revision here — and `cargo test --workspace` no longer
 # runs its tests, which run in its own CI instead. See the `[patch]` at the
 # bottom of this file for the other half of the arrangement.
-viewport-vulkan = { git = "https://github.com/codebam/viewport-vulkan.git", rev = "379121517a399af98e1863468ee02956694e6708" }
+viewport-vulkan = { git = "https://github.com/codebam/viewport-vulkan.git", rev = "d90fbe97e60c557f3e4c94898b3a9fa84f112aa7" }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
