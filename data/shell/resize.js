@@ -173,6 +173,14 @@ const FLOAT_RESIZE_STEP = 40;
 function resizeFocused(direction) {
   if (focusedId == null) return;
 
+  /* A maximized window is rendered at the whole output, outside every
+     container this shifts weights in — resize mode on it changes nothing,
+     exactly as the scrolling column cycle could not reach the window (see
+     cycleColumnWidth). A resize is the user taking the size back, so the
+     first step leaves maximize, and the window returns to the tree the
+     step is about to edit. */
+  if (isMaximized(focusedId)) setMaximized(focusedId, false);
+
   /* On the canvas a window's place is its size and nothing shares space with
      it, so resize mode changes that rather than a weight no renderer there
      reads — the same branch `window.move` has, and for the same reason.

@@ -8275,6 +8275,21 @@ if (mode !== 'scrolling') {
   check('a client unmaximize request restores the old placement',
     !floaty.el.classList.contains('maximized') && floaty.el.style.left !== '');
 
+  /* A resized-while-maximized column cannot move: the maximized window is
+     rendered outside the strip at the whole output, so cycling its column
+     width changes nothing on screen (Steam, which asks for
+     _NET_WM_STATE_MAXIMIZED on launch, sat at 100% through every press).
+     The cycle leaves maximize first, so the window comes back to the
+     column the preset is about to set and the resize reaches it. */
+  before = sent.length;
+  emit({ type: 'shell.command', command: 'window.maximized', args: [] });
+  emit({ type: 'view.focused', id: 82 });
+  emit({ type: 'shell.command', command: 'layout.column.width', args: [] });
+  check('an X client\'s own maximize does not swallow the width cycle',
+    !floaty.el.classList.contains('maximized') &&
+    sent.slice(before).some((m) => m.type === 'view.maximized' &&
+      m.id === 82 && !m.maximized));
+
   /* Fullscreen over a floating window is the case the !important in shell.css
      exists for: the inline rect is left where it was, and the rule has to win
      over it without the JS stripping and restoring four properties. */

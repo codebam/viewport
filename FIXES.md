@@ -421,3 +421,30 @@ and the JavaScript shell suites under `tests/`.
   `docs/debugging.md` now records. A nested or DRM session keeps its
   sounds. Covered by a unit test (`for_run(true)` returns `None` without
   touching PipeWire, so it holds with or without a sound server).
+
+- [ ] **59. The lock should go black for ten seconds before it locks.**
+  Requested (2026-11-12): after the lock fires, the screen should go
+  black for 10 seconds before the session is actually locked, so the
+  lock is visible as a black screen first rather than an instant
+  lock. The grace period belongs in the lock path (`state/lock_power.rs`
+  / `handlers/session_lock.rs`), not in the idle hook alone, so every
+  way of asking for a lock (idle, `session.lock`, the settings panel)
+  gets the same ten seconds; it must be interruptible by activity only
+  during the black phase, and the countdown must not re-arm on unrelated
+  input.
+
+- [x] **60. Resize commands cannot move a client that maximized itself.
+  Fixed.** The Steam X window asks for `_NET_WM_STATE_MAXIMIZED` on launch.
+  The compositor grants it and the shell marks it maximized, and a
+  maximized window is rendered pulled out of its column at the whole
+  output. The scrolling `Mod4+r` cycle (`layout.column.width`), the
+  matching height cycle, and the tiling resize step then change only a
+  column the window is no longer drawn in, so the window sat at 100%
+  through every press while Big Picture's own rectangle kept answering.
+  The first visible symptom in the debug log: the shell asks 1261 (the
+  0.5 column) and 4 ms later 2526 (full) with no user input between them.
+  Fixed by having a resize command leave maximize first — the resize is
+  the user taking the size back from the state the client chose — so the
+  cycle reaches the window in the same step. Covered by a shell test
+  asserting a client-maximized window loses both the class and the
+  compositor state when the width cycle fires.

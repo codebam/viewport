@@ -1500,6 +1500,15 @@ function cycleColumnWidth() {
   const workspace = focusedWorkspace();
   if (workspace === null) return;
 
+  /* A maximized window is drawn outside the strip at the whole output, so
+     cycling the column it sits in changes nothing about what is on screen —
+     the window stays at 100% however many presets pass. A client can enter
+     that state on its own (Steam asks for _NET_WM_STATE_MAXIMIZED on
+     launch), and nothing about the window's own size says so. Resizing is
+     the user taking the size back, so the cycle leaves maximize first; the
+     client keeps no say about a state it did not ask to keep. */
+  if (isMaximized(focusedId)) setMaximized(focusedId, false);
+
   const root = workspaceRoot(workspace);
   const column = root.children[columnIndexOf(workspace, focusedId)];
   if (!column) return;
@@ -1513,6 +1522,11 @@ function cycleColumnWidth() {
 function cycleWindowHeight() {
   const workspace = focusedWorkspace();
   if (workspace === null) return;
+
+  // A maximized window's height is the output's, like its width: cycling
+  // the share cannot reach it. See cycleColumnWidth for why the resize
+  // leaves maximize first.
+  if (isMaximized(focusedId)) setMaximized(focusedId, false);
 
   const found = findLeaf(focusedId);
   if (!found || found.parent.children.length < 2) return;
