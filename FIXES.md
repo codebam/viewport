@@ -330,9 +330,9 @@ and the JavaScript shell suites under `tests/`.
   address always, with `tests/xwayland-xtest-portal.test.sh` asserting the
   request arrives, that the offer is the cursor alone, and that it is refused
   when nothing can draw a chooser. Found and fixed with
-  `.hermes/plans/2026-10-17_0012-steam-cursor-control.md`; the grant half —
-  Enter, the EIS socket, the cursor moving — is the live acceptance run, since
-  a headless shell cannot commit the DMA-BUF the chooser needs to exist.
+  `.hermes/plans/2026-10-17_0012-steam-cursor-control.md`. Confirmed live
+  (2026-11-12): an `xdotool` motion against the compositor's Xwayland raised
+  the portal prompt, and granting it moved the real cursor.
 
 ## IPC coverage (found while closing headless gaps, 2026-11-11)
 
