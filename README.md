@@ -17,10 +17,10 @@ UI to a DMA-BUF. Neither ever hands a pixel to the CPU.
 
 <p align="center">
   <a href="https://pub-b1fc9705d9cd4b50885284c3ede52d27.r2.dev/viewport-demo-1080p.mp4">
-    <img src="docs/img/demo-poster.jpg" width="640" alt="Viewport demo — four tiled terminals under the web shell" />
+    <img src="docs/img/demo-poster.jpg" width="640" alt="Viewport demo: three tiled terminals under the web shell" />
   </a>
   <br />
-  <em><a href="https://files.seanbehan.ca/viewport-demo-1080p.mp4">Watch the demo</a> (69s, no audio)</em>
+  <em><a href="https://pub-b1fc9705d9cd4b50885284c3ede52d27.r2.dev/viewport-demo-1080p.mp4">Watch the demo</a> (77s, no audio)</em>
 </p>
 
 Which engine is a choice: WPE inside the compositor, WebKitGTK in a process of
