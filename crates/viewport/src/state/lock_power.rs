@@ -74,6 +74,14 @@ impl ViewportState {
             return;
         }
 
+        // Said out loud because "it locked without going black" is otherwise
+        // indistinguishable from a delay that was never loaded: the setting
+        // lives in `idle.lock_delay`, and a lock that skips the black phase
+        // is one whose `idle_settings.lock_delay` is absent or zero.
+        tracing::info!(
+            "lock: no delay configured (idle.lock_delay={:?}); locking at once",
+            self.idle_settings.lock_delay
+        );
         self.perform_lock();
     }
 
