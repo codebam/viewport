@@ -4275,7 +4275,15 @@ impl ViewportState {
             // apply: activation is what the client is told about, and acting
             // before it would capture a pointer the client is not expecting.
             if !constraint.is_active() {
-                return;
+                // The pointer is over this surface now — this whole
+                // resolution is keyed on `under` — so this is the moment
+                // the protocol wants the activation. A native client can
+                // ask for a constraint while the pointer is not yet over
+                // it (`new_constraint` refuses to activate then), and
+                // nothing else ever activates it: without this the
+                // constraint stays inactive for the whole session and a
+                // confined cursor leaves at the output edge.
+                constraint.activate();
             }
             match &*constraint {
                 PointerConstraint::Locked(_) => locked = true,

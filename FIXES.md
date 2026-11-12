@@ -383,20 +383,27 @@ and the JavaScript shell suites under `tests/`.
   FANTASY VII REBIRTH the grab itself takes hold — the cursor is
   captured — but when the pointer reaches the right edge of the screen
   it crosses onto the next monitor instead of staying confined. So
-  pointer lock works and pointer confinement does not. The escape
-  window is the Xwayland grab-mirror churn: the constraint is destroyed
-  and rebuilt mid-capture (entry 53), and a motion arriving in the
-  rebuild window resolves to no confinement at all, so the cursor gets a
-  free move and `cursor::clamp` — which only clamps when the target is
-  outside every output — lets it onto the neighbour. Fixed by
+  pointer lock works and pointer confinement does not. The window was a
+  native Wayland client doing HDR (`wp_color_management_v1`), not an
+  Xwayland one, so the escape is not the Xwayland half of entry 53's
+  churn. The hole is activation timing: `new_constraint` activates a
+  constraint only when the pointer happens to be over its surface at
+  the request, and nothing ever activates it later. A native client
+  that asks once while the pointer is not yet over the surface keeps an
+  inactive constraint for the whole session, and an inactive constraint
+  confines nothing, so the cursor gets a free move at the edge and
+  `cursor::clamp` — which only clamps when the target is outside every
+  output — lets it onto the neighbour. Fixed by activating a constraint
+  this motion has the pointer over (the moment the protocol wants it),
+  and — the Xwayland half, kept for the same symptom there — by
   remembering the last resolved confinement (`remembered_confinement`)
   and holding it while the pointer is still inside its region, clearing
-  it only when the constraint is genuinely removed (a `PointerLeave`
-  keeps it, so walking off and back in does not strand the cursor).
-  `pointer::region_contains` is the inside test, with a unit test that
-  it agrees with `confine` exactly at the far edges — the column escape
-  starts from. The live-game acceptance is a multi-output capture
-  dance pushing a confined pointer hard right past the edge (the
+  it only on genuine removal (a `PointerLeave` keeps it, so walking off
+  and back in does not strand the cursor). `pointer::region_contains` is
+  the inside test, with a unit test that it agrees with `confine`
+  exactly at the far edges — the column escape starts from. The
+  live-game acceptance is a multi-output capture dance pushing a
+  confined pointer hard right past the edge (the
   `tests/xwayland-capture-overlay.test.sh` shape) and asserting it
   never appears on the neighbour.
 

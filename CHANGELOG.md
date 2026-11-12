@@ -36,9 +36,12 @@ to summarise rather than to duplicate.
   verified against the npm tarball.
 
 ### Fixed
-- A confined cursor no longer escapes at the output edge during
-  Xwayland's grab-mirror churn. The last resolved confinement is
-  remembered and held while the pointer stays inside its region, instead
+- A confined cursor no longer escapes at the output edge. A constraint
+  requested while the pointer is not yet over its surface is now
+  activated on the first motion with the pointer over it (before, it stayed
+  inactive forever, which a native Wayland client requesting once hits
+  while Xwayland's re-requests masked it), and the last resolved confinement
+  is remembered and held while the pointer stays inside its region, instead
   of a rebuild-window motion resolving to no confinement and crossing onto
   the next monitor. Cleared when the constraint is genuinely removed.
 - `config.gaps` and `config.border` refused messages used to partly apply:
