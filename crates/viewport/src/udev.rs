@@ -3624,6 +3624,20 @@ impl ViewportState {
         // bug gets written.
         let elements = crate::render::build(&frame, renderer);
 
+        // Which views this pass carries. A submitted frame is the only proof a
+        // window reached the screen, and it is what `settle_undrawn_views` is
+        // waiting for — so the ids are taken here, before the borrows below,
+        // and stamped only if the flip is actually queued.
+        let carried: Vec<u32> = {
+            use smithay::wayland::seat::WaylandFocus as _;
+            frame
+                .windows
+                .iter()
+                .filter_map(|entry| entry.window.wl_surface())
+                .filter_map(|surface| self.views.find_by_surface(&surface).map(|view| view.id))
+                .collect()
+        };
+
         // A composite of exactly this list, for when the screen and the log
         // disagree.
         if let Some(path) = output_dump_target() {
@@ -3824,6 +3838,16 @@ impl ViewportState {
         if submitted {
             if let Some(log) = udev.frame_log.as_mut() {
                 log.flips += 1;
+            }
+            // The frame is in the air and it carries these windows, which is
+            // the moment one stops being owed a draw. See
+            // `ViewportState::settle_undrawn_views`.
+            let now = std::time::Instant::now();
+            for id in carried {
+                if let Some(view) = self.views.get_mut(id) {
+                    view.drawn_at = Some(now);
+                    view.redraw_asks = 0;
+                }
             }
         }
         if failed {

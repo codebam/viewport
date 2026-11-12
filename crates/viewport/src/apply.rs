@@ -2583,6 +2583,17 @@ fn view_layout(state: &mut ViewportState, mut layout: viewport_ipc::request::Vie
         .space
         .map_element(window, (resolved.box_.x, resolved.box_.y), false);
 
+    // The frame that will carry this rectangle has not been drawn yet, so a
+    // `drawn_at` from before it says nothing about it. Recording the debt here
+    // is what lets `settle_undrawn_views` catch the case where no frame ever
+    // pays it out — the new window that stays missing until something else
+    // forces a redraw. See the note on that function.
+    state.undrawn_pending = true;
+    if let Some(view) = state.views.get_mut(id) {
+        view.placed_at = Some(std::time::Instant::now());
+        view.redraw_asks = 0;
+    }
+
     // Mapping puts a window on top of the stack, and the shell lays every
     // window out on every frame of an animation — so the last one it happened
     // to send ended up in front, which is a floating window disappearing

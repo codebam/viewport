@@ -1315,6 +1315,14 @@ fn run() -> Result<()> {
         let _ = state.display_handle.flush_clients();
         let flushed = since(at);
 
+        // A window the shell has placed but no submitted frame has carried:
+        // the check that catches a new window staying invisible. A bool on the
+        // ordinary turn — see `settle_undrawn_views` for what it costs when it
+        // is true, and for why it stops on its own.
+        if state.undrawn_pending {
+            state.settle_undrawn_views();
+        }
+
         if let Some(log) = state.udev.as_mut().and_then(|udev| udev.frame_log.as_mut()) {
             log.loop_turns += 1;
             log.render_nanos += rendered;

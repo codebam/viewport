@@ -11,6 +11,19 @@ to summarise rather than to duplicate.
 
 ## [Unreleased]
 
+### Fixed
+- A window the shell placed no longer stays invisible when no submitted frame
+  ever carries it. The compositor now records when a `view.layout` placed a
+  window and when a queued flip last carried it, and a placement the frames
+  have not caught up with after 250ms gets a warning, a forced redraw and a
+  second request before it is reported — with whether the rectangle overlaps
+  any output at all, which tells a shell placement fault from a frame-building
+  one. This is the reported "new window is not drawn until Mod4 animates the
+  bar in": the window was placed, so the placement watchdog had stood down,
+  and a client that had already painted had nothing left to commit. Bounded to
+  three steps per placement, so a genuinely undrawable window costs log lines
+  rather than a redraw per turn of the loop.
+
 ### Added
 - `keyboard.numlock_by_default` latches Num Lock on when the session starts
   (Hyprland's `input:numlock_by_default`). A startup setting applied once after

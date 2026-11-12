@@ -770,6 +770,13 @@ pub struct ViewportState {
     /// pacing barrier released for one screen's windows.
     pub dirty_outputs: std::collections::HashSet<crate::udev::OutputId>,
 
+    /// A placed window is waiting to be carried by a submitted frame.
+    ///
+    /// Set by `view.layout`, cleared when `settle_undrawn_views` finds nothing
+    /// left to watch. A bool rather than a scan on every turn of the loop,
+    /// which is where it is read.
+    pub undrawn_pending: bool,
+
     /// The stack is owed a `restack`, and the colour-management clients are
     /// owed a look at whether their screen changed under them.
     ///
@@ -1976,6 +1983,7 @@ impl ViewportState {
             last_layout: None,
             needs_render: false,
             dirty_outputs: std::collections::HashSet::new(),
+            undrawn_pending: false,
             needs_restack: false,
             needs_colour_notify: false,
             foreign_outputs_dirty: Vec::new(),
@@ -4380,6 +4388,144 @@ impl ViewportState {
         }
     }
 
+    /// Pay out the frames the compositor owes a placed window.
+    ///
+    /// A placed window is in the space, and any frame built after that carries
+    /// it — so the only way one stays invisible is that no frame is built, or
+    /// that the frame which should carry it never reaches the screen. Both are
+    /// silent: the shell has drawn its page and the window's frame, the
+    /// placement watchdog has already stood down because the window *was*
+    /// placed, and the client has nothing left to commit. The hole then shows
+    /// the desktop through it until something unrelated forces a redraw, which
+    /// is why this is reported as a new window that stays missing until Mod4
+    /// animates the bar in.
+    ///
+    /// So the debt is tracked rather than assumed paid: `view.layout` records
+    /// when a rectangle was placed and a submitted frame records which windows
+    /// it carried. A placement the frames have not caught up with after a
+    /// quarter of a second gets one warning and one forced redraw; the second
+    /// stage repeats the request, and the last says whether the rectangle
+    /// overlaps any output at all — which is the first question to ask, because
+    /// an off-output rectangle is the shell's placement and an on-output one
+    /// that never appears is the compositor's frame building.
+    ///
+    /// Bounded on purpose: three steps per placement and then it stops, so a
+    /// window that genuinely cannot be drawn costs three log lines rather than
+    /// a redraw per turn of the loop. `undrawn_pending` is recomputed here,
+    /// which is what keeps the whole check off the ordinary path.
+    pub fn settle_undrawn_views(&mut self) {
+        // The lock screen is the only thing on the glass while it is up, so
+        // nothing it hides is owed a frame; the unlock marks one.
+        if self.locked {
+            self.undrawn_pending = false;
+            return;
+        }
+        // Only the DRM backend draws through `render_pass`, and only there can
+        // a built frame fail to reach the screen at all; nested and headless
+        // draw whatever the loop asks them to and owe nothing. A blanked screen
+        // is off for the same reason, and waking it marks a redraw.
+        let Some(udev) = self.udev.as_ref() else {
+            self.undrawn_pending = false;
+            return;
+        };
+        if udev.blanked {
+            self.undrawn_pending = false;
+            return;
+        }
+        let now = std::time::Instant::now();
+        let ids: Vec<u32> = self.views.iter().map(|view| view.id).collect();
+        let mut ask = false;
+        let mut watching = false;
+        for id in ids {
+            let Some(view) = self.views.get(id) else {
+                continue;
+            };
+            let (Some(placed), drawn, asks) = (view.placed_at, view.drawn_at, view.redraw_asks)
+            else {
+                continue;
+            };
+            // A frame carried this rectangle: nothing is owed.
+            if drawn.is_some_and(|drawn| drawn >= placed) {
+                continue;
+            }
+            if view.minimized || !view.visible {
+                continue;
+            }
+            // Only a window the space is holding is one a frame could carry: a
+            // hidden workspace unmaps its windows, and no frame owes them.
+            let Some(layout) = self.space.element_geometry(&view.window) else {
+                continue;
+            };
+            let action = undrawn_action(now, placed, drawn, asks);
+            if action == UndrawnAction::Idle {
+                // Still inside the grace period, or a stage is still due.
+                watching |= asks < 3;
+                continue;
+            }
+            let overlaps: Vec<String> = self
+                .space
+                .outputs()
+                .filter_map(|output| {
+                    let geometry = self.space.output_geometry(output)?;
+                    geometry.overlaps(layout).then(|| {
+                        format!(
+                            "{} at {}x{}{:+}{:+}",
+                            output.name(),
+                            geometry.size.w,
+                            geometry.size.h,
+                            geometry.loc.x,
+                            geometry.loc.y
+                        )
+                    })
+                })
+                .collect();
+            // Which half the fault is in, said in the same line as the fact.
+            let why = if overlaps.is_empty() {
+                "the rectangle is outside every output, so no frame can carry it"
+            } else {
+                "the outputs overlap it, so the frame the compositor builds is not carrying it"
+            };
+            let rect = format!(
+                "{}x{}{:+}{:+}",
+                layout.size.w, layout.size.h, layout.loc.x, layout.loc.y
+            );
+            let waited = placed.elapsed().as_millis();
+            if asks == 0 {
+                tracing::warn!(
+                    "view {id}: placed at {rect} and no submitted frame has carried it in {waited}ms; \
+                     {why}. Asking for a redraw."
+                );
+                ask = true;
+                watching = true;
+            } else if action == UndrawnAction::AskRedraw {
+                tracing::warn!(
+                    "view {id}: still not carried by any submitted frame {waited}ms after it was placed \
+                     at {rect}; {why}. Asking once more."
+                );
+                ask = true;
+                watching = true;
+            } else {
+                tracing::error!(
+                    "view {id}: giving up on a placed window after {waited}ms; placed at {rect}, \
+                     {}; {why}",
+                    if overlaps.is_empty() {
+                        "overlapping no output".to_owned()
+                    } else {
+                        format!("overlapping {}", overlaps.join(", "))
+                    },
+                );
+            }
+            if let Some(view) = self.views.get_mut(id) {
+                view.redraw_asks = asks.saturating_add(1);
+            }
+        }
+        if ask {
+            self.needs_render = true;
+            self.arm_frame_clock();
+        }
+        self.undrawn_pending = watching;
+    }
+
     /// Which screens each window is on, to every foreign-toplevel client.
     ///
     /// A taskbar drawn per monitor can only put a window in its own list if it
@@ -4932,12 +5078,121 @@ fn is_layered(stack: &[Layer]) -> bool {
     stack.windows(2).all(|pair| pair[0] <= pair[1])
 }
 
+/// What the undrawn-window watchdog should do about one placed window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UndrawnAction {
+    /// Nothing yet: the frame has not had time, or a stage is still due.
+    Idle,
+    /// Ask for another frame.
+    AskRedraw,
+    /// Stop asking, and say what was seen.
+    GiveUp,
+}
+
+/// How long a placed window may go without a submitted frame carrying it
+/// before the watchdog acts. The later stages are multiples of it.
+const UNDRAWN_GRACE: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// The whole decision, kept out of `settle_undrawn_views` so it can be tested
+/// without a compositor: given when the window was placed, when a submitted
+/// frame last carried it and how many asks have already gone out, say what to
+/// do now.
+fn undrawn_action(
+    now: std::time::Instant,
+    placed: std::time::Instant,
+    drawn: Option<std::time::Instant>,
+    asks: u8,
+) -> UndrawnAction {
+    // A frame that carried this rectangle settled the debt; one that carried an
+    // earlier rectangle says nothing about this one.
+    if drawn.is_some_and(|drawn| drawn >= placed) {
+        return UndrawnAction::Idle;
+    }
+    let waited = now.saturating_duration_since(placed);
+    match asks {
+        0 if waited >= UNDRAWN_GRACE => UndrawnAction::AskRedraw,
+        1 if waited >= UNDRAWN_GRACE * 3 => UndrawnAction::AskRedraw,
+        2 if waited >= UNDRAWN_GRACE * 6 => UndrawnAction::GiveUp,
+        _ => UndrawnAction::Idle,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn at(x: f64, y: f64) -> Point<f64, Logical> {
         (x, y).into()
+    }
+
+    /// The watchdog's whole schedule: silence for the grace period, one ask,
+    /// then a second, then a report, then nothing.
+    ///
+    /// This is the bound that keeps "a placed window the frames have not
+    /// carried" from turning into a redraw per turn of the loop: a window that
+    /// cannot be drawn costs three lines and three frames, not a busy loop.
+    #[test]
+    fn an_undrawn_window_is_asked_for_twice_and_then_reported() {
+        use std::time::{Duration, Instant};
+        let placed = Instant::now();
+        let at = |ms: u64| placed + Duration::from_millis(ms);
+
+        assert_eq!(undrawn_action(at(0), placed, None, 0), UndrawnAction::Idle);
+        assert_eq!(
+            undrawn_action(at(249), placed, None, 0),
+            UndrawnAction::Idle,
+            "within the grace period nothing is asked"
+        );
+        assert_eq!(
+            undrawn_action(at(250), placed, None, 0),
+            UndrawnAction::AskRedraw
+        );
+        assert_eq!(
+            undrawn_action(at(400), placed, None, 1),
+            UndrawnAction::Idle,
+            "the first ask is given time to land before the second"
+        );
+        assert_eq!(
+            undrawn_action(at(750), placed, None, 1),
+            UndrawnAction::AskRedraw
+        );
+        assert_eq!(
+            undrawn_action(at(1499), placed, None, 2),
+            UndrawnAction::Idle
+        );
+        assert_eq!(
+            undrawn_action(at(1500), placed, None, 2),
+            UndrawnAction::GiveUp
+        );
+        assert_eq!(
+            undrawn_action(at(60_000), placed, None, 3),
+            UndrawnAction::Idle,
+            "and after the report it is left alone"
+        );
+    }
+
+    /// Only a frame submitted *after* the placement settles the debt.
+    ///
+    /// The distinction matters: a window animated from one rectangle to
+    /// another is placed again every frame, and the frame that carried the
+    /// rectangle it came from is not the frame that carries the one it is
+    /// going to.
+    #[test]
+    fn a_frame_after_the_placement_settles_the_debt() {
+        use std::time::{Duration, Instant};
+        let placed = Instant::now();
+        let at = |ms: u64| placed + Duration::from_millis(ms);
+
+        assert_eq!(
+            undrawn_action(at(400), placed, Some(at(420)), 0),
+            UndrawnAction::Idle
+        );
+        let before = placed - Duration::from_millis(100);
+        assert_eq!(
+            undrawn_action(at(400), placed, Some(before), 0),
+            UndrawnAction::AskRedraw,
+            "a frame from before the placement does not carry it"
+        );
     }
 
     #[test]

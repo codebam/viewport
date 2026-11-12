@@ -122,6 +122,24 @@ pub struct View {
     /// `view.added` going out and `view.layout` coming back.
     pub placed: bool,
 
+    /// When that rectangle was last placed, and when a submitted frame last
+    /// carried this window.
+    ///
+    /// The pair is the whole of [`crate::state::ViewportState::settle_undrawn_views`]:
+    /// a placed window whose `drawn_at` is behind `placed_at` is one the
+    /// compositor owes a frame and has not paid. That failure is otherwise
+    /// completely silent — the shell has drawn the page and its window frame,
+    /// the placement watchdog has stood down because the window *was* placed,
+    /// and the hole shows the desktop through it until something unrelated
+    /// forces a redraw. Reported as a new window that stays missing until
+    /// Mod4 animates the bar in.
+    pub placed_at: Option<std::time::Instant>,
+    pub drawn_at: Option<std::time::Instant>,
+    /// Redraws the watchdog has asked for since `placed_at`, so a window that
+    /// cannot be drawn is reported once and then left alone rather than
+    /// retried for ever.
+    pub redraw_asks: u8,
+
     /// The last geometry the shell asked for. Absent fields in the next
     /// `view.layout` resolve against this (`src/ipc.c:833`).
     pub box_: Box,
@@ -669,6 +687,9 @@ impl Views {
             mapped: false,
             icon: None,
             placed: false,
+            placed_at: None,
+            drawn_at: None,
+            redraw_asks: 0,
             box_: Box::new(0, 0, 0, 0),
             visible: true,
             minimized: false,
