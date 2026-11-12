@@ -13,9 +13,15 @@
 // is sRGB. Assuming is the status quo, and it is why HDR content on most
 // compositors looks either washed out or oversaturated.
 //
-// The parametric path is implemented. ICC profiles are not: parsing an ICC
-// profile properly is its own project, and accepting one while ignoring what
-// it says would be worse than admitting it is unsupported.
+// The parametric path is implemented, and so is the display side of an ICC
+// profile: `icc.rs` reads a matrix-and-curve profile's transform, bakes it into
+// a cube, and `render_pass` hands the cube to the renderer, which samples it
+// after the parametric conversion. A profile that is not matrix-and-curve is
+// refused rather than half-read.
+//
+// What no image description can carry, and this file therefore does not do:
+// automatic HDR switching (Hyprland's `render:cm_auto_hdr`) and tone mapping.
+// Those are compositor policy, not a client's statement about its buffers.
 
 use std::sync::Mutex;
 
