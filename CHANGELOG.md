@@ -37,7 +37,10 @@ to summarise rather than to duplicate.
   whose crop for the window has no area at all cuts every surface away while
   the shell's frame stays drawn. That is never a crop worth honouring — it
   means the shell's rectangle and its reserved area disagreed — so the window
-  is drawn uncropped instead, with a warning naming the empty clip.
+  is drawn uncropped instead, with a warning naming the empty clip. The same
+  applies to a crop that does not meet the window at all: it crops every
+  surface away just as surely as an empty one, so the window is drawn
+  uncropped and the log says so.
 
 ### Added
 - `render:cm_enabled` (Hyprland's master switch, absent on): off means no
