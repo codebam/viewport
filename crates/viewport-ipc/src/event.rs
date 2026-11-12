@@ -1029,6 +1029,14 @@ pub struct WorkspaceRule {
     /// A command to run when the workspace is created and empty.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_created_empty: Option<String>,
+    /// Draw no border around this workspace's windows (Hyprland `no_border`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub no_border: Option<bool>,
+    /// Draw this workspace's windows with square corners (Hyprland
+    /// `no_rounding`). The shell squares the frame and reports `square` so the
+    /// compositor does not crop the client either.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub no_rounding: Option<bool>,
 }
 
 fn yes() -> bool {
@@ -2178,6 +2186,8 @@ mod tests {
             persistent: None,
             default_name: None,
             on_created_empty: None,
+            no_border: None,
+            no_rounding: None,
         });
         let value = json(&Event::Config(Box::new(config)));
         assert_eq!(

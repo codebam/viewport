@@ -16,6 +16,11 @@ to summarise rather than to duplicate.
   (Hyprland's `input:numlock_by_default`). A startup setting applied once after
   the configured keymap is on the seat; a reload or a later `config.keyboard`
   never forces it back on over a manual toggle.
+- Per-workspace `no_border` and `no_rounding` rules (Hyprland's workspace rules
+  of the same names). `no_border` drops the coloured frame but keeps the focus
+  ring; `no_rounding` squares the frame and reports `square` so the compositor
+  stops cropping the client to a rounded corner. Both are carried through
+  `config.workspaces` and persisted by `config.save`.
 
 ## [0.5.0] - 2026-11-12
 

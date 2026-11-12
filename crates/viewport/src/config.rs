@@ -275,6 +275,14 @@ pub struct WorkspaceConfig {
     /// A command to run when the workspace is created and empty. Hyprland's
     /// `on-created-empty`, for a dashboard or a terminal that belongs there.
     pub on_created_empty: Option<String>,
+    /// Draw no border around the windows on this workspace. Hyprland's
+    /// `no_border`. Absent is off — the global `border` block stands.
+    pub no_border: Option<bool>,
+    /// Draw the windows on this workspace with square corners. Hyprland's
+    /// `no_rounding`. Absent is off — the global radius stands. The shell
+    /// squares the frame and tells the compositor not to crop the client, the
+    /// same pair the smart radius uses.
+    pub no_rounding: Option<bool>,
 }
 
 /// The `border` block.

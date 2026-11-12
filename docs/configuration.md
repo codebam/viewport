@@ -58,13 +58,13 @@ a TTY.
 
 `workspaces` is an optional object whose keys are positive workspace numbers.
 Each value accepts `output`, `layout`, `tiling_mode`, `gaps`, `persistent`,
-`default_name` and `on_created_empty`. `output` is the connector preferred as
-that workspace's home; `layout` accepts a built-in or validated
-`layout_extensions` name; `tiling_mode` accepts `manual`, `master-stack`,
-`spiral`, `bsp` or `grid`; and `gaps` has the same optional `inner`, `outer`
-and `smart` fields as the global block. Omitted fields inherit global values.
-Invalid workspace numbers, unknown layout/mode names and negative gap sizes are
-rejected or ignored with a diagnostic before reaching the shell.
+`default_name`, `on_created_empty`, `no_border` and `no_rounding`. `output` is
+the connector preferred as that workspace's home; `layout` accepts a built-in or
+validated `layout_extensions` name; `tiling_mode` accepts `manual`,
+`master-stack`, `spiral`, `bsp` or `grid`; and `gaps` has the same optional
+`inner`, `outer` and `smart` fields as the global block. Omitted fields inherit
+global values. Invalid workspace numbers, unknown layout/mode names and negative
+gap sizes are rejected or ignored with a diagnostic before reaching the shell.
 
 ```jsonc
 {
@@ -82,6 +82,14 @@ created, unless the session file or a command has already named it.
 `on_created_empty` is a command the shell runs when the workspace is first
 switched to, which is when it comes into being — not when the config is loaded,
 so a rule for a workspace nobody visits starts nothing.
+
+`no_border` and `no_rounding` (Hyprland's workspace rules of the same names)
+override the global border and radius for the windows on that workspace.
+`no_border: true` drops the coloured frame — the focus ring stays, so a
+borderless window still shows where the keyboard is. `no_rounding: true` draws
+the windows square, and the compositor is told to stop cropping the client to a
+rounded corner too, so the surface and its frame agree. Absent or `false`
+inherits the global `border` block.
 
 Workspace assignment and layout policy remain shell-owned. Workspaces 1 through
 9 exist initially and keep their default bindings; a command, rule or config

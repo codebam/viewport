@@ -234,8 +234,21 @@ function reportGeometry(id) {
      rounds the frame and the compositor crops the client, so the second has to
      be told what the first decided — the class above is CSS, and CSS is not
      something the compositor can read. */
-  const square = !overviewActive && smartRadius()
-    && singleWindowOn(workspaceOf(id));
+  /* A workspace's no_border / no_rounding rules override the global border and
+     radius for the windows on it. The frame is CSS, so the classes do the
+     drawing; no_rounding also has to reach the compositor as `square` — the
+     same channel the smart radius uses — or the client would be cropped round
+     inside a square frame. Applied before the unchanged-geometry early return
+     below so a rule change reaches the classes even when the rect does not move. */
+  const wsAppearance = workspaceRule(workspaceOf(id));
+  const wsNoBorder = wsAppearance.no_border === true;
+  const wsNoRounding = wsAppearance.no_rounding === true;
+  if (view.el) {
+    view.el.classList.toggle('ws-no-border', wsNoBorder);
+    view.el.classList.toggle('ws-no-rounding', wsNoRounding);
+  }
+  const square = !overviewActive
+    && (wsNoRounding || (smartRadius() && singleWindowOn(workspaceOf(id))));
 
   const prev = view.box;
   const prevClip = view.clip;

@@ -1804,6 +1804,21 @@ html.behind .desktop {
   opacity: .85;
 }
 
+/* A workspace's no_border / no_rounding rules, applied per window by
+   reportGeometry. The border is the coloured frame; the focus outline is a
+   separate ring and stays, so a borderless window still shows where the
+   keyboard is. no_rounding squares the frame to match the `square` flag the
+   compositor is told, which stops it cropping the client round.
+
+   Late in the file on purpose: a workspace override has to beat the thumbnail's
+   own 1px/3px frame at equal specificity, which only source order decides. */
+.window.ws-no-border {
+  border-width: 0;
+}
+.window.ws-no-rounding {
+  border-radius: 0;
+}
+
 /* An output that is not showing the overview shows nothing at all, rather than
    a stale layout whose windows have been moved into someone else's grid. */
 .desktop.overview-active .empty { display: none; }

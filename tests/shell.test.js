@@ -4900,6 +4900,36 @@ if (mode === 'scrolling') {
   }
 }
 
+/* A workspace's no_border / no_rounding rules reach the windows on it: the
+   frame classes go on, and no_rounding is reported as `square` so the
+   compositor stops cropping the client round inside a square frame. Removing
+   the rule takes both back off. */
+{
+  const views = globalThis.__shell.views;
+  const ws = globalThis.__shell.outputs
+    .get(globalThis.__shell.activeOutput).workspace;
+  emit({ type: 'config', layout: mode, workspaces: [
+    { workspace: ws, no_border: true, no_rounding: true },
+  ] });
+  emit({ type: 'view.added', id: 330, title: 'appearance', app_id: 'appearance',
+    output: 'DP-1', min_width: 0, min_height: 0, floating: false,
+    width: 800, height: 600 });
+  emit({ type: 'view.focused', id: 330 });
+  const appearanceView = views.get(330);
+  check('a workspace no_border rule removes the window border',
+    appearanceView.el.classList.contains('ws-no-border'));
+  check('a workspace no_rounding rule squares the frame',
+    appearanceView.el.classList.contains('ws-no-rounding'));
+  check('and no_rounding is reported to the compositor as square',
+    sent.some((m) => m.type === 'view.layout' && m.id === 330
+      && m.square === true));
+  emit({ type: 'config', layout: mode, workspaces: [] });
+  check('removing the rule restores the border and the rounding',
+    !appearanceView.el.classList.contains('ws-no-border')
+    && !appearanceView.el.classList.contains('ws-no-rounding'));
+  emit({ type: 'view.removed', id: 330 });
+}
+
 /* Moving a window animates: the tree is rebuilt from scratch on every relayout,
  * so there is no property change on a retained element for CSS to transition.
  * The window elements are retained, and get offset back to where they came from

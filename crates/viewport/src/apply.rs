@@ -2218,6 +2218,8 @@ fn config_save(state: &mut ViewportState) {
                             persistent: rule.persistent,
                             default_name: rule.default_name.clone(),
                             on_created_empty: rule.on_created_empty.clone(),
+                            no_border: rule.no_border,
+                            no_rounding: rule.no_rounding,
                         },
                     )
                 })
