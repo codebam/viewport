@@ -10,6 +10,21 @@ impl ViewportState {
     /// flag or an earlier load set, which is what makes a reload safe
     /// (`src/config.c:400`).
     pub fn apply_config(&mut self, file: crate::config::File) {
+        // render:cm_auto_hdr, clamped the way `RenderConfig::auto_hdr` reads
+        // it. A reload can change the answer either way — switched off, or a
+        // mode that now matches — so the screens in HDR are reconsidered on
+        // the next loop turn.
+        if let Some(mode) = file.render.cm_auto_hdr {
+            let clamped = mode.clamp(0, 2);
+            if clamped != mode {
+                tracing::warn!(
+                    "render.cm_auto_hdr {mode} is outside Hyprland's 0-2; using {clamped}"
+                );
+            }
+            self.cm_auto_hdr = clamped as u8;
+        }
+        self.auto_hdr_pending = true;
+
         if let Some(extensions) = file.layout_extensions {
             let mut extensions: Vec<_> = extensions
                 .into_iter()

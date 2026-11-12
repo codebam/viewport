@@ -40,6 +40,16 @@ to summarise rather than to duplicate.
   is drawn uncropped instead, with a warning naming the empty clip.
 
 ### Added
+- Automatic HDR, Hyprland's `render:cm_auto_hdr` (`0` off, `1` switch to HDR,
+  `2` the same with EDID primaries, absent is `1`): a fullscreen window whose
+  buffers declare an HDR transfer function — PQ or HLG, through
+  `wp_color_management_v1` or a Windows HDR description — switches the output
+  it covers into HDR, and the output goes back when the window leaves
+  fullscreen or closes. Only a switch the compositor made is undone, so a
+  display put in HDR by hand stays there. A `no_auto_hdr` window rule exempts a
+  window, and so does a connector that cannot do BT.2020 with PQ. The decision
+  runs on the loop turn rather than inside the commit handler that notices the
+  window change, because switching a screen costs two atomic commits.
 - ICC display profiles are applied, not just read. The transform a profile
   describes is baked into a 33³ cube; the Vulkan renderer uploads it once per
   profile and samples it after the parametric conversion, so each output is

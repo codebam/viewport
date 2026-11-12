@@ -1134,6 +1134,18 @@ pub struct ViewportState {
     /// whatever a client asks for. Kept separately so a night-light client
     /// taking over — and letting go — does not lose the monitor profile.
     pub gamma_vcgt: std::collections::HashMap<String, crate::gamma::Ramp>,
+    /// Hyprland's `render:cm_auto_hdr`: `0` off, `1` HDR for a fullscreen
+    /// window that asks, `2` the same with the display's EDID primaries (drawn
+    /// as BT.2020 here, which is the same picture this compositor can make).
+    pub cm_auto_hdr: u8,
+    /// The outputs this code switched into HDR, and the view that caused it.
+    ///
+    /// Only the switches this code made are undone: a monitor in HDR because
+    /// somebody asked for it stays there. See `sync_auto_hdr`.
+    pub auto_hdr: std::collections::HashMap<String, u32>,
+    /// Whether the set of fullscreen windows has moved since the last
+    /// `sync_auto_hdr`, so the ordinary loop turn does not scan for nothing.
+    pub auto_hdr_pending: bool,
     /// The colour cube each output's ICC profile was baked into, with the
     /// token that names it to the renderer.
     ///
@@ -2061,6 +2073,9 @@ impl ViewportState {
             syncobj_state: None,
             gamma_ramps: std::collections::HashMap::new(),
             gamma_vcgt: std::collections::HashMap::new(),
+            cm_auto_hdr: 1,
+            auto_hdr: std::collections::HashMap::new(),
+            auto_hdr_pending: false,
             icc_cubes: std::collections::HashMap::new(),
             next_icc_cube_token: 1,
             _cursor_shape_state: cursor_shape_state,
@@ -2555,6 +2570,9 @@ impl ViewportState {
 include!("state/screencast.rs");
 
 include!("state/output_controls.rs");
+
+// Automatic HDR: a fullscreen client that asks for it switches its output.
+include!("state/auto_hdr.rs");
 
 impl ViewportState {
     /// Load the fallback page if the shell has not painted in time.

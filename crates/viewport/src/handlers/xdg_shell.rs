@@ -189,6 +189,8 @@ impl XdgShellHandler for ViewportState {
 
         self.space.unmap_elem(&window);
         self.views.remove(id);
+        // A closed window cannot be the fullscreen HDR one any more.
+        self.auto_hdr_pending = true;
 
         // A resize or move in progress belongs to a surface that is going
         // away. The grab is discarded by Smithay on the next pointer event
@@ -710,6 +712,9 @@ impl ViewportState {
             command: "window.fullscreen.set".to_owned(),
             args: vec![id.to_string(), u8::from(fullscreen).to_string()],
         });
+        // Whether a screen should be in HDR is a question about which windows
+        // are fullscreen, and that just changed. Answered on the loop turn.
+        self.auto_hdr_pending = true;
     }
 
     pub(crate) fn notify_maximized(&mut self, id: u32, maximized: bool) {

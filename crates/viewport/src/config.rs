@@ -693,6 +693,37 @@ pub enum BackgroundTerminal {
 }
 
 /// What the file says. Everything optional; see the module comment.
+/// The `render` block.
+///
+/// Hyprland's `render:` options, as far as this compositor implements them.
+/// Unknown keys inside the block are ignored like everywhere else, so a config
+/// written for a newer version still starts.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct RenderConfig {
+    /// `render:cm_auto_hdr` — switch an output into HDR while a fullscreen
+    /// window asks for it. `0` off, `1` switch to HDR, `2` switch to HDR with
+    /// the display's EDID primaries.
+    ///
+    /// Absent is `1`, Hyprland's default. This compositor draws HDR as BT.2020
+    /// whatever the display's EDID says, so `2` behaves as `1` and says so in
+    /// the log when it switches. Only the switch this makes is undone when the
+    /// window leaves: a display in HDR because somebody asked for it stays in
+    /// HDR. A window with a `no_auto_hdr` rule never causes a switch.
+    pub cm_auto_hdr: Option<i64>,
+}
+
+impl RenderConfig {
+    /// The mode Hyprland documents, clamped to its range.
+    ///
+    /// Clamped rather than refused: a number out of range is not the typo a
+    /// misspelt name is, and Hyprland's own table is `[0 - 2]`. Out of range
+    /// gets the nearest of the three behaviours, with a warning.
+    pub fn auto_hdr(&self) -> u8 {
+        self.cm_auto_hdr.unwrap_or(1).clamp(0, 2) as u8
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct File {
@@ -891,6 +922,8 @@ pub struct File {
     pub cursor: CursorConfig,
     pub magnify: MagnifyConfig,
     pub idle: IdleConfig,
+    /// Colour management policy: what this compositor switches on its own.
+    pub render: RenderConfig,
 
     /// What to do when the laptop lid closes: `"ignore"`, `"lock"`, `"blank"`
     /// or `"suspend"`. Absent is lock when `idle.lock_command` is set,
@@ -1886,11 +1919,41 @@ pub fn initially_allows_capture(
     };
     !rules.iter().any(|rule| {
         rule.get("capture").and_then(serde_json::Value::as_bool) == Some(false)
-            && capture_rule_might_match(rule, app_id, title, tag)
+            && rule_might_match(rule, app_id, title, tag)
     })
 }
 
-fn capture_rule_might_match(
+/// A boolean window-rule key for a window with these facts.
+///
+/// `None` when no rule mentions `key` at all, so "the file says nothing" and
+/// "the file says `false`" stay different answers — the distinction every
+/// other rule keeps. Matching is the conservative matcher the capture policy
+/// uses at map time: a rule naming a fact this side cannot evaluate counts as
+/// a match rather than being skipped.
+pub fn rule_flag(
+    rules: Option<&serde_json::Value>,
+    key: &str,
+    app_id: &str,
+    title: &str,
+    tag: Option<&str>,
+) -> Option<bool> {
+    let rules = rules.and_then(serde_json::Value::as_array)?;
+    let mut answer = None;
+    for rule in rules {
+        let Some(value) = rule.get(key).and_then(serde_json::Value::as_bool) else {
+            continue;
+        };
+        if rule_might_match(rule, app_id, title, tag) {
+            // Any rule that claims the window decides it; a later rule saying
+            // false does not take an earlier one back, the same way the
+            // capture policy treats its denies.
+            answer = Some(answer.is_some_and(|held| held) || value);
+        }
+    }
+    answer
+}
+
+fn rule_might_match(
     rule: &serde_json::Value,
     app_id: &str,
     title: &str,
@@ -2001,6 +2064,59 @@ fn json_truthy(value: &serde_json::Value) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_no_auto_hdr_rule_is_read_for_the_window_it_names() {
+        let rules = serde_json::json!([
+            {"match": {"app_id": {"equals": "foot"}}, "no_auto_hdr": true},
+        ]);
+        assert_eq!(
+            super::rule_flag(Some(&rules), "no_auto_hdr", "foot", "", None),
+            Some(true)
+        );
+        // A rule that does not claim the window has no opinion about it,
+        // which is not the same as a rule that said false.
+        assert_eq!(
+            super::rule_flag(Some(&rules), "no_auto_hdr", "mpv", "", None),
+            None
+        );
+        // A rule that does claim it says what it says, either way.
+        let off = serde_json::json!([{"app_id": "foot", "no_auto_hdr": false}]);
+        assert_eq!(
+            super::rule_flag(Some(&off), "no_auto_hdr", "foot", "", None),
+            Some(false)
+        );
+        assert_eq!(
+            super::rule_flag(Some(&off), "no_auto_hdr", "mpv", "", None),
+            None
+        );
+    }
+
+    #[test]
+    fn an_out_of_range_auto_hdr_setting_has_the_nearest_behaviour() {
+        assert_eq!(RenderConfig { cm_auto_hdr: None }.auto_hdr(), 1);
+        assert_eq!(
+            RenderConfig {
+                cm_auto_hdr: Some(0)
+            }
+            .auto_hdr(),
+            0
+        );
+        assert_eq!(
+            RenderConfig {
+                cm_auto_hdr: Some(-3)
+            }
+            .auto_hdr(),
+            0
+        );
+        assert_eq!(
+            RenderConfig {
+                cm_auto_hdr: Some(9)
+            }
+            .auto_hdr(),
+            2
+        );
+    }
+
     use super::*;
 
     #[test]

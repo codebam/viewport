@@ -175,6 +175,8 @@ impl XwmHandler for ViewportState {
 
         self.space.unmap_elem(&element);
         self.views.remove(id);
+        // A closed window cannot be the fullscreen HDR one any more.
+        self.auto_hdr_pending = true;
 
         // The seat keeps a dead surface as its keyboard focus unless it is
         // told otherwise, and keystrokes then go nowhere until something is

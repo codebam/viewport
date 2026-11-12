@@ -1331,6 +1331,15 @@ fn run() -> Result<()> {
             state.settle_see_through_views();
         }
 
+        // A fullscreen window that asks for HDR switches its screen, and the
+        // screen goes back when it leaves: Hyprland's `render:cm_auto_hdr`.
+        // Deferred to the loop turn because the switch costs two atomic
+        // commits and does not belong inside the commit handler that noticed
+        // the window change.
+        if state.auto_hdr_pending {
+            state.sync_auto_hdr();
+        }
+
         if let Some(log) = state.udev.as_mut().and_then(|udev| udev.frame_log.as_mut()) {
             log.loop_turns += 1;
             log.render_nanos += rendered;

@@ -2416,13 +2416,20 @@ re-evaluated as the window moves in and out of a group, not only at map time.
 
 The effects this shell can apply are the workspace, floating and its rect,
 `pinned`, `pseudotile`, `swallow`, `capture`, `opacity`, `focus`, `animation`,
-`tearing`, `idle_inhibit`, `decorate` and a size floor and ceiling. `focus:
+`tearing`, `idle_inhibit`, `decorate`, `no_auto_hdr` and a size floor and
+ceiling. `focus:
 false` opens a window without taking the keyboard — a launcher, or a
 picture-in-picture window that should appear without interrupting. `animation:
 false` gives it the reduced-motion treatment: no fade, but it still appears.
 `min_width` / `min_height` raise the client's own floor and `max_width` /
 `max_height` cap it, all in logical pixels; zero or absent leaves the client's
 answer.
+
+`no_auto_hdr: true` keeps the window from switching its output into HDR when it
+is fullscreen — see [Automatic HDR](#automatic-hdr) below. It is Hyprland's
+rule of the same name, for the same case: a terminal or a player that happens
+to be fullscreen should not relight the desk for content nobody asked to be
+shown in HDR.
 
 `tearing: true` asks the compositor to present the window as soon as a frame
 is ready, the same as `wp-tearing-control-v1` does when the client asks; it is
@@ -2968,6 +2975,34 @@ The older global `adaptive_sync` boolean remains supported. `false` is the
 default `off`, `true` is `always`, and an output's `vrr` overrides that default.
 The settings panel exposes physical heads, including disabled and mirror sinks,
 while desktops and workspaces are created only for independent/source heads.
+
+### Automatic HDR
+
+```json
+"render": { "cm_auto_hdr": 1 }
+```
+
+`render:cm_auto_hdr` is Hyprland's name and meaning: `0` never switch on its
+own, `1` (the default) switch the output into HDR while a fullscreen window
+says its content is HDR, and `2` the same with the display's EDID primaries.
+This compositor draws HDR as BT.2020 whatever the EDID says, so `2` behaves as
+`1` and says so in the log when it switches. A value outside `0`–`2` takes the
+nearest of the three and warns.
+
+The switch is undone when the window leaves fullscreen or closes — but only if
+this code made it: a monitor put into HDR by hand, through
+`outputs.<name>.hdr` or `output.hdr`, stays there. A window with a
+`no_auto_hdr` rule never causes a switch, a display whose connector does not
+offer BT.2020 with PQ metadata is left alone, and so is an output that is
+already in HDR for its own reasons.
+
+What counts as HDR is the buffer's declared transfer function: PQ or HLG, which
+a client states through `wp_color_management_v1` or one of the Windows
+descriptions the compositor offers. Wide primaries with an sRGB curve are
+wide-gamut SDR and do not relight the screen. The check runs when a window's
+fullscreen state changes, and once more on every configuration reload, so a
+window that declares HDR after it went fullscreen switches the screen at its
+next fullscreen transition rather than mid-frame.
 
 **Two cards can offer the same connector name.** Connector names are handed out
 per card, so a laptop with an integrated display controller and a discrete card
