@@ -1780,6 +1780,7 @@ impl ViewportState {
                 theme: None,
                 gaps: None,
                 border: None,
+                cursor: None,
                 opacity: None,
                 // The shell's own stylesheet pace, until a config file says
                 // otherwise.

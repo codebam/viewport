@@ -94,6 +94,11 @@ pub struct Overlay {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub border: Option<viewport_ipc::event::Border>,
 
+    /// Spelled the way the `cursor` block spells it, and parsed back the
+    /// same way — see the round-trip test below.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<viewport_ipc::event::Cursor>,
+
     /// The monitors, by connector name.
     ///
     /// A `BTreeMap` rather than a `HashMap` so the file comes out in the same
@@ -341,6 +346,17 @@ pub fn apply(into: &mut crate::config::File, overlay: &Overlay) {
             into.border.smart = Some(value);
         }
     }
+    if let Some(cursor) = overlay.cursor.as_ref() {
+        if let Some(value) = cursor.hide_after_ms {
+            into.cursor.hide_after_ms = Some(value);
+        }
+        if let Some(value) = cursor.hide_on_key_press {
+            into.cursor.hide_on_key_press = Some(value);
+        }
+        if let Some(value) = cursor.hide_on_touch {
+            into.cursor.hide_on_touch = Some(value);
+        }
+    }
     // Per monitor, not the whole map: the overlay holds only the monitors the
     // panel touched, and a config-file block for an untouched one has to
     // survive.
@@ -406,6 +422,11 @@ mod tests {
                 width: Some(3),
                 smart: Some(false),
             }),
+            cursor: Some(viewport_ipc::event::Cursor {
+                hide_after_ms: Some(0),
+                hide_on_key_press: Some(true),
+                hide_on_touch: None,
+            }),
             outputs,
         }
     }
@@ -429,6 +450,9 @@ mod tests {
         assert_eq!(file.border.radius, Some(10));
         assert_eq!(file.border.width, Some(3));
         assert_eq!(file.border.smart, Some(false));
+        assert_eq!(file.cursor.hide_after_ms, Some(0));
+        assert_eq!(file.cursor.hide_on_key_press, Some(true));
+        assert_eq!(file.cursor.hide_on_touch, None);
 
         let output = file
             .outputs

@@ -208,6 +208,7 @@ fn is_known_type(name: &str) -> bool {
             | "config.border"
             | "config.wallpaper"
             | "config.dark_mode"
+            | "config.cursor"
             | "config.save"
             | "output.revert"
     )

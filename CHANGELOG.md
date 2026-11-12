@@ -36,6 +36,16 @@ to summarise rather than to duplicate.
   verified against the npm tarball.
 
 ### Added
+- `config.cursor` on the control socket sets when the pointer image leaves
+  the screen — `hide_after_ms`, `hide_on_key_press` and `hide_on_touch`, the
+  `cursor` block's runtime half. Zero is off (the cursor never hides), a
+  negative deadline is refused whole, and a bare `config.cursor` toggles
+  the deadline between never and the shipped 2000ms for keybindings.
+  Turning it off while the image is hidden draws it again at once. The
+  value rides the `config` event's `cursor` and `config.save` writes it, so
+  the settings panel can show and keep the switch. This is the first of a
+  series: every config-file setting is meant to gain a runtime setter, and
+  the ones that do not have one yet are listed in `docs/roadmap.md`.
 - `idle.lock_delay` (seconds) stands the outputs black after a lock is asked
   for, before it actually locks — every lock path, idle deadline, `session.lock`,
   lid and binding alike. Zero or absent is off, and locking is immediate.

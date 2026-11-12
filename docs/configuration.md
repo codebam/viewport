@@ -121,11 +121,14 @@ command-line flags win for the variables they own, because those validate and a
 typo there should be a message rather than a session on the wrong card.
 
 **Runtime** — the control socket. `config.gaps`, `config.border`,
-`config.wallpaper`, `config.dark_mode` and `output.configure` change the
+`config.wallpaper`, `config.dark_mode`, `config.cursor` and
+`output.configure` change the
 compositor's copy of the configuration and re-announce it, without touching
 any file. That is the tier a wallpaper cycler runs on, and the tier the
 settings panel runs on: a value applies the moment it is set and is gone at
-the next restart, which is exactly what "let me try this" means.
+the next restart, which is exactly what "let me try this" means. Which keys
+have a runtime setter is tracked in `docs/roadmap.md` — the aim is every
+setting, and the ones that do not have one yet are listed there by name.
 
 **Saved** — `~/.config/viewport/settings.json`, beside the bootstrap file and
 written only by `config.save`. It holds whatever the runtime tier was last
@@ -494,6 +497,24 @@ terminal — rather than only while it is not asks for.
 Only the drawn image goes. The pointer has not moved, keeps its focus, and
 clients are told nothing, so a hidden cursor cannot make a page think the mouse
 left it.
+
+**At runtime.** `config.cursor` on the control socket sets the hide trio
+without touching the file on disk — for a keybinding, for a verification
+tool that needs the pointer drawn in every capture, and for the settings
+panel, which sends exactly this:
+
+```sh
+viewport msg -t config.cursor --hide_after_ms 0
+```
+
+Each field is optional; only the ones given change — `--hide-after-ms`,
+`--hide-on-key-press` and `--hide-on-touch` mirror the three file keys.
+Zero is off, as in the file; a negative value is refused whole. A bare
+`viewport msg -t config.cursor` toggles the deadline between never (`0`)
+and the shipped `2000`, which is what a keybinding wants. Turning the
+deadline off while the image is hidden draws it again at once, and turning
+it on arms the countdown. The current value is in the `config` event's
+`cursor`, and `config.save` writes it beside the other runtime settings.
 
 `cursor.follow_mouse` makes keyboard focus follow the pointer: moving the
 pointer over a window gives it the keyboard without a click. Absent is off.

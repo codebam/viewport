@@ -194,6 +194,51 @@ fn the_colour_scheme_is_announced_as_well_as_set() {
     assert_eq!(client.wait_for("config")["dark_mode"], true);
 }
 
+/// The hide trio, both ways: the shell has to be able to read it before it
+/// can draw a switch for it, and the toggle has to land on the deadline the
+/// compositor arms — off to 2000, 2000 to off.
+#[test]
+fn the_cursor_hide_deadline_is_announced_as_well_as_set() {
+    let compositor = Compositor::start("cursor-hide");
+    let mut client = compositor.connect();
+
+    client.send(r#"{"type":"view.query"}"#);
+    // Absent from the file means the compositor keeps whatever it had — off.
+    assert!(client.wait_for("config")["cursor"].is_null());
+
+    // A panel sends the state it wants.
+    client.send(r#"{"type":"config.cursor","hide_after_ms":1500}"#);
+    assert_eq!(
+        client.wait_for("config")["cursor"]["hide_after_ms"],
+        1500,
+        "the setter stayed silent"
+    );
+    client.send(r#"{"type":"config.cursor","hide_after_ms":0,"hide_on_key_press":true}"#);
+    let config = client.wait_for("config");
+    assert_eq!(config["cursor"]["hide_after_ms"], 0);
+    assert_eq!(config["cursor"]["hide_on_key_press"], true);
+
+    // Zero is off: the next deadline is gone, so a timer armed earlier fires
+    // into nothing. The bare toggle brings the deadline back at the default.
+    client.send(r#"{"type":"config.cursor"}"#);
+    assert_eq!(
+        client.wait_for("config")["cursor"]["hide_after_ms"],
+        2000,
+        "absent did not toggle off back on"
+    );
+
+    // A negative deadline is refused whole: the prior value stands.
+    client.send(r#"{"type":"config.cursor","hide_after_ms":-50}"#);
+    let error = client.wait_for("error");
+    assert!(error.to_string().contains("config.cursor"));
+    client.send(r#"{"type":"view.query"}"#);
+    assert_eq!(
+        client.wait_for("config")["cursor"]["hide_after_ms"],
+        2000,
+        "the refused half got applied anyway"
+    );
+}
+
 /// The whole of the persistence answer, end to end: set something at runtime,
 /// save, restart, and find it still there.
 ///

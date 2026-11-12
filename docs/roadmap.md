@@ -107,6 +107,54 @@ the symptoms and the log lines to look for, and whoever first boots this on a
 laptop with a discrete card beside an integrated one should expect to find
 something; that is not pessimism, it is what an untested path is worth.
 
+## Runtime-togglable settings
+
+The aim is that every setting in the config file can also be changed at
+runtime over the control socket — no file edit, no reload — the way
+`config.gaps`, `config.border`, `config.wallpaper`, `config.dark_mode` and
+`config.cursor` already are, persisting through `config.save` when wanted
+and re-announced in the `config` event. That is what a settings panel, a
+keybinding, a verification tool and a wallpaper cycler all want, and it is
+why the runtime tier sits between the bootstrap file and the overlay in
+`docs/configuration.md`.
+
+This section is the list of what does not have a setter yet, grouped by
+what landing each one costs. When one lands it comes off this list and is
+documented where the rest of that subject is, exactly as the other entries
+in this file do.
+
+**Just another `config.*` setter — the `config.gaps` shape.** Shell-carried
+blocks whose file reader, `config::File`, and runtime handler all already
+exist; each is a request variant, an apply arm, a `Config` field and an
+overlay field. `config.motion` is the named one — `docs/configuration.md`
+already says there is no setter yet — and the rest of the shell-carried
+set belongs here: `group`, `clock`, `bar` (mode), `bar_blur`, `bar_widgets`
+and `bar_items`, `logo`, `tutorial`, `tiling_mode`, `layout` and its
+extensions, `focus_crosses_outputs`, `osk`, `tray`, `clipboard_history`,
+`icon_theme`, `theme`, `rules`, `layer_rules`, `decorations`, `workspaces`
+rules and `opacity`. The cursor's remaining keys — `theme`, `size`,
+`follow_mouse` and `follow_mouse_threshold` — are here too: the hide trio
+landed first because a tool that drives the pointer needs it before it
+needs a cursor theme.
+
+**Input, idle and devices — a setter plus new machinery.** `idle`
+(`lock_after`, `blank_after`, `lock_delay`, `lock_command`) and `lid` need
+the idle timers re-armed, not just a value stored; `keyboard` (layout,
+variant, options, model, repeat rate and delay) needs the keymap rebuilt;
+per-device `input` needs the message to name the device, the way
+`input_config_for` already names it; `notifications` (`sound_file`,
+`sound_name`, `history`) needs the sound player and the history re-read;
+and `magnify` (step, max) needs lowering the ceiling to repaint, as a
+reload already does.
+
+**Startup-only by design.** `url`, `url_span`, `shell_backend` and its
+fallback, `env`, `gpu`, `pixel_format`, `cross_gpu` and `startup` are read
+before backends open and before anything is spawned — a runtime setter
+could not move the session onto another card or shell without a restart,
+and a typo arriving over the socket would be a worse failure than one in
+the file. They stay on the file, and on `reload` where the file re-read
+already applies them; this list is where it says so.
+
 ## What is deliberately not on this list
 
 A file chooser stays with the GTK backend. `viewport-portals.conf` already

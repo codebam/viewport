@@ -964,6 +964,36 @@ pub enum Request {
         enabled: Option<bool>,
     },
 
+    /// Set when the pointer image leaves the screen, as the `cursor` block in
+    /// the config file.
+    ///
+    /// The same path as `config.gaps`: the compositor's `Hide` state is
+    /// updated and re-announced in the `Config` event, without touching the
+    /// file on disk. Zero is off (the cursor never hides), which is what a
+    /// remote-verification tool wants when it needs the pointer visible in
+    /// every capture; any positive millisecond count is the idle deadline.
+    ///
+    /// Every field is optional; only the ones given are changed. A negative
+    /// deadline is rejected.
+    ///
+    /// A bare `config.cursor` with no fields *toggles* the deadline: on becomes
+    /// `0` (never hide) and off becomes `2000` (the shipped default). That is
+    /// what a keybinding wants, on the same terms as `config.dark_mode` — and
+    /// a panel drawing a switch sends the state it wants.
+    #[serde(rename = "config.cursor")]
+    ConfigCursor {
+        /// Milliseconds without pointer input before the cursor hides, as
+        /// `cursor.hide_after_ms`. Zero is off. Negative values are rejected.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hide_after_ms: Option<i64>,
+        /// Hide on the next key press, as `cursor.hide_on_key_press`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hide_on_key_press: Option<bool>,
+        /// Hide on the next touch, as `cursor.hide_on_touch`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hide_on_touch: Option<bool>,
+    },
+
     /// Write the runtime settings out, so they survive the next start.
     ///
     /// Everything above this deliberately does not touch the disk, which is
@@ -2109,6 +2139,45 @@ mod tests {
             panic!("not a config.wallpaper message");
         };
         assert_eq!(path.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn config_cursor_carries_the_hide_trio() {
+        let Request::ConfigCursor {
+            hide_after_ms,
+            hide_on_key_press,
+            hide_on_touch,
+        } = parse(r#"{"type":"config.cursor","hide_after_ms":0,"hide_on_key_press":true}"#)
+        else {
+            panic!("not a config.cursor message");
+        };
+        assert_eq!(hide_after_ms, Some(0));
+        assert_eq!(hide_on_key_press, Some(true));
+        assert_eq!(hide_on_touch, None);
+
+        // Zero is off, not immediate — the value a verification tool sends
+        // when it needs the cursor drawn in every capture.
+        let Request::ConfigCursor { hide_after_ms, .. } =
+            parse(r#"{"type":"config.cursor","hide_after_ms":2000}"#)
+        else {
+            panic!("not a config.cursor message");
+        };
+        assert_eq!(hide_after_ms, Some(2000));
+
+        // Bare is the toggle: every field absent, the compositor flips the
+        // deadline between never and the 2000ms default.
+        let Request::ConfigCursor {
+            hide_after_ms,
+            hide_on_key_press,
+            hide_on_touch,
+        } = parse(r#"{"type":"config.cursor"}"#)
+        else {
+            panic!("not a config.cursor message");
+        };
+        assert_eq!(
+            (hide_after_ms, hide_on_key_press, hide_on_touch),
+            (None, None, None)
+        );
     }
 
     /// Absent toggles and present sets, which is the difference between a

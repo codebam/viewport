@@ -208,6 +208,7 @@ Also accepted on the UNIX socket, which speaks the same message set.
 | `config.border` | optional `radius`, optional `width`, optional `smart` — the same for the `border` block. Read by the compositor as well as the shell, since the client is cropped to the corner the shell draws. Zero is accepted, a negative value is refused |
 | `config.wallpaper` | optional `path` (a file or a URL, picture or video; the empty string removes the wallpaper), optional `mode` — set the desktop background at runtime, as `wallpaper` and `wallpaper_mode` in the config file. Only the fields given change; a path that is not there, or an unknown mode, comes back as an `error` and nothing is applied |
 | `config.dark_mode` | optional `enabled` (absent toggles) — what applications are told to draw themselves in, as `dark_mode` in the config file. Not a setting the shell paints: it goes out on the bus as `org.freedesktop.appearance`'s `color-scheme` and the GNOME theme name beside it, and what follows it is every toolkit application on the desk. The same `set_dark` the `appearance toggle` keybinding reaches, with the state named rather than flipped — which is what a switch on a panel needs and a key does not. The current value is in the `config` event's `dark_mode` |
+| `config.cursor` | optional `hide_after_ms` (a negative value is refused), optional `hide_on_key_press`, optional `hide_on_touch` — set when the pointer image leaves the screen, as the `cursor` block in the config file. Only the fields given change; zero is off. A bare `config.cursor` with no fields toggles the deadline: on becomes `0` (never hide) and off becomes `2000`. Turning the deadline off while the image is hidden draws it again at once, and arming starts the countdown; nothing is written to disk. The current value is in the `config` event's `cursor` |
 | `config.save` | — write the runtime settings down so they survive a restart. Answers with `config.saved`, or an `error`. See below |
 | `shell.command` | `command`, optional `args[]` — re-emitted as the `shell.command` *event*; see below |
 | `quit` | — |
@@ -359,7 +360,8 @@ twelve seconds in.
 
 ### Saving the runtime settings
 
-`config.gaps`, `config.border`, `config.wallpaper` and `config.dark_mode`
+`config.gaps`, `config.border`, `config.wallpaper`, `config.dark_mode` and
+`config.cursor`
 deliberately do not touch the disk — that is what makes them safe for a
 wallpaper cycler and for trying a value out. `config.save` is the other half:
 it writes what is currently set into `settings.json` beside the config file,

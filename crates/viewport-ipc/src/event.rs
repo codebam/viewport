@@ -751,6 +751,16 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub border: Option<Border>,
 
+    /// When the pointer image leaves the screen, as the `cursor` block in the
+    /// config file. Carried so the settings panel can show the switch in the
+    /// position it really is, and so `config.save` writes the same shape the
+    /// config file reads — unlike `gaps` and `border` the shell draws nothing
+    /// from it, the cursor is the compositor's to draw. Absent means the
+    /// compositor keeps whatever it had — a message from a build that
+    /// predates this key behaves as a desk that never hides the cursor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<Cursor>,
+
     /// Compositor-side opacity multipliers. Absent preserves the historical
     /// fully opaque policy; the shell's own per-frame opacity remains a
     /// separate input and is multiplied by this policy at render time.
@@ -994,6 +1004,23 @@ pub struct Border {
     /// around, and rounding it after it has been pushed against the screen
     /// edge is what leaves wallpaper showing in the corners of the monitor.
     pub smart: Option<bool>,
+}
+
+/// When the pointer image leaves the screen, as `cursor` in the config file,
+/// carried so the panel can show and `config.save` can write the switch the
+/// compositor actually has.
+///
+/// `hide_after_ms` is the idle deadline: zero or absent is off, which is the
+/// answer a remote-verification tool wants when it needs the cursor drawn in
+/// every capture. The two `hide_on_*` booleans are Hyprland's immediate
+/// triggers — while typing, and while touched. Optional so an absent field
+/// leaves what the compositor had standing.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Cursor {
+    pub hide_after_ms: Option<i64>,
+    pub hide_on_key_press: Option<bool>,
+    pub hide_on_touch: Option<bool>,
 }
 
 /// How the shell animates, as `motion` in the config file, carried to the
@@ -1772,6 +1799,7 @@ mod tests {
             theme: None,
             gaps: None,
             border: None,
+            cursor: None,
             opacity: None,
             motion: None,
             group: None,
@@ -1954,6 +1982,7 @@ mod tests {
                 width: Some(3),
                 smart: Some(true),
             }),
+            cursor: None,
             opacity: None,
             motion: None,
             group: None,
@@ -2012,6 +2041,7 @@ mod tests {
                 smart: Some(true),
             }),
             border: None,
+            cursor: None,
             opacity: None,
             motion: None,
             group: None,
@@ -2064,6 +2094,7 @@ mod tests {
             theme: None,
             gaps: None,
             border: None,
+            cursor: None,
             opacity: None,
             motion: None,
             group: None,
@@ -2097,6 +2128,7 @@ mod tests {
             theme: None,
             gaps: None,
             border: None,
+            cursor: None,
             opacity: None,
             motion: None,
             group: None,
@@ -2256,6 +2288,7 @@ mod tests {
                 theme: None,
                 gaps: None,
                 border: None,
+                cursor: None,
                 opacity: None,
                 motion: None,
                 group: None,

@@ -1031,6 +1031,74 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             state.notify_config();
         }
 
+        Request::ConfigCursor {
+            hide_after_ms,
+            hide_on_key_press,
+            hide_on_touch,
+        } => {
+            // Validated as a whole before anything changes, like ConfigGaps:
+            // a negative deadline takes the whole message with it.
+            if let Some(v) = hide_after_ms {
+                if v < 0 {
+                    reject(state, "config.cursor", &format!("hide_after_ms {v}"));
+                    return;
+                }
+            }
+            // A bare message toggles the deadline, on the same terms as
+            // `config.dark_mode` — a keybinding wants to flip a switch without
+            // knowing the number. On becomes never-hide (0) and off becomes
+            // the shipped 2000ms. A message naming only the booleans leaves
+            // the deadline alone, which is the panel's case.
+            let hide_after_ms = match hide_after_ms {
+                Some(v) => Some(v),
+                None if hide_on_key_press.is_none() && hide_on_touch.is_none() => {
+                    Some(if state.cursor_hide.after().is_some() {
+                        0
+                    } else {
+                        2000
+                    })
+                }
+                None => None,
+            };
+            let current = state
+                .config
+                .cursor
+                .get_or_insert_with(viewport_ipc::event::Cursor::default);
+            let mut changed = false;
+            let mut needs_render = false;
+            if let Some(v) = hide_after_ms {
+                // `set_after_ms` returns whether a hidden cursor had to be
+                // drawn again — the deadline that hid it is gone, so nothing
+                // else would. That is damage the caller must paint.
+                needs_render |= state.cursor_hide.set_after_ms(Some(v));
+                current.hide_after_ms = Some(v);
+                changed = true;
+            }
+            if let Some(on) = hide_on_key_press {
+                needs_render |= state.cursor_hide.set_on_key_press(on);
+                current.hide_on_key_press = Some(on);
+                changed = true;
+            }
+            if let Some(on) = hide_on_touch {
+                needs_render |= state.cursor_hide.set_on_touch(on);
+                current.hide_on_touch = Some(on);
+                changed = true;
+            }
+            if changed {
+                // The shell draws nothing from this — the cursor is the
+                // compositor's — but the Config event carries it so the panel
+                // shows the switch where it really is and `config.save` writes
+                // what is on screen. Arming starts a countdown that was off;
+                // turning it off leaves an armed timer that fires once into
+                // nothing, which is what the reload path already does.
+                if needs_render {
+                    state.needs_render = true;
+                }
+                state.notify_config();
+                state.arm_cursor_hide();
+            }
+        }
+
         Request::ConfigSave => config_save(state),
 
         Request::Quit => state.shutdown(),
@@ -1258,6 +1326,7 @@ fn config_save(state: &mut ViewportState) {
         wallpaper_mode: state.config.wallpaper_mode.clone(),
         gaps: state.config.gaps.clone(),
         border: state.config.border.clone(),
+        cursor: state.config.cursor.clone(),
         outputs: Default::default(),
     };
 

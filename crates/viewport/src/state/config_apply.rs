@@ -269,6 +269,28 @@ impl ViewportState {
             }
             self.config.border = Some(border);
         }
+        if file.cursor != crate::config::CursorConfig::default() {
+            // Carried for the same reason the border is: the panel shows the
+            // switch where it really is, and `config.save` writes what the
+            // file said. Only the hide trio the `config.cursor` message owns
+            // — theme and size are the loader's, follow_mouse is the state
+            // below. A negative deadline is a timer that fires at once, so it
+            // keeps what the compositor had, as the runtime message does.
+            let prior = self.config.cursor.clone().unwrap_or_default();
+            let mut cursor = viewport_ipc::event::Cursor {
+                hide_after_ms: file.cursor.hide_after_ms,
+                hide_on_key_press: file.cursor.hide_on_key_press,
+                hide_on_touch: file.cursor.hide_on_touch,
+            };
+            if cursor.hide_after_ms.is_some_and(|v| v < 0) {
+                tracing::warn!(
+                    "config.cursor.hide_after_ms {} is negative; keeping the current value",
+                    cursor.hide_after_ms.unwrap()
+                );
+                cursor.hide_after_ms = prior.hide_after_ms;
+            }
+            self.config.cursor = Some(cursor);
+        }
         if file.motion != crate::config::MotionConfig::default() {
             // Validated for the same reason the gaps and the border are: a
             // negative or non-finite duration is a transition that never

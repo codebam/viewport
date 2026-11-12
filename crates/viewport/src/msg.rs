@@ -554,6 +554,12 @@ const TYPES: &[Type] = &[
         hint: "[--enabled BOOL]   (absent toggles)",
     },
     Type {
+        name: "config.cursor",
+        fields: &["hide_after_ms", "hide_on_key_press", "hide_on_touch"],
+        strings: &[],
+        hint: "[--hide_after_ms N --hide_on_key_press BOOL --hide_on_touch BOOL]   (bare toggles hide_after_ms 0 <-> 2000)",
+    },
+    Type {
         name: "config.save",
         fields: &[],
         strings: &[],
@@ -1555,6 +1561,34 @@ mod tests {
             serde_json::json!({
                 "type": "config.border", "radius": 12, "width": 3, "smart": true
             })
+        );
+    }
+
+    #[test]
+    fn config_cursor_builds_a_number_not_a_string() {
+        assert_eq!(
+            value(&["-t", "config.cursor", "--hide_after_ms", "0"]),
+            serde_json::json!({"type": "config.cursor", "hide_after_ms": 0})
+        );
+        assert_eq!(
+            value(&[
+                "-t",
+                "config.cursor",
+                "--hide_after_ms",
+                "2000",
+                "--hide_on_key_press",
+                "false"
+            ]),
+            serde_json::json!({
+                "type": "config.cursor",
+                "hide_after_ms": 2000,
+                "hide_on_key_press": false
+            })
+        );
+        // Bare is the toggle.
+        assert_eq!(
+            value(&["-t", "config.cursor"]),
+            serde_json::json!({"type": "config.cursor"})
         );
     }
 
