@@ -290,6 +290,23 @@ pub struct WorkspaceConfig {
     /// squares the frame and tells the compositor not to crop the client, the
     /// same pair the smart radius uses.
     pub no_rounding: Option<bool>,
+    /// Draw no decorations around this workspace's windows. Hyprland's
+    /// `decorate`, which is the umbrella over the border, the shadow and the
+    /// groupbar: absent or true leaves each to its own setting, false turns
+    /// them all off. Rounding stays its own rule, as it is there, so
+    /// `decorate: false` with `no_rounding: false` is a borderless window with
+    /// rounded corners.
+    pub decorate: Option<bool>,
+    /// Where floating windows on this workspace may be placed, as the space
+    /// between them and the reserved area's edges. Hyprland's `float_gaps`,
+    /// with its `css_gaps` spelling: one number for every side, two for
+    /// vertical and horizontal, three for top/horizontal/bottom, or four for
+    /// top/right/bottom/left.
+    ///
+    /// Only placement: a window centred or clamped by the shell uses this
+    /// inset, and a window given a rectangle by a rule or by the user's own
+    /// drag keeps it.
+    pub float_gaps: Option<viewport_ipc::event::CssGaps>,
 }
 
 /// The `border` block.
@@ -2427,6 +2444,31 @@ mod tests {
         let mut sorted = specs.clone();
         sorted.sort_by(|a, b| a.spec.cmp(&b.spec));
         assert_eq!(specs, sorted);
+    }
+
+    #[test]
+    fn a_workspace_rule_carries_decorations_and_float_gaps() {
+        let file: File = serde_json::from_str(
+            r#"{
+                "workspaces": {
+                    "4": {"decorate": false, "float_gaps": [10, 20, 30, 40]},
+                    "5": {"float_gaps": 6}
+                }
+            }"#,
+        )
+        .expect("should parse");
+        let workspaces = file.workspaces.expect("workspaces block");
+        let four = workspaces.get(&4).expect("workspace 4");
+        assert_eq!(four.decorate, Some(false));
+        let gaps = four.float_gaps.expect("four sides");
+        assert_eq!(
+            (gaps.top, gaps.right, gaps.bottom, gaps.left),
+            (10, 20, 30, 40)
+        );
+        let six = workspaces.get(&5).expect("workspace 5");
+        let gaps = six.float_gaps.expect("one number is every side");
+        assert_eq!((gaps.top, gaps.right, gaps.bottom, gaps.left), (6, 6, 6, 6));
+        assert_eq!(six.decorate, None, "absent is inherited, not false");
     }
 
     #[test]

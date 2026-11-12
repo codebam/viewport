@@ -59,6 +59,27 @@ function windowsAreaOf(workspace) {
   };
 }
 
+/* The gaps between a floating window and the reserved area's edges, from the
+   workspace's `float_gaps` rule. Hyprland's `css_gaps`: the message carries the
+   four sides already resolved, so this only has to be defensive about values a
+   hand-written rule can still make nonsense — a non-number is absent, and a
+   negative side is treated as absent rather than as a gap that pulls the window
+   into the monitor's bezel. */
+function floatGapsOf(workspace) {
+  const rule = workspaceRule(workspace);
+  const gaps = rule?.float_gaps;
+  const zero = { top: 0, right: 0, bottom: 0, left: 0 };
+  if (!gaps || typeof gaps !== 'object') return zero;
+  const side = (name) => {
+    const value = Number(gaps[name]);
+    return Number.isFinite(value) && value > 0 ? Math.round(value) : 0;
+  };
+  return {
+    top: side('top'), right: side('right'),
+    bottom: side('bottom'), left: side('left'),
+  };
+}
+
 /* Returns whether a view.layout was sent, which is what pumpGeometry() reads
    to decide the layout is still moving. Every path answers that one question:
    a window that vanished, one measured at zero size and one that has not moved
@@ -235,13 +256,17 @@ function reportGeometry(id) {
      be told what the first decided — the class above is CSS, and CSS is not
      something the compositor can read. */
   /* A workspace's no_border / no_rounding rules override the global border and
-     radius for the windows on it. The frame is CSS, so the classes do the
-     drawing; no_rounding also has to reach the compositor as `square` — the
-     same channel the smart radius uses — or the client would be cropped round
-     inside a square frame. Applied before the unchanged-geometry early return
-     below so a rule change reaches the classes even when the rect does not move. */
+     radius for the windows on it, and its `decorate` rule is the umbrella over
+     them the way it is in Hyprland: no decorations means no border (shadows and
+     groupbars are not drawn by this shell), while rounding stays its own rule.
+     The frame is CSS, so the classes do the drawing; no_rounding also has to
+     reach the compositor as `square` — the same channel the smart radius uses —
+     or the client would be cropped round inside a square frame. Applied before
+     the unchanged-geometry early return below so a rule change reaches the
+     classes even when the rect does not move. */
   const wsAppearance = workspaceRule(workspaceOf(id));
-  const wsNoBorder = wsAppearance.no_border === true;
+  const wsBare = wsAppearance.decorate === false;
+  const wsNoBorder = wsBare || wsAppearance.no_border === true;
   const wsNoRounding = wsAppearance.no_rounding === true;
   if (view.el) {
     view.el.classList.toggle('ws-no-border', wsNoBorder);

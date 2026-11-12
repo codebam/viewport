@@ -125,9 +125,21 @@ function setFloating(id, floating, rect = null) {
     removeLeaf(id);
 
     const output = outputs.get(hostOfWorkspace(workspace) ?? activeOutputName());
-    const area = output
+    const gaps = floatGapsOf(workspace);
+    const outer = output
       ? output.windowsEl.getBoundingClientRect()
       : { width: 800, height: 600 };
+    /* The work area floating windows are placed in: the reserved area — the
+       output less its bars, which is what `.windows` already is — inset by the
+       workspace's `float_gaps`. Hyprland's own rule, and the reason a desktop
+       can keep dialogs clear of a bar or a dock without moving every tiled
+       window on the workspace. */
+    const area = {
+      left: gaps.left,
+      top: gaps.top,
+      width: Math.max(1, outer.width - gaps.left - gaps.right),
+      height: Math.max(1, outer.height - gaps.top - gaps.bottom),
+    };
 
     /* Positions are relative to the tiling area of the output, since that is
        the element a floating window is absolutely positioned inside — not the
@@ -139,10 +151,10 @@ function setFloating(id, floating, rect = null) {
 
     view.floating = {
       workspace,
-      /* Centred. A dialog that opens in a corner reads as a glitch, and the
-         client never says where it wants to be. */
-      x: rect?.x ?? Math.round((area.width - width) / 2),
-      y: rect?.y ?? Math.round((area.height - height) / 2),
+      /* Centred in that work area. A dialog that opens in a corner reads as a
+         glitch, and the client never says where it wants to be. */
+      x: rect?.x ?? Math.round(area.left + (area.width - width) / 2),
+      y: rect?.y ?? Math.round(area.top + (area.height - height) / 2),
       width: Math.round(width),
       height: Math.round(height),
     };
@@ -220,12 +232,17 @@ function moveByDelta(id, dx, dy) {
   floating.y += dy;
 
   /* Leave a grabbable strip on screen. A window dragged fully off the edge
-     cannot be dragged back, and there is no titlebar to alt-tab to it by. */
+     cannot be dragged back, and there is no titlebar to alt-tab to it by. The
+     far edges stop at the workspace's floating gaps, so a drag cannot take a
+     window into the space the rule set aside — the same work area it was
+     centred in. */
   if (area) {
+    const gaps = floatGapsOf(floating.workspace);
     const margin = 40;
     floating.x = Math.max(margin - floating.width,
-      Math.min(floating.x, area.width - margin));
-    floating.y = Math.max(0, Math.min(floating.y, area.height - margin));
+      Math.min(floating.x, area.width - gaps.right - margin));
+    floating.y = Math.max(0,
+      Math.min(floating.y, area.height - gaps.bottom - margin));
   }
 
   gestureRelayout();

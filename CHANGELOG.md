@@ -25,6 +25,12 @@ to summarise rather than to duplicate.
   rather than a redraw per turn of the loop.
 
 ### Added
+- Per-workspace `decorate` and `float_gaps` rules (Hyprland's workspace rules of
+  the same names). `decorate: false` draws a workspace's windows bare — no
+  border, shadow or groupbar — while rounding stays its own rule, and
+  `float_gaps` insets the work area floating windows are centred in and clamped
+  to, in the `css_gaps` spelling (one to four numbers). Both travel to the shell
+  with the rest of the workspace policy and are saved by `config.save`.
 - `hyprcursor` themes are read: a manifest plus one zip per shape, per-size
   images, per-cursor resize methods (`nearest`, `bilinear`, `none`), animation
   delays, `define_override` aliases and `nominal_size`, from

@@ -58,7 +58,8 @@ a TTY.
 
 `workspaces` is an optional object whose keys are positive workspace numbers.
 Each value accepts `output`, `layout`, `tiling_mode`, `gaps`, `persistent`,
-`default_name`, `on_created_empty`, `no_border` and `no_rounding`. `output` is
+`default_name`, `on_created_empty`, `no_border`, `no_rounding`, `decorate` and
+`float_gaps`. `output` is
 the connector preferred as that workspace's home; `layout` accepts a built-in or
 validated `layout_extensions` name; `tiling_mode` accepts `manual`,
 `master-stack`, `spiral`, `bsp` or `grid`; and `gaps` has the same optional
@@ -90,6 +91,28 @@ borderless window still shows where the keyboard is. `no_rounding: true` draws
 the windows square, and the compositor is told to stop cropping the client to a
 rounded corner too, so the surface and its frame agree. Absent or `false`
 inherits the global `border` block.
+
+`decorate` is Hyprland's rule of the same name: the umbrella over the border,
+the shadow and the groupbar, which this shell draws as the frame around a
+window. `decorate: false` draws the windows bare while rounding stays its own
+rule, so `{"decorate": false, "no_rounding": false}` is a borderless window with
+rounded corners. Absent or `true` leaves each of the others to its own setting.
+
+`float_gaps` is the space between a floating window and the edges of the area
+reserved for windows — Hyprland's per-workspace rule, with the `css_gaps`
+shorthand: one number for every side, `[vertical, horizontal]`, `[top,
+horizontal, bottom]`, or `[top, right, bottom, left]`. It moves where a dialog
+is centred and how far a dragged floating window may go, without moving the
+tiled windows on the workspace. Absent means no inset.
+
+```jsonc
+{
+  "workspaces": {
+    "4": { "decorate": false, "no_rounding": false },
+    "7": { "float_gaps": [20, 40] }
+  }
+}
+```
 
 Workspace assignment and layout policy remain shell-owned. Workspaces 1 through
 9 exist initially and keep their default bindings; a command, rule or config

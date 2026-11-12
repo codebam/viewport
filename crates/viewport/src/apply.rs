@@ -2220,6 +2220,8 @@ fn config_save(state: &mut ViewportState) {
                             on_created_empty: rule.on_created_empty.clone(),
                             no_border: rule.no_border,
                             no_rounding: rule.no_rounding,
+                            decorate: rule.decorate,
+                            float_gaps: rule.float_gaps,
                         },
                     )
                 })

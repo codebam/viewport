@@ -1024,6 +1024,8 @@ impl ViewportState {
                     .filter(|command| !command.trim().is_empty()),
                 no_border: rule.no_border,
                 no_rounding: rule.no_rounding,
+                decorate: rule.decorate,
+                float_gaps: rule.float_gaps,
             });
         }
         rules.sort_by_key(|rule| rule.workspace);

@@ -1037,6 +1037,18 @@ pub struct WorkspaceRule {
     /// compositor does not crop the client either.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub no_rounding: Option<bool>,
+    /// Draw no decorations around this workspace's windows at all (Hyprland
+    /// `decorate`). The umbrella over the border, the shadow and the groupbar:
+    /// absent or true leaves each of those to its own setting, false turns
+    /// them all off. Rounding is its own rule, as it is in Hyprland.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decorate: Option<bool>,
+    /// Where floating windows on this workspace may be placed, as the space
+    /// between them and the edges of the reserved area (Hyprland's
+    /// `float_gaps`). Absent means no inset, which is what the tiling area
+    /// already provides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub float_gaps: Option<CssGaps>,
 }
 
 fn yes() -> bool {
@@ -1064,6 +1076,74 @@ pub struct Gaps {
     pub inner: Option<i32>,
     pub outer: Option<i32>,
     pub smart: Option<bool>,
+}
+
+/// Gaps on each side, as Hyprland's `css_gaps` spells them.
+///
+/// One number for every side, two for vertical and horizontal, three for top,
+/// horizontal and bottom, or four for top, right, bottom and left — the CSS
+/// shorthand's own order. Always carried to the shell as the four sides,
+/// because what the shell does with them is arithmetic rather than CSS.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct CssGaps {
+    pub top: i32,
+    pub right: i32,
+    pub bottom: i32,
+    pub left: i32,
+}
+
+impl<'de> Deserialize<'de> for CssGaps {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::Error as _;
+
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Sides {
+            All(i32),
+            Each(Vec<i32>),
+        }
+
+        match Sides::deserialize(deserializer)? {
+            Sides::All(value) => Ok(CssGaps {
+                top: value,
+                right: value,
+                bottom: value,
+                left: value,
+            }),
+            Sides::Each(values) => match values.as_slice() {
+                [all] => Ok(CssGaps {
+                    top: *all,
+                    right: *all,
+                    bottom: *all,
+                    left: *all,
+                }),
+                [vertical, horizontal] => Ok(CssGaps {
+                    top: *vertical,
+                    right: *horizontal,
+                    bottom: *vertical,
+                    left: *horizontal,
+                }),
+                [top, horizontal, bottom] => Ok(CssGaps {
+                    top: *top,
+                    right: *horizontal,
+                    bottom: *bottom,
+                    left: *horizontal,
+                }),
+                [top, right, bottom, left] => Ok(CssGaps {
+                    top: *top,
+                    right: *right,
+                    bottom: *bottom,
+                    left: *left,
+                }),
+                _ => Err(D::Error::custom(
+                    "gaps take one, two, three or four numbers",
+                )),
+            },
+        }
+    }
 }
 
 /// Window border settings, as `border` in the config file, carried to the
@@ -2188,6 +2268,8 @@ mod tests {
             on_created_empty: None,
             no_border: None,
             no_rounding: None,
+            decorate: None,
+            float_gaps: None,
         });
         let value = json(&Event::Config(Box::new(config)));
         assert_eq!(
@@ -2199,6 +2281,64 @@ mod tests {
                 "tiling_mode": "grid",
                 "gaps": { "inner": 12, "outer": null, "smart": true }
             })
+        );
+    }
+
+    #[test]
+    fn a_workspace_rule_carries_decorations_and_float_gaps() {
+        let mut config: Config = serde_json::from_value(serde_json::json!({
+            "layout": "tiling",
+            "logo": true,
+            "tutorial": true
+        }))
+        .expect("minimal config");
+        config.workspaces.push(WorkspaceRule {
+            workspace: 4,
+            output: None,
+            layout: None,
+            tiling_mode: None,
+            gaps: None,
+            persistent: None,
+            default_name: None,
+            on_created_empty: None,
+            no_border: None,
+            no_rounding: None,
+            decorate: Some(false),
+            float_gaps: Some(CssGaps {
+                top: 10,
+                right: 20,
+                bottom: 30,
+                left: 40,
+            }),
+        });
+        let value = json(&Event::Config(Box::new(config)));
+        assert_eq!(value["workspaces"][0]["decorate"], false);
+        assert_eq!(
+            value["workspaces"][0]["float_gaps"],
+            serde_json::json!({ "top": 10, "right": 20, "bottom": 30, "left": 40 })
+        );
+    }
+
+    #[test]
+    fn css_gaps_take_the_css_shorthand_sides() {
+        let one: CssGaps = serde_json::from_value(serde_json::json!(7)).expect("one");
+        assert_eq!((one.top, one.right, one.bottom, one.left), (7, 7, 7, 7));
+
+        let two: CssGaps = serde_json::from_value(serde_json::json!([10, 20])).expect("two");
+        assert_eq!((two.top, two.right, two.bottom, two.left), (10, 20, 10, 20));
+
+        let three: CssGaps = serde_json::from_value(serde_json::json!([1, 2, 3])).expect("three");
+        assert_eq!(
+            (three.top, three.right, three.bottom, three.left),
+            (1, 2, 3, 2)
+        );
+
+        let four: CssGaps = serde_json::from_value(serde_json::json!([1, 2, 3, 4])).expect("four");
+        assert_eq!((four.top, four.right, four.bottom, four.left), (1, 2, 3, 4));
+
+        assert!(
+            serde_json::from_value::<CssGaps>(serde_json::json!([1, 2, 3, 4, 5])).is_err(),
+            "more sides than a box has is a mistake, not the last four"
         );
     }
 

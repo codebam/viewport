@@ -4930,6 +4930,55 @@ if (mode === 'scrolling') {
   emit({ type: 'view.removed', id: 330 });
 }
 
+/* A workspace's `decorate: false` is the umbrella over the border, shadow and
+   groupbar: the window is drawn bare, while rounding stays its own rule. */
+{
+  const views = globalThis.__shell.views;
+  const ws = globalThis.__shell.outputs
+    .get(globalThis.__shell.activeOutput).workspace;
+  emit({ type: 'config', layout: mode, workspaces: [
+    { workspace: ws, decorate: false },
+  ] });
+  emit({ type: 'view.added', id: 331, title: 'bare', app_id: 'bare',
+    output: 'DP-1', min_width: 0, min_height: 0, floating: false,
+    width: 800, height: 600 });
+  emit({ type: 'view.focused', id: 331 });
+  const bare = views.get(331);
+  check('a workspace decorate rule removes the window border',
+    bare.el.classList.contains('ws-no-border'));
+  check('and leaves rounding to its own rule',
+    !bare.el.classList.contains('ws-no-rounding'));
+  check('so decorate alone does not square the client',
+    !sent.some((m) => m.type === 'view.layout' && m.id === 331
+      && m.square === true));
+  emit({ type: 'config', layout: mode, workspaces: [] });
+  check('removing the decorate rule restores the border',
+    !bare.el.classList.contains('ws-no-border'));
+  emit({ type: 'view.removed', id: 331 });
+}
+
+/* A workspace's `float_gaps` rule insets the work area floating windows are
+   centred in — Hyprland's per-workspace rule, four sides already resolved by
+   the compositor. */
+{
+  const ws = globalThis.__shell.outputs
+    .get(globalThis.__shell.activeOutput).workspace;
+  emit({ type: 'config', layout: mode, rules: HARNESS_RULES, workspaces: [
+    { workspace: ws, float_gaps: { top: 30, right: 40, bottom: 50, left: 60 } },
+  ] });
+  emit({ type: 'view.added', id: 332, title: 'dialog', app_id: 'dialog',
+    output: 'DP-1', min_width: 0, min_height: 0, floating: true,
+    width: 300, height: 200 });
+  const placed = globalThis.__shell.floatingForTest(332);
+  /* The stub's .windows is the full 1920x1050, so the expected centre is the
+     inset area's centre: 60 + (1820 - 300) / 2 and 30 + (970 - 200) / 2. */
+  check('a workspace float_gaps rule insets floating placement',
+    placed?.x === 60 + Math.round((1920 - 60 - 40 - 300) / 2)
+    && placed?.y === 30 + Math.round((1050 - 30 - 50 - 200) / 2));
+  emit({ type: 'config', layout: mode, rules: HARNESS_RULES, workspaces: [] });
+  emit({ type: 'view.removed', id: 332 });
+}
+
 /* Moving a window animates: the tree is rebuilt from scratch on every relayout,
  * so there is no property change on a retained element for CSS to transition.
  * The window elements are retained, and get offset back to where they came from
