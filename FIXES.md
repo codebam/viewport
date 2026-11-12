@@ -401,11 +401,9 @@ and the JavaScript shell suites under `tests/`.
   it only on genuine removal (a `PointerLeave` keeps it, so walking off
   and back in does not strand the cursor). `pointer::region_contains` is
   the inside test, with a unit test that it agrees with `confine`
-  exactly at the far edges — the column escape starts from. The
-  live-game acceptance is a multi-output capture dance pushing a
-  confined pointer hard right past the edge (the
-  `tests/xwayland-capture-overlay.test.sh` shape) and asserting it
-  never appears on the neighbour.
+  exactly at the far edges — the column escape starts from.
+  Confirmed live in FINAL FANTASY VII REBIRTH (2026-11-12): the cursor
+  stays on the monitor through a full right-edge push.
 
 - [x] **58. The integration suite plays sound effects on the host desktop.
   Fixed.** `scripts/integration.sh` (2026-11-12): running the Wayland
