@@ -21,6 +21,12 @@ impl ViewportState {
     /// moves. A shell that offers the toggle on a display that cannot take it
     /// offers a key that does nothing.
     pub fn hdr_capable(&self, name: &str) -> bool {
+        // Nothing to offer while the pipeline is off: HDR is one of the
+        // things it manages, and a toggle that cannot be honoured is a
+        // switch that does nothing.
+        if !self.cm_enabled {
+            return false;
+        }
         self.udev
             .as_ref()
             .and_then(|udev| {
@@ -47,6 +53,9 @@ impl ViewportState {
     /// actually is, and the renderer converting — is already here; without it
     /// this would only make every SDR window look washed out.
     pub fn set_hdr(&mut self, name: &str, enabled: bool) -> anyhow::Result<()> {
+        if !self.cm_enabled {
+            anyhow::bail!("colour management is switched off (render:cm_enabled)");
+        }
         let Some(udev) = self.udev.as_mut() else {
             anyhow::bail!("HDR needs the drm backend");
         };

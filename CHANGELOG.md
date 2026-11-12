@@ -40,6 +40,12 @@ to summarise rather than to duplicate.
   is drawn uncropped instead, with a warning naming the empty clip.
 
 ### Added
+- `render:cm_enabled` (Hyprland's master switch, absent on): off means no
+  `wp_color_management_v1` global, every client taken as sRGB, every output
+  driven as sRGB, HDR neither offered nor kept on, and ICC transforms not
+  applied — the profile's calibration ramp still is. Read at startup, like
+  Hyprland's, because a Wayland global cannot be taken back from clients that
+  already bound it; a reload that changes it says a restart is needed.
 - Per-window `tonemap` rules (Hyprland's rule of the same name): `on` (the
   default) and `limited` fold the part of a window's range a dimmer output
   cannot show into the headroom that is left, so highlights keep their detail

@@ -701,6 +701,13 @@ pub enum BackgroundTerminal {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct RenderConfig {
+    /// `render:cm_enabled` — whether the colour management pipeline runs at
+    /// all. Off means no `wp_color_management_v1` global, no ICC transform and
+    /// no HDR: every client is sRGB and every output is driven as sRGB. Hyprland
+    /// needs a restart for this, and so does this compositor, because a global
+    /// cannot be taken back from clients that already bound it.
+    pub cm_enabled: Option<bool>,
+
     /// `render:cm_auto_hdr` — switch an output into HDR while a fullscreen
     /// window asks for it. `0` off, `1` switch to HDR, `2` switch to HDR with
     /// the display's EDID primaries.
@@ -730,6 +737,11 @@ impl RenderConfig {
     /// Clamped rather than refused: a number out of range is not the typo a
     /// misspelt name is, and Hyprland's own table is `[0 - 2]`. Out of range
     /// gets the nearest of the three behaviours, with a warning.
+    /// Whether the pipeline runs. Absent is on, Hyprland's default.
+    pub fn enabled(&self) -> bool {
+        self.cm_enabled.unwrap_or(true)
+    }
+
     pub fn auto_hdr(&self) -> u8 {
         self.cm_auto_hdr.unwrap_or(1).clamp(0, 2) as u8
     }
@@ -2180,12 +2192,27 @@ mod tests {
     }
 
     #[test]
+    fn colour_management_is_on_unless_it_is_turned_off() {
+        assert!(RenderConfig::default().enabled());
+        assert!(RenderConfig {
+            cm_enabled: Some(true),
+            ..Default::default()
+        }
+        .enabled());
+        assert!(!RenderConfig {
+            cm_enabled: Some(false),
+            ..Default::default()
+        }
+        .enabled());
+    }
+
+    #[test]
     fn the_sdr_eotf_names_are_hyprlands() {
         use viewport_vulkan::color::SdrEotf;
         let named = |value: Option<&str>| {
             RenderConfig {
-                cm_auto_hdr: None,
                 cm_sdr_eotf: value.map(str::to_owned),
+                ..Default::default()
             }
             .sdr_eotf()
         };

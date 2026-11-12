@@ -3726,7 +3726,7 @@ impl ViewportState {
         // The assumption rides on a texture's description, stamped at import,
         // so it applies from each surface's next commit rather than
         // retroactively.
-        let sdr = if self.icc_cubes.contains_key(&output.name()) {
+        let sdr = if !self.cm_enabled || self.icc_cubes.contains_key(&output.name()) {
             viewport_vulkan::color::SdrEotf::Srgb
         } else {
             self.cm_sdr_eotf

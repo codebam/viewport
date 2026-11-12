@@ -3013,6 +3013,22 @@ fullscreen state changes, and once more on every configuration reload, so a
 window that declares HDR after it went fullscreen switches the screen at its
 next fullscreen transition rather than mid-frame.
 
+### Turning colour management off
+
+```json
+"render": { "cm_enabled": false }
+```
+
+`render:cm_enabled` is Hyprland's master switch for the whole pipeline. Off
+means the `wp_color_management_v1` global is not advertised, every client is
+taken as sRGB, every output is driven as sRGB, HDR is neither offered nor kept
+on, and an ICC profile's transform is not applied — its calibration ramp still
+is, because that is a KMS gamma ramp rather than part of the pipeline.
+
+Like Hyprland's option it takes effect at the next start: a Wayland global
+cannot be taken back from clients that already bound it. A reload that changes
+it says so in the log rather than pretending the setting did nothing.
+
 ### What SDR content is assumed to be
 
 ```json

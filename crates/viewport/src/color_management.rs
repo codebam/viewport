@@ -62,7 +62,11 @@ const VERSION: u32 = 3;
 /// Everything the compositor holds for colour management.
 #[derive(Debug)]
 pub struct ColorManagementState {
-    _global: smithay::reexports::wayland_server::backend::GlobalId,
+    /// Absent when `render:cm_enabled` is off: the global is never advertised,
+    /// so a client cannot describe its buffers and the parametric conversion
+    /// is all there is. Hyprland needs a restart for the setting, and so does
+    /// this — a global cannot be taken back from clients that already bound it.
+    _global: Option<smithay::reexports::wayland_server::backend::GlobalId>,
     /// The per-output objects clients hold.
     ///
     /// Kept because the protocol gives a client no way to notice on its own:
@@ -123,12 +127,12 @@ struct Feedback {
 }
 
 impl ColorManagementState {
-    pub fn new<D>(display: &DisplayHandle) -> Self
+    pub fn new<D>(display: &DisplayHandle, enabled: bool) -> Self
     where
         D: GlobalDispatch<WpColorManagerV1, ()> + 'static,
     {
         Self {
-            _global: display.create_global::<D, WpColorManagerV1, _>(VERSION, ()),
+            _global: enabled.then(|| display.create_global::<D, WpColorManagerV1, _>(VERSION, ())),
             outputs: Vec::new(),
             surfaces: Vec::new(),
             feedback: Vec::new(),
@@ -1005,6 +1009,13 @@ fn named_transfer(transfer: TransferFunction) -> Option<WireTransferFunction> {
 /// while driving PQ is not a placeholder, it is a different picture from the
 /// one the client is told to draw.
 pub fn output_description(state: &ViewportState, output: Option<&Output>) -> Description {
+    // With the pipeline off there is nothing to describe: every client is
+    // told sRGB and drawn as sRGB. An output switched to HDR by an earlier
+    // session is not honoured either — `set_hdr` refuses while this is off,
+    // and this is the other half of that promise.
+    if !state.cm_enabled {
+        return Description::default();
+    }
     let hdr = output
         .map(|output| state.hdr_enabled(&output.name()))
         .unwrap_or(false);

@@ -10,6 +10,17 @@ impl ViewportState {
     /// flag or an earlier load set, which is what makes a reload safe
     /// (`src/config.c:400`).
     pub fn apply_config(&mut self, file: crate::config::File) {
+        // render:cm_enabled decides whether a Wayland global is advertised at
+        // startup, and a global cannot be taken back from clients that already
+        // bound it — so a reload that changes it says so rather than pretending.
+        if let Some(enabled) = file.render.cm_enabled {
+            if enabled != self.cm_enabled {
+                tracing::warn!(
+                    "render.cm_enabled changed to {enabled}; it takes effect at the next start"
+                );
+            }
+        }
+
         // render:cm_auto_hdr, clamped the way `RenderConfig::auto_hdr` reads
         // it. A reload can change the answer either way — switched off, or a
         // mode that now matches — so the screens in HDR are reconsidered on

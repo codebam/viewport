@@ -1134,6 +1134,10 @@ pub struct ViewportState {
     /// whatever a client asks for. Kept separately so a night-light client
     /// taking over — and letting go — does not lose the monitor profile.
     pub gamma_vcgt: std::collections::HashMap<String, crate::gamma::Ramp>,
+    /// Hyprland's `render:cm_enabled`: whether the colour management pipeline
+    /// runs at all. Read once at startup — the global status is decided here —
+    /// and a reload that changes it says a restart is needed.
+    pub cm_enabled: bool,
     /// Hyprland's `render:cm_auto_hdr`: `0` off, `1` HDR for a fullscreen
     /// window that asks, `2` the same with the display's EDID primaries (drawn
     /// as BT.2020 here, which is the same picture this compositor can make).
@@ -1529,12 +1533,14 @@ impl ViewportState {
         event_loop: &mut EventLoop<'static, Self>,
         display: Display<Self>,
         socket_path: Option<std::path::PathBuf>,
+        cm_enabled: bool,
     ) -> anyhow::Result<Self> {
         let dh = display.handle();
         let loop_handle = event_loop.handle();
 
         let compositor_state = CompositorState::new::<Self>(&dh);
-        let color_management = crate::color_management::ColorManagementState::new::<Self>(&dh);
+        let color_management =
+            crate::color_management::ColorManagementState::new::<Self>(&dh, cm_enabled);
         let color_representation =
             crate::color_representation::ColorRepresentationState::new::<Self>(&dh);
         let xdg_shell_state = XdgShellState::new_with_capabilities::<Self>(
@@ -2077,6 +2083,7 @@ impl ViewportState {
             syncobj_state: None,
             gamma_ramps: std::collections::HashMap::new(),
             gamma_vcgt: std::collections::HashMap::new(),
+            cm_enabled,
             cm_auto_hdr: 1,
             auto_hdr: std::collections::HashMap::new(),
             auto_hdr_pending: false,

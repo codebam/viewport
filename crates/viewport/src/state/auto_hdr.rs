@@ -22,7 +22,7 @@ impl ViewportState {
         self.auto_hdr_pending = false;
 
         let mut wanted: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
-        if self.cm_auto_hdr > 0 && self.udev.is_some() {
+        if self.cm_enabled && self.cm_auto_hdr > 0 && self.udev.is_some() {
             for view in self.views.iter() {
                 // Only a mapped, visible, fullscreen window covers its whole
                 // output, which is the one case the switch is for.

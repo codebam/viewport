@@ -996,6 +996,13 @@ impl ViewportState {
         // the renderer samples the baked cube. Reading it here means a profile
         // that cannot be understood is said out loud at load time rather than
         // on the frame somebody's colours come out wrong.
+        if !self.cm_enabled {
+            // The pipeline is off: the calibration ramp above still applies —
+            // it is a KMS gamma ramp, not part of the pipeline — but the cube
+            // it is applied on is not, so the transform is not read.
+            tracing::debug!("{name}: colour management is off; the profile's transform is not used");
+            return;
+        }
         match crate::icc::DisplayTransform::for_profile(&bytes) {
             Some(transform) => {
                 let grey = transform.map([0.5, 0.5, 0.5]);

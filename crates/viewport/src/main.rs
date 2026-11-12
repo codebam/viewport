@@ -351,7 +351,15 @@ fn run() -> Result<()> {
     let mut event_loop: EventLoop<ViewportState> = EventLoop::try_new()?;
     let display: Display<ViewportState> = Display::new()?;
 
-    let mut state = ViewportState::new(&mut event_loop, display, socket_path)?;
+    // `render:cm_enabled` is read here, before the state exists, because the
+    // answer decides whether a Wayland global is advertised at all — a
+    // setting that cannot be taken back once a client has bound it.
+    let mut state = ViewportState::new(
+        &mut event_loop,
+        display,
+        socket_path,
+        config.render.enabled(),
+    )?;
 
     // Before the config, because the config file is only consulted where
     // neither the command line nor the environment said anything. A name that
