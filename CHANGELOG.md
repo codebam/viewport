@@ -25,6 +25,12 @@ to summarise rather than to duplicate.
   rather than a redraw per turn of the loop.
 
 ### Added
+- Per-workspace `animation` and `layout_opts` rules. `animation` names the
+  style a switch to that workspace runs (the `motion.workspaces` styles), and
+  wins over the leaf's own style for that workspace only. `layout_opts` is the
+  layout's own string map for the workspace, handed to it as `context.opts` —
+  the hook a `layout_extensions` script is configured through — and both are
+  written back by `config.save`.
 - The motion tree: `motion.windows`, `motion.windows_in`, `motion.windows_move`
   and `motion.workspaces`, each with its own `style`, `duration`, `ease`,
   four-number `bezier` or physical `spring` (mass/stiffness/damping, integrated

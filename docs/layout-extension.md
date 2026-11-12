@@ -62,6 +62,9 @@ The context surface is:
 - `root`: current workspace's shared tiling tree, or `null`
 - `views`, `workspaces`, `outputs`: live maps owned by the shell
 - `focusedId`, `workspace`, `renderedIds`: current layout state
+- `opts`: the workspace's `layout_opts` rule as a map of strings — this
+  layout's own configuration for this workspace, empty when the rule is absent
+  or the workspace names none
 - `plan`: reserved for built-in multi-output layouts; extensions receive `null`
 - `helpers.renderTree(root)`, `helpers.renderStrip(root, output)`
 - `helpers.idsOf(workspace)`, `helpers.dynamicOrder(root)`

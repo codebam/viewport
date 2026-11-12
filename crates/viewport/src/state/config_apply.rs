@@ -1049,6 +1049,26 @@ impl ViewportState {
                 no_rounding: rule.no_rounding,
                 decorate: rule.decorate,
                 float_gaps: rule.float_gaps,
+                animation: rule.animation.filter(|style| {
+                    let valid = MOTION_WORKSPACE_STYLES.contains(&style.as_str());
+                    if !valid {
+                        tracing::warn!(
+                            "workspace {workspace}: unknown animation {style:?}; \
+                             inheriting the motion block's workspaces style"
+                        );
+                    }
+                    valid
+                }),
+                layout_opts: rule.layout_opts.and_then(|mut opts| {
+                    opts.retain(|key, value| !key.trim().is_empty() && !value.is_empty());
+                    if opts.is_empty() {
+                        tracing::warn!(
+                            "workspace {workspace}: layout_opts has no usable entries; ignoring it"
+                        );
+                        return None;
+                    }
+                    Some(opts)
+                }),
             });
         }
         rules.sort_by_key(|rule| rule.workspace);

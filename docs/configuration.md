@@ -58,8 +58,8 @@ a TTY.
 
 `workspaces` is an optional object whose keys are positive workspace numbers.
 Each value accepts `output`, `layout`, `tiling_mode`, `gaps`, `persistent`,
-`default_name`, `on_created_empty`, `no_border`, `no_rounding`, `decorate` and
-`float_gaps`. `output` is
+`default_name`, `on_created_empty`, `no_border`, `no_rounding`, `decorate`,
+`float_gaps`, `animation` and `layout_opts`. `output` is
 the connector preferred as that workspace's home; `layout` accepts a built-in or
 validated `layout_extensions` name; `tiling_mode` accepts `manual`,
 `master-stack`, `spiral`, `bsp` or `grid`; and `gaps` has the same optional
@@ -113,6 +113,32 @@ tiled windows on the workspace. Absent means no inset.
   }
 }
 ```
+
+`animation` is Hyprland's per-workspace `animation` rule: the style a switch to
+this workspace runs, by name, from the ones the `motion` block's `workspaces`
+leaf accepts — `fade`, `slide` and `slidefade`. It wins over the leaf's own
+`style` for this workspace only, so one workspace can slide while the rest
+fade. An unknown name is dropped with a diagnostic and the leaf's style
+stands.
+
+`layout_opts` is the layout's own vocabulary for this workspace — Hyprland's
+per-workspace `layout_opts`, which are options for a layout, not for the
+compositor. It is a map of strings, carried to the shell and handed to the
+workspace's layout as `context.opts`, so a `layout_extensions` script (or a
+built-in layout that grows a per-workspace knob) is configured per workspace:
+
+```jsonc
+{
+  "workspaces": {
+    "8": { "layout": "monocle", "animation": "slidefade",
+           "layout_opts": { "columns": "3" } }
+  }
+}
+```
+
+The built-in layouts accept no options of their own yet; the map exists for
+the extension hook. `docs/layout-extension.md` documents the context a layout
+receives.
 
 Workspace assignment and layout policy remain shell-owned. Workspaces 1 through
 9 exist initially and keep their default bindings; a command, rule or config

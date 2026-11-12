@@ -1049,6 +1049,17 @@ pub struct WorkspaceRule {
     /// already provides.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub float_gaps: Option<CssGaps>,
+    /// The named animation this workspace's switch runs (Hyprland's
+    /// per-workspace `animation` rule): one of the `motion.workspaces` styles.
+    /// Absent keeps that leaf's own style.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub animation: Option<String>,
+    /// The layout's own options for this workspace (Hyprland's `layout_opts`).
+    /// A string map the layout reads; the built-in layouts accept none yet,
+    /// and a `layout_extensions` script is what this hook exists for. Absent
+    /// means the layout's defaults.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout_opts: Option<std::collections::HashMap<String, String>>,
 }
 
 fn yes() -> bool {
@@ -2311,6 +2322,8 @@ mod tests {
             no_rounding: None,
             decorate: None,
             float_gaps: None,
+            animation: None,
+            layout_opts: None,
         });
         let value = json(&Event::Config(Box::new(config)));
         assert_eq!(
@@ -2403,12 +2416,22 @@ mod tests {
                 bottom: 30,
                 left: 40,
             }),
+            animation: Some("slide".into()),
+            layout_opts: Some(std::collections::HashMap::from([(
+                "columns".to_owned(),
+                "3".to_owned(),
+            )])),
         });
         let value = json(&Event::Config(Box::new(config)));
         assert_eq!(value["workspaces"][0]["decorate"], false);
         assert_eq!(
             value["workspaces"][0]["float_gaps"],
             serde_json::json!({ "top": 10, "right": 20, "bottom": 30, "left": 40 })
+        );
+        assert_eq!(value["workspaces"][0]["animation"], "slide");
+        assert_eq!(
+            value["workspaces"][0]["layout_opts"],
+            serde_json::json!({ "columns": "3" })
         );
     }
 

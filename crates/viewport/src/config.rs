@@ -307,6 +307,18 @@ pub struct WorkspaceConfig {
     /// inset, and a window given a rectangle by a rule or by the user's own
     /// drag keeps it.
     pub float_gaps: Option<viewport_ipc::event::CssGaps>,
+    /// The animation a switch to this workspace runs, by name. Hyprland's
+    /// per-workspace `animation` rule: the names are the styles the `motion`
+    /// block's `workspaces` leaf accepts (`fade`, `slide`, `slidefade`), and
+    /// absent keeps whatever that leaf says.
+    pub animation: Option<String>,
+    /// The layout's own options for this workspace. Hyprland's `layout_opts`,
+    /// which are the layout's vocabulary rather than the compositor's: a
+    /// string map carried to the shell and handed to the layout on this
+    /// workspace — a built-in one, or a `layout_extensions` script — so a
+    /// layout can be configured per workspace. Absent means the layout's
+    /// defaults.
+    pub layout_opts: Option<std::collections::HashMap<String, String>>,
 }
 
 /// The `border` block.
@@ -2562,6 +2574,30 @@ mod tests {
         let gaps = six.float_gaps.expect("one number is every side");
         assert_eq!((gaps.top, gaps.right, gaps.bottom, gaps.left), (6, 6, 6, 6));
         assert_eq!(six.decorate, None, "absent is inherited, not false");
+    }
+
+    #[test]
+    fn a_workspace_rule_carries_its_animation_and_layout_options() {
+        let file: File = serde_json::from_str(
+            r#"{
+                "workspaces": {
+                    "6": {
+                        "animation": "slidefade",
+                        "layout_opts": {"columns": "3", "gap": "8"}
+                    }
+                }
+            }"#,
+        )
+        .expect("should parse");
+        let rule = file
+            .workspaces
+            .expect("workspaces block")
+            .remove(&6)
+            .expect("workspace 6");
+        assert_eq!(rule.animation.as_deref(), Some("slidefade"));
+        let opts = rule.layout_opts.expect("layout options");
+        assert_eq!(opts.get("columns").map(String::as_str), Some("3"));
+        assert_eq!(opts.get("gap").map(String::as_str), Some("8"));
     }
 
     #[test]

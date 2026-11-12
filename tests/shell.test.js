@@ -493,6 +493,9 @@ const EXPORTS = ';globalThis.__shell = { views, workspaces, outputs, scrollOffse
      read straight off the document element in the test. */
   + ' reducedMotionForTest: reducedMotion, motionEaseForTest: motionEase,'
   + ' motionLeafForTest: motionLeaf,'
+  + ' fadeInForTest: fadeIn,'
+  + ' layoutContextForTest: layoutContext,'
+  + ' workspaceLayoutOptsForTest: workspaceLayoutOpts,'
   + ' springAdvanceForTest: (state, spring, dt) => springAdvance(state, spring, dt),'
   + ' entranceTransformForTest: entranceTransform,'
   + ' fullscreenOnForTest: fullscreenOn,'
@@ -5809,6 +5812,52 @@ if (mode === 'scrolling') {
      own, and a slide entrance left behind would move them on screen. */
   emit({ type: 'config', layout: mode, rules: HARNESS_RULES,
     motion: { enabled: true } });
+
+  /* A workspace's `layout_opts` rule is handed to its layout as `opts`, the
+     hook a layout extension is configured through. */
+  {
+    const out = [...globalThis.__shell.outputs.values()][0];
+    const optsWorkspace = out.workspace;
+    emit({ type: 'config', layout: mode, rules: HARNESS_RULES,
+      workspaces: [{ workspace: optsWorkspace,
+        layout_opts: { columns: '3', gap: '8' } }] });
+    const ctx = globalThis.__shell.layoutContextForTest(out);
+    check('a workspace layout_opts rule reaches the layout context',
+      ctx.opts.columns === '3' && ctx.opts.gap === '8');
+    check('and the context names the workspace it belongs to',
+      ctx.workspace === optsWorkspace);
+    emit({ type: 'config', layout: mode, rules: HARNESS_RULES, workspaces: [] });
+    const plain = globalThis.__shell.layoutContextForTest(out);
+    check('a workspace with no options gets an empty map',
+      Object.keys(plain.opts).length === 0);
+  }
+
+  /* A workspace's `animation` rule wins over the motion block's workspaces
+     leaf for that workspace's switch: `slide` has no fade, so the arrival is
+     told its resting opacity rather than zero. */
+  {
+    emit({ type: 'config', layout: mode, rules: HARNESS_RULES,
+      motion: { workspaces: { style: 'fade' } },
+      workspaces: [{ workspace: 1, animation: 'slide' }] });
+    emit({ type: 'view.added', id: 360, title: 'anim', app_id: 'anim',
+      output: 'DP-1', min_width: 0, min_height: 0, floating: false,
+      width: 800, height: 600 });
+    let mark = sent.length;
+    globalThis.__shell.fadeInForTest(360, 'workspaces');
+    let messages = sent.slice(mark).filter((m) => m.id === 360);
+    check('a workspace animation rule styles its switch',
+      messages.some((m) => m.type === 'view.opacity')
+      && !messages.some((m) => m.type === 'view.opacity' && m.opacity === 0));
+    emit({ type: 'config', layout: mode, rules: HARNESS_RULES,
+      motion: { workspaces: { style: 'fade' } }, workspaces: [] });
+    mark = sent.length;
+    globalThis.__shell.fadeInForTest(360, 'workspaces');
+    messages = sent.slice(mark).filter((m) => m.id === 360);
+    check('without the rule the motion block styles it',
+      messages.some((m) => m.type === 'view.opacity' && m.opacity === 0));
+    emit({ type: 'view.removed', id: 360 });
+    emit({ type: 'config', layout: mode, rules: HARNESS_RULES, motion: {} });
+  }
 
   /* Workspace policy is resolved against the active workspace, while globals
      remain fallback values for every workspace without a rule. */

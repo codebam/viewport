@@ -423,6 +423,30 @@ let layoutMode = 'tiling';
  * scrolling strip is its own model. See dynamic.js. */
 let tilingMode = 'manual';
 
+/* The animation a switch to this workspace runs, when its rule names one.
+   Hyprland's per-workspace `animation`: the named style wins over the motion
+   block's `workspaces` leaf for this workspace, and absent keeps the leaf. */
+function workspaceAnimation(n) {
+  const style = workspaceRule(n)?.animation;
+  return typeof style === 'string' && style !== '' ? style : null;
+}
+
+/* The layout's own options for this workspace (Hyprland's `layout_opts`): a
+   string map handed to the layout as `context.opts`, which is the hook a
+   layout extension is configured through. A copy, so a layout that keeps or
+   edits what it is given cannot change the config the shell holds. */
+function workspaceLayoutOpts(n) {
+  const opts = workspaceRule(n)?.layout_opts;
+  if (!opts || typeof opts !== 'object' || Array.isArray(opts)) return {};
+  const copy = {};
+  for (const [key, value] of Object.entries(opts)) {
+    if (typeof key === 'string' && key !== '' && typeof value === 'string') {
+      copy[key] = value;
+    }
+  }
+  return copy;
+}
+
 function workspaceRule(n) {
   return workspaceRules.get(n) ?? {};
 }

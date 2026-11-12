@@ -2222,6 +2222,8 @@ fn config_save(state: &mut ViewportState) {
                             no_rounding: rule.no_rounding,
                             decorate: rule.decorate,
                             float_gaps: rule.float_gaps,
+                            animation: rule.animation.clone(),
+                            layout_opts: rule.layout_opts.clone(),
                         },
                     )
                 })

@@ -690,8 +690,14 @@ function fadeIn(id, category = 'windows_in') {
   /* A `workspaces` entrance is a switch's animation, and a relayout that is
      not a switch — coming back from the overview, showing a special — arrives
      the same way but has no direction and no workspace to slide. Those keep
-     the opening window's leaf. */
-  if (category === 'workspaces' && arrivalDirections.size === 0) {
+     the opening window's leaf, unless the workspace names an animation of its
+     own: that is a statement about the workspace's switch, not about this
+     relayout, and it wins. */
+  const workspaceStyle = category === 'workspaces'
+    && typeof workspaceAnimation === 'function'
+    ? workspaceAnimation(workspaceOf(id)) : null;
+  if (category === 'workspaces' && workspaceStyle === null
+      && arrivalDirections.size === 0) {
     category = 'windows_in';
   }
   const leaf = typeof motionLeaf === 'function' ? motionLeaf(category) : null;
@@ -717,7 +723,7 @@ function fadeIn(id, category = 'windows_in') {
     return false;
   }
 
-  const style = leaf?.style ?? 'fade';
+  const style = workspaceStyle ?? leaf?.style ?? 'fade';
   /* `slide` is the one style with no fade: Hyprland slides the window in at
      full brightness. Every other style fades, and `slidefade` is both. */
   const fades = style !== 'slide';
@@ -873,6 +879,7 @@ const resizeObserver = new ResizeObserver((entries) => {
 });
 
 function layoutContext(output = null, root = null, plan = null) {
+  const workspace = output?.workspace ?? null;
   return {
     output,
     root,
@@ -882,7 +889,11 @@ function layoutContext(output = null, root = null, plan = null) {
     outputs,
     renderedIds,
     focusedId,
-    workspace: output?.workspace ?? null,
+    workspace,
+    /* The layout's own options for this workspace, from its `layout_opts`
+       rule — the hook Hyprland gives a layout plugin, here given to this
+       workspace's layout, built-in or extension. */
+    opts: workspaceLayoutOpts(workspace),
     helpers: {
       renderTree,
       renderStrip,
