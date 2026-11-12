@@ -412,6 +412,7 @@
   ],
   "idle": {
     "lock_after": 600,
+    "lock_delay": 10,
     "lock_command": "swaylock -f",
     "blank_after": 900
   },

@@ -36,8 +36,8 @@ a TTY.
   "pixel_format": "auto",   // or "10" / "8" bits per channel; see below
   "gpu": "card1",           // which card renders; see below
   "cross_gpu": "native",    // or "portable", with two cards; see below
-  "idle": { "lock_after": 600, "lock_command": "swaylock -f",
-            "blank_after": 900 },
+  "idle": { "lock_after": 600, "lock_delay": 10,
+            "lock_command": "swaylock -f", "blank_after": 900 },
   "lid": "lock",            // or "blank" / "suspend" / "ignore"; see below
   "cursor": { "theme": "Bibata-Modern-Classic", "size": 24,
               "hide_after_ms": 3000 },   // see below; absent is never
@@ -188,6 +188,15 @@ next input, exactly as the idle timer does. `lid` is what the laptop hinge
 does: `"lock"`, `"blank"`, `"suspend"` (via logind) or `"ignore"`. Absent is
 lock when `idle.lock_command` is set, otherwise blank. A desktop has no lid,
 so the setting never fires.
+
+`idle.lock_delay` is how long the outputs stand black after any lock is
+asked for, before it actually locks — seconds, opt-in only: absent or zero
+locks immediately, as before. During the black phase the session is still
+unlocked, and any deliberate input (a press, a motion) cancels the lock and
+brings the outputs back rather than letting it fire; the release of the
+chord that asked for the lock does not cancel it. Every way of asking —
+idle deadline, `lock` binding, lid, `session.lock` — goes through the same
+delay, so there is one answer to whether the desk is about to lock.
 
 What locking means is one setting, `idle.lock_command`, and it has two answers.
 Set, it is the program to run — `swaylock -f`, or anything else that speaks

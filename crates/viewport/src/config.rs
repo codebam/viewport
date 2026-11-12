@@ -169,6 +169,9 @@ pub struct MagnifyConfig {
 pub struct IdleConfig {
     pub lock_after: Option<i64>,
     pub blank_after: Option<i64>,
+    /// Seconds the outputs stay black after a lock is asked for before it
+    /// locks. Zero or absent is off: locking is immediate, as before.
+    pub lock_delay: Option<i64>,
     /// The locker to run, or absent for the lock screen the shell draws.
     ///
     /// The one setting that decides what locking means anywhere — see
@@ -2399,7 +2402,7 @@ mod tests {
             r#"{
                 "keyboard": {"layout":"us","repeat_rate":25},
                 "cursor": {"theme":"Adwaita","size":32,"hide_after_ms":1500},
-                "idle": {"lock_after":300,"lock_command":"swaylock"},
+                "idle": {"lock_after":300,"lock_delay":10,"lock_command":"swaylock"},
                 "magnify": {"step":0.25,"max":6.0},
                 "outputs": {"DP-1":{"mode":"2560x1440@120","x":0,"hdr":true}}
             }"#,
@@ -2410,6 +2413,7 @@ mod tests {
         assert_eq!(file.cursor.size, Some(32));
         assert_eq!(file.cursor.hide_after_ms, Some(1500));
         assert_eq!(file.idle.lock_after, Some(300));
+        assert_eq!(file.idle.lock_delay, Some(10));
         assert_eq!(file.magnify.step, Some(0.25));
         assert_eq!(file.magnify.max, Some(6.0));
         let dp1 = file.outputs.get("DP-1").expect("DP-1");

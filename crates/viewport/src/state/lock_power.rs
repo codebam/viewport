@@ -59,6 +59,28 @@ impl ViewportState {
             return;
         }
 
+        // A configured delay stands the lock black for the delay first, so
+        // an accidental lock gives the person ten seconds of darkness to
+        // remember the chord in rather than a lock screen they think the
+        // machine wedged on. The first request arms it; a second request
+        // inside the window finds one already running and leaves it alone —
+        // the idle deadline firing while the lid waits out the same window
+        // must not restart the clock every tick.
+        if self.idle.lock_pending() {
+            return;
+        }
+        if let Some(delay) = self.idle_settings.delay() {
+            self.arm_lock_delay(delay);
+            return;
+        }
+
+        self.perform_lock();
+    }
+
+    /// Lock the session now, delayed or not — the delay hop lives in
+    /// [`ViewportState::lock_session`], and its countdown in
+    /// [`ViewportState::lock_delay_tick`].
+    fn perform_lock(&mut self) {
         // A lock is a session state change, and the idle tick now refreshes
         // the inhibitor answer conditionally; settle it here so a hold taken
         // or dropped around the lock is not carried into a policy that has
@@ -77,6 +99,57 @@ impl ViewportState {
             // what a desk with no keyboard could not do before it.
             crate::lock::Mode::BuiltIn => self.lock_with_shell(),
         }
+    }
+
+    /// Stand a lock up black for the delay, and lock when it runs out.
+    ///
+    /// The outputs go off, not merely dark: a black frame still lights the
+    /// panel. The countdown is orphaned rather than disarmed — activity
+    /// during the black phase clears the idle pending flag (and brings the
+    /// outputs back through the wake path), and the tick that later fires
+    /// finds nothing pending and does nothing.
+    fn arm_lock_delay(&mut self, delay: std::time::Duration) {
+        tracing::info!("lock: standing black for {delay:?} before locking");
+        self.idle.arm_lock();
+        self.blank_screens();
+
+        self.lock_delay_generation = self.lock_delay_generation.wrapping_add(1);
+        let generation = self.lock_delay_generation;
+        if self.lock_delay_timer.is_none() {
+            self.lock_delay_timer = self.create_tick("lock delay", Self::lock_delay_tick);
+        }
+        if Self::arm_tick("lock delay", self.lock_delay_timer.as_ref(), delay) {
+            return;
+        }
+
+        // No timerfd. A loop timer still fires wherever calloop is the one
+        // waiting, which is every backend but the web engine's.
+        let timer = smithay::reexports::calloop::timer::Timer::from_duration(delay);
+        if let Err(e) = self
+            .loop_handle
+            .insert_source(timer, move |_, _, state: &mut Self| {
+                if state.lock_delay_generation == generation {
+                    state.lock_delay_tick();
+                }
+                smithay::reexports::calloop::timer::TimeoutAction::Drop
+            })
+        {
+            tracing::warn!("lock delay: {e}");
+        }
+    }
+
+    /// The black window ran out: lock for real. A cancelled delay is
+    /// orphaned rather than disarmed, so this finds nothing pending and
+    /// stays out of the way.
+    fn lock_delay_tick(&mut self) {
+        if !self.idle.lock_pending() {
+            return;
+        }
+        self.idle.clear_lock();
+        tracing::info!("lock: delay over; locking");
+        // The lock screen draws on the outputs — they must be back on.
+        self.set_outputs_enabled(true);
+        self.perform_lock();
     }
 
     /// Let go of every input grab before a lock screen takes the seat.

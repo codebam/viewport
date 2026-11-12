@@ -29,6 +29,12 @@ pub struct Settings {
     pub lock_after: Option<i64>,
     /// Seconds before the outputs are turned off. Zero or absent is off.
     pub blank_after: Option<i64>,
+    /// Seconds the outputs stay black after a lock is asked for, before it
+    /// actually locks. Zero or absent is off, and locking then is immediate
+    /// as it has always been. A positive value is a deliberate head start for
+    /// the lock screen: security is on a clock, and a long gap is a long
+    /// unlocked black screen, so only a person who asked for it gets it.
+    pub lock_delay: Option<i64>,
     pub lock_command: Option<String>,
 }
 
@@ -36,6 +42,16 @@ impl Settings {
     /// Whether anything here needs a timer at all.
     pub fn wanted(&self) -> bool {
         self.lock_after.unwrap_or(0) > 0 || self.blank_after.unwrap_or(0) > 0
+    }
+
+    /// How long a lock request stands black before it locks, or nothing.
+    ///
+    /// Negative reads as off: a delay cannot be negative, and a nonsense
+    /// negative coming from a config typo is more useful silently ignored
+    /// than a panic on a duration conversion.
+    pub fn delay(&self) -> Option<Duration> {
+        let seconds = self.lock_delay.filter(|s| *s > 0)?;
+        Some(Duration::from_secs(seconds as u64))
     }
 }
 
@@ -65,6 +81,15 @@ pub struct Idle {
     /// what has to be ignored, so releases are what is ignored — a press, a
     /// click or a moved mouse brings the screens back on the spot.
     awaiting_release: bool,
+    /// A lock was asked for and is standing black for its delay.
+    ///
+    /// The lock has not happened: the session is still unlocked, and the only
+    /// thing standing between the person and the desktop is a black output.
+    /// `activity` cancels it, because a deliberate act in the black phase
+    /// means somebody is there — the very accident the delay exists to
+    /// forgive. A release the chord left in flight does not, for the blank's
+    /// own reason above.
+    pending_lock: bool,
     /// Something is holding idle off — a video player, usually.
     inhibited: bool,
 }
@@ -76,6 +101,7 @@ impl Default for Idle {
             locked: false,
             blanked: false,
             awaiting_release: false,
+            pending_lock: false,
             inhibited: false,
         }
     }
@@ -97,9 +123,34 @@ impl Idle {
         self.since = Instant::now();
         self.locked = false;
         let was_blanked = self.blanked;
+        let cancelled = self.pending_lock;
+        self.pending_lock = false;
         self.blanked = false;
         self.awaiting_release = false;
-        was_blanked
+        // A cancelled lock delay is a wake in the same sense a blank is:
+        // the outputs are dark and something has to bring them back out of
+        // the cancel, or the desktop stays black under a live session.
+        was_blanked || cancelled
+    }
+
+    /// Stand a lock up for its delay: blank now, lock when the delay runs out.
+    ///
+    /// The pending flag is what the ending tick and `activity` settle
+    /// between them: a deliberate act while the screens are dark cancels
+    /// instead of locking, while a late tick after a cancel finds nothing
+    /// pending and does nothing.
+    pub fn arm_lock(&mut self) {
+        self.pending_lock = true;
+    }
+
+    /// Whether a lock is standing black inside its delay.
+    pub fn lock_pending(&self) -> bool {
+        self.pending_lock
+    }
+
+    /// Take a pending lock off the books, as when its delay ran out.
+    pub fn clear_lock(&mut self) {
+        self.pending_lock = false;
     }
 
     pub fn set_inhibited(&mut self, inhibited: bool) {
@@ -180,6 +231,7 @@ mod tests {
         Settings {
             lock_after: lock,
             blank_after: blank,
+            lock_delay: None,
             lock_command: Some("swaylock".to_owned()),
         }
     }
@@ -345,6 +397,66 @@ mod tests {
             "the release woke the screens back up"
         );
         assert!(idle.blanked(), "and it cleared the flag on the way past");
+    }
+
+    #[test]
+    fn a_lock_delay_defaults_to_off_and_clamps_nonsense() {
+        // Off unless asked for, like the deadlines: without an explicit
+        // opt-in a lock is immediate, and a negative typo reads as off
+        // rather than a duration panic.
+        let mut s = settings(None, None);
+        assert_eq!(s.delay(), None);
+        s.lock_delay = Some(0);
+        assert_eq!(s.delay(), None);
+        s.lock_delay = Some(-5);
+        assert_eq!(s.delay(), None);
+        s.lock_delay = Some(10);
+        assert_eq!(s.delay(), Some(Duration::from_secs(10)));
+        assert!(
+            !Settings::default().wanted(),
+            "the delay alone must not start the idle timers"
+        );
+    }
+
+    #[test]
+    fn a_deliberate_act_during_the_black_phase_cancels_the_lock() {
+        // The whole point of the delay: ten seconds of darkness is a
+        // forgiveness window, not a countdown to an inevitable lock.
+        // Activity cancels without re-arming — the deadlines restart from
+        // this act, and the delayed lock never fires on its own.
+        let mut idle = Idle::default();
+        idle.force_blank();
+        idle.arm_lock();
+        assert!(idle.lock_pending());
+
+        assert!(
+            idle.activity(Activity::Deliberate),
+            "a cancelled delay must wake the outputs like a blank"
+        );
+        assert!(!idle.lock_pending(), "and the pending lock must be gone");
+        assert!(!idle.blanked());
+
+        // The stranded tick afterwards (orphaned by the cancel) must not
+        // lock anything: pending is false, so the caller treats it as a
+        // no-op — which is the contract this test pins down.
+        let s = settings(Some(3600), None);
+        assert_eq!(idle.tick(&s, Duration::from_secs(5)), Actions::default());
+    }
+
+    #[test]
+    fn the_lock_chords_release_does_not_cancel_the_delay() {
+        // A lock asked for by chord arrives with its release in flight.
+        // Cancelling on that release would get a black flicker and no lock,
+        // the same race `awaiting_release` exists for on the blank.
+        let mut idle = Idle::default();
+        idle.force_blank();
+        idle.arm_lock();
+
+        assert!(!idle.activity(Activity::Release));
+        assert!(
+            idle.lock_pending(),
+            "the chord's release must not cancel its own lock"
+        );
     }
 
     #[test]

@@ -35,6 +35,13 @@ to summarise rather than to duplicate.
 - GSAP 3.15.0 to 3.15.1; the vendored file and its hash are refreshed and
   verified against the npm tarball.
 
+### Added
+- `idle.lock_delay` (seconds) stands the outputs black after a lock is asked
+  for, before it actually locks — every lock path, idle deadline, `session.lock`,
+  lid and binding alike. Zero or absent is off, and locking is immediate.
+  Deliberate input in the black phase cancels and wakes; the release of the
+  chord that asked for the lock does not.
+
 ### Fixed
 - A confined cursor no longer escapes at the output edge. A constraint
   requested while the pointer is not yet over its surface is now

@@ -1338,6 +1338,13 @@ pub struct ViewportState {
     /// which cannot be re-armed, only added to — does not fire a deadline that
     /// was superseded by a second configuration.
     pub output_revert_generation: u64,
+    /// The timer for the lock delay's black phase.
+    ///
+    /// Same reasoning as the revert timer above: this one has to fire when
+    /// nothing is happening — the outputs are off by definition.
+    pub lock_delay_timer: Option<std::os::fd::OwnedFd>,
+    /// Which arming the pending tick belongs to, like the revert's.
+    pub lock_delay_generation: u64,
     /// The timer the config's live reload settles on, when watched.
     pub config_reload_timer: Option<std::os::fd::OwnedFd>,
     /// Whether a config reload is already waiting on the timer.
@@ -2057,6 +2064,8 @@ impl ViewportState {
             output_revert: None,
             output_revert_timer: None,
             output_revert_generation: 0,
+            lock_delay_timer: None,
+            lock_delay_generation: 0,
             config_reload_timer: None,
             config_reload_pending: false,
             shell_reload_timer: None,

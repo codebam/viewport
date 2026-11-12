@@ -422,16 +422,23 @@ and the JavaScript shell suites under `tests/`.
   sounds. Covered by a unit test (`for_run(true)` returns `None` without
   touching PipeWire, so it holds with or without a sound server).
 
-- [ ] **59. The lock should go black for ten seconds before it locks.**
-  Requested (2026-11-12): after the lock fires, the screen should go
-  black for 10 seconds before the session is actually locked, so the
-  lock is visible as a black screen first rather than an instant
-  lock. The grace period belongs in the lock path (`state/lock_power.rs`
-  / `handlers/session_lock.rs`), not in the idle hook alone, so every
-  way of asking for a lock (idle, `session.lock`, the settings panel)
-  gets the same ten seconds; it must be interruptible by activity only
-  during the black phase, and the countdown must not re-arm on unrelated
-  input.
+- [x] **59. The lock should go black for ten seconds before it locks.
+  Fixed.** Requested (2026-11-12) and implemented as `idle.lock_delay`:
+  a lock request now blanks the outputs (DPMS off) for the delay and
+  only then actually locks, and the value is configurable with zero or
+  absent meaning immediate locking as before. It lives in the lock path
+  (`state/lock_power.rs`), so every way of asking — idle deadline,
+  `session.lock`, lid, `lock` binding — goes through the same delay.
+  The countdown belongs to the lock-time idle state rather than a clock
+  in the timer that could drift from it: deliberate activity during the
+  black phase cancels (and wakes the outputs through the existing path)
+  while the release of the chord that asked for the lock does not, and a
+  second request inside the window leaves the first countdown alone.
+  The timer is orphaned on cancel, exactly as the output-revert
+  countdown is, so a stranded tick after a cancel stays out of the way.
+  Covered by idle unit tests (delay clamps, cancel, release grace) and
+  `tests/lock-delay.test.sh` (session unlocked during black, lock fires
+  when it runs out).
 
 - [x] **60. Resize commands cannot move a client that maximized itself.
   Fixed.** The Steam X window asks for `_NET_WM_STATE_MAXIMIZED` on launch.

@@ -678,6 +678,7 @@ impl ViewportState {
             self.idle_settings = crate::idle::Settings {
                 lock_after: file.idle.lock_after,
                 blank_after: file.idle.blank_after,
+                lock_delay: file.idle.lock_delay,
                 lock_command: file.idle.lock_command,
             };
         }

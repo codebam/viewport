@@ -216,6 +216,8 @@ run session-lock-takeover "$root/tests/lock-takeover.test.sh" \
 # in that story at all.
 run session-lock-builtin "$root/tests/lock-builtin.test.sh" \
 	"$VIEWPORT" "$work/capture-client" "$work/paint-client"
+run session-lock-delay "$root/tests/lock-delay.test.sh" \
+	"$VIEWPORT" "$work/capture-client" "$work/paint-client"
 run foreign-toplevel "$root/tests/foreign-toplevel.test.sh" \
 	"$VIEWPORT" "$work/foreign-toplevel-client" "$work/paint-client"
 run output-management "$root/tests/output-management.test.sh" \
