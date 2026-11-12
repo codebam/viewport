@@ -991,6 +991,28 @@ impl ViewportState {
                 return;
             }
         };
+        // The transform the screen needs, as opposed to the calibration ramp
+        // above: a matrix-and-curve profile says how the display renders, and
+        // the renderer samples the baked cube. Reading it here means a profile
+        // that cannot be understood is said out loud at load time rather than
+        // on the frame somebody's colours come out wrong.
+        match crate::icc::DisplayTransform::for_profile(&bytes) {
+            Some(transform) => {
+                let grey = transform.map([0.5, 0.5, 0.5]);
+                tracing::info!(
+                    "{name}: ICC colour transform ready — {} cube entries, sRGB grey \
+                     becomes {:.3}, {:.3}, {:.3}",
+                    transform.lut().len(),
+                    grey[0],
+                    grey[1],
+                    grey[2],
+                );
+            }
+            None => tracing::debug!(
+                "{name}: {path} describes no RGB matrix-and-curve transform; only its \
+                 calibration is used"
+            ),
+        }
         match crate::icc::vcgt(&bytes) {
             Some(ramp) => {
                 tracing::info!(
