@@ -492,6 +492,9 @@ const EXPORTS = ';globalThis.__shell = { views, workspaces, outputs, scrollOffse
      easing a tween would run on. The CSS properties applyMotion writes are
      read straight off the document element in the test. */
   + ' reducedMotionForTest: reducedMotion, motionEaseForTest: motionEase,'
+  + ' motionLeafForTest: motionLeaf,'
+  + ' springAdvanceForTest: (state, spring, dt) => springAdvance(state, spring, dt),'
+  + ' entranceTransformForTest: entranceTransform,'
   + ' fullscreenOnForTest: fullscreenOn,'
   + ' maximizedOnForTest: maximizedOn,'
   + ' dynamicOrderForTest: dynamicOrder,'
@@ -5716,6 +5719,96 @@ if (mode === 'scrolling') {
     !globalThis.__shell.reducedMotionForTest());
   check('and takes the class off',
     !document.documentElement.classList.contains('motion-off'));
+
+  /* The motion tree: a leaf inherits the pace and curve of the ones above it
+     and keeps its own style, and the categories that own a CSS transition
+     land on their own properties. */
+  emit({ type: 'config', layout: mode, rules: HARNESS_RULES,
+    motion: {
+      duration: 90,
+      ease: 'cubic-bezier(0, 0, 1, 1)',
+      windows: { duration: 120 },
+      windows_in: { style: 'popin' },
+      windows_move: { duration: 75, bezier: [0.25, 0.1, 0.25, 1] },
+      workspaces: { style: 'slidefade' },
+    } });
+  const leafIn = globalThis.__shell.motionLeafForTest('windows_in');
+  check('a windowsIn leaf inherits the windows pace',
+    leafIn?.duration === 120);
+  check('and keeps the style it names', leafIn?.style === 'popin');
+  check('a windowsMove leaf takes its own pace',
+    globalThis.__shell.motionLeafForTest('windows_move')?.duration === 75
+    && motionStyle.getPropertyValue('--anim-move') === '75ms');
+  check('and its curve as numbers becomes a timing function',
+    motionStyle.getPropertyValue('--ease-move')
+      === 'cubic-bezier(0.25, 0.1, 0.25, 1)');
+  check('a workspace leaf keeps its own style too',
+    globalThis.__shell.motionLeafForTest('workspaces')?.style === 'slidefade');
+  check('and inherits the root curve it did not name',
+    globalThis.__shell.motionLeafForTest('workspaces')?.ease
+      === 'cubic-bezier(0, 0, 1, 1)');
+
+  /* A popin entrance is reported at a scale below one while it opens, so the
+     compositor draws the client shrinking into place. */
+  emit({ type: 'config', layout: mode, rules: HARNESS_RULES,
+    motion: { duration: 60, windows_in: { style: 'popin' } } });
+  const popinMark = sent.length;
+  emit({ type: 'view.added', id: 350, title: 'popin', app_id: 'popin',
+    output: 'DP-1', min_width: 0, min_height: 0, floating: false,
+    width: 800, height: 600 });
+  const popinSent = sent.slice(popinMark);
+  check('a popin entrance is reported at a scale below one',
+    popinSent.some((m) => m.type === 'view.layout' && m.id === 350
+      && typeof m.scale === 'number' && m.scale >= 0.85 && m.scale < 1));
+  check('and fades in from nothing to its resting opacity',
+    popinSent.some((m) => m.type === 'view.opacity' && m.id === 350
+      && m.opacity === 0)
+    && popinSent.some((m) => m.type === 'view.opacity' && m.id === 350
+      && m.opacity === 1));
+  emit({ type: 'view.removed', id: 350 });
+
+  /* A slide entrance comes from the side of the monitor the window is nearer
+     to, at the full width of the area it is drawn in. */
+  emit({ type: 'config', layout: mode, rules: HARNESS_RULES,
+    motion: { windows_in: { style: 'slide' } } });
+  emit({ type: 'view.added', id: 351, title: 'slide', app_id: 'slide',
+    output: 'DP-1', min_width: 0, min_height: 0, floating: false,
+    width: 800, height: 600 });
+  const slideView = globalThis.__shell.views.get(351);
+  const slideStart = globalThis.__shell.entranceTransformForTest(
+    slideView, 'slide', 'windows_in');
+  check('a slide entrance starts off the side of the monitor',
+    slideStart !== null && Math.abs(slideStart.x) === 1920
+    && slideStart.scale === 1);
+  check('and a popin entrance starts just under its final size',
+    (() => {
+      const popin = globalThis.__shell.entranceTransformForTest(
+        slideView, 'popin', 'windows_in');
+      return popin !== null && popin.scale === 0.85 && popin.x === 0;
+    })());
+  emit({ type: 'view.removed', id: 351 });
+
+  /* The spring is the reference integrator: a critically damped spring
+     converges without overshooting, and within a fraction of a second. */
+  {
+    const spring = { mass: 1, stiffness: 400, damping: 40 };
+    const state = { value: 0, velocity: 0 };
+    let steps = 0;
+    for (; steps < 240; steps++) {
+      globalThis.__shell.springAdvanceForTest(state, spring, 1 / 60);
+      if (Math.abs(state.value - 1) < 0.001
+          && Math.abs(state.velocity) < 0.001) break;
+    }
+    check('a critical spring converges on its target',
+      Math.abs(state.value - 1) < 0.001);
+    check('without overshooting', state.value <= 1.001);
+    check('inside a second', steps < 60);
+  }
+
+  /* The tree is global state: the checks after this one open windows of their
+     own, and a slide entrance left behind would move them on screen. */
+  emit({ type: 'config', layout: mode, rules: HARNESS_RULES,
+    motion: { enabled: true } });
 
   /* Workspace policy is resolved against the active workspace, while globals
      remain fallback values for every workspace without a rule. */

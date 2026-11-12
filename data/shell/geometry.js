@@ -97,8 +97,13 @@ function reportGeometry(id) {
      cold window keeps the size of a warm one and is merely drawn small, so
      that a focus change — which reshuffles every orbit on the workspace — does
      not reconfigure half the clients on it. See solar.js. */
-  const scale = view.overview?.scale ?? view.solar?.scale
+  /* A layout may already scale the window (overview thumbnails, solar's
+     orbits, the canvas plane); an entrance scales on top of that, so the two
+     multiply. The compositor is told the product for the same reason the
+     measured rectangle is the transformed one. */
+  const layoutScale = view.overview?.scale ?? view.solar?.scale
     ?? view.canvas?.scale ?? 1;
+  const scale = layoutScale * (view.entrance?.scale ?? 1);
   /* The whole device pixels *inside* the measured rect, rather than the ones
      nearest its edges.
 
@@ -389,6 +394,39 @@ function flipFrom(before) {
     offsets.push([view.el, dx, dy]);
   }
 
+  /* A spring cannot be a CSS transition, so the slide is sampled here — the
+     pump is measuring these rects every frame either way, and the compositor
+     follows them. Without one, the slide stays where CSS can do it. */
+  const moveLeaf = typeof motionLeaf === 'function' ? motionLeaf('windows_move') : null;
+  if (moveLeaf?.spring) {
+    if (offsets.length === 0 && strips.length === 0) return;
+    for (const [el, dx, dy] of offsets) {
+      el.classList.add('flipping');
+      el.style.transform = `translate(${dx}px, ${dy}px)`;
+    }
+    /* One forced reflow, so the offset position exists before the first
+       sampled frame — the same read the stylesheet path needs. */
+    void document.documentElement?.offsetWidth;
+    releaseStrips();
+    runMotion(moveLeaf, (progress) => {
+      const remaining = 1 - progress;
+      for (const [el, dx, dy] of offsets) {
+        el.style.transform = remaining <= 0
+          ? ''
+          : `translate(${dx * remaining}px, ${dy * remaining}px)`;
+      }
+    }, () => {
+      for (const [el] of offsets) {
+        el.style.transform = '';
+        el.classList.remove('flipping');
+      }
+      /* One more sampling bout, so the compositor is handed the settled
+         rectangle rather than the last frame of the spring. */
+      pumpGeometry();
+    });
+    return;
+  }
+
   const moved = [];
   for (const [el, dx, dy] of offsets) {
     el.classList.add('flipping');
@@ -620,53 +658,144 @@ function reducedMotion() {
     matchMedia('(prefers-reduced-motion: reduce)').matches;
 }
 
-/* Fade a newly opened window in.
+/* Bring a newly visible window on screen, in the style its motion category
+ * names.
  *
  * This one cannot be CSS. The frame is the shell's, but the window's contents
  * are a surface the compositor draws, and no style here touches it — so the
  * opacity is tweened in JS and sent over IPC, where the compositor applies it
- * to the surface itself. Skipped entirely when motion is reduced.
+ * to the surface itself. A style that moves the window (slide, slidefade,
+ * gnomed) or scales it (popin, zoom) moves the retained element and reports
+ * its rectangle every frame: the compositor follows the measured rect and the
+ * reported scale, which is the same channel a flip and the overview use.
  *
- * What is left here is the part that is about windows: where the fade stops,
- * and what to do when there is not going to be one. The tween itself is
- * surfaceOpacityTween in motion.js, along with the rest of the shell's
- * hand-driven animation.
+ * `category` is which leaf of the motion tree the entrance belongs to:
+ * `windows_in` for a window that just opened, `workspaces` for one arriving
+ * with a workspace switch. The two are separate leaves because they are
+ * separate animations in Hyprland, and a desk that wants popin windows does
+ * not necessarily want a slide on every workspace change.
  *
  * Returns whether a tween was actually started, which is what lets a caller
  * that also has an opinion about this window's opacity — solar, whose tiers
  * rest well below 1 — leave a fade in progress alone rather than talking over
  * it. */
-function fadeIn(id) {
+function fadeIn(id, category = 'windows_in') {
+  const view = views.get(id);
   /* Where the fade stops. Usually opaque, but the solar layout rests its cold
      windows well below that — and a fade that always ended at 1 would bring
      every one of them up bright and leave it bright until something else
      caused a relayout, which is a window that looks focused and is not. */
   const resting = typeof solarRestingOpacity === 'function'
     ? solarRestingOpacity(id) : 1;
+  /* A `workspaces` entrance is a switch's animation, and a relayout that is
+     not a switch — coming back from the overview, showing a special — arrives
+     the same way but has no direction and no workspace to slide. Those keep
+     the opening window's leaf. */
+  if (category === 'workspaces' && arrivalDirections.size === 0) {
+    category = 'windows_in';
+  }
+  const leaf = typeof motionLeaf === 'function' ? motionLeaf(category) : null;
+  /* One entrance per window at a time: a switch asks twice — once from the
+     visibility pass and once from the arrival pass that knows what a switch
+     is — and two tweens fighting over one opacity is a fade that stutters. */
+  if (view?.entranceTween) return false;
 
   /* A rule can take the animation off one window — Hyprland's `animation`
      effect — and it gets the reduced-motion answer: no journey, but it still
-     arrives. */
-  if (reducedMotion() || views.get(id)?.noAnimation) {
-    /* No journey, but it still has to arrive. Reduced motion asks for nothing
-       to move, not for every cold window to open at full brightness and stay
-       there until something else happens to cause a relayout. */
+     arrives. So does a category configured off. */
+  const snap = () => {
     if (resting !== 1) send({ type: 'view.opacity', id, opacity: resting });
+    if (view?.entrance) {
+      view.entrance = null;
+      view.el.style.transform = '';
+      reportGeometry(id);
+    }
+  };
+  if (reducedMotion() || view?.noAnimation || leaf?.enabled === false) {
+    if (view) view.entranceTween = false;
+    snap();
     return false;
   }
 
-  send({ type: 'view.opacity', id, opacity: 0 });
+  const style = leaf?.style ?? 'fade';
+  /* `slide` is the one style with no fade: Hyprland slides the window in at
+     full brightness. Every other style fades, and `slidefade` is both. */
+  const fades = style !== 'slide';
+  send({ type: 'view.opacity', id, opacity: fades ? 0 : resting });
 
-  const started = surfaceOpacityTween(resting, (opacity) => {
-    send({ type: 'view.opacity', id, opacity });
+  const move = entranceTransform(view, style, category);
+  if (move) view.entrance = { x: move.x, y: move.y, scale: move.scale };
+
+  if (view) view.entranceTween = true;
+  const started = runMotion(leaf, (progress) => {
+    if (fades) send({ type: 'view.opacity', id, opacity: resting * progress });
+    if (!move) return;
+    const left = move.x * (1 - progress);
+    const top = move.y * (1 - progress);
+    const scale = 1 + (move.scale - 1) * (1 - progress);
+    view.entrance = { x: left, y: top, scale };
+    view.el.style.transform = transformOf(left, top, scale);
+    reportGeometry(id);
+  }, () => {
+    if (view) view.entranceTween = false;
+    if (fades) send({ type: 'view.opacity', id, opacity: resting });
+    if (!move) return;
+    view.entrance = null;
+    view.el.style.transform = '';
+    reportGeometry(id);
   });
 
   /* The window was just told to be invisible. If no tween is going to bring it
      back up — a shell whose tween engine did not load is the way that happens
      — this has to, or the fade that never started is a window that never
      appears. */
-  if (!started) send({ type: 'view.opacity', id, opacity: resting });
+  if (!started) snap();
   return started;
+}
+
+/* Where an entrance starts from, by style: the offset and scale it arrives
+ * from, with the final state at zero offset and scale 1.
+ *
+ * `slide` comes in from the side of its own monitor it is nearer to; a
+ * workspace arrival comes in from the side the workspace was switched to, so
+ * the whole workspace slides as one. `slidefade` is a shorter version of the
+ * same slide, and `gnomed` rises from below. */
+function entranceTransform(view, style, category) {
+  if (!view || !view.el) return null;
+  if (style === 'popin') return { x: 0, y: 0, scale: 0.85 };
+  if (style === 'zoom') return { x: 0, y: 0, scale: 1.15 };
+  if (style === 'gnomed') return { x: 0, y: 24, scale: 1 };
+  if (style !== 'slide' && style !== 'slidefade') return null;
+
+  const workspace = workspaceOf(view.id);
+  const outputName = hostOfWorkspace(workspace) ?? activeOutputName();
+  const output = outputs.get(outputName);
+  const area = output ? output.windowsEl.getBoundingClientRect() : null;
+  if (!area || area.width <= 0) return null;
+
+  let direction = 0;
+  if (category === 'workspaces') {
+    direction = arrivalDirections.get(outputName) ?? 0;
+  } else {
+    const rect = view.el.getBoundingClientRect();
+    direction = rect.left + rect.width / 2 < area.left + area.width / 2 ? -1 : 1;
+  }
+  if (direction === 0) return null;
+
+  /* Full width for a slide — the window really comes from off the edge — and
+     a shorter one for slidefade, which is a slide and a fade together rather
+     than a journey across the screen. */
+  const distance = style === 'slide' ? area.width : area.width * 0.12;
+  return { x: direction * distance, y: 0, scale: 1 };
+}
+
+function transformOf(x, y, scale) {
+  const parts = [];
+  if (x !== 0 || y !== 0) {
+    parts.push(`translate(${x.toFixed(2)}px, ${y.toFixed(2)}px)`);
+  }
+  if (scale !== 1) parts.push(`scale(${scale.toFixed(4)})`);
+  return parts.join(' ');
 }
 
 /* Fade in every window a relayout has just brought on screen.
@@ -689,7 +818,7 @@ function fadeIn(id) {
 function fadeInArrivals(before) {
   if (reducedMotion()) return;
   for (const id of renderedIds) {
-    if (!before.has(id)) fadeIn(id);
+    if (!before.has(id)) fadeIn(id, 'workspaces');
   }
 }
 
@@ -796,6 +925,12 @@ registerBuiltinLayout('canvas', {
   absorbsFloating: true,
 });
 
+/* Which workspace each output was showing at the last relayout, and which way
+   the one it shows now came from. An arrival animation needs to know a switch
+   happened at all; a slide needs to know which side to come in from. */
+const lastWorkspacesByOutput = new Map();
+let arrivalDirections = new Map();
+
 function relayoutAll() {
   /* The overview is a grid of the outputs. With none left there is nothing to
      draw it on and the assignment below would divide by zero; clear it and
@@ -845,6 +980,20 @@ function relayoutAll() {
   /* workspace -> output showing it. A workspace appears at most once. */
   const shown = new Map();
   for (const [name, output] of outputs) shown.set(output.workspace, name);
+
+  /* Which outputs changed workspace since the last relayout, and which way
+     the new one came from: higher numbers slide in from the right, lower from
+     the left, which is the order a workspace strip implies. A relayout that
+     is not a switch leaves the map empty and nothing slides. */
+  const directions = new Map();
+  for (const [name, output] of outputs) {
+    const previous = lastWorkspacesByOutput.get(name);
+    if (previous !== undefined && previous !== output.workspace) {
+      directions.set(name, output.workspace > previous ? 1 : -1);
+    }
+    lastWorkspacesByOutput.set(name, output.workspace);
+  }
+  arrivalDirections = directions;
 
   /* Render first, then decide what is visible. Which windows are on screen is
      now a result of rendering rather than something knowable in advance: a
@@ -1100,7 +1249,7 @@ function relayoutAll() {
        fades nothing. */
     const wasVisible = !view.el.hidden;
     view.el.hidden = !visible;
-    if (visible && !wasVisible && fadeIn(id)) faded.add(id);
+    if (visible && !wasVisible && fadeIn(id, 'workspaces')) faded.add(id);
     if (!visible && view.box !== null) {
       view.box = null;
       send({ type: 'view.visible', id, visible: false });

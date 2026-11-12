@@ -369,6 +369,63 @@ pub struct MotionConfig {
     /// `steps(...)`, or one of the keywords. Absent leaves the shell's own
     /// cubic-bezier.
     pub ease: Option<String>,
+    /// The root curve as four numbers — `x1, y1, x2, y2` — for a desk that
+    /// would rather not write the function out. Wins over `ease` when both are
+    /// present, because a curve written as numbers is the more specific form.
+    pub bezier: Option<[f64; 4]>,
+    /// The default for the categories below: a field they do not name
+    /// inherits from here, then from this block's own root fields.
+    pub windows: Option<MotionCategory>,
+    /// Windows arriving — a new window, or one coming back on screen.
+    pub windows_in: Option<MotionCategory>,
+    /// Windows moving — the slide a relayout animates, Hyprland's
+    /// `windowsMove`.
+    pub windows_move: Option<MotionCategory>,
+    /// Workspaces arriving and leaving — what a switch animates.
+    pub workspaces: Option<MotionCategory>,
+}
+
+/// One leaf of the motion tree.
+///
+/// Hyprland's `animation` block, in this file's shape: a named style, a pace,
+/// and either a curve or a spring. Every field is optional and absent ones
+/// inherit — first from `motion.windows`, then from the `motion` block's own
+/// `duration` and `ease` — so a desk that only wants popin openings writes
+/// one line.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct MotionCategory {
+    /// The named style. Windows in accept `fade`, `popin`, `zoom`, `slide`,
+    /// `slidefade`, and `gnomed`; workspaces accept `fade`, `slide` and
+    /// `slidefade`. An unknown name inherits.
+    pub style: Option<String>,
+    /// Milliseconds, as the root's `duration` is.
+    pub duration: Option<f64>,
+    /// A CSS timing function, as the root's `ease` is.
+    pub ease: Option<String>,
+    /// The same curve as four numbers, `x1, y1, x2, y2`.
+    pub bezier: Option<[f64; 4]>,
+    /// A physical spring, which overrides both the duration and the curve for
+    /// this category. Ignored by a category whose animation cannot spring —
+    /// the shell says which those are.
+    pub spring: Option<MotionSpring>,
+    /// Whether this category animates at all. Absent inherits.
+    pub enabled: Option<bool>,
+}
+
+/// A spring, in the terms the physics uses.
+///
+/// `mass`, `stiffness` and `damping` are the same three numbers the reference
+/// implementation integrates: a heavier or stiffer spring is faster, and a
+/// damping of `2 * sqrt(stiffness * mass)` is critical (no overshoot). Absent
+/// fields default to 1, 400 and 40, which is a quick, critically damped
+/// settle.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct MotionSpring {
+    pub mass: Option<f64>,
+    pub stiffness: Option<f64>,
+    pub damping: Option<f64>,
 }
 
 /// The `group` block: how tabbed and stacked containers take new windows.
@@ -2444,6 +2501,42 @@ mod tests {
         let mut sorted = specs.clone();
         sorted.sort_by(|a, b| a.spec.cmp(&b.spec));
         assert_eq!(specs, sorted);
+    }
+
+    #[test]
+    fn the_motion_tree_parses_with_styles_object_curves_and_springs() {
+        let file: File = serde_json::from_str(
+            r#"{
+                "motion": {
+                    "duration": 90,
+                    "ease": "ease-out",
+                    "bezier": [0.2, 0.9, 0.3, 1.0],
+                    "windows": {"duration": 120},
+                    "windows_in": {"style": "popin", "spring": {"mass": 1, "stiffness": 400}},
+                    "windows_move": {"duration": 75, "bezier": [0.4, 0, 0.2, 1]},
+                    "workspaces": {"style": "slidefade", "enabled": false}
+                }
+            }"#,
+        )
+        .expect("should parse");
+        let motion = file.motion;
+        assert_eq!(motion.duration, Some(90.0));
+        assert_eq!(motion.ease.as_deref(), Some("ease-out"));
+        assert_eq!(motion.bezier, Some([0.2, 0.9, 0.3, 1.0]));
+        assert_eq!(motion.windows.and_then(|leaf| leaf.duration), Some(120.0));
+        let inside = motion.windows_in.expect("windows_in");
+        assert_eq!(inside.style.as_deref(), Some("popin"));
+        let spring = inside.spring.expect("spring");
+        assert_eq!(spring.mass, Some(1.0));
+        assert_eq!(spring.stiffness, Some(400.0));
+        assert_eq!(spring.damping, None, "an absent field takes the default");
+        assert_eq!(
+            motion.windows_move.and_then(|leaf| leaf.bezier),
+            Some([0.4, 0.0, 0.2, 1.0])
+        );
+        let workspaces = motion.workspaces.expect("workspaces");
+        assert_eq!(workspaces.style.as_deref(), Some("slidefade"));
+        assert_eq!(workspaces.enabled, Some(false));
     }
 
     #[test]

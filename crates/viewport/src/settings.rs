@@ -821,6 +821,22 @@ mod tests {
                 duration: Some(120.0),
                 slow: None,
                 ease: Some("linear".to_owned()),
+                bezier: None,
+                windows: Some(viewport_ipc::event::MotionCategory {
+                    style: Some("popin".to_owned()),
+                    duration: Some(120.0),
+                    ease: None,
+                    bezier: None,
+                    spring: Some(viewport_ipc::event::MotionSpring {
+                        mass: 1.0,
+                        stiffness: 400.0,
+                        damping: 40.0,
+                    }),
+                    enabled: None,
+                }),
+                windows_in: None,
+                windows_move: None,
+                workspaces: None,
             }),
             group: Some(viewport_ipc::event::Group {
                 auto_group: Some(true),

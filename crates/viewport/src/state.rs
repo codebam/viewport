@@ -5132,6 +5132,85 @@ mod tests {
     /// carried" from turning into a redraw per turn of the loop: a window that
     /// cannot be drawn costs three lines and three frames, not a busy loop.
     #[test]
+    fn a_motion_leaf_is_validated_field_by_field() {
+        let category = crate::config::MotionCategory {
+            style: Some("popin".into()),
+            duration: Some(120.0),
+            ease: Some("  ".into()),
+            bezier: Some([0.2, 0.9, 0.3, 1.0]),
+            spring: Some(crate::config::MotionSpring {
+                mass: Some(1.0),
+                stiffness: Some(400.0),
+                damping: Some(40.0),
+            }),
+            enabled: Some(true),
+        };
+        let converted = motion_category(
+            "config.motion.windows_in",
+            Some(&category),
+            &MOTION_WINDOW_STYLES,
+        )
+        .expect("a leaf");
+        assert_eq!(converted.style.as_deref(), Some("popin"));
+        assert_eq!(converted.duration, Some(120.0));
+        assert_eq!(converted.ease, None, "a blank curve is dropped");
+        assert_eq!(converted.bezier, Some([0.2, 0.9, 0.3, 1.0]));
+        assert_eq!(
+            converted.spring,
+            Some(viewport_ipc::event::MotionSpring {
+                mass: 1.0,
+                stiffness: 400.0,
+                damping: 40.0,
+            })
+        );
+        assert_eq!(converted.enabled, Some(true));
+    }
+
+    #[test]
+    fn a_style_that_belongs_to_another_category_is_dropped() {
+        let category = crate::config::MotionCategory {
+            style: Some("popin".into()),
+            ..Default::default()
+        };
+        let converted = motion_category(
+            "config.motion.workspaces",
+            Some(&category),
+            &MOTION_WORKSPACE_STYLES,
+        )
+        .expect("a leaf");
+        assert_eq!(converted.style, None, "popin is an arrival, not a switch");
+    }
+
+    #[test]
+    fn a_spring_that_is_not_physical_is_dropped_rather_than_clamped() {
+        let category = crate::config::MotionCategory {
+            spring: Some(crate::config::MotionSpring {
+                mass: Some(0.0),
+                stiffness: Some(400.0),
+                damping: Some(40.0),
+            }),
+            ..Default::default()
+        };
+        let converted =
+            motion_category("config.motion.windows", Some(&category), &[]).expect("a leaf");
+        assert_eq!(converted.spring, None);
+    }
+
+    #[test]
+    fn a_curve_has_to_be_a_bezier() {
+        assert_eq!(
+            validated_bezier("m", Some([0.2, 1.0, 0.3, 1.0])),
+            Some([0.2, 1.0, 0.3, 1.0])
+        );
+        assert_eq!(
+            validated_bezier("m", Some([1.2, 1.0, 0.3, 1.0])),
+            None,
+            "x above 1"
+        );
+        assert_eq!(validated_bezier("m", Some([0.2, f64::NAN, 0.3, 1.0])), None);
+    }
+
+    #[test]
     fn an_undrawn_window_is_asked_for_twice_and_then_reported() {
         use std::time::{Duration, Instant};
         let placed = Instant::now();

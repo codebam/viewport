@@ -25,6 +25,17 @@ to summarise rather than to duplicate.
   rather than a redraw per turn of the loop.
 
 ### Added
+- The motion tree: `motion.windows`, `motion.windows_in`, `motion.windows_move`
+  and `motion.workspaces`, each with its own `style`, `duration`, `ease`,
+  four-number `bezier` or physical `spring` (mass/stiffness/damping, integrated
+  closed-form), inheriting pace, curve, spring and the on/off switch from
+  `windows` and then from the block. Named styles for window entrances (`fade`,
+  `popin`, `zoom`, `slide`, `slidefade`, `gnomed`) and for workspace switches
+  (`fade`, `slide`, `slidefade`), with a window's entrance scale composed onto
+  the layout's own scale and reported to the compositor. Springs drive the
+  frame-driven animations — entrances and the relayout slide; CSS flex
+  transitions keep their curve. `windowsOut`, `layers` and per-workspace
+  `animation` remain for a later change.
 - Per-workspace `decorate` and `float_gaps` rules (Hyprland's workspace rules of
   the same names). `decorate: false` draws a workspace's windows bare — no
   border, shadow or groupbar — while rounding stays its own rule, and

@@ -1347,6 +1347,47 @@ pub struct Motion {
     pub slow: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ease: Option<String>,
+    /// The root curve as `x1, y1, x2, y2`, when the config wrote it that way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bezier: Option<[f64; 4]>,
+    /// The motion tree's leaves, each already validated. A leaf only carries
+    /// what it names; the shell inherits the rest, first from `windows` and
+    /// then from this block's own pace and curve — see `applyMotion`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub windows: Option<MotionCategory>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub windows_in: Option<MotionCategory>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub windows_move: Option<MotionCategory>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspaces: Option<MotionCategory>,
+}
+
+/// One leaf of the motion tree, as the shell receives it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MotionCategory {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub style: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ease: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bezier: Option<[f64; 4]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spring: Option<MotionSpring>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+}
+
+/// A spring with every number resolved, so the shell integrates one formula
+/// and the compositor's defaults are the only ones there are.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct MotionSpring {
+    pub mass: f64,
+    pub stiffness: f64,
+    pub damping: f64,
 }
 
 /// How tabbed and stacked containers take new windows, as `group` in the
@@ -2282,6 +2323,58 @@ mod tests {
                 "gaps": { "inner": 12, "outer": null, "smart": true }
             })
         );
+    }
+
+    #[test]
+    fn the_motion_tree_is_carried_to_the_shell() {
+        let motion = Motion {
+            enabled: Some(true),
+            duration: Some(90.0),
+            slow: Some(140.0),
+            ease: Some("ease-out".into()),
+            bezier: Some([0.2, 0.9, 0.3, 1.0]),
+            windows: Some(MotionCategory {
+                style: None,
+                duration: Some(120.0),
+                ease: None,
+                bezier: None,
+                spring: None,
+                enabled: None,
+            }),
+            windows_in: Some(MotionCategory {
+                style: Some("popin".into()),
+                duration: None,
+                ease: None,
+                bezier: None,
+                spring: Some(MotionSpring {
+                    mass: 1.0,
+                    stiffness: 400.0,
+                    damping: 40.0,
+                }),
+                enabled: None,
+            }),
+            windows_move: None,
+            workspaces: Some(MotionCategory {
+                style: Some("slidefade".into()),
+                duration: None,
+                ease: None,
+                bezier: None,
+                spring: None,
+                enabled: Some(false),
+            }),
+        };
+        let value = serde_json::to_value(&motion).expect("serialises");
+        assert_eq!(value["bezier"], serde_json::json!([0.2, 0.9, 0.3, 1.0]));
+        assert_eq!(value["windows"]["duration"], 120.0);
+        assert_eq!(value["windows_in"]["style"], "popin");
+        assert_eq!(value["windows_in"]["spring"]["stiffness"], 400.0);
+        assert_eq!(value["workspaces"]["enabled"], false);
+        assert!(
+            value.get("windows_move").is_none(),
+            "a leaf that says nothing is not sent"
+        );
+        let back: Motion = serde_json::from_value(value).expect("round trip");
+        assert_eq!(back, motion);
     }
 
     #[test]

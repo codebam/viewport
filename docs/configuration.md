@@ -1395,6 +1395,58 @@ user who has asked their whole desktop for less motion. Absent fields leave the
 stylesheet's values; a negative or non-finite duration is refused and the
 previous value kept, with a line in the log naming the key.
 
+### The tree
+
+Hyprland's `animation` block is a tree: `windowsIn`, `windowsMove` and
+`workspaces` are leaves that may be given their own pace, curve and style,
+with `windows` as the default they inherit from. This is that tree, one key
+each:
+
+```jsonc
+{
+  "motion": {
+    "duration": 130,
+    "ease": "cubic-bezier(0.2, 0.8, 0.2, 1)",
+    "bezier": [0.2, 0.8, 0.2, 1],      // the same curve, as four numbers
+    "windows": { "duration": 160 },     // the default for the three below
+    "windows_in": {
+      "style": "popin",                 // fade | popin | zoom | slide | slidefade | gnomed
+      "duration": 180,
+      "spring": { "mass": 1, "stiffness": 400, "damping": 40 }
+    },
+    "windows_move": { "duration": 110, "bezier": [0.2, 1, 0.3, 1] },
+    "workspaces": { "style": "slidefade", "duration": 220 }
+  }
+}
+```
+
+A leaf names what it wants and inherits the rest: pace, curve, spring and the
+on/off switch come from `windows`, then from the block itself. The style is
+the leaf's own, because the styles a category may name are different ones — a
+`popin` opening is not a workspace switch. An unknown style, or a value that
+is not a number, is dropped with a line in the log and the inherited value
+stands, so one bad leaf does not turn the whole desktop's motion off.
+
+`windows_in` styles: `fade` (opacity only), `popin` (grows from 85%), `zoom`
+(shrinks from 115%), `slide` (in from the side of the monitor the window is
+nearer, at full brightness), `slidefade` (a shorter version of that slide, with
+a fade) and `gnomed` (rises 24 pixels with a fade). `workspaces` styles:
+`fade`, `slide` and `slidefade`, which is what a workspace switch uses to
+bring its windows on screen — `slide` has no fade, `slidefade` is both.
+
+`bezier` is the curve as four numbers — `x1, y1, x2, y2` — for a desk that
+would rather not write the function out; it wins over `ease` in the same
+block. A `spring` is the other way to write a curve: a physical spring that
+overrides both pace and curve, integrated closed-form per frame, with `mass`,
+`stiffness` and `damping` as the reference implementation defines them (a
+damping of `2 * sqrt(stiffness * mass)` is critical). Absent spring fields
+default to 1, 400 and 40. A spring is honoured by the animations the shell
+drives frame by frame — window entrances and the slide a relayout animates;
+a container's own flex transition is CSS and runs on its curve.
+
+Not implemented yet: `windowsOut` (closing animations), `layers`, and the
+per-workspace `animation` rule, which wants the tree to be complete first.
+
 **At runtime.** `config.motion` on the control socket sets the block
 without touching the file — a wallpaper cycler's cousin for animation, and
 what the settings panel sends:
@@ -1403,10 +1455,11 @@ what the settings panel sends:
 viewport msg -t config.motion --duration 120 --ease linear
 ```
 
-Each field is optional; only the ones given change. A negative or
-non-finite duration or slow is refused whole. The shell reapplies the block
-from the re-announced config, so a changed pace takes effect on the next
-transition rather than at the next restart.
+Each field is optional; only the ones given change, and the tree's leaves are
+the file's — the runtime message names the block's own pace and curve only. A
+negative or non-finite duration or slow is refused whole. The shell reapplies
+the block from the re-announced config, so a changed pace takes effect on the
+next transition rather than at the next restart.
 
 ## Window opacity
 

@@ -16,7 +16,7 @@
  *     against a child count the markup is free to change.
  *   - a value that is not a style at all. A window's contents are a Wayland
  *     surface the compositor draws, so its opacity is an IPC message and no
- *     rule here can reach it. See surfaceOpacityTween.
+ *     rule here can reach it. See runMotion.
  *
  * GSAP drives them, vendored at data/shell/vendor/gsap.min.js and loaded
  * before every other script. It is used as a tween engine only: no
@@ -113,6 +113,13 @@ function motionSeconds(property) {
    was one. Cached like the durations, and cleared by applyMotion. */
 let motionEaseValue = null;
 
+/* The motion tree, resolved: every leaf with the pace, curve and spring it
+   actually runs on. A leaf names what it wants and inherits the rest — first
+   from `windows`, then from the block's own pace and curve, then from the
+   stylesheet — which is Hyprland's `animation` block over an inherited tree,
+   in this file's shape. Rebuilt by applyMotion; read through motionLeaf. */
+let motionLeaves = new Map();
+
 function motionEase() {
   if (motionEaseValue !== null) return motionEaseValue;
   let ease = 'cubic-bezier(0.2, 0.8, 0.2, 1)';
@@ -166,6 +173,260 @@ function applyMotion(motion) {
     root.style.setProperty('--ease', ease);
     motionEaseValue = ease;
   }
+
+  /* The tree itself, resolved once so a tween does not re-derive inheritance
+     on every frame. `windows` is the umbrella the other three inherit from;
+     the block's own `duration` and `ease` are the floor under that. */
+  const treeRoot = {
+    duration: finiteNumber(motion.duration),
+    ease: nonEmptyString(motion.ease),
+    bezier: bezierOf(motion.bezier),
+    spring: null,
+    style: null,
+    enabled: null,
+  };
+  const umbrella = resolveMotionLeaf('windows', motion.windows, null, treeRoot);
+  motionLeaves = new Map([['windows', umbrella]]);
+  for (const [name, raw] of [
+    ['windows_in', motion.windows_in],
+    ['windows_move', motion.windows_move],
+    ['workspaces', motion.workspaces],
+  ]) {
+    motionLeaves.set(name, resolveMotionLeaf(name, raw, umbrella, treeRoot));
+  }
+
+  /* The move category reaches the stylesheet through its own variables: the
+     window's transform transition is the one CSS animation a motion leaf
+     owns — see `.window` in shell.css. Everything else that springs or
+     styles is driven from JavaScript. */
+  const move = motionLeaves.get('windows_move');
+  if (motion.enabled === false || systemReduced) {
+    root.style.setProperty('--anim-move', '0ms');
+    root.style.setProperty('--ease-move', 'linear');
+  } else {
+    root.style.setProperty('--anim-move', `${leafDurationMs(move, '--anim')}ms`);
+    root.style.setProperty('--ease-move', leafCurve(move));
+  }
+}
+
+/* A number the config can prove: anything else is absent, not zero. */
+function finiteNumber(value) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function nonEmptyString(value) {
+  return typeof value === 'string' && value.trim() !== '' ? value.trim() : null;
+}
+
+/* A curve written as four numbers, in the spelling CSS wants. */
+function bezierOf(value) {
+  if (!Array.isArray(value) || value.length !== 4) return null;
+  if (!value.every((n) => typeof n === 'number' && Number.isFinite(n))) return null;
+  return `cubic-bezier(${value.map((n) => String(Number(n.toFixed(4)))).join(', ')})`;
+}
+
+/* A spring as the physics wants it: mass, stiffness and damping, defaulted the
+   way the compositor defaults them. */
+function springOf(spring) {
+  if (!spring || typeof spring !== 'object') return null;
+  const mass = finiteNumber(spring.mass) ?? 1;
+  const stiffness = finiteNumber(spring.stiffness) ?? 400;
+  const damping = finiteNumber(spring.damping) ?? 40;
+  if (!(mass > 0 && stiffness > 0 && damping >= 0)) return null;
+  return { mass, stiffness, damping };
+}
+
+/* One leaf, resolved. `umbrella` is the `windows` leaf it may inherit from;
+   `root` is the block itself. */
+function resolveMotionLeaf(name, raw, umbrella, root) {
+  const leaf = raw && typeof raw === 'object' ? raw : {};
+  const parent = umbrella ?? {};
+  /* The style is the leaf's own: the styles a category may name are different
+     ones — `popin` is an arrival, not a workspace switch — so inheriting one
+     from `windows` would apply a style the category never offered. Pace,
+     curve, spring and the switch still inherit. */
+  const style = nonEmptyString(leaf.style);
+  const duration = finiteNumber(leaf.duration) ?? finiteNumber(parent.duration)
+    ?? root.duration;
+  const ease = nonEmptyString(leaf.ease) ?? nonEmptyString(parent.ease)
+    ?? root.ease;
+  const bezier = bezierOf(leaf.bezier) ?? bezierOf(parent.bezier) ?? root.bezier;
+  const spring = springOf(leaf.spring) ?? springOf(parent.spring);
+  const enabled = typeof leaf.enabled === 'boolean' ? leaf.enabled
+    : typeof parent.enabled === 'boolean' ? parent.enabled : null;
+  return { name, style, duration, ease, bezier, spring, enabled };
+}
+
+/* The leaf named `name`, or null when no tree has been applied. */
+function motionLeaf(name) {
+  return motionLeaves.get(name) ?? null;
+}
+
+/* A leaf's pace in milliseconds, falling back to the stylesheet property it
+   replaces so an unconfigured tree keeps the old timing exactly. */
+function leafDurationMs(leaf, fallbackProperty = '--anim') {
+  if (leaf && leaf.enabled === false) return 0;
+  if (leaf && typeof leaf.duration === 'number' && Number.isFinite(leaf.duration)) {
+    return Math.max(0, leaf.duration);
+  }
+  return Math.max(0, motionSeconds(fallbackProperty) * 1000);
+}
+
+/* A leaf's curve as a CSS timing function: its own numbers first, then its
+   own string, then the stylesheet's. */
+function leafCurve(leaf) {
+  return (leaf && (leaf.bezier ?? leaf.ease)) || motionEase();
+}
+
+/* The same curve evaluated at `t`, for the hand-driven animations. */
+function easeValue(ease, t) {
+  if (!(t > 0)) return 0;
+  if (t >= 1) return 1;
+  const [x1, y1, x2, y2] = parseCurve(ease);
+  /* Solve x(u) = t, then read y(u): a cubic-bezier names x as well as y, and
+     the timing function is y at the u whose x is the elapsed fraction. */
+  let low = 0;
+  let high = 1;
+  let u = t;
+  for (let i = 0; i < 24; i++) {
+    u = (low + high) / 2;
+    if (bezierAxis(u, x1, x2) < t) low = u;
+    else high = u;
+  }
+  return bezierAxis(u, y1, y2);
+}
+
+const CURVE_KEYWORDS = {
+  linear: [0, 0, 1, 1],
+  ease: [0.25, 0.1, 0.25, 1],
+  'ease-in': [0.42, 0, 1, 1],
+  'ease-out': [0, 0, 0.58, 1],
+  'ease-in-out': [0.42, 0, 0.58, 1],
+};
+
+function parseCurve(ease) {
+  if (typeof ease !== 'string') return CURVE_KEYWORDS.ease;
+  const text = ease.trim();
+  if (CURVE_KEYWORDS[text]) return CURVE_KEYWORDS[text];
+  const match = /^cubic-bezier\(\s*([^)]+)\)$/.exec(text);
+  if (!match) return CURVE_KEYWORDS.ease;
+  const numbers = match[1].split(',').map((part) => Number(part.trim()));
+  if (numbers.length !== 4 || numbers.some((n) => !Number.isFinite(n))) {
+    return CURVE_KEYWORDS.ease;
+  }
+  return numbers;
+}
+
+/* One axis of a cubic bezier with endpoints 0 and 1, at parameter `u`. */
+function bezierAxis(u, a, b) {
+  const inverse = 1 - u;
+  return 3 * inverse * inverse * u * a + 3 * inverse * u * u * b + u * u * u;
+}
+
+/* How long a hand-driven animation may run before it is cut off. Generous for
+   a slow spring, short enough that a mistake cannot leave a frame loop
+   running for a second. */
+const MOTION_FRAME_CAP = 240;
+
+/* Run one hand-driven animation, sampling progress from 0 to 1.
+
+   The same loop drives both kinds: a spring is integrated from the clock with
+   the reference formula, and a paced animation is the elapsed fraction put
+   through its curve. Returns whether anything was started — a reduced-motion
+   session and a zero-duration category sample 1 at once and return false. */
+function runMotion(leaf, sample, done) {
+  if (!motionAllowed() || !leaf || leaf.enabled === false
+      || typeof requestAnimationFrame !== 'function') {
+    sample(1);
+    if (done) done();
+    return false;
+  }
+  const ms = leafDurationMs(leaf);
+  if (ms <= 0 && !leaf.spring) {
+    sample(1);
+    if (done) done();
+    return false;
+  }
+  if (leaf.spring) {
+    runSpring(leaf.spring, sample, done);
+    return true;
+  }
+  const duration = ms / 1000;
+  const curve = leafCurve(leaf);
+  let started = null;
+  let frames = 0;
+  const step = (now) => {
+    if (started === null) started = now;
+    const t = Math.min(1, Math.max(0, (now - started) / 1000 / duration));
+    sample(easeValue(curve, t));
+    if (t < 1 && ++frames < MOTION_FRAME_CAP) requestAnimationFrame(step);
+    else if (done) done();
+  };
+  requestAnimationFrame(step);
+  return true;
+}
+
+/* The reference spring, advanced closed-form over one frame's elapsed time:
+   the result does not depend on how the frames happened to fall. */
+function runSpring(spring, sample, done) {
+  const state = { value: 0, velocity: 0 };
+  let last = null;
+  let frames = 0;
+  const step = (now) => {
+    if (last === null) last = now;
+    const dt = Math.min(0.064, Math.max(0, (now - last) / 1000));
+    last = now;
+    springAdvance(state, spring, dt);
+    sample(Math.max(0, Math.min(1.05, state.value)));
+    const settled = Math.abs(state.value - 1) < 0.001
+      && Math.abs(state.velocity) < 0.001;
+    if (!settled && ++frames < MOTION_FRAME_CAP) requestAnimationFrame(step);
+    else {
+      sample(1);
+      if (done) done();
+    }
+  };
+  requestAnimationFrame(step);
+}
+
+function springAdvance(state, spring, dt) {
+  if (!(dt > 0)) return state;
+  const mass = Math.max(spring.mass, 0.0001);
+  const stiffness = Math.max(spring.stiffness, 0.0001);
+  const damping = Math.max(spring.damping, 0);
+  const displacement = state.value - 1;
+  const omega0 = Math.sqrt(stiffness / mass);
+  const gamma = damping / (2 * mass);
+  let value;
+  let velocity;
+  if (gamma < omega0) {
+    const omegad = Math.sqrt(omega0 * omega0 - gamma * gamma);
+    const decay = Math.exp(-gamma * dt);
+    const sin = Math.sin(omegad * dt);
+    const cos = Math.cos(omegad * dt);
+    value = 1 + decay * (displacement * cos
+      + ((state.velocity + gamma * displacement) / omegad) * sin);
+    velocity = decay * (state.velocity * cos
+      - ((gamma * state.velocity + omega0 * omega0 * displacement) / omegad) * sin);
+  } else if (Math.abs(gamma - omega0) <= Math.max(omega0, 1) * 0.0001) {
+    const decay = Math.exp(-gamma * dt);
+    const b = state.velocity + gamma * displacement;
+    value = 1 + decay * (displacement + b * dt);
+    velocity = decay * (state.velocity - gamma * b * dt);
+  } else {
+    const root = Math.sqrt(gamma * gamma - omega0 * omega0);
+    const r1 = -gamma + root;
+    const r2 = -gamma - root;
+    const a = (state.velocity - r2 * displacement) / (r1 - r2);
+    const b = displacement - a;
+    const e1 = Math.exp(r1 * dt);
+    const e2 = Math.exp(r2 * dt);
+    value = 1 + a * e1 + b * e2;
+    velocity = a * r1 * e1 + b * r2 * e2;
+  }
+  state.value = value;
+  state.velocity = velocity;
+  return state;
 }
 
 /* The single question every helper asks before doing anything. reducedMotion()
@@ -412,49 +673,4 @@ function animateScreencastIn(dialog, rows) {
   }
 }
 
-/* ------------------------------------------------------------------------
- * Window surfaces
- * --------------------------------------------------------------------- */
 
-/* Fade a value that is not a style.
- *
- * A window's frame is the shell's and its contents are a surface the
- * compositor draws, so no rule in shell.css can touch the opacity of what is
- * actually on screen. The compositor holds whatever value it was last told and
- * interpolates nothing, which means the samples *are* the fade: this tweens a
- * plain number and hands each sample to the caller, who sends it over IPC.
- *
- * Sampled every other frame. Each view.opacity makes the compositor walk the
- * window's whole surface tree with wlr_scene_node_for_each_buffer(), so the
- * price of the tween is one tree walk per sample per window opened, and over a
- * tenth of a second a 30Hz ramp is indistinguishable from a 60Hz one. The last
- * sample is never skipped: it is the one that leaves the window at its resting
- * opacity, and dropping it would leave a window permanently dimmer than it
- * should be.
- *
- * Returns whether a tween was started, which is what lets a caller with its
- * own opinion about this window's opacity — solar, whose cold tiers rest well
- * below 1 — leave one in progress alone rather than talking over it. */
-function surfaceOpacityTween(resting, sample) {
-  if (!motionAllowed()) return false;
-
-  const state = { value: 0 };
-  let frame = 0;
-
-  gsap.to(state, {
-    value: resting,
-    /* Shorter than the layout's own animations on purpose: a window opening is
-       already accompanied by everything beside it moving over to make room,
-       and a fade that outlasted that movement would still be brightening after
-       the desktop had settled. */
-    duration: motionSeconds('--anim'),
-    ease: motionEase(),
-    onUpdate() {
-      if (++frame % 2 === 0) sample(state.value);
-    },
-    onComplete() {
-      sample(resting);
-    },
-  });
-  return true;
-}

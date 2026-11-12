@@ -241,13 +241,36 @@ impl ViewportState {
             // Validated for the same reason the gaps and the border are: a
             // negative or non-finite duration is a transition that never
             // finishes, or finishes before it is drawn, and the field keeps
-            // what it had rather than taking it.
+            // what it had rather than taking it. The tree's leaves are
+            // validated one by one — one bad category drops that field, not
+            // the whole motion block.
             let prior = self.config.motion.clone().unwrap_or_default();
             let mut motion = viewport_ipc::event::Motion {
                 enabled: file.motion.enabled,
                 duration: file.motion.duration,
                 slow: file.motion.slow,
-                ease: file.motion.ease.clone(),
+                ease: validated_ease("config.motion.ease", file.motion.ease.clone()),
+                bezier: validated_bezier("config.motion.bezier", file.motion.bezier),
+                windows: motion_category(
+                    "config.motion.windows",
+                    file.motion.windows.as_ref(),
+                    &MOTION_WINDOW_STYLES,
+                ),
+                windows_in: motion_category(
+                    "config.motion.windows_in",
+                    file.motion.windows_in.as_ref(),
+                    &MOTION_WINDOW_STYLES,
+                ),
+                windows_move: motion_category(
+                    "config.motion.windows_move",
+                    file.motion.windows_move.as_ref(),
+                    &[],
+                ),
+                workspaces: motion_category(
+                    "config.motion.workspaces",
+                    file.motion.workspaces.as_ref(),
+                    &MOTION_WORKSPACE_STYLES,
+                ),
             };
             for (name, value, fallback) in [
                 ("duration", &mut motion.duration, prior.duration),
@@ -1032,6 +1055,7 @@ impl ViewportState {
         rules
     }
 
+
     /// Apply the bar's widget and item lists: store the shell's copy and
     /// point the samplers at what the new bar draws.
     ///
@@ -1222,4 +1246,92 @@ pub(crate) fn input_event_map(
             )
         })
         .collect()
+}
+/// The styles a category may name. An unknown one is dropped with a warning
+/// rather than carried: the shell would otherwise silently fall back and the
+/// config would look like it had been ignored, which it would have been.
+const MOTION_WINDOW_STYLES: [&str; 6] = ["fade", "popin", "zoom", "slide", "slidefade", "gnomed"];
+const MOTION_WORKSPACE_STYLES: [&str; 3] = ["fade", "slide", "slidefade"];
+
+/// One leaf of the motion tree, validated field by field.
+///
+/// A field is dropped rather than taking the category with it, for the same
+/// reason a bad workspace rule does not take the rest of the set: one
+/// mistyped curve should not turn the whole desktop's motion off.
+fn motion_category(
+    what: &str,
+    category: Option<&crate::config::MotionCategory>,
+    styles: &[&str],
+) -> Option<viewport_ipc::event::MotionCategory> {
+    let category = category?;
+    let style = category.style.clone().filter(|style| {
+        let valid = styles.iter().any(|known| known == style);
+        if !valid && !styles.is_empty() {
+            tracing::warn!("{what}.style {style:?} is not a known style; inheriting");
+        }
+        valid
+    });
+    let duration = category.duration.filter(|value| {
+        let valid = value.is_finite() && *value >= 0.0;
+        if !valid {
+            tracing::warn!("{what}.duration {value} is not a finite non-negative number; inheriting");
+        }
+        valid
+    });
+    Some(viewport_ipc::event::MotionCategory {
+        style,
+        duration,
+        ease: validated_ease(&format!("{what}.ease"), category.ease.clone()),
+        bezier: validated_bezier(&format!("{what}.bezier"), category.bezier),
+        spring: category.spring.as_ref().and_then(|spring| {
+            let mass = spring.mass.unwrap_or(1.0);
+            let stiffness = spring.stiffness.unwrap_or(400.0);
+            let damping = spring.damping.unwrap_or(40.0);
+            let valid = mass.is_finite()
+                && stiffness.is_finite()
+                && damping.is_finite()
+                && mass > 0.0
+                && stiffness > 0.0
+                && damping >= 0.0;
+            if !valid {
+                tracing::warn!(
+                    "{what}.spring (mass {mass}, stiffness {stiffness}, damping {damping}) \
+                     is not a physical spring; inheriting"
+                );
+                return None;
+            }
+            Some(viewport_ipc::event::MotionSpring {
+                mass,
+                stiffness,
+                damping,
+            })
+        }),
+        enabled: category.enabled,
+    })
+}
+
+/// A CSS timing function, dropped when it is empty or not a string worth
+/// handing to the engine.
+fn validated_ease(what: &str, ease: Option<String>) -> Option<String> {
+    let ease = ease?;
+    if ease.trim().is_empty() {
+        tracing::warn!("{what} is empty; keeping the inherited curve");
+        return None;
+    }
+    Some(ease)
+}
+
+/// Four numbers as a curve. The x coordinates have to stay in 0..=1 or the
+/// function is not a cubic-bezier the engine will accept; the y coordinates may
+/// overshoot, which is how a bouncy curve is written.
+fn validated_bezier(what: &str, bezier: Option<[f64; 4]>) -> Option<[f64; 4]> {
+    let bezier = bezier?;
+    let valid = bezier.iter().all(|value| value.is_finite())
+        && (0.0..=1.0).contains(&bezier[0])
+        && (0.0..=1.0).contains(&bezier[2]);
+    if !valid {
+        tracing::warn!("{what} {:?} is not a cubic-bezier; inheriting", bezier);
+        return None;
+    }
+    Some(bezier)
 }
