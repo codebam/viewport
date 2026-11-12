@@ -398,6 +398,10 @@ fn run() -> Result<()> {
         }
     }
     state.apply_config(config);
+    // Num Lock on at startup if the config asks — once, after the configured
+    // keymap is on the seat, and never again on a reload. See
+    // `apply_numlock_default`.
+    state.apply_numlock_default();
     // The colour scheme as it now stands, so the shell can draw the switch in
     // the position it is really in. Set here rather than inside `apply_config`
     // because a config file that says nothing about it still has an answer —

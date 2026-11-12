@@ -665,6 +665,12 @@ Absent lets xkb choose, which is what everything else wants:
 before they start, in milliseconds. Absent is 25 and 200, which is sway's pair
 and the compositor's.
 
+`numlock_by_default` latches Num Lock on when the session starts — Hyprland's
+`input:numlock_by_default`. Absent is off. It is a startup setting, not a
+runtime one: it is applied once, after the configured keymap is on the seat,
+and a reload or a later `config.keyboard` never forces it back on over
+somebody who has since switched it off by hand.
+
 The block is read once, at startup — and at runtime too, below. A keymap is
 set by handing the seat a new keyboard and there is no way to change the
 layout of one that already exists, so changing it replaces the keyboard. An

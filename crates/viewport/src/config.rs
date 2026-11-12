@@ -74,6 +74,14 @@ pub struct KeyboardConfig {
     pub model: Option<String>,
     pub repeat_rate: Option<i32>,
     pub repeat_delay: Option<i32>,
+    /// Whether Num Lock is on when the session starts. Hyprland's
+    /// `numlock_by_default`. Absent is off, which is what the seat starts with.
+    ///
+    /// A startup setting, not a runtime one: it latches the modifier once the
+    /// keyboard is first up, and never forces it again — a reload or a later
+    /// `config.keyboard` must not turn Num Lock back on over somebody who has
+    /// since switched it off by hand.
+    pub numlock_by_default: Option<bool>,
 }
 
 /// The cursor block.
@@ -2187,6 +2195,16 @@ mod tests {
         assert_eq!(file.keyboard.rules.as_deref(), Some("evdev"));
         assert_eq!(file.keyboard.model.as_deref(), Some("pc105"));
         assert_eq!(file.keyboard.layout.as_deref(), Some("de"));
+    }
+
+    #[test]
+    fn numlock_by_default_parses_and_is_off_when_absent() {
+        let file: File = serde_json::from_str(r#"{"keyboard":{"numlock_by_default":true}}"#)
+            .expect("should parse");
+        assert_eq!(file.keyboard.numlock_by_default, Some(true));
+        let absent: File =
+            serde_json::from_str(r#"{"keyboard":{"layout":"us"}}"#).expect("should parse");
+        assert_eq!(absent.keyboard.numlock_by_default, None);
     }
 
     #[test]

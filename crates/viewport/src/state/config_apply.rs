@@ -853,6 +853,54 @@ impl ViewportState {
         }
     }
 
+    /// Latch Num Lock on at startup if `keyboard.numlock_by_default` asks.
+    ///
+    /// Called once, after the first `apply_config` has put the configured
+    /// keymap on the seat — never on a reload, so it cannot turn Num Lock back
+    /// on over somebody who has since switched it off by hand. The modifier is
+    /// set in the xkb state's locked mask, which is what `wl_keyboard.modifiers`
+    /// and the LED both read, so a client sees Num Lock on from its first key
+    /// event. A keymap with no Mod2 is left alone rather than latching a mask
+    /// that means nothing.
+    pub fn apply_numlock_default(&mut self) {
+        use smithay::input::keyboard::xkb;
+        if !self.keyboard_config.numlock_by_default.unwrap_or(false) {
+            return;
+        }
+        let Some(keyboard) = self.seat.get_keyboard() else {
+            return;
+        };
+        let mods = keyboard.modifier_state();
+        if mods.num_lock {
+            return;
+        }
+        let serialized = mods.serialized;
+        keyboard.with_xkb_state(self, |mut ctx| {
+            let num_mask = {
+                let guard = ctx.xkb().lock().unwrap();
+                // SAFETY: the keymap reference lives only for this closure,
+                // which runs inside `with_xkb_state` while the `Xkb` that owns
+                // it is borrowed — the ref-count cannot outlive it.
+                let keymap = unsafe { guard.keymap() };
+                let index = keymap.mod_get_index(xkb::MOD_NAME_NUM);
+                if index == xkb::MOD_INVALID {
+                    0
+                } else {
+                    1u32 << index
+                }
+            };
+            if num_mask != 0 {
+                ctx.set_modifier_mask(
+                    serialized.depressed,
+                    serialized.latched,
+                    serialized.locked | num_mask,
+                    serialized.layout_effective,
+                );
+                tracing::info!("numlock: latched on at startup (keyboard.numlock_by_default)");
+            }
+        });
+    }
+
     /// What the notification sound and history are, from one pair of answers.
     ///
     /// Shared by the file's reload and by `config.notifications`: set the

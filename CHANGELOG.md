@@ -11,6 +11,12 @@ to summarise rather than to duplicate.
 
 ## [Unreleased]
 
+### Added
+- `keyboard.numlock_by_default` latches Num Lock on when the session starts
+  (Hyprland's `input:numlock_by_default`). A startup setting applied once after
+  the configured keymap is on the seat; a reload or a later `config.keyboard`
+  never forces it back on over a manual toggle.
+
 ## [0.5.0] - 2026-11-12
 
 ### Changed

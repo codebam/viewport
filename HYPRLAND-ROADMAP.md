@@ -52,8 +52,10 @@ downstream of that: the shell cannot get what no client on the machine gets.
 
 The rest, named so that the next sweep does not have to rediscover them, and
 not worth a row each: `scroll_button` with its lock, and `drag_3fg`;
-`numlock_by_default` and `kb_file` (the layout, variant, options, `kb_model`
-and `kb_rules` this has are all present now); tablet region mapping and
+`numlock_by_default` is done — `keyboard.numlock_by_default` latches the
+modifier once at startup and never forces it again on a reload; `kb_file`
+(the layout, variant, options, `kb_model` and `kb_rules` this has are all
+present now); tablet region mapping and
 pressure ranges, where this maps the pen to the whole desk and passes the
 pressure through as it is; `no_warps` and `warp_on_change_workspace` (the
 cursor block now has the theme, size, `hide_after_ms`, `hide_on_key_press` and
