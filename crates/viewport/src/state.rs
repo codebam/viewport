@@ -1146,6 +1146,10 @@ pub struct ViewportState {
     /// Whether the set of fullscreen windows has moved since the last
     /// `sync_auto_hdr`, so the ordinary loop turn does not scan for nothing.
     pub auto_hdr_pending: bool,
+    /// Hyprland's `render:cm_sdr_eotf`: what a surface's buffers are assumed
+    /// to contain when the client declared no image description. An output
+    /// with an ICC profile always assumes sRGB — see `render_pass`.
+    pub cm_sdr_eotf: viewport_vulkan::color::SdrEotf,
     /// The colour cube each output's ICC profile was baked into, with the
     /// token that names it to the renderer.
     ///
@@ -2076,6 +2080,7 @@ impl ViewportState {
             cm_auto_hdr: 1,
             auto_hdr: std::collections::HashMap::new(),
             auto_hdr_pending: false,
+            cm_sdr_eotf: viewport_vulkan::color::SdrEotf::Srgb,
             icc_cubes: std::collections::HashMap::new(),
             next_icc_cube_token: 1,
             _cursor_shape_state: cursor_shape_state,

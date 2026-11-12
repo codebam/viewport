@@ -405,27 +405,37 @@ impl Captures for smithay::backend::renderer::gles::GlesRenderer {
     type Buffer = smithay::backend::renderer::gles::GlesRenderbuffer;
 }
 
-/// A renderer that can apply an output's display colour cube.
+/// A renderer that can take this compositor's colour settings.
 ///
-/// Vulkan samples one; GLES has no cube path and says so by doing nothing, so
-/// an output with a profile on GLES keeps the parametric conversion rather
-/// than being drawn wrongly.
-pub trait ColourCube {
+/// Vulkan applies them; GLES keeps the parametric conversion and says so by
+/// doing nothing, so a display with a profile on GLES is drawn approximately
+/// rather than wrongly — the one thing it must not do is refuse the frame.
+pub trait ColourSettings {
     /// Make the next frame be drawn in the output's colour space. `cube`
     /// carries its token; a renderer already holding that cube does nothing.
     fn set_colour_cube(&mut self, cube: Option<(u64, &[[f32; 4]])>);
+
+    /// What a surface's buffers are assumed to contain when the client
+    /// declared no image description (`render:cm_sdr_eotf`).
+    fn set_sdr_eotf(&mut self, eotf: viewport_vulkan::color::SdrEotf);
 }
 
-impl ColourCube for VulkanRenderer {
+impl ColourSettings for VulkanRenderer {
     fn set_colour_cube(&mut self, cube: Option<(u64, &[[f32; 4]])>) {
         if let Err(e) = self.set_color_lut(cube) {
             tracing::warn!("an output's ICC transform was refused: {e:#}");
         }
     }
+
+    fn set_sdr_eotf(&mut self, eotf: viewport_vulkan::color::SdrEotf) {
+        self.set_sdr_eotf(eotf);
+    }
 }
 
-impl ColourCube for smithay::backend::renderer::gles::GlesRenderer {
+impl ColourSettings for smithay::backend::renderer::gles::GlesRenderer {
     fn set_colour_cube(&mut self, _cube: Option<(u64, &[[f32; 4]])>) {}
+
+    fn set_sdr_eotf(&mut self, _eotf: viewport_vulkan::color::SdrEotf) {}
 }
 
 /// Do the same thing with whichever renderer this is.
@@ -3537,7 +3547,7 @@ impl ViewportState {
             + smithay::backend::renderer::Bind<<R as Captures>::Buffer>
             + smithay::backend::renderer::Offscreen<<R as Captures>::Buffer>
             + Captures
-            + ColourCube
+            + ColourSettings
             + crate::background_effect::BackgroundEffectRenderer,
         <R as smithay::backend::renderer::RendererSuper>::TextureId: Clone + Send + Sync + 'static,
         <R as smithay::backend::renderer::RendererSuper>::Error: Send + Sync + 'static,
@@ -3708,6 +3718,21 @@ impl ViewportState {
         let mut submitted = false;
         // Whether the device refused it. See the error arms below.
         let mut failed = false;
+        // What SDR content is assumed to be (`render:cm_sdr_eotf`). On an
+        // output with an ICC profile the answer is always sRGB: the cube maps
+        // sRGB into that panel, and feeding it a different curve would apply
+        // the profile to the wrong input. Same rule Hyprland documents.
+        //
+        // The assumption rides on a texture's description, stamped at import,
+        // so it applies from each surface's next commit rather than
+        // retroactively.
+        let sdr = if self.icc_cubes.contains_key(&output.name()) {
+            viewport_vulkan::color::SdrEotf::Srgb
+        } else {
+            self.cm_sdr_eotf
+        };
+        renderer.set_sdr_eotf(sdr);
+
         // The output's colour transform: the cube its ICC profile was baked
         // into. Stated before every frame because the renderer serves every
         // output; the token makes it free while the profile has not changed.

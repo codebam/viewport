@@ -3004,6 +3004,27 @@ fullscreen state changes, and once more on every configuration reload, so a
 window that declares HDR after it went fullscreen switches the screen at its
 next fullscreen transition rather than mid-frame.
 
+### What SDR content is assumed to be
+
+```json
+"render": { "cm_sdr_eotf": "gamma22" }
+```
+
+`render:cm_sdr_eotf` is Hyprland's name for the other half of the same
+question. A window's buffers are converted from whatever the client says they
+contain into the output's space; a client that says nothing is assumed to be
+sRGB. `default` (the default) and `srgb` are that assumption, `gamma22` takes an
+undeclared buffer as a pure 2.2 power curve instead, and `gamma22force` takes
+declared sRGB that way too — for capture stacks and drivers that write a pure
+power curve into a buffer they label sRGB. An unknown name keeps the default and
+says so in the log.
+
+An output with an ICC profile always assumes sRGB, whatever this key says: the
+profile's cube maps sRGB into that panel, and feeding it a different curve would
+apply the profile to the wrong input. The assumption is stamped on a surface's
+buffers each time they are imported, so a reload applies from each window's next
+commit rather than to pictures already on screen.
+
 **Two cards can offer the same connector name.** Connector names are handed out
 per card, so a laptop with an integrated display controller and a discrete card
 beside it has two `DP-1`s, and a key in this block would otherwise apply to

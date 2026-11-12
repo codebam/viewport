@@ -711,6 +711,17 @@ pub struct RenderConfig {
     /// window leaves: a display in HDR because somebody asked for it stays in
     /// HDR. A window with a `no_auto_hdr` rule never causes a switch.
     pub cm_auto_hdr: Option<i64>,
+
+    /// `render:cm_sdr_eotf` — what SDR content is assumed to be encoded with
+    /// when the client declares no image description. `"default"` and
+    /// `"srgb"` are the protocol's own answer, `"gamma22"` treats undeclared
+    /// buffers as a pure 2.2 power curve, and `"gamma22force"` treats declared
+    /// sRGB that way too — for sources that write gamma 2.2 into an sRGB
+    /// buffer and mean the pure curve.
+    ///
+    /// Absent is `"default"`. An output with an ICC profile always assumes
+    /// sRGB, because the profile's cube maps sRGB into that panel.
+    pub cm_sdr_eotf: Option<String>,
 }
 
 impl RenderConfig {
@@ -721,6 +732,26 @@ impl RenderConfig {
     /// gets the nearest of the three behaviours, with a warning.
     pub fn auto_hdr(&self) -> u8 {
         self.cm_auto_hdr.unwrap_or(1).clamp(0, 2) as u8
+    }
+
+    /// The SDR assumption this block names, if any.
+    ///
+    /// An unknown name keeps the protocol default with a warning rather than
+    /// refusing the file: a desk that misspells this should still start.
+    pub fn sdr_eotf(&self) -> Option<viewport_vulkan::color::SdrEotf> {
+        use viewport_vulkan::color::SdrEotf;
+        let name = self.cm_sdr_eotf.as_deref()?;
+        match name {
+            "default" | "srgb" => Some(SdrEotf::Srgb),
+            "gamma22" => Some(SdrEotf::Gamma22),
+            "gamma22force" => Some(SdrEotf::Gamma22Force),
+            other => {
+                tracing::warn!(
+                    "unknown render.cm_sdr_eotf {other:?}; expected default, gamma22, gamma22force or srgb"
+                );
+                Some(SdrEotf::Srgb)
+            }
+        }
     }
 }
 
@@ -2092,29 +2123,37 @@ mod tests {
     }
 
     #[test]
+    fn the_sdr_eotf_names_are_hyprlands() {
+        use viewport_vulkan::color::SdrEotf;
+        let named = |value: Option<&str>| {
+            RenderConfig {
+                cm_auto_hdr: None,
+                cm_sdr_eotf: value.map(str::to_owned),
+            }
+            .sdr_eotf()
+        };
+        assert_eq!(named(None), None);
+        assert_eq!(named(Some("default")), Some(SdrEotf::Srgb));
+        assert_eq!(named(Some("srgb")), Some(SdrEotf::Srgb));
+        assert_eq!(named(Some("gamma22")), Some(SdrEotf::Gamma22));
+        assert_eq!(named(Some("gamma22force")), Some(SdrEotf::Gamma22Force));
+        // A misspelling keeps the default rather than stopping the config.
+        assert_eq!(named(Some("gamma2.2")), Some(SdrEotf::Srgb));
+    }
+
+    #[test]
     fn an_out_of_range_auto_hdr_setting_has_the_nearest_behaviour() {
-        assert_eq!(RenderConfig { cm_auto_hdr: None }.auto_hdr(), 1);
-        assert_eq!(
+        let mode = |value: Option<i64>| {
             RenderConfig {
-                cm_auto_hdr: Some(0)
+                cm_auto_hdr: value,
+                ..Default::default()
             }
-            .auto_hdr(),
-            0
-        );
-        assert_eq!(
-            RenderConfig {
-                cm_auto_hdr: Some(-3)
-            }
-            .auto_hdr(),
-            0
-        );
-        assert_eq!(
-            RenderConfig {
-                cm_auto_hdr: Some(9)
-            }
-            .auto_hdr(),
-            2
-        );
+            .auto_hdr()
+        };
+        assert_eq!(mode(None), 1);
+        assert_eq!(mode(Some(0)), 0);
+        assert_eq!(mode(Some(-3)), 0);
+        assert_eq!(mode(Some(9)), 2);
     }
 
     use super::*;

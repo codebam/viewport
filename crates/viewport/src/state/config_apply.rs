@@ -23,6 +23,9 @@ impl ViewportState {
             }
             self.cm_auto_hdr = clamped as u8;
         }
+        if let Some(eotf) = file.render.sdr_eotf() {
+            self.cm_sdr_eotf = eotf;
+        }
         self.auto_hdr_pending = true;
 
         if let Some(extensions) = file.layout_extensions {

@@ -40,6 +40,13 @@ to summarise rather than to duplicate.
   is drawn uncropped instead, with a warning naming the empty clip.
 
 ### Added
+- `render:cm_sdr_eotf` — what SDR content is assumed to be encoded with when a
+  client declares no image description: `default`/`srgb` (the protocol's
+  answer), `gamma22` for undeclared buffers, or `gamma22force` which takes
+  declared sRGB as a pure power curve as well. An output with an ICC profile
+  always assumes sRGB, because the profile's cube maps sRGB into that panel;
+  the assumption rides on a surface's buffers, so a reload takes effect at each
+  window's next commit.
 - Automatic HDR, Hyprland's `render:cm_auto_hdr` (`0` off, `1` switch to HDR,
   `2` the same with EDID primaries, absent is `1`): a fullscreen window whose
   buffers declare an HDR transfer function — PQ or HLG, through
