@@ -128,7 +128,9 @@ typo there should be a message rather than a session on the wrong card.
 `config.focus_crosses_outputs`, `config.osk`, `config.tray`,
 `config.clipboard_history`, `config.icon_theme`, `config.theme`,
 `config.rules`, `config.layer_rules`, `config.decorations`, `config.workspaces`,
-`config.opacity` and `output.configure` change the
+`config.opacity`, `config.idle`, `config.lid`, `config.keyboard`,
+`config.input`, `config.notifications`, `config.magnify` and `output.configure`
+change the
 compositor's copy of the configuration and re-announce it, without touching
 any file. That is the tier a wallpaper cycler runs on, and the tier the
 settings panel runs on: a value applies the moment it is set and is gone at
@@ -198,6 +200,19 @@ next input, exactly as the idle timer does. `lid` is what the laptop hinge
 does: `"lock"`, `"blank"`, `"suspend"` (via logind) or `"ignore"`. Absent is
 lock when `idle.lock_command` is set, otherwise blank. A desktop has no lid,
 so the setting never fires.
+
+**At runtime.** `config.idle` and `config.lid` on the control socket set the
+block and the hinge policy without touching the file:
+
+```console
+viewport msg -t config.idle --lock_after 600 --lock_command swaylock
+viewport msg -t config.lid --action lock
+```
+
+Changing a deadline re-arms the timers, so a desk that has been quiet for an
+hour gets a full new period rather than locking on the next tick, and nothing
+is woken — a blanked desk stays blanked. An unknown lid action is refused
+whole rather than ignored.
 
 `idle.lock_delay` is how long the outputs stand black after any lock is
 asked for, before it actually locks — seconds, opt-in only: absent or zero
@@ -381,6 +396,19 @@ Available fields are `tap`, `tap_drag`, `natural_scroll`, `left_handed`,
 settings are logged and ignored. Settings apply when a device appears and again
 on config reload.
 
+**At runtime.** `config.input` on the control socket sets one device's entry
+without touching the file, naming it the way the file does. The connected
+devices are reconfigured at once, and a device that arrives later reads the
+same map:
+
+```console
+viewport msg -t config.input --device '*' --tap true --scroll_factor 0.5
+```
+
+Only the fields given change on that device's entry, and an entry that does
+not exist yet is created. An unnamed device, an acceleration outside -1 to 1,
+an unknown profile or method, or a zero scroll factor is refused whole.
+
 `scroll_factor` multiplies both the continuous amount and the discrete steps a
 device sends — Hyprland's `input:scroll_factor`, which is the number a touchpad
 usually wants below 1. Zero is refused and a negative value reverses the
@@ -558,6 +586,15 @@ zoom-in chord that zooms out — and lowering `max` in a reload brings the
 picture down to meet it rather than leaving the screen somewhere the config
 file says is not allowed.
 
+**At runtime.** `config.magnify` on the control socket sets the block the
+same way, and the event carries the clamped, effective values:
+
+```console
+viewport msg -t config.magnify --step 0.25 --max 6
+```
+
+A step or ceiling that is not a finite positive number is refused whole.
+
 **Everything still works where it looks like it does.** The pointer is not
 magnified; the picture is. The compositor's cursor stays at the real place it
 was, and the cursor is drawn through the same transform as everything else, so
@@ -622,13 +659,25 @@ Absent lets xkb choose, which is what everything else wants:
 before they start, in milliseconds. Absent is 25 and 200, which is sway's pair
 and the compositor's.
 
-The block is read once, at startup. A keymap is set by handing the seat a new
-keyboard and there is no way to change the layout of one that already exists,
-so this happens before any client has seen the seat — changing it means
-restarting the compositor. An entire block left out changes nothing, and a
-layout xkb refuses is logged by name and the current keymap kept, because an
-unknown layout that silently left the built-in one in place looks exactly like
-a config file that was never read.
+The block is read once, at startup — and at runtime too, below. A keymap is
+set by handing the seat a new keyboard and there is no way to change the
+layout of one that already exists, so changing it replaces the keyboard. An
+entire block left out changes nothing, and a layout xkb refuses is logged by
+name and the current keymap kept, because an unknown layout that silently
+left the built-in one in place looks exactly like a config file that was
+never read.
+
+**At runtime.** `config.keyboard` on the control socket sets the block
+without touching the file — the seat's keyboard is replaced, so the new
+keymap is live at once, and a keymap xkb refuses is rejected with the old
+one standing:
+
+```console
+viewport msg -t config.keyboard --layout de --repeat_rate 30
+```
+
+Only the fields given change, and the empty string takes one back to the
+xkb default. A repeat rate or delay of zero or below is refused whole.
 
 Chords are separate: `binds` names them by keysym, so the same binding follows
 the layout rather than the key's position. See [Changing some of the keymap, or
@@ -1780,6 +1829,17 @@ Absent is silence, and there is deliberately no built-in default: the
 freedesktop sound theme every distribution installs has no notification event
 of its own, so a name chosen here would be one desktop's taste imposed on
 every other.
+
+**At runtime.** `config.notifications` on the control socket sets the sound
+and the history without touching the file. The sound player is re-read, and
+a lowered history drops the oldest entries there and then:
+
+```console
+viewport msg -t config.notifications --sound_file /sounds/notify.ogg --history 20
+```
+
+Only the fields given change. Blanking the sound file is silence, the same
+as leaving the key out.
 
 **What a sender asks for wins.** The specification gives programs three hints
 and all three are honoured. `sound-file` and `sound-name` mean the same as the

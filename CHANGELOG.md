@@ -36,6 +36,22 @@ to summarise rather than to duplicate.
   verified against the npm tarball.
 
 ### Added
+- The remaining runtime config setters, the ones that needed new machinery
+  rather than just a stored value: `config.idle` (with `config.lid`),
+  `config.keyboard`, per-device `config.input`, `config.notifications` and
+  `config.magnify`. Each is a request variant, an apply arm, a `Config`
+  field and an overlay field, so each persists through `config.save` and is
+  re-announced in the `config` event. `config.idle` re-arms the idle
+  timers, so a deadline turned on while the desk has been quiet gets a full
+  period and nothing is woken; `config.keyboard` replaces the seat's
+  keyboard, recompiling the keymap, and a keymap xkb refuses is rejected
+  over the socket rather than warned about; `config.input` names its device
+  (`vendor:product:name`, or `*`) and reconfigures the connected devices at
+  once; `config.notifications` re-reads the sound player and the history;
+  and `config.magnify` carries the clamped, effective step and ceiling, with
+  a lowered ceiling repainting as a reload does. With these, every
+  config-file setting that can be changed at runtime has a setter — the
+  startup-only ones are listed as file-only by design in `docs/roadmap.md`.
 - `config.cursor` on the control socket sets when the pointer image leaves
   the screen — `hide_after_ms`, `hide_on_key_press` and `hide_on_touch`, the
   `cursor` block's runtime half. Zero is off (the cursor never hides), a

@@ -292,6 +292,158 @@ fn the_shell_animation_pace_is_set_and_announced() {
     );
 }
 
+/// The idle deadlines, the lid policy, the keymap, the per-device input, the
+/// notification sound and history, and the magnifier: each has new machinery
+/// behind its setter, so each is set, read back off the `config` event, and
+/// refused whole on an invalid value.
+#[test]
+fn config_setters_with_machinery_land_and_read_back() {
+    let compositor = Compositor::start("config-machinery");
+    let mut client = compositor.connect();
+
+    client.send(r#"{"type":"view.query"}"#);
+    let config = client.wait_for("config");
+    // Nothing in the file means the compositor keeps whatever it had — off.
+    assert!(config["idle"].is_null());
+    assert!(config["lid"].is_null());
+    assert!(config["keyboard"].is_null());
+    assert!(config["input"].is_null());
+    // The magnifier always has an answer once it is configured, which every
+    // load does — the shipped step and ceiling.
+    assert_eq!(config["magnify"]["step"], 0.5);
+    assert_eq!(config["magnify"]["max"], 8.0);
+
+    // The idle deadlines and the locker.
+    client.send(
+        r#"{"type":"config.idle","lock_after":600,"lock_delay":10,"lock_command":"swaylock"}"#,
+    );
+    let config = client.wait_for("config");
+    assert_eq!(config["idle"]["lock_after"], 600);
+    assert_eq!(config["idle"]["lock_delay"], 10);
+    assert_eq!(config["idle"]["lock_command"], "swaylock");
+    assert!(config["idle"]["blank_after"].is_null());
+
+    // Only the fields given change.
+    client.send(r#"{"type":"config.idle","blank_after":300}"#);
+    let config = client.wait_for("config");
+    assert_eq!(config["idle"]["blank_after"], 300);
+    assert_eq!(config["idle"]["lock_after"], 600);
+
+    // A negative deadline is refused whole: the prior value stands.
+    client.send(r#"{"type":"config.idle","lock_after":-1}"#);
+    let error = client.wait_for("error");
+    assert!(error.to_string().contains("config.idle"));
+    client.send(r#"{"type":"view.query"}"#);
+    assert_eq!(
+        client.wait_for("config")["idle"]["lock_after"],
+        600,
+        "the refused half got applied anyway"
+    );
+
+    // The lid policy, on the same terms.
+    client.send(r#"{"type":"config.lid","action":"lock"}"#);
+    assert_eq!(client.wait_for("config")["lid"], "lock");
+    client.send(r#"{"type":"config.lid","action":"nap"}"#);
+    let error = client.wait_for("error");
+    assert!(error.to_string().contains("config.lid"));
+    client.send(r#"{"type":"view.query"}"#);
+    assert_eq!(
+        client.wait_for("config")["lid"],
+        "lock",
+        "an unknown action replaced the policy"
+    );
+
+    // The keymap is recompiled over the socket.
+    client.send(r#"{"type":"config.keyboard","layout":"de","repeat_rate":30}"#);
+    let config = client.wait_for("config");
+    assert_eq!(config["keyboard"]["layout"], "de");
+    assert_eq!(config["keyboard"]["repeat_rate"], 30);
+    assert!(config["keyboard"]["variant"].is_null());
+
+    // Only the fields given change, and a repeat of zero is refused whole.
+    client.send(r#"{"type":"config.keyboard","repeat_rate":0}"#);
+    let error = client.wait_for("error");
+    assert!(error.to_string().contains("config.keyboard"));
+    client.send(r#"{"type":"view.query"}"#);
+    let config = client.wait_for("config");
+    assert_eq!(
+        config["keyboard"]["repeat_rate"], 30,
+        "the refused half got applied anyway"
+    );
+    assert_eq!(config["keyboard"]["layout"], "de");
+
+    // A keymap xkb refuses leaves the old one standing and is rejected.
+    client.send(r#"{"type":"config.keyboard","layout":"no-such-layout"}"#);
+    let error = client.wait_for("error");
+    assert!(error.to_string().contains("config.keyboard"));
+    client.send(r#"{"type":"view.query"}"#);
+    assert_eq!(
+        client.wait_for("config")["keyboard"]["layout"],
+        "de",
+        "a refused keymap was recorded anyway"
+    );
+
+    // Per-device input, named the way the file names it.
+    client.send(r#"{"type":"config.input","device":"*","tap":true,"scroll_factor":2.0}"#);
+    let config = client.wait_for("config");
+    assert_eq!(config["input"]["*"]["tap"], true);
+    assert_eq!(config["input"]["*"]["scroll_factor"], 2.0);
+
+    // An entry that does not exist yet is created; its neighbour stands.
+    client
+        .send(r#"{"type":"config.input","device":"046d:c52b:USB Receiver","natural_scroll":true}"#);
+    let config = client.wait_for("config");
+    assert_eq!(
+        config["input"]["046d:c52b:USB Receiver"]["natural_scroll"],
+        true
+    );
+    assert_eq!(config["input"]["*"]["tap"], true);
+
+    // An unknown profile and an unnamed device are refused whole.
+    client.send(r#"{"type":"config.input","device":"*","accel_profile":"bogus"}"#);
+    let error = client.wait_for("error");
+    assert!(error.to_string().contains("config.input"));
+    client.send(r#"{"type":"config.input","tap":true}"#);
+    let error = client.wait_for("error");
+    assert!(error.to_string().contains("config.input"));
+    client.send(r#"{"type":"view.query"}"#);
+    let config = client.wait_for("config");
+    assert!(
+        config["input"]["*"]["accel_profile"].is_null(),
+        "the refused half got applied anyway"
+    );
+
+    // The notification sound and how many the centre keeps.
+    client.send(r#"{"type":"config.notifications","sound_file":"/sounds/notify.ogg","history":5}"#);
+    let config = client.wait_for("config");
+    assert_eq!(config["notifications"]["sound_file"], "/sounds/notify.ogg");
+    assert_eq!(config["notifications"]["history"], 5);
+
+    // The magnifier's step and ceiling, clamped to what it can do.
+    client.send(r#"{"type":"config.magnify","step":0.25,"max":6.0}"#);
+    let config = client.wait_for("config");
+    assert_eq!(config["magnify"]["step"], 0.25);
+    assert_eq!(config["magnify"]["max"], 6.0);
+
+    client.send(r#"{"type":"config.magnify","max":100.0}"#);
+    assert_eq!(
+        client.wait_for("config")["magnify"]["max"],
+        32.0,
+        "the event must carry the ceiling, not the ask"
+    );
+
+    // A step that is not a positive number is refused whole.
+    client.send(r#"{"type":"config.magnify","step":-1.0}"#);
+    let error = client.wait_for("error");
+    assert!(error.to_string().contains("config.magnify"));
+    client.send(r#"{"type":"view.query"}"#);
+    assert_eq!(
+        client.wait_for("config")["magnify"]["step"],
+        0.25,
+        "the refused half got applied anyway"
+    );
+}
+
 #[test]
 fn unknown_names_over_the_socket_are_refused_not_warned() {
     let compositor = Compositor::start("config-refusals");

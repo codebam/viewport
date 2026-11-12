@@ -108,6 +108,17 @@ impl Default for Idle {
 }
 
 impl Idle {
+    /// The policy changed under a desk that may have been quiet for an hour,
+    /// so both deadlines start again from now.
+    ///
+    /// Not `activity`: nothing arrived, so nothing is woken. A desk that is
+    /// blanked stays blanked, and a session that is locked stays locked —
+    /// this only stops a deadline turned on (or shortened) at runtime from
+    /// firing on the next tick off a `since` nobody chose.
+    pub fn rearm(&mut self) {
+        self.since = Instant::now();
+    }
+
     /// Input arrived, so both deadlines start again.
     ///
     /// Returns whether the screens were blanked and need bringing back, which
@@ -456,6 +467,26 @@ mod tests {
         assert!(
             idle.lock_pending(),
             "the chord's release must not cancel its own lock"
+        );
+    }
+
+    #[test]
+    fn rearming_restarts_the_deadlines_without_waking_anything() {
+        // The policy changed under a desk that has been quiet for an hour:
+        // the deadlines start from now, so a deadline turned on at runtime
+        // gets a full period rather than firing on the next tick off the
+        // last input — but nothing is woken, so a desk that is blanked
+        // stays blanked.
+        let mut idle = Idle::default();
+        let s = settings(None, Some(1));
+        idle.tick(&s, Duration::from_secs(5));
+        assert!(idle.blanked());
+
+        idle.rearm();
+        assert!(idle.blanked(), "a re-armed desk stays blanked");
+        assert!(
+            idle.since.elapsed() < Duration::from_secs(1),
+            "the deadlines are measured from the re-arm, not the last input"
         );
     }
 

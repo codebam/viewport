@@ -932,6 +932,47 @@ pub struct Config {
     /// `hicolor`, which is what the compositor searches when nothing is named.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon_theme: Option<String>,
+
+    /// When the session locks and when the outputs go dark, as the `idle`
+    /// block in the config file. Carried so the panel can show what it is and
+    /// `config.save` can write it back; the timers themselves are the
+    /// compositor's. Absent means the compositor keeps whatever it had.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle: Option<Idle>,
+
+    /// What closing the laptop lid does: `"ignore"`, `"lock"`, `"blank"` or
+    /// `"suspend"`, as `lid` in the config file. Absent means the compositor
+    /// keeps whatever it had — a desktop has no lid, so the setting never
+    /// fires there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lid: Option<String>,
+
+    /// The seat's keymap, as the `keyboard` block in the config file. Carried
+    /// so the panel can show what it is and `config.save` can write it back;
+    /// the keymap itself is the compositor's to compile. Absent means the
+    /// compositor keeps whatever it had.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keyboard: Option<Keyboard>,
+
+    /// Per-device libinput settings, keyed the way the `input` block keys
+    /// them (`vendor:product:name`, `*` for all devices). Carried so the panel
+    /// can show what it is and `config.save` can write it back. Absent means
+    /// the compositor keeps whatever it had.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<std::collections::BTreeMap<String, Input>>,
+
+    /// What a notification that names no sound of its own sounds like, and how
+    /// many the centre keeps, as the `notifications` block in the config file.
+    /// Carried so the panel can show what it is and `config.save` can write it
+    /// back. Absent means the compositor keeps whatever it had.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notifications: Option<Notifications>,
+
+    /// The screen magnifier's step and ceiling, as the `magnify` block in the
+    /// config file. Carried so the panel can show what it is and `config.save`
+    /// can write it back. Absent means the compositor keeps whatever it had.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub magnify: Option<Magnify>,
 }
 
 /// Global multipliers applied to the shell-owned per-window opacity.
@@ -1064,6 +1105,140 @@ pub struct Cursor {
     pub follow_mouse: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub follow_mouse_threshold: Option<f64>,
+}
+
+/// When the session locks and when the outputs go dark, as `idle` in the
+/// config file, carried so the panel can show what it is and `config.save`
+/// can write it back.
+///
+/// Every field optional so an absent one leaves what the compositor had
+/// standing. The deadlines are seconds; zero or absent is off. `lock_delay`
+/// is how long the outputs stand black after a lock is asked for before it
+/// locks. `lock_command` is the locker to run, or absent for the lock screen
+/// the shell draws — the empty string is that same "no command" spelled out.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Idle {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lock_after: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blank_after: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lock_delay: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lock_command: Option<String>,
+}
+
+/// The seat's keymap, as `keyboard` in the config file, carried so the panel
+/// can show what it is and `config.save` can write it back.
+///
+/// Every field optional so an absent one leaves what the compositor had
+/// standing. `layout`, `variant`, `options`, `rules` and `model` are xkb's;
+/// an empty string is the default xkb picks, which is also how a sender
+/// takes one back. `repeat_rate` is presses a second and `repeat_delay` the
+/// milliseconds before the first repeat; neither may be zero or below.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Keyboard {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variant: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub options: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rules: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repeat_rate: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repeat_delay: Option<i32>,
+}
+
+/// Settings libinput applies to one device, as one entry of the `input` block
+/// in the config file.
+///
+/// Every field optional so an absent one leaves what the compositor had
+/// standing: the `*` entry applies first and an exact entry overrides only
+/// the fields it names. `accel_speed` is libinput's normalized range, -1 to
+/// 1; `accel_profile` is `adaptive` or `flat`; `click_method` is
+/// `button_areas` or `clickfinger`; `scroll_method` is `none`, `two_finger`,
+/// `edge` or `on_button_down`; `scroll_factor` multiplies scroll distance
+/// and may be negative to reverse it, but not zero.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Input {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tap: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tap_drag: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub natural_scroll: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub left_handed: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub middle_emulation: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disable_while_typing: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accel_speed: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accel_profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub click_method: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scroll_method: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scroll_factor: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub emulate_discrete_scroll: Option<bool>,
+}
+
+/// What a notification that names no sound of its own sounds like, and how
+/// many the centre keeps, as `notifications` in the config file, carried so
+/// the panel can show what it is and `config.save` can write it back.
+///
+/// Every field optional so an absent one leaves what the compositor had
+/// standing. `sound_file` is a path played as given; `sound_name` is a name
+/// from the sound naming specification, resolved against the installed sound
+/// theme and ignored when `sound_file` is set; either blank is silence.
+/// `history` is how many notifications the centre keeps after their popups
+/// have gone — zero keeps nothing.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Notifications {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sound_file: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sound_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history: Option<usize>,
+}
+
+/// The screen magnifier's step and ceiling, as `magnify` in the config file,
+/// carried so the panel can show what it is and `config.save` can write it
+/// back.
+///
+/// Both fields are always present, like `Opacity`'s: the compositor always
+/// has an answer once it has been configured, and the effective values are
+/// what the magnifier actually uses — a `step` below the smallest worth
+/// having is already clamped to it, and a `max` is already inside the zoom
+/// ceiling. `step` is what one press of zoom-in adds; `max` is the largest
+/// zoom the chords will reach.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Magnify {
+    pub step: f64,
+    pub max: f64,
+}
+
+impl Default for Magnify {
+    fn default() -> Self {
+        Self {
+            step: 0.5,
+            max: 8.0,
+        }
+    }
 }
 
 /// How the shell animates, as `motion` in the config file, carried to the
@@ -1862,6 +2037,12 @@ mod tests {
             tray: None,
             clipboard_history: None,
             icon_theme: None,
+            idle: None,
+            lid: None,
+            keyboard: None,
+            input: None,
+            notifications: None,
+            magnify: None,
         })));
         assert!(value.get("bar").is_none());
         assert!(value.get("rules").is_none());
@@ -2050,6 +2231,12 @@ mod tests {
             tray: None,
             clipboard_history: None,
             icon_theme: None,
+            idle: None,
+            lid: None,
+            keyboard: None,
+            input: None,
+            notifications: None,
+            magnify: None,
         })));
         assert_eq!(value["border"]["radius"], 12);
         assert_eq!(value["border"]["width"], 3);
@@ -2114,6 +2301,12 @@ mod tests {
             tray: None,
             clipboard_history: None,
             icon_theme: None,
+            idle: None,
+            lid: None,
+            keyboard: None,
+            input: None,
+            notifications: None,
+            magnify: None,
         })));
         assert_eq!(value["gaps"]["inner"], 15);
         assert_eq!(value["gaps"]["outer"], 4);
@@ -2172,6 +2365,12 @@ mod tests {
             tray: None,
             clipboard_history: None,
             icon_theme: None,
+            idle: None,
+            lid: None,
+            keyboard: None,
+            input: None,
+            notifications: None,
+            magnify: None,
         })));
         assert_eq!(value["focus_crosses_outputs"], false);
     }
@@ -2211,6 +2410,12 @@ mod tests {
             tray: None,
             clipboard_history: None,
             icon_theme: None,
+            idle: None,
+            lid: None,
+            keyboard: None,
+            input: None,
+            notifications: None,
+            magnify: None,
         })));
         assert!(value["rules"].is_array(), "rules must not be a string");
         assert_eq!(value["rules"][0]["app_id"], "mpv");
@@ -2376,6 +2581,12 @@ mod tests {
                 tray: None,
                 clipboard_history: None,
                 icon_theme: None,
+                idle: None,
+                lid: None,
+                keyboard: None,
+                input: None,
+                notifications: None,
+                magnify: None,
             }))),
             json(&Event::WorkspaceRequest {
                 action: String::new(),

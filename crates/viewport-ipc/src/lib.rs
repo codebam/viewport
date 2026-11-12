@@ -232,6 +232,12 @@ fn is_known_type(name: &str) -> bool {
             | "config.decorations"
             | "config.workspaces"
             | "config.opacity"
+            | "config.idle"
+            | "config.lid"
+            | "config.keyboard"
+            | "config.input"
+            | "config.notifications"
+            | "config.magnify"
             | "config.save"
             | "output.revert"
     )

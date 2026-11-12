@@ -141,6 +141,16 @@ impl Magnifier {
         self.zoom
     }
 
+    /// What one press of zoom-in adds, as configured.
+    pub fn step(&self) -> f64 {
+        self.step
+    }
+
+    /// The largest zoom the chords will reach, as configured.
+    pub fn max(&self) -> f64 {
+        self.max
+    }
+
     pub fn is_on(&self) -> bool {
         self.zoom > 1.0 + OFF
     }

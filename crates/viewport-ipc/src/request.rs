@@ -1362,6 +1362,200 @@ pub enum Request {
     ///
     /// Answered with `config.saved` naming the file, or with an `error` if it
     /// could not be written.
+    /// Set when the session locks and when the outputs go dark at runtime, as
+    /// the `idle` block in the config file.
+    ///
+    /// The same path as `config.gaps` — the compositor's copy is updated and
+    /// re-announced in the `config` event — except the deadlines are not the
+    /// shell's to keep: changing one re-arms the idle timers, so a deadline
+    /// turned on while the desk has been quiet for an hour gives a full
+    /// period rather than firing on the next tick, and `refresh_idle_inhibit`
+    /// runs again because the policy may just have turned on or off.
+    ///
+    /// Every field is optional; only the ones given are changed. A negative
+    /// deadline is rejected.
+    #[serde(rename = "config.idle")]
+    ConfigIdle {
+        /// Seconds of inactivity before the session locks, as
+        /// `idle.lock_after`. Zero is off. Negative values are rejected.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lock_after: Option<i64>,
+        /// Seconds before the outputs are turned off, as
+        /// `idle.blank_after`. Zero is off. Negative values are rejected.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        blank_after: Option<i64>,
+        /// Seconds the outputs stay black after a lock is asked for before it
+        /// locks, as `idle.lock_delay`. Zero is off. Negative values are
+        /// rejected.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lock_delay: Option<i64>,
+        /// The locker to run, as `idle.lock_command`. The empty string takes
+        /// the external locker away and puts back the lock screen the shell
+        /// draws.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lock_command: Option<String>,
+    },
+
+    /// Set what closing the laptop lid does at runtime, as `lid` in the
+    /// config file.
+    ///
+    /// The same path as `config.gaps`: the compositor's `Config` is updated
+    /// and re-sent. The power worker is told too, because a lid policy can
+    /// keep it alive with no battery widget on the bar — turning the policy
+    /// off has to stop it, and turning it on has to start it, there and then.
+    /// A desktop has no lid, so the setting never fires there.
+    #[serde(rename = "config.lid")]
+    ConfigLid {
+        /// `"ignore"`, `"lock"`, `"blank"` or `"suspend"`, as `lid` in the
+        /// config file. Anything else is rejected rather than ignored.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        action: Option<String>,
+    },
+
+    /// Set the seat's keymap at runtime, as the `keyboard` block in the
+    /// config file.
+    ///
+    /// The same path as `config.gaps`, except a keymap cannot be changed in
+    /// place: the seat's keyboard is replaced, which recompiles the xkb
+    /// keymap, and a keymap xkb refuses leaves the old one standing and the
+    /// whole message rejected. Every field is optional; only the ones given
+    /// are changed, and the empty string takes one back to the xkb default.
+    /// A repeat rate or delay of zero or below is rejected.
+    #[serde(rename = "config.keyboard")]
+    ConfigKeyboard {
+        /// The xkb layout, as `keyboard.layout`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        layout: Option<String>,
+        /// The xkb variant, as `keyboard.variant`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        variant: Option<String>,
+        /// The xkb options, as `keyboard.options`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        options: Option<String>,
+        /// The xkb rules file, as `keyboard.rules`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rules: Option<String>,
+        /// The xkb model, as `keyboard.model`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+        /// Key repeats a second, as `keyboard.repeat_rate`. Zero and negative
+        /// values are rejected.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        repeat_rate: Option<i32>,
+        /// Milliseconds before the first repeat, as `keyboard.repeat_delay`.
+        /// Zero and negative values are rejected.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        repeat_delay: Option<i32>,
+    },
+
+    /// Set libinput settings for one device at runtime, as one entry of the
+    /// `input` block in the config file.
+    ///
+    /// The same path as `config.gaps`, except the message has to name the
+    /// device it means: `vendor:product:name`, the same key the file uses,
+    /// with `*` for every device. Only the fields given are changed on that
+    /// device's entry — an entry that does not exist yet is created, and one
+    /// that does keeps the fields the message did not name — and the devices
+    /// already connected are reconfigured at once, as a reload would.
+    /// Invalid values are rejected whole.
+    #[serde(rename = "config.input")]
+    ConfigInput {
+        /// Which device this is for: `vendor:product:name`, or `*` for all.
+        /// An empty name is rejected.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        device: Option<String>,
+        /// Tap the touchpad to click, as `tap`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tap: Option<bool>,
+        /// Tap and drag, as `tap_drag`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tap_drag: Option<bool>,
+        /// Natural (reversed) scroll direction, as `natural_scroll`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        natural_scroll: Option<bool>,
+        /// Left-handed mode, as `left_handed`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        left_handed: Option<bool>,
+        /// Middle-click emulation, as `middle_emulation`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        middle_emulation: Option<bool>,
+        /// Disable the device while typing, as `disable_while_typing`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        disable_while_typing: Option<bool>,
+        /// Acceleration speed in libinput's normalized range, -1 to 1, as
+        /// `accel_speed`. Anything outside it is rejected.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        accel_speed: Option<f64>,
+        /// `adaptive` or `flat`, as `accel_profile`. Anything else is
+        /// rejected.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        accel_profile: Option<String>,
+        /// `button_areas` or `clickfinger`, as `click_method`. Anything else
+        /// is rejected.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        click_method: Option<String>,
+        /// `none`, `two_finger`, `edge` or `on_button_down`, as
+        /// `scroll_method`. Anything else is rejected.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scroll_method: Option<String>,
+        /// What a scroll is multiplied by, as `scroll_factor`. May be
+        /// negative to reverse the direction; zero and non-finite values are
+        /// rejected.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scroll_factor: Option<f64>,
+        /// Send discrete steps for a touchpad's continuous scroll, as
+        /// `emulate_discrete_scroll`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        emulate_discrete_scroll: Option<bool>,
+    },
+
+    /// Set what a notification that names no sound of its own sounds like at
+    /// runtime, and how many the centre keeps, as the `notifications` block
+    /// in the config file.
+    ///
+    /// The same path as `config.gaps`: the compositor's `Config` is updated
+    /// and re-sent. Unlike the gaps the sound player and the history are the
+    /// compositor's own, so they are re-read too — a reload that lowers the
+    /// history drops the oldest entries there and then, and this does the
+    /// same. Every field is optional; only the ones given are changed. A
+    /// blank sound file or name is silence.
+    #[serde(rename = "config.notifications")]
+    ConfigNotifications {
+        /// A path to a sound file, played as given, as
+        /// `notifications.sound_file`. The empty string takes the sound away.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sound_file: Option<String>,
+        /// A name from the sound naming specification, as
+        /// `notifications.sound_name`. Ignored when `sound_file` is set. The
+        /// empty string takes the sound away.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sound_name: Option<String>,
+        /// How many notifications the centre keeps, as
+        /// `notifications.history`. Zero keeps nothing.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        history: Option<usize>,
+    },
+
+    /// Set the screen magnifier's step and ceiling at runtime, as the
+    /// `magnify` block in the config file.
+    ///
+    /// The same path as `config.gaps`: the compositor's `Config` is updated
+    /// and re-sent. A lowered ceiling below where the screen currently is
+    /// brings the picture back down to meet it, as a reload does. Every field
+    /// is optional; only the ones given are changed. A step or ceiling that
+    /// is not a finite positive number is rejected; the effective values —
+    /// clamped to the smallest worth having and the zoom ceiling — are what
+    /// the `config` event carries.
+    #[serde(rename = "config.magnify")]
+    ConfigMagnify {
+        /// What one press of zoom-in adds, as `magnify.step`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        step: Option<f64>,
+        /// The largest zoom the chords will reach, as `magnify.max`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max: Option<f64>,
+    },
+
     #[serde(rename = "config.save")]
     ConfigSave,
 }
@@ -2628,6 +2822,97 @@ mod tests {
     fn saving_and_reverting_are_bodyless() {
         assert_eq!(parse(r#"{"type":"config.save"}"#), Request::ConfigSave);
         assert_eq!(parse(r#"{"type":"output.revert"}"#), Request::OutputRevert);
+    }
+
+    /// The setters with new machinery behind them carry their fields the way
+    /// `config.gaps` does: every field optional, only the ones given changed.
+    /// `config.input` is the one that has to name a device.
+    #[test]
+    fn config_setters_with_machinery_carry_their_fields() {
+        let Request::ConfigIdle {
+            lock_after,
+            blank_after,
+            lock_delay,
+            lock_command,
+        } = parse(
+            r#"{"type":"config.idle","lock_after":600,"lock_delay":10,"lock_command":"swaylock"}"#,
+        )
+        else {
+            panic!("not a config.idle message");
+        };
+        assert_eq!(lock_after, Some(600));
+        assert_eq!(blank_after, None);
+        assert_eq!(lock_delay, Some(10));
+        assert_eq!(lock_command.as_deref(), Some("swaylock"));
+
+        let Request::ConfigLid { action } = parse(r#"{"type":"config.lid","action":"lock"}"#)
+        else {
+            panic!("not a config.lid message");
+        };
+        assert_eq!(action.as_deref(), Some("lock"));
+
+        let Request::ConfigKeyboard {
+            layout,
+            variant,
+            options,
+            rules,
+            model,
+            repeat_rate,
+            repeat_delay,
+        } = parse(
+            r#"{"type":"config.keyboard","layout":"de","variant":"neo","options":"caps:escape","rules":"evdev","model":"pc105","repeat_rate":30,"repeat_delay":250}"#,
+        )
+        else {
+            panic!("not a config.keyboard message");
+        };
+        assert_eq!(layout.as_deref(), Some("de"));
+        assert_eq!(variant.as_deref(), Some("neo"));
+        assert_eq!(options.as_deref(), Some("caps:escape"));
+        assert_eq!(rules.as_deref(), Some("evdev"));
+        assert_eq!(model.as_deref(), Some("pc105"));
+        assert_eq!(repeat_rate, Some(30));
+        assert_eq!(repeat_delay, Some(250));
+
+        let Request::ConfigInput {
+            device,
+            tap,
+            accel_speed,
+            accel_profile,
+            scroll_factor,
+            ..
+        } = parse(
+            r#"{"type":"config.input","device":"046d:c52b:USB Receiver","tap":true,"accel_speed":0.5,"accel_profile":"adaptive","scroll_factor":1.5}"#,
+        )
+        else {
+            panic!("not a config.input message");
+        };
+        assert_eq!(device.as_deref(), Some("046d:c52b:USB Receiver"));
+        assert_eq!(tap, Some(true));
+        assert_eq!(accel_speed, Some(0.5));
+        assert_eq!(accel_profile.as_deref(), Some("adaptive"));
+        assert_eq!(scroll_factor, Some(1.5));
+
+        let Request::ConfigNotifications {
+            sound_file,
+            sound_name,
+            history,
+        } = parse(
+            r#"{"type":"config.notifications","sound_file":"/sounds/notify.ogg","history":20}"#,
+        )
+        else {
+            panic!("not a config.notifications message");
+        };
+        assert_eq!(sound_file.as_deref(), Some("/sounds/notify.ogg"));
+        assert_eq!(sound_name, None);
+        assert_eq!(history, Some(20));
+
+        let Request::ConfigMagnify { step, max } =
+            parse(r#"{"type":"config.magnify","step":0.25,"max":6.0}"#)
+        else {
+            panic!("not a config.magnify message");
+        };
+        assert_eq!(step, Some(0.25));
+        assert_eq!(max, Some(6.0));
     }
 
     #[test]

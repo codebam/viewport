@@ -1837,6 +1837,12 @@ impl ViewportState {
                 clipboard_history: None,
                 // Hicolor, until something names a theme.
                 icon_theme: None,
+                idle: None,
+                lid: None,
+                keyboard: None,
+                input: None,
+                notifications: None,
+                magnify: None,
             },
             bar_items_config: None,
             layer_rules: crate::layer::Rules::default(),

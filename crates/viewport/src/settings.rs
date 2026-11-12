@@ -185,6 +185,33 @@ pub struct Overlay {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub opacity: Option<viewport_ipc::event::Opacity>,
 
+    /// Spelled the way the `idle` block spells it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub idle: Option<viewport_ipc::event::Idle>,
+
+    /// Spelled the way `lid` spells it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lid: Option<String>,
+
+    /// Spelled the way the `keyboard` block spells it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub keyboard: Option<viewport_ipc::event::Keyboard>,
+
+    /// The file's map form — device to the settings already merged — so
+    /// what is written is what the config reader reads. A `BTreeMap` for
+    /// the same order-every-time reason as `outputs`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input: Option<BTreeMap<String, viewport_ipc::event::Input>>,
+
+    /// Spelled the way the `notifications` block spells it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notifications: Option<viewport_ipc::event::Notifications>,
+
+    /// Spelled the way the `magnify` block spells it — the effective,
+    /// already-clamped values, so what is written is what the magnifier does.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub magnify: Option<viewport_ipc::event::Magnify>,
+
     /// The monitors, by connector name.
     ///
     /// A `BTreeMap` rather than a `HashMap` so the file comes out in the same
@@ -613,6 +640,108 @@ pub fn apply(into: &mut crate::config::File, overlay: &Overlay) {
         into.opacity.inactive = Some(opacity.inactive);
         into.opacity.fullscreen = Some(opacity.fullscreen);
     }
+    if let Some(idle) = overlay.idle.as_ref() {
+        if let Some(value) = idle.lock_after {
+            into.idle.lock_after = Some(value);
+        }
+        if let Some(value) = idle.blank_after {
+            into.idle.blank_after = Some(value);
+        }
+        if let Some(value) = idle.lock_delay {
+            into.idle.lock_delay = Some(value);
+        }
+        if let Some(value) = idle.lock_command.as_ref() {
+            into.idle.lock_command = Some(value.clone());
+        }
+    }
+    if let Some(value) = overlay.lid.as_ref() {
+        into.lid = Some(value.clone());
+    }
+    if let Some(keyboard) = overlay.keyboard.as_ref() {
+        if let Some(value) = keyboard.layout.as_ref() {
+            into.keyboard.layout = Some(value.clone());
+        }
+        if let Some(value) = keyboard.variant.as_ref() {
+            into.keyboard.variant = Some(value.clone());
+        }
+        if let Some(value) = keyboard.options.as_ref() {
+            into.keyboard.options = Some(value.clone());
+        }
+        if let Some(value) = keyboard.rules.as_ref() {
+            into.keyboard.rules = Some(value.clone());
+        }
+        if let Some(value) = keyboard.model.as_ref() {
+            into.keyboard.model = Some(value.clone());
+        }
+        if let Some(value) = keyboard.repeat_rate {
+            into.keyboard.repeat_rate = Some(value);
+        }
+        if let Some(value) = keyboard.repeat_delay {
+            into.keyboard.repeat_delay = Some(value);
+        }
+    }
+    // Per device, not the whole map: the overlay holds only the devices the
+    // panel touched, and a config-file entry for an untouched one has to
+    // survive — the same rule the monitors above follow.
+    if let Some(input) = overlay.input.as_ref() {
+        let map = into
+            .input
+            .get_or_insert_with(std::collections::HashMap::new);
+        for (device, settings) in input {
+            let entry = map.entry(device.clone()).or_default();
+            if let Some(value) = settings.tap {
+                entry.tap = Some(value);
+            }
+            if let Some(value) = settings.tap_drag {
+                entry.tap_drag = Some(value);
+            }
+            if let Some(value) = settings.natural_scroll {
+                entry.natural_scroll = Some(value);
+            }
+            if let Some(value) = settings.left_handed {
+                entry.left_handed = Some(value);
+            }
+            if let Some(value) = settings.middle_emulation {
+                entry.middle_emulation = Some(value);
+            }
+            if let Some(value) = settings.disable_while_typing {
+                entry.disable_while_typing = Some(value);
+            }
+            if let Some(value) = settings.accel_speed {
+                entry.accel_speed = Some(value);
+            }
+            if let Some(value) = settings.accel_profile.as_ref() {
+                entry.accel_profile = Some(value.clone());
+            }
+            if let Some(value) = settings.click_method.as_ref() {
+                entry.click_method = Some(value.clone());
+            }
+            if let Some(value) = settings.scroll_method.as_ref() {
+                entry.scroll_method = Some(value.clone());
+            }
+            if let Some(value) = settings.scroll_factor {
+                entry.scroll_factor = Some(value);
+            }
+            if let Some(value) = settings.emulate_discrete_scroll {
+                entry.emulate_discrete_scroll = Some(value);
+            }
+        }
+    }
+    if let Some(notifications) = overlay.notifications.as_ref() {
+        if let Some(value) = notifications.sound_file.as_ref() {
+            into.notifications.sound_file = Some(value.clone());
+        }
+        if let Some(value) = notifications.sound_name.as_ref() {
+            into.notifications.sound_name = Some(value.clone());
+        }
+        if let Some(value) = notifications.history {
+            into.notifications.history = Some(value);
+        }
+    }
+    if let Some(magnify) = overlay.magnify.as_ref() {
+        into.magnify.step = Some(magnify.step);
+        into.magnify.max = Some(magnify.max);
+    }
     // Per monitor, not the whole map: the overlay holds only the monitors the
     // panel touched, and a config-file block for an untouched one has to
     // survive.
@@ -747,6 +876,52 @@ mod tests {
                 inactive: 0.8,
                 fullscreen: 1.0,
             }),
+            idle: Some(viewport_ipc::event::Idle {
+                lock_after: Some(600),
+                blank_after: Some(300),
+                lock_delay: Some(10),
+                lock_command: Some("swaylock".to_owned()),
+            }),
+            lid: Some("lock".to_owned()),
+            keyboard: Some(viewport_ipc::event::Keyboard {
+                layout: Some("de".to_owned()),
+                variant: Some("neo".to_owned()),
+                options: Some("caps:escape".to_owned()),
+                rules: Some("evdev".to_owned()),
+                model: Some("pc105".to_owned()),
+                repeat_rate: Some(30),
+                repeat_delay: Some(250),
+            }),
+            input: Some(
+                [(
+                    "*".to_owned(),
+                    viewport_ipc::event::Input {
+                        tap: Some(true),
+                        tap_drag: None,
+                        natural_scroll: Some(true),
+                        left_handed: None,
+                        middle_emulation: None,
+                        disable_while_typing: None,
+                        accel_speed: Some(0.5),
+                        accel_profile: Some("adaptive".to_owned()),
+                        click_method: None,
+                        scroll_method: None,
+                        scroll_factor: Some(1.5),
+                        emulate_discrete_scroll: Some(true),
+                    },
+                )]
+                .into_iter()
+                .collect(),
+            ),
+            notifications: Some(viewport_ipc::event::Notifications {
+                sound_file: Some("/sounds/notify.ogg".to_owned()),
+                sound_name: Some("message-new-instant".to_owned()),
+                history: Some(20),
+            }),
+            magnify: Some(viewport_ipc::event::Magnify {
+                step: 0.25,
+                max: 6.0,
+            }),
             outputs,
         }
     }
@@ -832,6 +1007,36 @@ mod tests {
         assert_eq!(file.opacity.active, Some(0.95));
         assert_eq!(file.opacity.inactive, Some(0.8));
         assert_eq!(file.opacity.fullscreen, Some(1.0));
+        assert_eq!(file.idle.lock_after, Some(600));
+        assert_eq!(file.idle.blank_after, Some(300));
+        assert_eq!(file.idle.lock_delay, Some(10));
+        assert_eq!(file.idle.lock_command.as_deref(), Some("swaylock"));
+        assert_eq!(file.lid.as_deref(), Some("lock"));
+        assert_eq!(file.keyboard.layout.as_deref(), Some("de"));
+        assert_eq!(file.keyboard.variant.as_deref(), Some("neo"));
+        assert_eq!(file.keyboard.options.as_deref(), Some("caps:escape"));
+        assert_eq!(file.keyboard.rules.as_deref(), Some("evdev"));
+        assert_eq!(file.keyboard.model.as_deref(), Some("pc105"));
+        assert_eq!(file.keyboard.repeat_rate, Some(30));
+        assert_eq!(file.keyboard.repeat_delay, Some(250));
+        let device = &file.input.as_ref().expect("input saved")["*"];
+        assert_eq!(device.tap, Some(true));
+        assert_eq!(device.natural_scroll, Some(true));
+        assert_eq!(device.accel_speed, Some(0.5));
+        assert_eq!(device.accel_profile.as_deref(), Some("adaptive"));
+        assert_eq!(device.scroll_factor, Some(1.5));
+        assert_eq!(device.emulate_discrete_scroll, Some(true));
+        assert_eq!(
+            file.notifications.sound_file.as_deref(),
+            Some("/sounds/notify.ogg")
+        );
+        assert_eq!(
+            file.notifications.sound_name.as_deref(),
+            Some("message-new-instant")
+        );
+        assert_eq!(file.notifications.history, Some(20));
+        assert_eq!(file.magnify.step, Some(0.25));
+        assert_eq!(file.magnify.max, Some(6.0));
 
         let output = file
             .outputs

@@ -1609,6 +1609,316 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             }
         }
 
+        Request::ConfigIdle {
+            lock_after,
+            blank_after,
+            lock_delay,
+            lock_command,
+        } => {
+            // Validated as a whole before anything changes, like ConfigGaps:
+            // a negative deadline takes the whole message with it.
+            for (name, value) in [
+                ("lock_after", lock_after),
+                ("blank_after", blank_after),
+                ("lock_delay", lock_delay),
+            ] {
+                if let Some(v) = value {
+                    if v < 0 {
+                        reject(state, "config.idle", &format!("{name} {v}"));
+                        return;
+                    }
+                }
+            }
+            let changed = lock_after.is_some()
+                || blank_after.is_some()
+                || lock_delay.is_some()
+                || lock_command.is_some();
+            if let Some(v) = lock_after {
+                state.idle_settings.lock_after = Some(v);
+            }
+            if let Some(v) = blank_after {
+                state.idle_settings.blank_after = Some(v);
+            }
+            if let Some(v) = lock_delay {
+                state.idle_settings.lock_delay = Some(v);
+            }
+            if let Some(v) = lock_command.as_ref() {
+                state.idle_settings.lock_command = Some(v.clone());
+            }
+            if changed {
+                // The lock mode, the re-armed timers and the inhibit state
+                // all move with the settings; the Config event carries them
+                // so the panel shows the switch where it really is and
+                // `config.save` writes what is on screen. A lock command
+                // that blinks the mode must not wake a blanked desk either
+                // way, which is `Idle::rearm`'s whole point.
+                state.apply_idle_settings();
+                let current = state
+                    .config
+                    .idle
+                    .get_or_insert_with(viewport_ipc::event::Idle::default);
+                if let Some(v) = lock_after {
+                    current.lock_after = Some(v);
+                }
+                if let Some(v) = blank_after {
+                    current.blank_after = Some(v);
+                }
+                if let Some(v) = lock_delay {
+                    current.lock_delay = Some(v);
+                }
+                if let Some(v) = lock_command.as_ref() {
+                    current.lock_command = Some(v.clone());
+                }
+                state.notify_config();
+            }
+        }
+
+        Request::ConfigLid { action } => {
+            if let Some(action) = action {
+                match crate::power::LidAction::parse(&action) {
+                    Some(parsed) => {
+                        state.apply_lid(parsed);
+                        state.config.lid = Some(action);
+                        state.notify_config();
+                    }
+                    None => {
+                        reject(state, "config.lid", &format!("unknown action {action:?}"));
+                    }
+                }
+            }
+        }
+
+        Request::ConfigKeyboard {
+            layout,
+            variant,
+            options,
+            rules,
+            model,
+            repeat_rate,
+            repeat_delay,
+        } => {
+            // Validated as a whole before anything changes, like ConfigGaps:
+            // a repeat rate or delay of zero or below takes the whole
+            // message with it, and a keymap xkb refuses is rejected rather
+            // than recorded — `apply_keyboard` only writes down what it
+            // applied, so the Config copy below can only be reached on
+            // success.
+            for (name, value) in [("repeat_rate", repeat_rate), ("repeat_delay", repeat_delay)] {
+                if let Some(v) = value {
+                    if v <= 0 {
+                        reject(state, "config.keyboard", &format!("{name} {v}"));
+                        return;
+                    }
+                }
+            }
+            let mut keyboard = state.keyboard_config.clone();
+            if let Some(v) = layout {
+                keyboard.layout = Some(v);
+            }
+            if let Some(v) = variant {
+                keyboard.variant = Some(v);
+            }
+            if let Some(v) = options {
+                keyboard.options = Some(v);
+            }
+            if let Some(v) = rules {
+                keyboard.rules = Some(v);
+            }
+            if let Some(v) = model {
+                keyboard.model = Some(v);
+            }
+            if let Some(v) = repeat_rate {
+                keyboard.repeat_rate = Some(v);
+            }
+            if let Some(v) = repeat_delay {
+                keyboard.repeat_delay = Some(v);
+            }
+            match state.apply_keyboard(&keyboard) {
+                Ok(_) => {
+                    // The keymap was rebuilt, or was already what the desk
+                    // types in: either way the Config copy is the candidate
+                    // and the panel shows what it is.
+                    state.config.keyboard = Some(viewport_ipc::event::Keyboard {
+                        layout: keyboard.layout.clone(),
+                        variant: keyboard.variant.clone(),
+                        options: keyboard.options.clone(),
+                        rules: keyboard.rules.clone(),
+                        model: keyboard.model.clone(),
+                        repeat_rate: keyboard.repeat_rate,
+                        repeat_delay: keyboard.repeat_delay,
+                    });
+                    state.notify_config();
+                }
+                Err(e) => {
+                    reject(state, "config.keyboard", &e);
+                }
+            }
+        }
+
+        Request::ConfigInput {
+            device,
+            tap,
+            tap_drag,
+            natural_scroll,
+            left_handed,
+            middle_emulation,
+            disable_while_typing,
+            accel_speed,
+            accel_profile,
+            click_method,
+            scroll_method,
+            scroll_factor,
+            emulate_discrete_scroll,
+        } => {
+            // Validated as a whole before anything changes, like ConfigGaps:
+            // an unnamed device, an acceleration outside libinput's range, a
+            // profile or method nobody knows, or a zero scroll factor takes
+            // the whole message with it.
+            let Some(device) = device.filter(|name| !name.trim().is_empty()) else {
+                reject(state, "config.input", "no device named");
+                return;
+            };
+            if let Some(v) = accel_speed {
+                if !(v.is_finite() && (-1.0..=1.0).contains(&v)) {
+                    reject(state, "config.input", &format!("accel_speed {v}"));
+                    return;
+                }
+            }
+            if let Some(v) = accel_profile.as_deref() {
+                if !["adaptive", "flat"].contains(&v) {
+                    reject(state, "config.input", &format!("accel_profile {v:?}"));
+                    return;
+                }
+            }
+            if let Some(v) = click_method.as_deref() {
+                if !["button_areas", "clickfinger"].contains(&v) {
+                    reject(state, "config.input", &format!("click_method {v:?}"));
+                    return;
+                }
+            }
+            if let Some(v) = scroll_method.as_deref() {
+                if !["none", "two_finger", "edge", "on_button_down"].contains(&v) {
+                    reject(state, "config.input", &format!("scroll_method {v:?}"));
+                    return;
+                }
+            }
+            if let Some(v) = scroll_factor {
+                if !(v.is_finite() && v != 0.0) {
+                    reject(state, "config.input", &format!("scroll_factor {v}"));
+                    return;
+                }
+            }
+            let entry = state.input_config.entry(device.clone()).or_default();
+            if let Some(v) = tap {
+                entry.tap = Some(v);
+            }
+            if let Some(v) = tap_drag {
+                entry.tap_drag = Some(v);
+            }
+            if let Some(v) = natural_scroll {
+                entry.natural_scroll = Some(v);
+            }
+            if let Some(v) = left_handed {
+                entry.left_handed = Some(v);
+            }
+            if let Some(v) = middle_emulation {
+                entry.middle_emulation = Some(v);
+            }
+            if let Some(v) = disable_while_typing {
+                entry.disable_while_typing = Some(v);
+            }
+            if let Some(v) = accel_speed {
+                entry.accel_speed = Some(v);
+            }
+            if let Some(v) = accel_profile {
+                entry.accel_profile = Some(v);
+            }
+            if let Some(v) = click_method {
+                entry.click_method = Some(v);
+            }
+            if let Some(v) = scroll_method {
+                entry.scroll_method = Some(v);
+            }
+            if let Some(v) = scroll_factor {
+                entry.scroll_factor = Some(v);
+            }
+            if let Some(v) = emulate_discrete_scroll {
+                entry.emulate_discrete_scroll = Some(v);
+            }
+            // The devices already connected are reconfigured at once, as a
+            // reload does; a device that arrives later reads the same map.
+            state.apply_libinput_config();
+            state.config.input = Some(crate::state::input_event_map(&state.input_config));
+            state.notify_config();
+        }
+
+        Request::ConfigNotifications {
+            sound_file,
+            sound_name,
+            history,
+        } => {
+            // Nothing to validate beyond the type: a sound that resolves to
+            // nothing is silence, which is what absence already means.
+            let current = state
+                .config
+                .notifications
+                .get_or_insert_with(viewport_ipc::event::Notifications::default);
+            let mut changed = false;
+            if let Some(v) = sound_file {
+                current.sound_file = Some(v);
+                changed = true;
+            }
+            if let Some(v) = sound_name {
+                current.sound_name = Some(v);
+                changed = true;
+            }
+            if let Some(v) = history {
+                current.history = Some(v);
+                changed = true;
+            }
+            if changed {
+                // The sound player and the history are re-read off the
+                // merged copy, so lowering the history drops the oldest
+                // entries there and then, as a reload does.
+                let current = state.config.notifications.clone().unwrap_or_default();
+                state.apply_notifications_config(
+                    current.sound_file.as_deref(),
+                    current.sound_name.as_deref(),
+                    current.history,
+                );
+                state.notify_config();
+            }
+        }
+
+        Request::ConfigMagnify { step, max } => {
+            // Validated as a whole before anything changes, like ConfigGaps:
+            // a step or ceiling that is not a finite positive number takes
+            // the whole message with it. The effective values — clamped to
+            // the smallest worth having and the zoom ceiling — are what the
+            // Config copy carries, read back off the magnifier rather than
+            // remembered as they were asked for.
+            for (name, value) in [("step", step), ("max", max)] {
+                if let Some(v) = value {
+                    if !(v.is_finite() && v > 0.0) {
+                        reject(state, "config.magnify", &format!("{name} {v}"));
+                        return;
+                    }
+                }
+            }
+            if step.is_some() || max.is_some() {
+                let step = step.unwrap_or_else(|| state.magnifier.step());
+                let max = max.unwrap_or_else(|| state.magnifier.max());
+                if state.magnifier.configure(Some(step), Some(max)) {
+                    state.needs_render = true;
+                }
+                state.config.magnify = Some(viewport_ipc::event::Magnify {
+                    step: state.magnifier.step(),
+                    max: state.magnifier.max(),
+                });
+                state.notify_config();
+            }
+        }
+
         Request::ConfigSave => config_save(state),
 
         Request::Quit => state.shutdown(),
@@ -1900,6 +2210,12 @@ fn config_save(state: &mut ViewportState) {
             serde_json::to_value(&workspaces).ok()
         },
         opacity: state.config.opacity.clone(),
+        idle: state.config.idle.clone(),
+        lid: state.config.lid.clone(),
+        keyboard: state.config.keyboard.clone(),
+        input: state.config.input.clone(),
+        notifications: state.config.notifications.clone(),
+        magnify: state.config.magnify.clone(),
         outputs: Default::default(),
     };
 

@@ -374,6 +374,9 @@ impl ViewportState {
         if let Some(input) = file.input {
             self.input_config = input;
             self.apply_libinput_config();
+            // Carried for the same reason the cursor block is: the panel
+            // shows what it is, and `config.save` writes it back.
+            self.config.input = Some(input_event_map(&self.input_config));
         }
         if let Some(gestures) = file.gestures {
             let mut specs: Vec<_> = gestures.into_iter().collect();
@@ -485,31 +488,25 @@ impl ViewportState {
                     KdeDefaultMode::Client
                 });
         }
-        // What a notification with no sound hints of its own plays. Set on
-        // every load rather than only when it changed, and unconditionally
-        // rather than behind a `!= default()` guard: absence here means
-        // silence, so a reload that removed the key has to reach the server
-        // thread as `None` or the old sound outlives the configuration that
-        // asked for it.
-        self.notifications
-            .set_default_sound(crate::sound::Sound::from_config(
-                file.notifications.sound_file.as_deref(),
-                file.notifications.sound_name.as_deref(),
-            ));
-
-        // How much of a record to keep, on the same terms: applied on every
-        // load, so a reload that lowers it drops the oldest entries there and
-        // then, and one that sets zero empties the centre rather than leaving
-        // what is already in it behind a setting that says it keeps nothing.
-        let before = self.notification_history.entries().len();
-        self.notification_history.set_limit(
-            file.notifications
-                .history
-                .unwrap_or(crate::notification::DEFAULT_HISTORY),
+        // What a notification with no sound hints of its own plays, and how
+        // much of a record to keep: applied on every load rather than only
+        // when it changed, and unconditionally rather than behind a
+        // `!= default()` guard — absence here means silence, so a reload
+        // that removed the key has to reach the server thread as `None` or
+        // the old sound outlives the configuration that asked for it, and a
+        // history lowered or set to zero drops entries there and then.
+        self.apply_notifications_config(
+            file.notifications.sound_file.as_deref(),
+            file.notifications.sound_name.as_deref(),
+            file.notifications.history,
         );
-        if self.notification_history.entries().len() != before {
-            self.publish_notification_history();
-        }
+        // Carried for the same reason the cursor block is: the panel shows
+        // what it is, and `config.save` writes it back.
+        self.config.notifications = Some(viewport_ipc::event::Notifications {
+            sound_file: file.notifications.sound_file.clone(),
+            sound_name: file.notifications.sound_name.clone(),
+            history: file.notifications.history,
+        });
 
         // The tray, on unless the file turns it off. Applied on every load, so
         // a reload that flips it claims or releases the bus names then and
@@ -554,25 +551,34 @@ impl ViewportState {
                 lock_after: file.idle.lock_after,
                 blank_after: file.idle.blank_after,
                 lock_delay: file.idle.lock_delay,
-                lock_command: file.idle.lock_command,
+                lock_command: file.idle.lock_command.clone(),
             };
+            // Carried for the same reason the cursor block is: the panel
+            // shows what it is, and `config.save` writes it back.
+            self.config.idle = Some(viewport_ipc::event::Idle {
+                lock_after: file.idle.lock_after,
+                blank_after: file.idle.blank_after,
+                lock_delay: file.idle.lock_delay,
+                lock_command: file.idle.lock_command.clone(),
+            });
         }
-
-        // A reload can turn the idle policy on or off under a compositor that
-        // is not blanking on any deadline; refresh now rather than relying on
-        // the tick, which only does it while one of its triggers holds.
-        self.refresh_idle_inhibit();
 
         // The one answer to what locking means, worked out once per config
         // load rather than at each lock. Every path that locks — the idle
         // deadline, the `lock` binding, the lid, the power menu's Lock row —
         // goes through `lock_session`, which reads this and nothing else.
-        self.lock_mode =
-            crate::lock::Mode::from_command(self.idle_settings.lock_command.as_deref());
+        // A reload can turn the idle policy on or off under a compositor that
+        // is not blanking on any deadline, so this also re-arms the timers
+        // and refreshes the inhibit state now rather than relying on the
+        // tick, which only does it while one of its triggers holds.
+        self.apply_idle_settings();
 
-        self.lid = match file.lid.as_deref() {
+        let lid = match file.lid.as_deref() {
             Some(name) => match crate::power::LidAction::parse(name) {
-                Some(action) => action,
+                Some(action) => {
+                    self.config.lid = Some(name.to_owned());
+                    action
+                }
                 None => {
                     tracing::warn!(
                         "lid: {name:?} is not ignore, lock, blank or suspend; leaving as {:?}",
@@ -583,8 +589,7 @@ impl ViewportState {
             },
             None => crate::power::LidAction::default_for(self.idle_settings.lock_command.is_some()),
         };
-        self.power
-            .set_enabled(self.power.widget() || self.lid != crate::power::LidAction::Ignore);
+        self.apply_lid(lid);
 
         // The cursor theme, resolved against what is already loaded rather
         // than round-tripped through the process environment. Writing environ
@@ -612,6 +617,13 @@ impl ViewportState {
         {
             self.needs_render = true;
         }
+        // The effective values, clamped as `configure` clamps them: the
+        // panel shows what the magnifier will actually do, and
+        // `config.save` writes the same shape the config file reads.
+        self.config.magnify = Some(viewport_ipc::event::Magnify {
+            step: self.magnifier.step(),
+            max: self.magnifier.max(),
+        });
         if self.cursor_hide.set_after_ms(file.cursor.hide_after_ms) {
             // The deadline that hid it has just been taken away, so nothing
             // else would ever bring it back.
@@ -655,36 +667,17 @@ impl ViewportState {
         // recorded as last successfully applied is what tells those apart, and
         // the default is still skipped as it always was.
         let keyboard = &file.keyboard;
-        if keyboard != &crate::config::KeyboardConfig::default()
-            && keyboard != &self.keyboard_config
-        {
-            let (xkb, delay, rate) = keyboard_settings(keyboard);
-            match self.seat.add_keyboard(xkb, delay, rate) {
+        if keyboard != &crate::config::KeyboardConfig::default() {
+            match self.apply_keyboard(keyboard) {
                 Ok(_) => {
-                    // Written down for anything that has to be told what this
-                    // desk types in rather than asked to guess — which today
-                    // is a libei client, whose keymap is sent to it when its
-                    // keyboard device is made. Only on success: a layout that
-                    // was refused left the previous keymap in place, and
-                    // recording the refused one would send a remote client a
-                    // keymap the seat is not using.
-                    self.keyboard_config = keyboard.clone();
-                    tracing::info!(
-                        "keymap {:?}{}, repeat {rate}/s after {delay}ms",
-                        keyboard.layout.as_deref().unwrap_or("(default)"),
-                        keyboard
-                            .variant
-                            .as_deref()
-                            .map(|v| format!(" {v}"))
-                            .unwrap_or_default(),
-                    );
+                    // Carried for the same reason the cursor block is: the
+                    // panel shows what it is, and `config.save` writes it
+                    // back.
+                    self.config.keyboard = Some(keyboard_event(keyboard));
                 }
                 // Naming it matters: an unknown layout otherwise leaves the
                 // built-in one in place and looks like the config was ignored.
-                Err(e) => tracing::error!(
-                    "keymap {:?} was refused, keeping the current one: {e}",
-                    keyboard.layout.as_deref().unwrap_or("(default)")
-                ),
+                Err(e) => tracing::error!("{e}; keeping the current one"),
             }
         }
 
@@ -821,6 +814,93 @@ impl ViewportState {
         if let Err(err) = self.seat.add_keyboard(xkb, delay, rate) {
             tracing::warn!("the seat's keyboard could not be put back: {err}");
         }
+    }
+
+    /// Replace the seat's keyboard with what `keyboard` describes.
+    ///
+    /// Shared by the file's reload and by `config.keyboard`, which is why it
+    /// takes the candidate rather than reading `keyboard_config` and why it
+    /// answers instead of logging: a reload that names a keymap xkb refuses
+    /// warns and keeps the old one, where the same refusal over the socket
+    /// is an `error` against the message that asked for it.
+    ///
+    /// Answers whether the keymap was rebuilt. On success `keyboard_config`
+    /// is what was applied — a refused layout must not be recorded, or a
+    /// libei client would be sent a keymap the seat is not using.
+    pub fn apply_keyboard(&mut self, keyboard: &crate::config::KeyboardConfig) -> Result<bool, String> {
+        if keyboard == &self.keyboard_config {
+            return Ok(false);
+        }
+        let (xkb, delay, rate) = keyboard_settings(keyboard);
+        match self.seat.add_keyboard(xkb, delay, rate) {
+            Ok(_) => {
+                self.keyboard_config = keyboard.clone();
+                tracing::info!(
+                    "keymap {:?}{}, repeat {rate}/s after {delay}ms",
+                    keyboard.layout.as_deref().unwrap_or("(default)"),
+                    keyboard
+                        .variant
+                        .as_deref()
+                        .map(|v| format!(" {v}"))
+                        .unwrap_or_default(),
+                );
+                Ok(true)
+            }
+            Err(e) => Err(format!(
+                "keymap {:?} was refused: {e}",
+                keyboard.layout.as_deref().unwrap_or("(default)")
+            )),
+        }
+    }
+
+    /// What the notification sound and history are, from one pair of answers.
+    ///
+    /// Shared by the file's reload and by `config.notifications`: set the
+    /// server's default sound unconditionally (absence here means silence,
+    /// so a reload that removed the key has to reach the server thread as
+    /// `None` or the old sound outlives the configuration that asked for
+    /// it), and set the history limit, publishing if it dropped entries.
+    pub fn apply_notifications_config(
+        &mut self,
+        sound_file: Option<&str>,
+        sound_name: Option<&str>,
+        history: Option<usize>,
+    ) {
+        self.notifications
+            .set_default_sound(crate::sound::Sound::from_config(sound_file, sound_name));
+        let before = self.notification_history.entries().len();
+        self.notification_history
+            .set_limit(history.unwrap_or(crate::notification::DEFAULT_HISTORY));
+        if self.notification_history.entries().len() != before {
+            self.publish_notification_history();
+        }
+    }
+
+    /// The one answer to what locking means, re-read off the idle settings,
+    /// and the deadlines re-armed against them.
+    ///
+    /// Shared by the file's reload and by `config.idle`: the lock mode is
+    /// worked out once per change rather than at each lock, and the timers
+    /// start again from now — a deadline turned on or shortened while the
+    /// desk has been quiet would otherwise fire on the next tick off a
+    /// `since` nobody chose. Nothing is woken: a blanked desk stays blanked.
+    pub fn apply_idle_settings(&mut self) {
+        self.lock_mode =
+            crate::lock::Mode::from_command(self.idle_settings.lock_command.as_deref());
+        self.idle.rearm();
+        self.refresh_idle_inhibit();
+    }
+
+    /// What closing the lid does, and whether the power worker stays alive.
+    ///
+    /// Shared by the file's reload and by `config.lid`: a lid policy can
+    /// keep the worker alive with no battery widget on the bar, so turning
+    /// the policy off has to stop it and turning it on has to start it,
+    /// there and then.
+    pub fn apply_lid(&mut self, action: crate::power::LidAction) {
+        self.lid = action;
+        self.power
+            .set_enabled(self.power.widget() || action != crate::power::LidAction::Ignore);
     }
 
     /// Validate the numbered-workspace rules and put them in the form the
@@ -1045,4 +1125,46 @@ impl ViewportState {
             self.needs_render = true;
         }
     }
+}
+
+/// The `keyboard` block in the shape the `config` event carries it.
+fn keyboard_event(keyboard: &crate::config::KeyboardConfig) -> viewport_ipc::event::Keyboard {
+    viewport_ipc::event::Keyboard {
+        layout: keyboard.layout.clone(),
+        variant: keyboard.variant.clone(),
+        options: keyboard.options.clone(),
+        rules: keyboard.rules.clone(),
+        model: keyboard.model.clone(),
+        repeat_rate: keyboard.repeat_rate,
+        repeat_delay: keyboard.repeat_delay,
+    }
+}
+
+/// The per-device `input` entries in the shape the `config` event carries
+/// them, sorted by device so the panel and `config.save` see one order.
+pub(crate) fn input_event_map(
+    configs: &std::collections::HashMap<String, crate::config::InputConfig>,
+) -> std::collections::BTreeMap<String, viewport_ipc::event::Input> {
+    configs
+        .iter()
+        .map(|(device, config)| {
+            (
+                device.clone(),
+                viewport_ipc::event::Input {
+                    tap: config.tap,
+                    tap_drag: config.tap_drag,
+                    natural_scroll: config.natural_scroll,
+                    left_handed: config.left_handed,
+                    middle_emulation: config.middle_emulation,
+                    disable_while_typing: config.disable_while_typing,
+                    accel_speed: config.accel_speed,
+                    accel_profile: config.accel_profile.clone(),
+                    click_method: config.click_method.clone(),
+                    scroll_method: config.scroll_method.clone(),
+                    scroll_factor: config.scroll_factor,
+                    emulate_discrete_scroll: config.emulate_discrete_scroll,
+                },
+            )
+        })
+        .collect()
 }

@@ -232,6 +232,12 @@ Also accepted on the UNIX socket, which speaks the same message set.
 | `config.decorations` | optional `mode` (`client` hands the frame back to the application; anything else keeps it here) — set who draws the window frame at runtime, as `decorations` in the config file. The advertised default moves with it. The current value is in the `config` event's `decorations` |
 | `config.workspaces` | optional `rules` (the full replacement rule set, as JSON — the file's number-to-rule map; an empty object clears it) — replace the numbered-workspace rules at runtime, as `workspaces` in the config file. Validated the way the file is: one bad workspace degrades to the global inheritance rather than refusing the whole message. The current value is in the `config` event's `workspaces` |
 | `config.opacity` | optional `active`, optional `inactive`, optional `fullscreen` (a negative or non-finite value is refused) — set the compositor-side opacity multipliers at runtime, as the `opacity` block in the config file. Multiplied by the shell's per-window opacity at render time, so a frame is repainted. Only the fields given change. The current value is in the `config` event's `opacity` |
+| `config.idle` | optional `lock_after`, optional `blank_after`, optional `lock_delay` (a negative value is refused), optional `lock_command` (the empty string takes the external locker away) — set when the session locks and when the outputs go dark at runtime, as the `idle` block in the config file. The timers are re-armed: a deadline turned on while the desk has been quiet gets a full period rather than firing on the next tick, and nothing is woken. Only the fields given change. The current value is in the `config` event's `idle` |
+| `config.lid` | optional `action` (`ignore`, `lock`, `blank` or `suspend`; anything else is refused) — set what closing the laptop lid does at runtime, as `lid` in the config file. The power worker is started or stopped with it. The current value is in the `config` event's `lid` |
+| `config.keyboard` | optional `layout`, `variant`, `options`, `rules`, `model`, `repeat_rate`, `repeat_delay` (a repeat of zero or below is refused) — set the seat's keymap at runtime, as the `keyboard` block in the config file. The keyboard is replaced, which recompiles the keymap; one xkb refuses leaves the old one standing and the message rejected. The empty string takes a field back to the xkb default. Only the fields given change. The current value is in the `config` event's `keyboard` |
+| `config.input` | `device` (`vendor:product:name`, or `*` for all; an empty name is refused), and optional `tap`, `tap_drag`, `natural_scroll`, `left_handed`, `middle_emulation`, `disable_while_typing`, `accel_speed` (outside -1 to 1 is refused), `accel_profile` (`adaptive` or `flat`), `click_method` (`button_areas` or `clickfinger`), `scroll_method` (`none`, `two_finger`, `edge` or `on_button_down`), `scroll_factor` (zero is refused), `emulate_discrete_scroll` — set libinput settings for one device at runtime, as one entry of the `input` block in the config file. An entry that does not exist yet is created, and the connected devices are reconfigured at once. Only the fields given change. The current value is in the `config` event's `input` |
+| `config.notifications` | optional `sound_file`, optional `sound_name` (either blank is silence), optional `history` — set what a notification that names no sound of its own sounds like, and how many the centre keeps, at runtime, as the `notifications` block in the config file. The sound player is re-read and a lowered history drops the oldest entries there and then. Only the fields given change. The current value is in the `config` event's `notifications` |
+| `config.magnify` | optional `step`, optional `max` (a non-finite or non-positive value is refused) — set the screen magnifier's step and ceiling at runtime, as the `magnify` block in the config file. A lowered ceiling below where the screen is brings the picture back down to meet it; the event carries the clamped, effective values. Only the fields given change. The current value is in the `config` event's `magnify` |
 | `config.save` | — write the runtime settings down so they survive a restart. Answers with `config.saved`, or an `error`. See below |
 | `shell.command` | `command`, optional `args[]` — re-emitted as the `shell.command` *event*; see below |
 | `quit` | — |
@@ -383,7 +389,7 @@ twelve seconds in.
 
 ### Saving the runtime settings
 
-Every `config.*` setter above — `config.gaps` through `config.opacity` —
+Every `config.*` setter above — `config.gaps` through `config.magnify` —
 deliberately does not touch the disk: that is what makes them safe for a
 wallpaper cycler and for trying a value out. `config.save` is the other half:
 it writes what is currently set into `settings.json` beside the config file,
@@ -405,7 +411,8 @@ What is written: `dark_mode`, `wallpaper`, `wallpaper_mode`, `gaps`, `border`,
 `cursor`, `motion`, `group`, `clock`, `bar`, `bar_blur`, `bar_widgets`,
 `bar_items`, `logo`, `tutorial`, `tiling_mode`, `layout`, `layout_extensions`,
 `focus_crosses_outputs`, `osk`, `tray`, `clipboard_history`, `icon_theme`,
-`theme`, `rules`, `layer_rules`, `decorations`, `workspaces`, `opacity`, and
+`theme`, `rules`, `layer_rules`, `decorations`, `workspaces`, `opacity`,
+`idle`, `lid`, `keyboard`, `input`, `notifications`, `magnify`, and
 an `outputs` entry for each monitor that an `output.configure` has named
 this session. Only those monitors — saving every head would freeze whatever
 mode the backend happened to pick for a screen nobody has an opinion about.

@@ -150,15 +150,22 @@ came with the ride and is written down where it happens (`config.save` in
 `docs/ipc.md`): an `ai` bar widget's credential env names do not cross back
 into the overlay, because only the provider reaches the shell.
 
-**Input, idle and devices — a setter plus new machinery.** `idle`
-(`lock_after`, `blank_after`, `lock_delay`, `lock_command`) and `lid` need
-the idle timers re-armed, not just a value stored; `keyboard` (layout,
-variant, options, model, repeat rate and delay) needs the keymap rebuilt;
-per-device `input` needs the message to name the device, the way
-`input_config_for` already names it; `notifications` (`sound_file`,
-`sound_name`, `history`) needs the sound player and the history re-read;
-and `magnify` (step, max) needs lowering the ceiling to repaint, as a
-reload already does.
+The second of the three groups below — "a setter plus new machinery" — has
+come off whole too: `config.idle` and `config.lid`, `config.keyboard`,
+per-device `config.input`, `config.notifications` and `config.magnify`. Each
+is a request variant, an apply arm, a `Config` field and an overlay field,
+and each is documented in `docs/ipc.md` and beside its subject in
+`docs/configuration.md`. What the machinery cost: `config.idle` re-arms the
+timers (`Idle::rearm`) rather than just storing values, so a deadline turned
+on while the desk has been quiet gets a full period and nothing is woken;
+`config.keyboard` replaces the seat's keyboard through the same
+`apply_keyboard` the file's reload uses, and a keymap xkb refuses is
+rejected over the socket rather than warned about; `config.input` names its
+device the way `input_config_for` does and reconfigures the connected
+devices at once; `config.notifications` re-reads the sound player and the
+history through the same `apply_notifications_config` a reload uses;
+`config.magnify` reads its effective, clamped values back off the
+magnifier, and lowering the ceiling repaints as a reload does.
 
 **Startup-only by design.** `url`, `url_span`, `shell_backend` and its
 fallback, `env`, `gpu`, `pixel_format`, `cross_gpu` and `startup` are read

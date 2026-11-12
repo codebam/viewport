@@ -121,6 +121,21 @@ const STRING_FIELDS: &[&str] = &[
     // An AI provider name, which is a word and must not be read as anything
     // else a word could parse as.
     "provider",
+    // The keyboard block's xkb names, the lock command, the per-device
+    // input's device key and libinput enums, and the notification sound
+    // hints — all words, or in the sound file's case a path.
+    "layout",
+    "variant",
+    "options",
+    "rules",
+    "model",
+    "lock_command",
+    "device",
+    "accel_profile",
+    "click_method",
+    "scroll_method",
+    "sound_file",
+    "sound_name",
 ];
 
 struct Type {
@@ -704,6 +719,64 @@ const TYPES: &[Type] = &[
         fields: &["active", "inactive", "fullscreen"],
         strings: &[],
         hint: "[--active N --inactive N --fullscreen N]   (set the compositor-side opacity multipliers; each is optional)",
+    },
+    Type {
+        name: "config.idle",
+        fields: &["lock_after", "blank_after", "lock_delay", "lock_command"],
+        strings: &[],
+        hint: "[--lock_after SECONDS --blank_after SECONDS --lock_delay SECONDS --lock_command COMMAND]   (set when the session locks and the outputs go dark; each is optional)",
+    },
+    Type {
+        name: "config.lid",
+        fields: &["action"],
+        strings: &[],
+        hint: "--action ignore|lock|blank|suspend   (set what closing the laptop lid does)",
+    },
+    Type {
+        name: "config.keyboard",
+        fields: &[
+            "layout",
+            "variant",
+            "options",
+            "rules",
+            "model",
+            "repeat_rate",
+            "repeat_delay",
+        ],
+        strings: &[],
+        hint: "[--layout NAME --variant NAME --options OPTS --rules NAME --model NAME --repeat_rate N --repeat_delay N]   (set the seat's keymap; each is optional)",
+    },
+    Type {
+        name: "config.input",
+        fields: &[
+            "device",
+            "tap",
+            "tap_drag",
+            "natural_scroll",
+            "left_handed",
+            "middle_emulation",
+            "disable_while_typing",
+            "accel_speed",
+            "accel_profile",
+            "click_method",
+            "scroll_method",
+            "scroll_factor",
+            "emulate_discrete_scroll",
+        ],
+        strings: &[],
+        hint: "--device vendor:product:name [--tap BOOL --natural_scroll BOOL --accel_speed N --scroll_factor N]   (set libinput settings for one device)",
+    },
+    Type {
+        name: "config.notifications",
+        fields: &["sound_file", "sound_name", "history"],
+        strings: &[],
+        hint: "[--sound_file FILE --sound_name NAME --history N]   (set the notification sound and how many the centre keeps; each is optional)",
+    },
+    Type {
+        name: "config.magnify",
+        fields: &["step", "max"],
+        strings: &[],
+        hint: "[--step N --max N]   (set the screen magnifier's step and ceiling; each is optional)",
     },
     Type {
         name: "config.save",
@@ -1815,6 +1888,85 @@ mod tests {
         assert_eq!(
             value(&["-t", "config.opacity", "--active", "0.9"]),
             serde_json::json!({"type": "config.opacity", "active": 0.9})
+        );
+    }
+
+    /// The setters with machinery behind them build their fields like
+    /// everything else — and their words stay words: a layout, a device key
+    /// or a lock command that happens to parse as JSON must still go on
+    /// the wire as a string.
+    #[test]
+    fn config_machinery_setters_build_their_fields() {
+        assert_eq!(
+            value(&[
+                "-t",
+                "config.idle",
+                "--lock_after",
+                "600",
+                "--lock_command",
+                "swaylock",
+            ]),
+            serde_json::json!({
+                "type": "config.idle",
+                "lock_after": 600,
+                "lock_command": "swaylock",
+            })
+        );
+        assert_eq!(
+            value(&["-t", "config.lid", "--action", "lock"]),
+            serde_json::json!({"type": "config.lid", "action": "lock"})
+        );
+        assert_eq!(
+            value(&[
+                "-t",
+                "config.keyboard",
+                "--layout",
+                "de",
+                "--repeat_rate",
+                "30",
+            ]),
+            serde_json::json!({
+                "type": "config.keyboard",
+                "layout": "de",
+                "repeat_rate": 30,
+            })
+        );
+        assert_eq!(
+            value(&[
+                "-t",
+                "config.input",
+                "--device",
+                "046d:c52b:USB Receiver",
+                "--tap",
+                "true",
+                "--accel_profile",
+                "adaptive",
+            ]),
+            serde_json::json!({
+                "type": "config.input",
+                "device": "046d:c52b:USB Receiver",
+                "tap": true,
+                "accel_profile": "adaptive",
+            })
+        );
+        assert_eq!(
+            value(&[
+                "-t",
+                "config.notifications",
+                "--sound_file",
+                "/sounds/notify.ogg",
+                "--history",
+                "5",
+            ]),
+            serde_json::json!({
+                "type": "config.notifications",
+                "sound_file": "/sounds/notify.ogg",
+                "history": 5,
+            })
+        );
+        assert_eq!(
+            value(&["-t", "config.magnify", "--step", "0.25"]),
+            serde_json::json!({"type": "config.magnify", "step": 0.25})
         );
     }
 
