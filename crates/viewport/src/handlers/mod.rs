@@ -1344,6 +1344,16 @@ impl smithay::wayland::pointer_warp::PointerWarpHandler for ViewportState {
         let Some(pointer) = self.seat.get_pointer() else {
             return;
         };
+        // The enter serial this request must name. The protocol has the
+        // compositor reject a warp on a serial that does not say "this
+        // pointer is over me"; without the check a hovered client could move
+        // the pointer at any moment, including mid-drag somewhere else.
+        // `None` before the pointer has entered anything, which no serial
+        // equals.
+        if Some(serial) != pointer.last_enter() {
+            tracing::debug!("a pointer warp with a stale enter serial is refused");
+            return;
+        }
         let at = pointer.current_location();
         let Some((under, origin)) = self.surface_under(at) else {
             return;
@@ -1351,16 +1361,30 @@ impl smithay::wayland::pointer_warp::PointerWarpHandler for ViewportState {
         if under != surface {
             return;
         }
+        // Not while locked: the lock screen is the only thing the pointer
+        // may reach, and a client asking to warp it is asking to leave.
+        if self.locked {
+            return;
+        }
 
-        // The client's position is relative to its own surface.
-        let to = at - origin + position;
+        // The client's position is a point in its own surface, at `origin` in
+        // the layout. Where the surface ends is the size it is drawn at,
+        // which is what the renderer crops it to.
+        let size = self
+            .views
+            .find_by_surface(&surface)
+            .map(|view| smithay::utils::Size::from((view.box_.width, view.box_.height)));
+        let Some(to) = warp_target(origin, position, size) else {
+            tracing::debug!("a pointer warp outside its surface is refused");
+            return;
+        };
         let under = self.surface_under(to);
         pointer.motion(
             self,
             under,
             &smithay::input::pointer::MotionEvent {
                 location: to,
-                serial,
+                serial: smithay::utils::SERIAL_COUNTER.next_serial(),
                 time: smithay::backend::input::InputTime::now(),
             },
         );
@@ -1818,6 +1842,85 @@ impl smithay::wayland::drm_lease::DrmLeaseHandler for ViewportState {
         if let Some(udev) = self.udev.as_mut() {
             udev.leases.retain(|lease| lease.id() != lease_id);
         }
+    }
+}
+
+/// Where a `wp_pointer_warp_v1.warp_pointer` lands.
+///
+/// The client's `position` is a point *in its own surface*, and the surface
+/// sits at `origin` in the layout — the same arithmetic
+/// [`ViewportState::hint_target`] does for a lock hint. `None` for a position
+/// that is not inside the surface: the protocol has the compositor reject
+/// those rather than teleport the pointer wherever the arithmetic lands.
+fn warp_target(
+    origin: smithay::utils::Point<f64, smithay::utils::Logical>,
+    position: smithay::utils::Point<f64, smithay::utils::Logical>,
+    surface_size: Option<smithay::utils::Size<i32, smithay::utils::Logical>>,
+) -> Option<smithay::utils::Point<f64, smithay::utils::Logical>> {
+    let to = origin + position;
+    if let Some(size) = surface_size {
+        let inside = position.x >= 0.0
+            && position.y >= 0.0
+            && position.x < f64::from(size.w)
+            && position.y < f64::from(size.h);
+        if !inside {
+            return None;
+        }
+    }
+    Some(to)
+}
+
+#[cfg(test)]
+mod warp_tests {
+    use super::*;
+    use smithay::utils::{Point, Size};
+
+    /// The client's position is a point in its own surface, and the surface
+    /// sits at `origin`. Adding the other way — taking the pointer's current
+    /// position, subtracting the origin to get back to surface-local, and
+    /// then adding the target *again* — treated `position` as a delta and
+    /// sent a warp on a second monitor to the first one.
+    #[test]
+    fn a_warp_lands_where_the_surface_names() {
+        // A window at (1920, 0): the cursor is over it at (2000, 100), the
+        // client asks for its own (400, 300).
+        let origin = Point::from((1920.0, 0.0));
+        assert_eq!(
+            warp_target(origin, Point::from((400.0, 300.0)), None),
+            Some(Point::from((2320.0, 300.0)))
+        );
+        // And the trivial case: a window at the origin still names global
+        // coordinates through its own surface.
+        assert_eq!(
+            warp_target(Point::from((0.0, 0.0)), Point::from((50.0, 50.0)), None),
+            Some(Point::from((50.0, 50.0)))
+        );
+    }
+
+    /// A position outside the surface is refused: the protocol has the
+    /// compositor reject it, and a client that could name a point on
+    /// another window could move the pointer onto whatever it liked.
+    #[test]
+    fn a_position_outside_the_surface_is_refused() {
+        let origin = Point::from((1920.0, 0.0));
+        let size = Size::from((800, 600));
+        assert_eq!(
+            warp_target(origin, Point::from((850.0, 300.0)), Some(size)),
+            None,
+            "past the right edge"
+        );
+        assert_eq!(
+            warp_target(origin, Point::from((-10.0, 0.0)), Some(size)),
+            None,
+            "before the left edge"
+        );
+        // Without a size to check against — a client with no committed
+        // geometry yet — the target stands: the caller's own surface check
+        // is the only gate left.
+        assert_eq!(
+            warp_target(origin, Point::from((400.0, 300.0)), None),
+            Some(Point::from((2320.0, 300.0)))
+        );
     }
 }
 
