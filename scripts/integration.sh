@@ -125,6 +125,8 @@ run capture-private-scrolling "$root/tests/capture.test.sh" \
 	"$VIEWPORT" "$work/paint-client" "$work/capture-client" scrolling private
 run capture-popup-effect "$root/tests/capture.test.sh" \
 	"$VIEWPORT" "$work/paint-client" "$work/capture-client" tiling public popup
+run see-through "$root/tests/see-through.test.sh" \
+	"$VIEWPORT" "$work/paint-client" "$work/capture-client"
 run background-effect "$root/tests/background-effect.test.sh" \
 	"$VIEWPORT" "$work/background-effect-client" "$work/capture-client"
 run color-representation "$root/tests/color-representation.test.sh" \

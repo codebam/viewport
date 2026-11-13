@@ -140,6 +140,16 @@ pub struct View {
     /// retried for ever.
     pub redraw_asks: u8,
 
+    /// Whether the shell has already been told that this window's crop does
+    /// not meet it.
+    ///
+    /// The warning is per window rather than per message because the shell
+    /// sends `view.layout` on every animation frame: a crop that disagrees
+    /// with the rectangle would otherwise fill the log at the refresh rate
+    /// while the window is being dragged, which is the one time somebody is
+    /// trying to read it.
+    pub clip_mismatch_warned: bool,
+
     /// When this window was first seen drawn at zero opacity while it was
     /// visible and placed.
     ///
@@ -702,6 +712,7 @@ impl Views {
             drawn_at: None,
             redraw_asks: 0,
             zero_opacity_at: None,
+            clip_mismatch_warned: false,
             box_: Box::new(0, 0, 0, 0),
             visible: true,
             minimized: false,

@@ -168,6 +168,18 @@ hole is, and all three are worth a bug report with the line in it. None should
 cost more than the grace period: the healing happens on the next frame after
 it, not when something else forces a redraw.
 
+The crop line is said once per window rather than once per message, because the
+shell re-sends `view.layout` on every animation frame and a window being
+dragged would otherwise fill the log; a later layout that agrees arms it again,
+so a recurrence is still said out loud.
+
+All three are reproduced by `tests/see-through.test.sh` on the headless
+backend — a painted window, each mechanism broken through the control socket,
+and the output pixels read back. Against the tree before the healing every one
+of them shows the bug (the sampled pixel goes to the background and nothing is
+logged); against this one they heal and say which was which. Run it with the
+other integration tests when anything touches this path.
+
 A window that stays missing with none of those lines in the log is a different
 fault: frames are not carrying it at all, rather than carrying it invisibly.
 That is what the frame watchdog reports — `still not carried by any submitted

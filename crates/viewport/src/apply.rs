@@ -2366,6 +2366,7 @@ fn usable_clip(
     id: u32,
     clip: Option<viewport_ipc::geometry::Box>,
     box_: viewport_ipc::geometry::Box,
+    warn: bool,
 ) -> Option<viewport_ipc::geometry::Box> {
     let clip = clip?;
     /* A crop that touches the window is the crop the shell meant. Neither an
@@ -2388,18 +2389,20 @@ fn usable_clip(
     if meets {
         return Some(clip);
     }
-    tracing::warn!(
-        "view {id}: the shell clipped it to a rectangle that does not meet it \
-         ({}x{} at {:+}{:+} against {}x{} at {:+}{:+}); drawing it uncropped",
-        clip.width,
-        clip.height,
-        clip.x,
-        clip.y,
-        box_.width,
-        box_.height,
-        box_.x,
-        box_.y
-    );
+    if warn {
+        tracing::warn!(
+            "view {id}: the shell clipped it to a rectangle that does not meet it \
+             ({}x{} at {:+}{:+} against {}x{} at {:+}{:+}); drawing it uncropped",
+            clip.width,
+            clip.height,
+            clip.x,
+            clip.y,
+            box_.width,
+            box_.height,
+            box_.x,
+            box_.y
+        );
+    }
     None
 }
 
@@ -2453,7 +2456,16 @@ fn view_layout(state: &mut ViewportState, mut layout: viewport_ipc::request::Vie
     // hole it drew against the area reserved for windows, so an empty
     // intersection means that area and the rectangle disagree, and cropping to
     // it is the one answer that cannot be right.
-    resolved.clip = usable_clip(layout.id, resolved.clip, resolved.box_);
+    let asked_clip = resolved.clip;
+    let warn = !state
+        .views
+        .get(layout.id)
+        .is_some_and(|view| view.clip_mismatch_warned);
+    resolved.clip = usable_clip(layout.id, asked_clip, resolved.box_, warn);
+    // Remembered so a shell that keeps sending the same disagreement does not
+    // fill the log while the window is being dragged; a later layout that
+    // agrees again clears it, so a recurrence is still said out loud.
+    let mismatch = asked_clip.is_some() && resolved.clip.is_none();
 
     // Where the window ended up, in the layout's coordinates, and where the
     // page asked for it. The first question whenever a window is on the wrong
@@ -2509,6 +2521,7 @@ fn view_layout(state: &mut ViewportState, mut layout: viewport_ipc::request::Vie
     // cut a corner off the client that the frame around it no longer has.
     view.square = layout.square;
     view.placed = true;
+    view.clip_mismatch_warned = mismatch;
     // A rectangle un-hides a window, as in C (`src/xdg_shell.c:832`).
     //
     // The shell hides a window by sending `view.visible false` — that is what
@@ -3265,13 +3278,14 @@ mod tests {
     fn a_crop_that_does_not_meet_the_window_is_not_a_crop() {
         let window = viewport_ipc::geometry::Box::new(10, 20, 300, 200);
         let full = viewport_ipc::geometry::Box::new(0, 0, 1920, 1080);
-        assert_eq!(super::usable_clip(1, Some(full), window), Some(full));
+        assert_eq!(super::usable_clip(1, Some(full), window, true), Some(full));
         // Empty in either direction: nothing to draw through.
         assert_eq!(
             super::usable_clip(
                 1,
                 Some(viewport_ipc::geometry::Box::new(10, 20, 0, 200)),
-                window
+                window,
+                true
             ),
             None
         );
@@ -3279,7 +3293,8 @@ mod tests {
             super::usable_clip(
                 1,
                 Some(viewport_ipc::geometry::Box::new(10, 20, 300, 0)),
-                window
+                window,
+                true
             ),
             None
         );
@@ -3289,7 +3304,8 @@ mod tests {
             super::usable_clip(
                 1,
                 Some(viewport_ipc::geometry::Box::new(-500, -500, 300, 200)),
-                window
+                window,
+                true
             ),
             None
         );
@@ -3298,15 +3314,16 @@ mod tests {
             super::usable_clip(
                 1,
                 Some(viewport_ipc::geometry::Box::new(310, 20, 300, 200)),
-                window
+                window,
+                true
             ),
             None
         );
         // Half over the edge of its own column is the case the crop exists
         // for, and it is kept.
         let half = viewport_ipc::geometry::Box::new(-150, 0, 300, 200);
-        assert_eq!(super::usable_clip(1, Some(half), window), Some(half));
-        assert_eq!(super::usable_clip(1, None, window), None);
+        assert_eq!(super::usable_clip(1, Some(half), window, true), Some(half));
+        assert_eq!(super::usable_clip(1, None, window, true), None);
     }
 
     #[test]
