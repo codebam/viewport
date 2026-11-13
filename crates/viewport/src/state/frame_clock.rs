@@ -65,6 +65,21 @@ impl ViewportState {
         }
     }
 
+    /// Half of one output's own frame period.
+    ///
+    /// `frame_interval` is the *fastest* output's, and standing it in here
+    /// paced a 60 Hz screen's invitations at 240 Hz once the walk below
+    /// noticed nothing — the throttle threw away three invitations in four,
+    /// which is the cost this half-period scheme exists to keep off the
+    /// ordinary case. An output with no mode keeps the desk's interval, which
+    /// is what a headless output has.
+    fn frame_interval_of(&self, output: &Output) -> std::time::Duration {
+        output
+            .current_mode()
+            .map(|mode| std::time::Duration::from_nanos(1_000_000_000_000 / mode.refresh.max(1) as u64))
+            .unwrap_or_else(|| self.frame_interval())
+    }
+
     /// Invite the surfaces on an output to draw their next frame.
     ///
     /// Split out of the render pass because a frame callback is not a thing
@@ -91,7 +106,7 @@ impl ViewportState {
         // Half a period leaves the throttle doing its actual job — an
         // occluded surface still cannot be invited faster than twice a frame —
         // without standing exactly where the jitter falls.
-        let throttle = Some(self.frame_interval() / 2);
+        let throttle = Some(self.frame_interval_of(output) / 2);
 
         // Who was actually waiting to be told. Counted before the send,
         // because the send is what empties the queue. See `FrameLog::wanted`.
@@ -103,7 +118,7 @@ impl ViewportState {
         {
             use smithay::wayland::compositor::SurfaceAttributes;
             let mut waiting = 0u32;
-            for window in self.space.elements() {
+            for window in self.space.elements_for_output(output) {
                 let mut asked = false;
                 window.with_surfaces(|_, states| {
                     let queued = states
@@ -122,7 +137,12 @@ impl ViewportState {
                 log.wanted += waiting;
             }
         }
-        for window in self.space.elements() {
+        // This output's windows, at this output's pace. `space.elements()`
+        // walked every window on the desktop per vblank per output — the same
+        // over-walk the render paths had and shed — and a 240 Hz monitor
+        // beside a 60 Hz one invited the 60 Hz clients four times as often as
+        // their screen could show.
+        for window in self.space.elements_for_output(output) {
             window.send_frame(output, at, throttle, |_, _| Some(output.clone()));
         }
         for layer in smithay::desktop::layer_map_for_output(output).layers() {
@@ -405,5 +425,61 @@ impl ViewportState {
                 toplevel.send_pending_configure();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod frame_callback_walk_tests {
+    /// The invitation walk covers this output's windows, at this output's
+    /// pace.
+    ///
+    /// `send_frame_callbacks` used to iterate `self.space.elements()` — every
+    /// window on the desktop — with a primary-scanout answer of
+    /// `Some(output.clone())` for every surface, once per vblank of *this*
+    /// output. On a 240 Hz monitor beside a 60 Hz one, the 60 Hz clients were
+    /// invited at 240 Hz, rendered at 240, and had three frames in four
+    /// discarded. The same bug in the render walks had already been fixed and
+    /// pinned (`every_udev_lock_walk_keeps_the_live_ones`' neighbour,
+    /// `the_per_frame_walks_cover_only_their_own_output`); this is that
+    /// neighbour's walk.
+    ///
+    /// A `ViewportState` cannot be built in a unit test, so the invariant is
+    /// checked against the source, the way the udev walks are.
+    #[test]
+    fn the_invitation_walk_covers_only_the_output_being_drawn() {
+        let source = include_str!("frame_clock.rs");
+        let source = source.split("#[cfg(test)]").next().unwrap_or(source);
+        let start = source
+            .find("pub fn send_frame_callbacks(")
+            .expect("send_frame_callbacks");
+        let rest = &source[start..];
+        let end = rest
+            .find("/// Keep inviting clients to draw")
+            .expect("the end of send_frame_callbacks");
+        let body = &rest[..end];
+
+        assert!(
+            body.contains("self.space.elements_for_output(output)"),
+            "windows must be asked per output, not across the desktop"
+        );
+        assert!(
+            !body.contains("self.space.elements()"),
+            "the invitation walk must not iterate every window for every monitor"
+        );
+        // The throttle is the output's own period, not the fastest monitor's:
+        // `frame_interval` is defined as the fastest output's, so asking it
+        // here would pace a 60 Hz screen at 240 Hz even with the walk fixed.
+        assert!(
+            source.contains("fn frame_interval_of("),
+            "the throttle must come from the output being drawn"
+        );
+        assert!(
+            body.contains("self.frame_interval_of(output)"),
+            "the invitation walk must ask the output being drawn for its own interval"
+        );
+        assert!(
+            !body.contains("Some(self.frame_interval()"),
+            "the fastest monitor's interval must not stand in for this output's"
+        );
     }
 }
