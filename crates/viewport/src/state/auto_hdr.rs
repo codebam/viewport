@@ -46,7 +46,7 @@ impl ViewportState {
                             .map(|surface| viewport_vulkan::color::description_for(&surface))
                     };
                     tracing::debug!(
-                        "auto-hdr: view {} is fullscreen on {name} but its content is {description:?}",
+                        "auto-hdr: view {} is fullscreen on {name} but no surface of it says HDR (toplevel {description:?})",
                         view.id
                     );
                     continue;
@@ -124,7 +124,7 @@ impl ViewportState {
         let Some(surface) = view.window.wl_surface() else {
             return false;
         };
-        crate::color_management::is_hdr(viewport_vulkan::color::description_for(&surface))
+        shows_hdr(&surface)
     }
 
     /// Whether a `no_auto_hdr` rule claims this window.
@@ -140,4 +140,32 @@ impl ViewportState {
             view.tag.as_deref(),
         ) == Some(true)
     }
+}
+
+/// Whether anything drawn for this window says its content is HDR.
+///
+/// The description belongs to the surface whose buffer carries the content, and
+/// that is not always the toplevel: Wine's Wayland driver puts a Vulkan
+/// swapchain — DXVK's — on a subsurface of the window, so the toplevel goes on
+/// saying sRGB while the HDR10 buffer that fills the screen is a child. Reading
+/// only the toplevel therefore saw SDR for every game under Proton, which is
+/// exactly what a fullscreen game asking for HDR looked like. Any surface in
+/// the tree declaring an HDR transfer function is what the window shows.
+fn shows_hdr(surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface) -> bool {
+    use smithay::wayland::compositor::{TraversalAction, with_surface_tree_downward};
+
+    let mut hdr = false;
+    with_surface_tree_downward(
+        surface,
+        (),
+        |_, _, _| TraversalAction::DoChildren(()),
+        |_, states, _| {
+            if !hdr && crate::color_management::is_hdr(viewport_vulkan::color::description_in(states))
+            {
+                hdr = true;
+            }
+        },
+        |_, _, _| true,
+    );
+    hdr
 }

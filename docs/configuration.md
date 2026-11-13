@@ -3007,7 +3007,10 @@ already in HDR for its own reasons.
 
 What counts as HDR is the buffer's declared transfer function: PQ or HLG, which
 a client states through `wp_color_management_v1` or one of the Windows
-descriptions the compositor offers. Wide primaries with an sRGB curve are
+descriptions the compositor offers. It is read from the whole surface tree, not
+just the toplevel, because that is where a client's real content can be: Wine's
+Wayland driver puts a Vulkan swapchain on a subsurface, so a game under Proton
+declares its HDR10 buffer on a child while its window surface stays sRGB. Wide primaries with an sRGB curve are
 wide-gamut SDR and do not relight the screen. The check runs when a window's
 fullscreen state changes, when a surface's declared description changes — a
 game that enters fullscreen first and enables HDR from its options afterwards

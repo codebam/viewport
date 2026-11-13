@@ -14,6 +14,13 @@ to summarise rather than to duplicate.
 ## [0.6.0] - 2026-11-12
 
 ### Fixed
+- Automatic HDR reads the declared description from a window's whole surface
+  tree, not only its toplevel. Wine's Wayland driver puts a D3D swapchain on a
+  subsurface — the one DXVK presents through — so a fullscreen Proton game's
+  HDR10 buffer was declared on a child surface while its toplevel stayed sRGB,
+  and the switch never happened. That is the missing half of the report from
+  Resident Evil 2: the game declares `windows_bt2100` (the log shows a PQ,
+  BT.2020 description arriving) and the screen still never lit.
 - Automatic HDR now notices a fullscreen window that starts declaring HDR
   while it is already fullscreen, and counts HLG as HDR content the way the
   documentation always said it did. The switch used to be re-evaluated only on
