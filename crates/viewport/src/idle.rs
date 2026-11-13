@@ -154,6 +154,32 @@ impl Idle {
         self.pending_lock = true;
     }
 
+    /// What a bus peer's "somebody is there" does to the idle state.
+    ///
+    /// `org.freedesktop.ScreenSaver.SimulateUserActivity` reaches
+    /// [`Self::activity`] with [`Activity::Deliberate`] today, and
+    /// `activity`'s contract is the whole of it: it clears
+    /// `pending_lock`. So any background process on the session bus —
+    /// anything that can open a D-Bus connection — could abort a lock delay
+    /// the user started by hand or that the idle deadline armed, by calling
+    /// the one method whose entire purpose is "pretend there was input".
+    /// A lock countdown is not an idle deadline: it is a thing the user
+    /// asked to happen, and the person walking away is the one who must be
+    /// there to cancel it.
+    ///
+    /// This is the deliberate-act half alone: the idle clock restarts and a
+    /// deadline-blanked screen wakes, because "somebody is there" means the
+    /// same thing as somebody being there — but a lock delay that is already
+    /// counting stays counting, and the tick that ends it still locks.
+    pub fn simulate_activity(&mut self) -> bool {
+        let was_blanked = self.blanked;
+        self.since = Instant::now();
+        self.locked = false;
+        self.blanked = false;
+        self.awaiting_release = false;
+        was_blanked
+    }
+
     /// Whether a lock is standing black inside its delay.
     pub fn lock_pending(&self) -> bool {
         self.pending_lock
@@ -510,5 +536,70 @@ mod tests {
             "the deadline's blank made the user wait"
         );
         assert!(!idle.blanked());
+    }
+
+    /// A bus peer's simulated activity does not cancel a lock delay.
+    ///
+    /// The lock delay was armed and the screens stood black for it; a
+    /// background process calling `SimulateUserActivity` used to clear the
+    /// pending lock through `activity`'s contract, and the session never
+    /// locked. The countdown survives the call and the tick still locks.
+    #[test]
+    fn a_simulated_activity_does_not_cancel_a_lock_delay() {
+        let mut idle = Idle::default();
+        idle.arm_lock();
+        idle.force_blank();
+
+        // The lock stays pending; the blank is a wake, which is the part a
+        // genuine presence means.
+        assert!(idle.simulate_activity(), "the black screen wakes");
+        assert!(!idle.blanked());
+        assert!(idle.lock_pending(), "the countdown is still running");
+
+        // And an ordinary deliberate act still cancels, which is the path
+        // the user cancelling at the black screen takes.
+        assert!(idle.activity(Activity::Deliberate), "waking the blank");
+        assert!(!idle.lock_pending(), "the user cancelled it");
+    }
+
+    /// And a simulated activity is not the release-swallowing path: it wakes
+    /// a forced blank the same way a chord's release would not, because the
+    /// program asked for a person.
+    #[test]
+    fn a_simulated_activity_wakes_a_forced_blank() {
+        let mut idle = Idle::default();
+        idle.force_blank();
+        assert!(idle.simulate_activity(), "somebody says they are there");
+        assert!(!idle.blanked());
+        // Nothing pending to distinguish this from an ordinary wake.
+        assert!(!idle.activity(Activity::Deliberate), "already awake");
+    }
+
+    /// The bus path uses the simulated half, not the whole contract.
+    ///
+    /// Checked against the source because the wire path needs a live loop:
+    /// `SimulateUserActivity` reached `activity(Deliberate)`, whose contract
+    /// includes clearing `pending_lock` — and any process on the session bus
+    /// could abort a lock delay the user started by hand with one call.
+    #[test]
+    fn the_screensaver_bus_path_does_not_cancel_a_lock() {
+        let source = include_str!("main.rs");
+        let source = source.split("#[cfg(test)]").next().unwrap_or(source);
+        let start = source
+            .find("let Event::Msg(crate::inhibit::Message::Activity) = event")
+            .expect("the screensaver activity handler");
+        let end = start
+            + source[start..]
+                .find("inserting the inhibit source")
+                .expect("the end of the handler");
+        let body = &source[start..end];
+        assert!(
+            body.contains("state.idle.simulate_activity()"),
+            "SimulateUserActivity must not cancel a pending lock"
+        );
+        assert!(
+            !body.contains("idle.activity("),
+            "the bus path must not take activity's whole contract"
+        );
     }
 }

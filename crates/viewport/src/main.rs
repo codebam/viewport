@@ -1116,7 +1116,16 @@ fn run() -> Result<()> {
                 // The same path a keypress takes, including bringing blanked
                 // screens back: a program saying somebody is there means the
                 // same thing as somebody being there.
-                if state.idle.activity(crate::idle::Activity::Deliberate) {
+                //
+                // Not `activity`'s whole contract, though. That clears
+                // `pending_lock`, and this call is any process on the bus —
+                // a loop backgrounded by a script could abort a lock delay
+                // the user started by hand with one `SimulateUserActivity`.
+                // `simulate_activity` is the same wake without the cancel: a
+                // lock countdown is a thing the user asked for, and the
+                // person walking away is the one who must be there to
+                // cancel it.
+                if state.idle.simulate_activity() {
                     state.set_outputs_enabled(true);
                 }
                 let seat = state.seat.clone();
