@@ -208,14 +208,22 @@ impl Notifications {
         self.emit_to_owner(id, "ActionInvoked", &(id, action));
     }
 
-    /// Tell the sender its notification is gone, and why — then forget whose
-    /// it was. A closed id is finished with; keeping the owner would only
-    /// grow this map for the life of the session.
+    /// Tell the sender its notification is gone, and why.
+    ///
+    /// The owner row is deliberately *not* dropped here any more. This is the
+    /// popup half of the lifecycle — an expiry, a dismissal, an action taken —
+    /// and every one of those leaves the notification in the centre, which is
+    /// what the centre is for. Dropping the owner turned an id whose record
+    /// was still live into an unowned one: any process on the bus could then
+    /// close it, its `ActionInvoked` fell back to broadcasting to every
+    /// connection (the invariant `invoke_action`'s own comment states), and
+    /// the owner's `replaces_id` stopped resolving and stacked duplicates.
+    ///
+    /// The rows leave when the record does — `History::forget`, `clear` and
+    /// the eviction in `trim` — plus the safety net in `notify` for ids that
+    /// never reached a history at all (a zero limit, or no map wired).
     pub fn closed(&self, id: u32, reason: CloseReason) {
         self.emit_to_owner(id, "NotificationClosed", &(id, reason as u32));
-        if let Ok(mut owners) = self.owners.lock() {
-            owners.remove(&id);
-        }
     }
 
     /// Emit one of the interface's signals, addressed to the notification's
@@ -662,16 +670,30 @@ impl History {
     }
 
     /// Drop one, and say whether it was there.
+    ///
+    /// The owner row goes with the entry, the way an eviction's does in
+    /// `trim`. Leaving it made a notification the centre no longer holds keep
+    /// an owner the next `Notify` from the same sender would replace into a
+    /// live slot — and an owner of nothing is a row that only the safety net
+    /// in `notify` would ever have reaped.
     pub fn forget(&mut self, id: u32) -> bool {
         let before = self.entries.len();
         self.entries.retain(|kept| kept.id != id);
-        self.entries.len() != before
+        let gone = self.entries.len() != before;
+        if gone {
+            self.forget_owners(&[id]);
+        }
+        gone
     }
 
     /// Drop all of them, and say whether there were any.
     pub fn clear(&mut self) -> bool {
         let had = !self.entries.is_empty();
-        self.entries.clear();
+        if had {
+            let ids: Vec<u32> = self.entries.iter().map(|kept| kept.id).collect();
+            self.entries.clear();
+            self.forget_owners(&ids);
+        }
         had
     }
 
@@ -894,6 +916,75 @@ mod tests {
         // the same id, and neither is worth a message to the shell.
         assert!(!history.forget(1));
         assert!(!history.clear());
+    }
+
+    /// An expiry or a dismissal leaves the notification in the centre — that
+    /// is what the centre is — and its owner must survive with it.
+    ///
+    /// `closed` used to drop the owner unconditionally, and the popup half of
+    /// the lifecycle runs through it while the record stays. From then on the
+    /// id looked unowned: any process on the bus could close it, its
+    /// `ActionInvoked` fell back to broadcasting to every connection, and the
+    /// owner's own `replaces_id` no longer resolved.
+    #[test]
+    fn an_expired_popup_keeps_its_owner_while_the_centre_holds_the_entry() {
+        let notifications = Notifications::default();
+        // With no bus connection the signals go nowhere, which is what a test
+        // wants; the owner map is what these cover.
+        notifications
+            .owners
+            .lock()
+            .unwrap()
+            .insert(1, ":1.42".to_owned());
+
+        let mut history = History::default();
+        history.share_owners(notifications.owners.clone());
+        history.record(&kept(1, "still here"));
+
+        // The popup timed out. The centre entry stays; so must the owner.
+        notifications.closed(1, CloseReason::Expired);
+
+        let owners = notifications.owners.lock().unwrap();
+        assert!(
+            owners.get(&1).map(String::as_str) == Some(":1.42"),
+            "the owner must live as long as the centre entry does"
+        );
+        assert!(
+            !may_close(&owners, 1, Some(":1.99")),
+            "an id still in the centre is not closable by a stranger"
+        );
+        // And the owner's own replacement still resolves instead of stacking
+        // a duplicate.
+        let next = Arc::new(AtomicU32::new(2));
+        assert_eq!(resolve_id(&next, &owners, 1, Some(":1.42")), 1);
+    }
+
+    /// And the other end: a notification taken out of the centre takes its
+    /// owner row with it. `forget` and `clear` used to leave the rows, which
+    /// the eviction path (`trim`) pruned but these two did not.
+    #[test]
+    fn a_notification_taken_out_of_the_centre_takes_its_owner_with_it() {
+        let owners: Arc<Mutex<HashMap<u32, String>>> = Arc::new(Mutex::new(HashMap::new()));
+        owners.lock().unwrap().insert(1, ":1.2".to_owned());
+        owners.lock().unwrap().insert(2, ":1.3".to_owned());
+
+        let mut history = History::default();
+        history.share_owners(owners.clone());
+        history.record(&kept(1, "one"));
+        history.record(&kept(2, "two"));
+
+        assert!(history.forget(1));
+        assert!(
+            !owners.lock().unwrap().contains_key(&1),
+            "forgetting the entry must forget whose it was"
+        );
+        assert!(owners.lock().unwrap().contains_key(&2), "the other stays");
+
+        assert!(history.clear());
+        assert!(
+            !owners.lock().unwrap().contains_key(&2),
+            "clearing the centre takes every owner it held with it"
+        );
     }
 
     #[test]
