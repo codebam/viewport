@@ -133,6 +133,50 @@ would choose; it exists so a broken shell leaves a desktop usable enough to open
 a terminal and fix it. The moment the shell does answer, the watchdog is
 disarmed for that window, so a merely slow shell costs nothing.
 
+## A window frame with the desktop showing through it
+
+A window that is *there* — its frame drawn, its place in the layout taken — and
+yet transparent enough to see the wallpaper through, usually until something
+unrelated (holding Mod4, opening another window) forces a redraw. The frame is
+the shell's: it is painted into the page and measured out, and the client is
+drawn into the hole. So when the hole shows the desktop, the frame can be
+perfect and the client pixels can still be missing.
+
+Three things produce that, and the compositor heals all three and says so.
+
+The shell fades a new window in by sending `view.opacity 0` and raising it as
+the animation runs. A tween that dies — an exception in the page, a frame
+callback that never comes — leaves the window at zero, and a window at zero is
+drawn at zero. A visible, placed window drawn at zero for longer than any fade
+takes is now drawn opaque:
+
+```
+view 42: drawn see-through — its fade left it at opacity 0 for 750ms; drawing it opaque
+```
+
+The other two are the crop. A `view.layout` carries the rectangle the shell
+wants the client clipped to, and a crop with no area — or one that lands
+somewhere the window is not — crops every surface away while the frame stays
+drawn. The compositor drops such a crop and draws the window uncropped:
+
+```
+view 42: the shell clipped it to a rectangle that does not meet it (0x0 at +0+0 against 300x200 at +10+20); drawing it uncropped
+```
+
+All three mean the shell and the compositor disagreed about where the window's
+hole is, and all three are worth a bug report with the line in it. None should
+cost more than the grace period: the healing happens on the next frame after
+it, not when something else forces a redraw.
+
+A window that stays missing with none of those lines in the log is a different
+fault: frames are not carrying it at all, rather than carrying it invisibly.
+That is what the frame watchdog reports — `still not carried by any submitted
+frame …` and then, if it never arrives, `giving up on a placed window …` with
+the rectangle and whether it overlaps an output. A window that stays missing
+with none of those lines either is being carried by frames and drawn, and is
+still not visible: the three mechanisms above are the known ways, and any other
+is worth a report with the log in hand.
+
 ## A page that draws one frame and stops
 
 The symptom is a desktop that loads, appears, and then never changes again —
