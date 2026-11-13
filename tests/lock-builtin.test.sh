@@ -209,7 +209,20 @@ fi
 
 # And it says what has happened, because from the front this is a black screen
 # that eats every key and nothing else can explain it.
-if grep -q "the shell has not drawn a lock screen" "$LOG"; then
+#
+# Waited for rather than read once. The warning is owed three seconds after the
+# lock and is said on a one-second tick, so the checks above can legitimately
+# get here inside those three seconds — a machine fast enough to do that would
+# fail a test the compositor is about to pass.
+warned=
+for _ in $(seq 40); do
+	if grep -q "the shell has not drawn a lock screen" "$LOG"; then
+		warned=yes
+		break
+	fi
+	sleep 0.1
+done
+if [ -n "$warned" ]; then
 	echo "ok   and the compositor says why the screen is black"
 else
 	fail "nothing in the log explains a locked session with nothing drawing"
