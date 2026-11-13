@@ -4502,6 +4502,18 @@ impl ViewportState {
             if view.minimized || !view.visible {
                 continue;
             }
+            // The shell can hide a window with its crop. A column scrolled out
+            // of the scrolling strip is still laid out — that is how the strip
+            // works — and cropped to nothing, which is the shell saying "this
+            // window is not on screen". No frame owes it one, and counting it
+            // as a lost draw made every scroll that pushed a column off the
+            // edge log an error about a window doing exactly what it was told.
+            if view
+                .clip
+                .is_some_and(|clip| clip.width <= 0 || clip.height <= 0)
+            {
+                continue;
+            }
             // Only a window the space is holding is one a frame could carry: a
             // hidden workspace unmaps its windows, and no frame owes them.
             let Some(layout) = self.space.element_geometry(&view.window) else {
