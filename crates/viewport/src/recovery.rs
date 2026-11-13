@@ -217,6 +217,18 @@ pub fn add_wait(attempts: u32, since: Duration) -> Duration {
     backoff(attempts).saturating_sub(since)
 }
 
+/// The same wait, for a slot whose card is offline.
+///
+/// The `!device.online` branch of the watchdog tick used to say "look again
+/// at the tick pace" without consulting the backoff its attempts had built
+/// up, so an unplugged eGPU kept the compositor waking two and a half times
+/// a second for the rest of the session while udev was never going to say
+/// anything. What it waits is the same [`backoff`] the never-opened cards
+/// wait, counted from when the card went.
+pub fn offline_wait(attempts: u32, since: Duration) -> Duration {
+    add_wait(attempts, since)
+}
+
 /// The shortest the watchdog will sleep between two looks.
 ///
 /// The retry pacing [`next_tick`] works from can come out at zero — an entry
@@ -336,6 +348,9 @@ impl ViewportState {
         let switched_away = self.udev.as_ref().is_some_and(|udev| !udev.active);
 
         let mut again = false;
+        // The soonest an offline slot's next reopen is due, collected while
+        // the loop runs. See the `!device.online` branch for why it exists.
+        let mut offline_wait_out: Option<Duration> = None;
         for index in 0..count {
             let Some(udev) = self.udev.as_ref() else {
                 return;
@@ -349,14 +364,25 @@ impl ViewportState {
                 // and `on_gpu_added` takes it from there; this is the path for
                 // when it does not — a driver that rebinds without a fresh add
                 // event, or one that arrived before the removal was processed.
-                let due = device
-                    .offline_since
-                    .is_none_or(|at| at.elapsed() >= backoff(device.attempts));
+                let since = device.offline_since.unwrap_or_else(std::time::Instant::now);
+                let elapsed = since.elapsed();
+                let attempts = device.attempts;
+                let due = elapsed >= backoff(attempts);
+                // Owed to the retry clock, not to the tick: an offline slot is
+                // a card waiting out its backoff, and `again` alone paced it
+                // at TICK — two and a half wakeups a second for an unplugged
+                // card, for the rest of the session. The same arithmetic the
+                // never-opened cards use puts the wait where it belongs. Worked
+                // out before the reopen below, which borrows `self` mutably.
+                let wait = offline_wait(attempts, elapsed);
                 if due && !switched_away {
                     let card = device.node;
                     self.reopen_device(index, card);
+                    // The slot's attempts moved on the way through; the next
+                    // wait is read fresh on the next tick.
+                    continue;
                 }
-                again = true;
+                offline_wait_out = Some(offline_wait_out.unwrap_or(Duration::ZERO).min(wait));
                 continue;
             }
 
@@ -430,7 +456,7 @@ impl ViewportState {
         // refusing to open at the thirty-second end of the backoff still cost
         // two and a half wakeups a second until the session ended — so the
         // next look takes the sooner of this and TICK instead.
-        let mut retry_in = None;
+        let mut retry_in = offline_wait_out;
         if !pending.is_empty() {
             if switched_away {
                 // Retries wait for the session to come back, like every other
@@ -444,12 +470,16 @@ impl ViewportState {
                 }
                 // Read after the attempts above: an entry that was just tried
                 // has been given a fresh backoff and is no longer due.
-                retry_in = self.udev.as_ref().and_then(|udev| {
+                let pending_wait = self.udev.as_ref().and_then(|udev| {
                     udev.pending_adds
                         .iter()
                         .map(|add| add_wait(add.attempts, add.tried_at.elapsed()))
                         .min()
                 });
+                retry_in = match (retry_in, pending_wait) {
+                    (Some(left), Some(right)) => Some(left.min(right)),
+                    (left, right) => left.or(right),
+                };
             }
         }
 
@@ -559,6 +589,12 @@ impl ViewportState {
         // rather than a commit against state the reset invalidated.
         if let Err(e) = device.manager.lock().activate(true) {
             tracing::warn!("gpu {index}: could not take the device back ({e})");
+            // Said, not just logged: `recover_device` zeroed the error count
+            // on the way in, and a failure nobody records leaves the device
+            // looking healthy with every monitor still frozen — the watchdog
+            // disarms on the next tick and the ladder never comes back. The
+            // count is what the next tick reads.
+            device.errors = device.errors.saturating_add(1);
             return;
         }
         // The images the renderer imported before the reset were acquired
@@ -602,6 +638,10 @@ impl ViewportState {
             Ok(renderer) => renderer,
             Err(e) => {
                 tracing::warn!("gpu {index}: no new renderer ({e:#})");
+                // The same reason `reactivate_device` says its failure: an
+                // uncounted error is a disarmed watchdog, and a card whose
+                // renderer could not be rebuilt is not a card that recovered.
+                self.note_gpu_error(index);
                 return;
             }
         };
@@ -697,6 +737,15 @@ impl ViewportState {
                             // along with its outputs and its vblank source.
                             if !device.online {
                                 device.offline_since = Some(std::time::Instant::now());
+                            } else {
+                                // A live slot whose reopen failed is a device
+                                // that is still stuck: `Reopen` was escalated to
+                                // because nothing below it worked, and leaving
+                                // the error count at zero here is how the
+                                // watchdog stood down with the screens frozen.
+                                // The count is what the next tick reads, and
+                                // `stalled` answers a nonzero count at once.
+                                device.errors = device.errors.saturating_add(1);
                             }
                         }
                     }
@@ -964,6 +1013,25 @@ impl ViewportState {
             device.stepped_at = None;
             device.settle = 0;
             device.offline_since = Some(std::time::Instant::now());
+            // The fd goes back now, not when the replacement opens. A card
+            // that comes back on the *same* minor — a driver rebind without a
+            // fresh device — is taken again through `install_device`, which
+            // opens before it releases (it must: the open has to succeed
+            // before anything is torn down), and logind answers a second
+            // `TakeDevice` on a still-held device with "already taken" for
+            // ever. Releasing here is what makes the same-node retry possible.
+            if let Some(seat_fd) = device.seat_fd.take() {
+                use smithay::backend::session::Session as _;
+                if let Err(e) = self
+                    .udev
+                    .as_mut()
+                    .expect("checked above")
+                    .session
+                    .close(seat_fd)
+                {
+                    tracing::warn!("gpu {index}: could not release the removed device: {e}");
+                }
+            }
             // The lease global goes with the card in the sense that nothing
             // new can be leased from it: the node the kernel unregistered is
             // not one a client should be handed. The state is kept rather
@@ -1215,6 +1283,109 @@ mod tests {
         assert!(
             body.contains("retain("),
             "the drop has to prune every entry for the device that went"
+        );
+    }
+
+    /// A step that fails mid-ladder keeps the ladder on the air.
+    ///
+    /// `recover_device` zeroes `errors` when it escalates, and the three step
+    /// bodies answered their own failures with a log line and a `return` — so
+    /// a GPU reset that outlived one step (Reactivate failing at +1.5s into a
+    /// 3–4s amdgpu reset window) left the device at `Healthy` with nothing
+    /// pending and no error count, and the watchdog disarmed with every
+    /// monitor still frozen. A step that could not do its work says so, and
+    /// the error count is what the next tick reads.
+    #[test]
+    fn a_failing_step_keeps_the_ladder_armed() {
+        let source = include_str!("recovery.rs");
+        let source = source.split("#[cfg(test)]").next().unwrap_or(source);
+
+        for (fn_name, next) in [
+            ("fn reactivate_device(", "fn rebuild_renderer("),
+            ("fn rebuild_renderer(", "fn reopen_device("),
+        ] {
+            let start = source.find(fn_name).expect(fn_name);
+            let body = &source[start
+                ..start
+                    + source[start..]
+                        .find(next)
+                        .expect("the next function after it")];
+            assert!(
+                body.contains("errors.saturating_add(1)") || body.contains("note_gpu_error"),
+                "{fn_name}'s failure path must keep the error count up: the ladder \
+                 disarms on the next tick otherwise"
+            );
+        }
+    }
+
+    /// And the reopen step's failure is remembered where the retry lives.
+    ///
+    /// `install_device`'s open failure path bumps `attempts` for a slotted
+    /// card — that is the backoff — but a slot whose card is *online* keeps
+    /// its outputs and its vblank source, and was left with the step still
+    /// standing on `Reopen` and no way back down. Nothing re-armed the
+    /// escalation except the error count, which this path does not touch
+    /// without the fix.
+    #[test]
+    fn a_failed_reopen_of_a_live_slot_is_recorded_as_an_error() {
+        let source = include_str!("recovery.rs");
+        let source = source.split("#[cfg(test)]").next().unwrap_or(source);
+        let start = source.find("fn install_device(").expect("install_device");
+        let body = &source[start
+            ..start
+                + source[start..]
+                    .find("\n    /// udev says a DRM device has appeared")
+                    .expect("the end of install_device")];
+        assert!(
+            body.contains("device.errors = device.errors.saturating_add(1);"),
+            "an open failure on a live slot must count as an error, or the \
+             watchdog stops looking at it"
+        );
+    }
+
+    /// An unplugged card's seat fd goes back to logind.
+    ///
+    /// `on_gpu_removed` marked the device offline but left `seat_fd` open,
+    /// and `install_device` opens the replacement *before* the replacement
+    /// path releases the old one — so a retry of the same node forever hit
+    /// logind's "already taken". The fd is released when the card goes.
+    #[test]
+    fn an_unplugged_cards_seat_fd_is_released() {
+        let source = include_str!("recovery.rs");
+        let source = source.split("#[cfg(test)]").next().unwrap_or(source);
+        let start = source
+            .find("pub fn on_gpu_removed")
+            .expect("on_gpu_removed");
+        let body = &source[start
+            ..start
+                + source[start..]
+                    .find("\n    /// udev says a DRM device has appeared")
+                    .expect("the end of on_gpu_removed")];
+        assert!(
+            body.contains("seat_fd.take()"),
+            "the seat fd must go back when the card goes"
+        );
+        assert!(
+            body.contains("session.close("),
+            "closing, not just dropping: the session remembers the device by the fd"
+        );
+    }
+
+    /// An offline slot waits its backoff, not the tick.
+    ///
+    /// The `!device.online` branch used to set `again = true` — the TICK pace
+    /// — whatever its backoff had left, so an unplugged eGPU kept the
+    /// compositor waking two and a half times a second for the rest of the
+    /// session. The branch now contributes its remaining backoff to the same
+    /// `retry_in` the never-opened cards use.
+    #[test]
+    fn an_offline_slot_waits_out_its_backoff() {
+        assert_eq!(offline_wait(0, Duration::ZERO), backoff(0));
+        assert_eq!(offline_wait(2, backoff(1)), backoff(2) - backoff(1));
+        assert_eq!(offline_wait(0, backoff(0)), Duration::ZERO);
+        assert_eq!(
+            offline_wait(0, backoff(0) + Duration::from_secs(1)),
+            Duration::ZERO
         );
     }
 }
