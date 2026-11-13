@@ -125,6 +125,13 @@ pub struct Theme {
 const MAX_SIDE: u32 = 1024;
 const MAX_FRAMES: usize = 256;
 const MAX_IMAGE_BYTES: u64 = 4 * 1024 * 1024;
+/// The most manifest bytes a shape's meta may be read for.
+///
+/// Capped where the directory reads are, by the file's own length; the
+/// archive's are capped by [`MAX_IMAGE_BYTES`]-style takes instead, because
+/// a zip's central directory is the archive's own claim and a theme is
+/// untrusted input.
+const MAX_META_BYTES: u64 = 1024 * 1024;
 
 impl Theme {
     /// The theme at `root`, read from its manifest and shape metadata.
@@ -405,7 +412,13 @@ fn read_shape(path: &Path) -> Option<ShapeInfo> {
         let mut found = None;
         for (name, hyprlang) in [("meta.hl", true), ("meta.toml", false)] {
             if let Ok(mut file) = archive.by_name(name) {
-                file.read_to_string(&mut text).ok()?;
+                // Capped: the central directory's size field is the archive's
+                // own claim about itself, and a file that lies about it is
+                // read for as long as the truth runs. A manifest is a few
+                // lines; a megabyte is more than any of them.
+                std::io::Read::take(&mut file, MAX_META_BYTES)
+                    .read_to_string(&mut text)
+                    .ok()?;
                 found = Some(hyprlang);
                 break;
             }
@@ -447,10 +460,32 @@ fn shape_from_meta(directory: &str, meta: &(String, bool), source: &Source) -> O
         let key = key.trim();
         let value = unquote(value.trim());
         match key {
-            "hotspot_x" => hotspot_x = value.parse().unwrap_or(0.0),
-            "hotspot_y" => hotspot_y = value.parse().unwrap_or(0.0),
+            // A hotspot is a fraction of the drawn image and feeds
+            // `(fraction * draw).round() as i32`; a NaN parse survives every
+            // clamp below (`f64::NAN.clamp` is still NaN) and poisons the
+            // `as i32` at the end into zero-width arithmetic. Anything not
+            // finite is a mistyped file, not a position.
+            "hotspot_x" => {
+                hotspot_x = value
+                    .parse::<f64>()
+                    .ok()
+                    .filter(|v| v.is_finite())
+                    .unwrap_or(0.0)
+            }
+            "hotspot_y" => {
+                hotspot_y = value
+                    .parse::<f64>()
+                    .ok()
+                    .filter(|v| v.is_finite())
+                    .unwrap_or(0.0)
+            }
             "nominal_size" => {
-                nominal = value.parse::<f64>().unwrap_or(1.0).clamp(0.1, 2.0);
+                nominal = value
+                    .parse::<f64>()
+                    .ok()
+                    .filter(|v| v.is_finite())
+                    .unwrap_or(1.0)
+                    .clamp(0.1, 2.0);
             }
             "resize_algorithm" => resize = Resize::parse(&value),
             "define_override" => {
@@ -512,7 +547,15 @@ fn parse_define_size(clause: &str) -> Option<ImageRef> {
     let side = if file.ends_with(".svg") {
         0
     } else {
-        side.parse::<u32>().ok().filter(|side| *side > 0)?
+        // Capped at the same bound the decoder and the draw path hold
+        // everything else to. A `define_size` past it is a lie about the data
+        // that follows — with no resample algorithm set, the theme asks for a
+        // buffer of side² × 4 bytes, and the multiplication was done in `u32`
+        // where a large enough lie wrapped to nothing and sliced out of
+        // bounds, or close to it asked for four gibibytes a frame.
+        side.parse::<u32>()
+            .ok()
+            .filter(|side| *side > 0 && *side <= MAX_SIDE)?
     };
     Some(ImageRef {
         file: file.to_owned(),
@@ -538,8 +581,17 @@ fn read_image(source: &Source, file: &str) -> Option<Vec<u8>> {
             if image.size() > MAX_IMAGE_BYTES {
                 return None;
             }
-            let mut bytes = Vec::with_capacity(image.size() as usize);
-            image.read_to_end(&mut bytes).ok()?;
+            // Read against the cap, not the claimed size: the size is the
+            // archive's own field, and `read_to_end` under a lying one would
+            // allocate what the truth turns out to be. One byte past the cap
+            // is how a refusal is told from an exactly-full read.
+            let mut bytes = Vec::new();
+            std::io::Read::take(&mut image, MAX_IMAGE_BYTES + 1)
+                .read_to_end(&mut bytes)
+                .ok()?;
+            if bytes.len() as u64 > MAX_IMAGE_BYTES {
+                return None;
+            }
             Some(bytes)
         }
     }
@@ -593,7 +645,9 @@ fn resample(pixels: &[u8], width: u32, height: u32, target: u32, how: Resize) ->
         return pixels.to_vec();
     }
     let (tw, th) = (target, target);
-    let mut out = vec![0u8; (tw * th * 4) as usize];
+    // Widened before the multiply: `u32` wrapped on a large enough target,
+    // and a wrapped length is a small allocation indexed far past its end.
+    let mut out = vec![0u8; tw as usize * th as usize * 4];
     match how {
         Resize::None | Resize::Nearest => {
             for y in 0..th {
@@ -916,5 +970,42 @@ mod tests {
         assert_eq!(converted[5], 0);
         assert_eq!(converted[6], 0);
         assert_eq!(converted[7], 128);
+    }
+
+    /// A theme's `define_size` names the resolution its artwork ships at, and
+    /// anything past what a cursor can be drawn at is a lie about the data
+    /// that follows.
+    ///
+    /// `parse_define_size` used to accept any `u32`, and with
+    /// `resize_algorithm` unset — the default for a toml meta, which is the
+    /// shape most themes ship — `shape` handed the unclamped value straight
+    /// to `resample`, whose `vec![0u8; tw * th * 4]` multiplied it out in
+    /// `u32`: `32768` overflowed (a panic in debug, a zero-length vector and
+    /// an immediate slice panic in release), and `32767` asked for four
+    /// gibibytes per frame. The side is refused at the parse, which is where
+    /// the file is still text and the theme is still one line.
+    #[test]
+    fn a_define_size_past_the_drawn_bound_is_refused() {
+        assert!(parse_define_size("24, p.png").is_some());
+        assert!(parse_define_size("1024, p.png").is_some(), "the cap itself");
+        assert!(
+            parse_define_size("1025, p.png").is_none(),
+            "one past the cap is not a size this loads"
+        );
+        assert!(parse_define_size("65536, p.png").is_none());
+        assert!(
+            parse_define_size("4294967295, p.png").is_none(),
+            "and the extreme is not special"
+        );
+    }
+
+    /// A resample to a sane size cannot overflow: the products are widened
+    /// before they are multiplied, so even a theme that ships a 2x2 png
+    /// against a 1024 target costs what a 1024 cursor costs.
+    #[test]
+    fn a_resample_at_the_cap_is_a_cursor_worth_of_pixels() {
+        let four = vec![255u8; 4 * 4];
+        let out = resample(&four, 2, 2, MAX_SIDE, Resize::None);
+        assert_eq!(out.len(), MAX_SIDE as usize * MAX_SIDE as usize * 4);
     }
 }
