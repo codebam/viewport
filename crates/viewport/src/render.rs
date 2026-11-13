@@ -412,6 +412,17 @@ where
     // locker draws its own or hides it, and the shell's lock screen has a
     // password box that has to be clickable. Nothing else is, so a cursor
     // cannot point at anything it should not.
+    //
+    // A capture carries neither. `window_elements` answers an empty list
+    // while the session is locked, and an output capture is the same picture
+    // at a wider angle: a recorder that kept a share running across a lock
+    // would otherwise stream the lock surface — and with it the password
+    // box being typed into — and the cursor over it, which shows which keys
+    // are being tapped. An empty list is what the caller composites as a
+    // black frame, the same answer a window share gives.
+    if capture {
+        return elements;
+    }
     if frame.locked_blank || frame.lock.is_some() {
         push_cursor(&mut elements, frame, renderer, scale, effects);
         if let Some(surface) = frame.lock.as_ref() {
@@ -1676,5 +1687,44 @@ mod tests {
             1.0,
         );
         assert_eq!(offset, Point::from((i32::MIN, i32::MAX)));
+    }
+
+    /// A capture of a locked output carries nothing.
+    ///
+    /// The locked branch of `layers` draws the lock screen and the pointer and
+    /// nothing else — which is right for the screen and wrong for a capture:
+    /// `window_elements` answers an empty list when the session is locked,
+    /// and an output capture is supposed to be the same picture. Streaming the
+    /// lock surface streamed the password box being typed into, and streaming
+    /// the cursor showed which keys were tapped.
+    ///
+    /// Building a real frame needs a renderer, so — like the lock-surface
+    /// walks in `state/frame_barriers.rs` — the invariant is checked against
+    /// the source the branch is written in.
+    #[test]
+    fn a_capture_of_a_locked_output_carries_nothing() {
+        let source = include_str!("render.rs");
+        let source = source.split("#[cfg(test)]").next().unwrap_or(source);
+        let start = source.find("fn layers<R>(").expect("the layers function");
+        // Searched inside the function only: `push_cursor` is called from
+        // elsewhere too, and a whole-source find would land before `layers`
+        // even begins.
+        let rest = &source[start..];
+        let end = rest
+            .find("push_cursor(&mut elements, frame, renderer, scale, effects);")
+            .expect("the end of the locked branch");
+        let body = &rest[..end];
+        assert!(
+            body.contains("if capture {"),
+            "the locked branch must answer nothing when capture is asked for"
+        );
+        // And before the branch that would draw it, so the answer cannot be
+        // overtaken by the lock surface being pushed on the way through.
+        let capture_guard = body.find("if capture {").unwrap();
+        let lock_branch = body.find("if frame.locked_blank").unwrap();
+        assert!(
+            capture_guard < lock_branch,
+            "the capture guard must answer before the locked branch draws anything"
+        );
     }
 }

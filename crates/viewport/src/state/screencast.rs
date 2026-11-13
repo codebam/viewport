@@ -1344,6 +1344,15 @@ impl ViewportState {
             } => self.revoke_input_capture(&session, generation, true),
             Message::Close { node } => self.stop_cast(node),
             Message::ClipboardRead { reply } => {
+                // Nothing of the desktop crosses a lock. A remote session is
+                // suspended by the lock (`lock_with_shell`), but its bus
+                // connection is not — and this answer is the desk's clipboard:
+                // a password copied seconds before locking is exactly what a
+                // paste from the history would serve it.
+                if self.locked {
+                    let _ = reply.try_send(None);
+                    return;
+                }
                 // The compositor's own selection first — a paste out of the
                 // history — then the newest entry, which is what a client's
                 // copy recorded. Both are text; an image or a file list has
@@ -1357,6 +1366,12 @@ impl ViewportState {
                 let _ = reply.try_send(text);
             }
             Message::ClipboardSet { text } => {
+                // Refused, not queued: a clipboard that changes while the
+                // user is away is a clipboard that changed behind their
+                // back, and the remote end learns of it at the next paste.
+                if self.locked {
+                    return;
+                }
                 if self.clipboard.record(text) {
                     self.notify_clipboard();
                 }
@@ -1378,6 +1393,14 @@ impl ViewportState {
                 modal: _,
                 reply,
             } => {
+                // A locked session serves no screenshot: the pixels on screen
+                // are the lock screen's, and a picture of what a share of the
+                // desk would carry is exactly what the lock exists to keep
+                // off the wire. Every picker path below refuses the same way.
+                if self.locked {
+                    let _ = reply.try_send(Err("the session is locked".to_owned()));
+                    return;
+                }
                 let output = self
                     .active_output
                     .as_deref()
