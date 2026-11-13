@@ -44,10 +44,19 @@ Only the features this renderer actually implements are advertised: parametric
 image descriptions, named primaries and named luminances, and the two
 well-known Windows descriptions below — which are advertised at the version
 their requests exist at, so a client bound below version 3 is not offered a
-request it cannot make. ICC profiles, power
-curves and arbitrary chromaticities are refused rather than accepted and
-ignored, and mastering metadata is accepted and dropped, because tone mapping
-is not done here.
+request it cannot make. A client-supplied ICC profile, a power curve and an
+arbitrary chromaticity are refused rather than accepted and ignored: the
+display's own profile is read from `outputs.<name>.icc`, and that is the one
+profile this pipeline can apply. Mastering metadata is accepted and dropped —
+tone mapping compresses by what the encoding can carry (10,000 cd/m² for PQ),
+not by the mastering peak the content declared, so a client that sends the
+metadata gets the right picture for its encoding and not the grading the
+metadata describes.
+
+`render:cm_enabled` decides whether any of this is offered at all. Off means
+the global does not exist, so a client cannot ask, every buffer is taken as
+sRGB, and `outputs.<name>.icc` contributes its calibration ramp and nothing
+else.
 
 What an output says about itself follows what it is being driven as. An output
 in HDR describes itself as BT.2020 with PQ, and its *target* volume — the pair
