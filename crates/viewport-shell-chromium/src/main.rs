@@ -219,7 +219,8 @@ fn guard_critical(message: &Value) -> bool {
 ///
 /// Two facts, and the gate is their conjunction: the document is *loaded*
 /// (`Page.loadEventFired` has fired for the frame the guard is tracking) and
-/// its origin passes the policy (`FrameGuard::url_known_allowed`). Kept apart
+/// (`Page.loadEventFired` has fired for the frame the guard is tracking) and
+/// its origin passes the policy. Kept apart
 /// from URL knowledge because they answer different questions at different
 /// times: a committed navigation names a URL long before its document's
 /// scripts have run, and both backends used to open the gate on that
@@ -249,8 +250,11 @@ impl LoadGate {
         self.url_allowed = Some(url.is_some_and(viewport_ipc::js::shell_url_allowed));
     }
 
-    /// Context bookkeeping: no state of the gate's depends on it.
-    fn context_created(&mut self) {}
+    /// Context bookkeeping: a cleared or replaced main-frame context is the
+    /// old document going away, so the gate closes until its load event.
+    fn context_created(&mut self) {
+        self.loaded = false;
+    }
 
     /// The document has loaded. The one event that can open the gate.
     fn load_event_fired(&mut self) {
@@ -273,7 +277,7 @@ impl LoadGate {
 /// * outbound, the compositor's events are evaluated into the page — but
 ///   only into a page that is still the shell. A document that navigated or
 ///   was redirected elsewhere must not be handed the desktop's clipboard,
-///   notifications or session state, so `url_known_allowed` is re-checked
+///   notifications or session state, so the gate's URL answer is re-checked
 ///   before every drain of the queue.
 /// * inbound, a page-to-compositor message is accepted only from the main
 ///   frame's default context. A subframe is a different document, and the
@@ -427,16 +431,6 @@ impl FrameGuard {
             Some(url) => viewport_ipc::js::shell_url_allowed(url),
             None => true,
         }
-    }
-
-    /// Whether a known main-frame URL passes the policy. Unlike
-    /// [`Self::events_allowed`], `None` is false: the initial queued events
-    /// wait for `Page.getFrameTree`/`frameNavigated` instead of being pushed
-    /// into a document whose origin has not been established yet.
-    fn url_known_allowed(&self) -> bool {
-        self.main_url
-            .as_deref()
-            .is_some_and(viewport_ipc::js::shell_url_allowed)
     }
 }
 
@@ -633,6 +627,13 @@ fn run(browser: &mut Browser, options: &Options) -> Result<()> {
                         waiting_for_url = false;
                     }
                     gate.frame_navigated(guard.main_url.as_deref());
+                    // Context bookkeeping rides the same note — a cleared or
+                    // replaced execution context is the old document going
+                    // away, which is what the gate exists to hold events back
+                    // from.
+                    if guard.main_context.is_none() {
+                        gate.context_created();
+                    }
                     if !waiting_for_url && !ready && guard.main_url.is_some() {
                         ready = gate.ready();
                         if ready {
