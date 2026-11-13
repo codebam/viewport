@@ -31,7 +31,10 @@ const MAX_RUNTIME_BINDINGS: usize = 1024;
 fn moves_focus(request: &Request) -> bool {
     matches!(
         request,
-        Request::ViewFocus { .. } | Request::BackgroundFocus | Request::ShellFocus
+        Request::ViewFocus { .. }
+            | Request::BackgroundFocus
+            | Request::ShellFocus
+            | Request::ShellOverview { .. }
     )
 }
 
@@ -65,6 +68,7 @@ fn acts_while_locked(request: &Request) -> bool {
             | Request::InputScroll { .. }
             | Request::BindAdd { .. }
             | Request::AiLogin { .. }
+            | Request::LauncherLaunch { .. }
             | Request::Quit
     )
 }
@@ -2109,7 +2113,14 @@ pub(crate) fn set_view_minimized(state: &mut ViewportState, id: u32, minimized: 
         state.view_is_fullscreen(id),
     );
 
-    if minimized && state.focused == id {
+    // Not while locked. `state.focused` still names the window the keyboard
+    // had before the lock, so a `view.minimized` for it would drop keyboard
+    // focus off the lock screen exactly as a `view.focus` would — and the
+    // lock gates above do not reach `set_view_minimized`, because it is also
+    // called from `minimize_request` on the client's own ask. A lock screen
+    // that can be unfocused from a socket message is a password going
+    // nowhere.
+    if minimized && state.focused == id && !state.locked {
         if let Some(keyboard) = state.seat.get_keyboard() {
             let serial = SERIAL_COUNTER.next_serial();
             keyboard.set_focus(
