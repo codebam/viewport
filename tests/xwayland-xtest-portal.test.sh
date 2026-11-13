@@ -67,8 +67,19 @@ fi
 # `org.freedesktop.impl.portal.desktop.viewport` at startup, and zbus fails the
 # whole connection when the name is taken, so a run that joined the live bus
 # would either test nothing or break the session it was started from.
+#
+# The config is named explicitly because dbus-daemon's built-in default is
+# `/etc/dbus-1/session.conf`, which NixOS provides and a CI runner does not:
+# without it the daemon never starts and this whole test reads as a failure
+# on a machine where nothing was wrong. Every dbus installation ships that
+# same config in its own prefix, so take it from there.
 if [ "${VIEWPORT_XTEST_TEST_BUS:-}" != yes ]; then
 	export VIEWPORT_XTEST_TEST_BUS=yes
+	dbus_prefix=$(dirname "$(dirname "$(command -v dbus-run-session)")")
+	dbus_session_conf="$dbus_prefix/share/dbus-1/session.conf"
+	if [ -r "$dbus_session_conf" ]; then
+		exec dbus-run-session --config-file="$dbus_session_conf" -- "$0" "$@"
+	fi
 	exec dbus-run-session -- "$0" "$@"
 fi
 

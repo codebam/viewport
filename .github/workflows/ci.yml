@@ -237,7 +237,10 @@ jobs:
       # temporary: drop it once crates/viewport-shell-servo/Cargo.lock moves
       # to h2 >= 0.4.16. The rest are unmaintained crates the pinned Servo
       # 0.6.0 tree carries with no safe upgrade, so they stay until the engine
-      # pin does. CEF gets no ignore at all: a finding there fails this step.
+      # pin does. RUSTSEC-2026-0459 is the same shape: servo-net 0.6.0 pins
+      # rusqlite 0.38, whose bundled SQLite is older than the fix and whose
+      # replacement needs rusqlite 0.41, which the pinned Servo cannot take.
+      # CEF gets no ignore at all: a finding there fails this step.
       - name: Advisory ratchet for excluded manifests
         run: |
           nix develop .#rust --command bash -euo pipefail -c '
@@ -247,6 +250,7 @@ jobs:
               "[advisories]" \
               "ignore = [" \
               "  { id = \"RUSTSEC-2026-0258\", reason = \"h2 0.4.15 in crates/viewport-shell-servo/Cargo.lock; needs h2 >= 0.4.16\" }," \
+              "  { id = \"RUSTSEC-2026-0459\", reason = \"libsqlite3-sys 0.36.0 via rusqlite 0.38.0, pinned by servo-net 0.6.0; the fix needs rusqlite 0.41, which the pinned Servo cannot use; exposure needs a crafted database and -wal pair opened by the process\" }," \
               "  { id = \"RUSTSEC-2025-0075\", reason = \"unic-char-range 0.9.0 is unmaintained; pulled in by Servo 0.6.0 via urlpattern; no safe upgrade\" }," \
               "  { id = \"RUSTSEC-2025-0080\", reason = \"unic-common 0.9.0 is unmaintained; pulled in by Servo 0.6.0 via urlpattern; no safe upgrade\" }," \
               "  { id = \"RUSTSEC-2025-0081\", reason = \"unic-char-property 0.9.0 is unmaintained; pulled in by Servo 0.6.0 via urlpattern; no safe upgrade\" }," \
