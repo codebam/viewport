@@ -214,6 +214,72 @@ fn guard_critical(message: &Value) -> bool {
 /// binding's name could still call `__viewport_send` directly from an iframe.
 /// So messages are accepted only from the tracked default context of the main
 /// frame, and only while the main frame's URL passes the origin policy.
+///
+/// Whether queued events may be evaluated into the document.
+///
+/// Two facts, and the gate is their conjunction: the document is *loaded*
+/// (`Page.loadEventFired` has fired for the frame the guard is tracking) and
+/// its origin passes the policy (`FrameGuard::url_known_allowed`). Kept apart
+/// from URL knowledge because they answer different questions at different
+/// times: a committed navigation names a URL long before its document's
+/// scripts have run, and both backends used to open the gate on that
+/// bookkeeping — CEF on the reload's own `Page.reload` method result,
+/// Chromium on `Page.frameNavigated`/`executionContextCreated` — and drained
+/// queued events into a document whose listener did not exist yet. What was
+/// queued during a reload was what was lost.
+#[derive(Default)]
+struct LoadGate {
+    /// Whether the current document has loaded. `false` at startup, across a
+    /// reload, and across a navigation until the new document's load event.
+    loaded: bool,
+    /// Whether a URL is known and passes the policy. Separate so the gate
+    /// cannot open for a document that navigated away.
+    url_allowed: Option<bool>,
+}
+
+impl LoadGate {
+    fn reload_requested(&mut self) {
+        self.loaded = false;
+    }
+
+    /// Frame bookkeeping named a main URL. It does not open the gate: the
+    /// navigation may still be committing.
+    fn frame_navigated(&mut self, url: Option<&str>) {
+        self.loaded = false;
+        self.url_allowed = Some(url.is_some_and(viewport_ipc::js::shell_url_allowed));
+    }
+
+    /// Context bookkeeping: no state of the gate's depends on it.
+    fn context_created(&mut self) {}
+
+    /// The document has loaded. The one event that can open the gate.
+    fn load_event_fired(&mut self) {
+        self.loaded = true;
+    }
+
+    fn ready(&self) -> bool {
+        self.loaded && self.url_allowed.unwrap_or(false)
+    }
+}
+
+/// The document the origin policy is enforced against.
+///
+/// Every state here is client-controlled input read back from DevTools, and
+/// every field is optional because the answer to "which document is this" is
+/// genuinely unknown until the frame tree or a navigation names one.
+///
+/// The bridge talks two directions, and both have to be guarded:
+///
+/// * outbound, the compositor's events are evaluated into the page — but
+///   only into a page that is still the shell. A document that navigated or
+///   was redirected elsewhere must not be handed the desktop's clipboard,
+///   notifications or session state, so `url_known_allowed` is re-checked
+///   before every drain of the queue.
+/// * inbound, a page-to-compositor message is accepted only from the main
+///   frame's default context. A subframe is a different document, and the
+///   shim only refuses to build `window.webkit` in a subframe — a page that
+///   knows the binding's name could still call `__viewport_send` directly
+///   from an iframe.
 #[derive(Default)]
 struct FrameGuard {
     main_frame: Option<String>,
@@ -407,6 +473,9 @@ fn run(browser: &mut Browser, options: &Options) -> Result<()> {
     // and every message the page sends arrives in triplicate.
     let mut attaching = false;
     let mut ready = false;
+    // The load half of `ready`, tracked by the gate so no bookkeeping message
+    // can open it: see `LoadGate` for the race this closes.
+    let mut gate = LoadGate::default();
     let mut queued: Vec<String> = Vec::new();
     // A reload that arrived before there was a session to send it to. The
     // message is not page data and must not be queued as if it were; it is
@@ -464,6 +533,7 @@ fn run(browser: &mut Browser, options: &Options) -> Result<()> {
                     tracing::info!("reloading the shell");
                     if let Some(session) = reload_target(session.as_deref(), &mut pending_reload) {
                         ready = false;
+                        gate.reload_requested();
                         browser.call(
                             &mut next_id,
                             session,
@@ -510,6 +580,7 @@ fn run(browser: &mut Browser, options: &Options) -> Result<()> {
                         // that is being replaced.
                         pending_reload = false;
                         ready = false;
+                        gate.reload_requested();
                         let session = session.as_deref().expect("just set");
                         browser.call(
                             &mut next_id,
@@ -518,12 +589,13 @@ fn run(browser: &mut Browser, options: &Options) -> Result<()> {
                             json!({"ignoreCache": true}),
                         )?;
                     } else {
-                        // Ready only once the frame tree has named a main URL
-                        // that passes the policy. Until then queued events wait
-                        // rather than being evaluated into a document whose
-                        // origin is not yet known; if the URL is known and
-                        // disallowed, the queue is dropped outright.
-                        ready = guard.url_known_allowed() && !waiting_for_url;
+                        // Ready only once the document has actually loaded —
+                        // the gate opens on `Page.loadEventFired`, not on the
+                        // frame bookkeeping that named the URL. Until then
+                        // queued events wait rather than being evaluated into
+                        // a document that is still coming up; if the URL is
+                        // known and disallowed, the queue is dropped outright.
+                        ready = gate.ready();
                         if ready {
                             for json in queued.drain(..) {
                                 let script = viewport_ipc::js::dispatch(&json);
@@ -553,18 +625,22 @@ fn run(browser: &mut Browser, options: &Options) -> Result<()> {
                 }
 
                 if guard.note(&message) {
-                    // The frame tree or a navigation just arrived. If that is
-                    // what made the main URL known and allowed, the queued
-                    // startup events can go to the document now.
+                    // The frame tree or a navigation just arrived. The URL is
+                    // now known, but the gate does not open on bookkeeping:
+                    // a committed navigation is not a loaded document, and
+                    // the queue waits for its load event.
                     if waiting_for_url && guard.main_url.is_some() {
                         waiting_for_url = false;
                     }
-                    if !waiting_for_url && !ready && guard.url_known_allowed() {
-                        ready = true;
-                        if let Some(session) = session.as_deref() {
-                            for json in queued.drain(..) {
-                                let script = viewport_ipc::js::dispatch(&json);
-                                browser.evaluate(&mut next_id, session, &script)?;
+                    gate.frame_navigated(guard.main_url.as_deref());
+                    if !waiting_for_url && !ready && guard.main_url.is_some() {
+                        ready = gate.ready();
+                        if ready {
+                            if let Some(session) = session.as_deref() {
+                                for json in queued.drain(..) {
+                                    let script = viewport_ipc::js::dispatch(&json);
+                                    browser.evaluate(&mut next_id, session, &script)?;
+                                }
                             }
                         }
                     }
@@ -590,11 +666,16 @@ fn run(browser: &mut Browser, options: &Options) -> Result<()> {
                 // The shim is re-installed by `addScriptToEvaluateOnNewDocument`
                 // before any of the page's own scripts run, so this only has to
                 // let messages flow again.
+                //
+                // This is the one thing that opens the gate: the document has
+                // loaded, its scripts have run, and the listener the events are
+                // dispatched to exists.
                 if message.get("method").and_then(Value::as_str) == Some("Page.loadEventFired") {
                     if waiting_for_url && guard.main_url.is_some() {
                         waiting_for_url = false;
                     }
-                    ready = session.is_some() && guard.url_known_allowed() && !waiting_for_url;
+                    gate.load_event_fired();
+                    ready = session.is_some() && gate.ready() && !waiting_for_url;
                     // The new document is up, so the events that arrived while
                     // it was loading can go to it. The attach branch above
                     // drains only on first attach, which a reload does not
@@ -602,7 +683,7 @@ fn run(browser: &mut Browser, options: &Options) -> Result<()> {
                     // `output.layout` and `session.restore` replay sent across
                     // a reload sat in the queue for the life of the process.
                     if let Some(session) = session.as_deref() {
-                        if guard.url_known_allowed() && !waiting_for_url {
+                        if gate.ready() && !waiting_for_url {
                             for json in queued.drain(..) {
                                 let script = viewport_ipc::js::dispatch(&json);
                                 browser.evaluate(&mut next_id, session, &script)?;
@@ -948,6 +1029,67 @@ impl Browser {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The reload gate opens on a load event, and on nothing before it.
+    ///
+    /// `ready` used to be re-opened by the frame bookkeeping itself —
+    /// `Page.frameNavigated` fires the moment navigation commits, long before
+    /// the new document's module scripts have attached their listener — and
+    /// by the reload's own `Page.reload` method result in the CEF twin of
+    /// this gate. Events drained between the commit and the load went into a
+    /// document nobody was listening on and were lost.
+    #[test]
+    fn the_reload_gate_opens_on_the_load_event_alone() {
+        let mut gate = LoadGate::default();
+
+        // A reload closes the gate and nothing else happens yet.
+        gate.reload_requested();
+        assert!(!gate.ready(), "the gate is closed across a reload");
+
+        // The navigation commits: frame bookkeeping, not a load. The gate
+        // stays shut, however good the URL looks.
+        gate.frame_navigated(Some("file:///shell/index.html"));
+        assert!(
+            !gate.ready(),
+            "a committed navigation is not a loaded document"
+        );
+
+        // An execution context arriving is not a load either — this is the
+        // exact event that used to re-open the gate.
+        gate.context_created();
+        assert!(!gate.ready());
+
+        // The load event is the one thing that opens it.
+        gate.load_event_fired();
+        assert!(gate.ready());
+    }
+
+    /// And the initial attach: the frame tree naming a good URL does not
+    /// open the gate before the document has loaded, either.
+    #[test]
+    fn the_first_frame_tree_does_not_open_the_gate() {
+        let mut gate = LoadGate::default();
+        gate.frame_navigated(Some("file:///shell/index.html"));
+        assert!(!gate.ready(), "waiting for the load event");
+        gate.load_event_fired();
+        assert!(gate.ready());
+
+        // A second navigation closes the gate again until its own load.
+        gate.frame_navigated(Some("file:///shell/index.html"));
+        assert!(!gate.ready());
+        gate.load_event_fired();
+        assert!(gate.ready());
+    }
+
+    /// A document that navigated away from an allowed origin keeps the gate
+    /// shut even when its load event fires.
+    #[test]
+    fn a_disallowed_origin_keeps_the_gate_shut() {
+        let mut gate = LoadGate::default();
+        gate.frame_navigated(Some("https://example.com/"));
+        gate.load_event_fired();
+        assert!(!gate.ready());
+    }
 
     #[test]
     fn a_page_target_is_recognised_and_a_service_worker_is_not() {

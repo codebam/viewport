@@ -54,6 +54,18 @@ static OUT: OnceLock<viewport_shell_bridge::Sender> = OnceLock::new();
 static QUEUE: Mutex<VecDeque<String>> = Mutex::new(VecDeque::new());
 static READY: AtomicBool = AtomicBool::new(false);
 
+/// Whether the current document has loaded, which only
+/// `Page.loadEventFired` says and only a reload unsays.
+///
+/// `READY` alone could be reopened by the frame bookkeeping: the reload's own
+/// `Page.reload` method result flows through `on_dev_tools_method_result`
+/// microseconds after `READY.store(false)`, the guard's URL is still the old
+/// document's (known allowed), and the gate swapped itself open — draining
+/// the queue into the document that was going away and leaving every event
+/// that arrived during the reload to be evaluated the same way. The load
+/// event is the one thing that says the document the events are for exists.
+static LOADED: AtomicBool = AtomicBool::new(false);
+
 /// A reload that arrived before there was a browser to send it to.
 ///
 /// The socket reader posts a `Deliver` task for every event, and the task's
@@ -802,6 +814,8 @@ wrap_dev_tools_message_observer! {
             // again: the same signal the chromium backend waits on.
             if method.as_deref() == Some("Page.loadEventFired") {
                 let present = BROWSER.with(|slot| slot.borrow().is_some());
+                // The document is up; this is the one thing that says so.
+                LOADED.store(true, Ordering::SeqCst);
                 READY.store(present, Ordering::SeqCst);
                 // And hand over what arrived while the document was loading.
                 // `install_bridge` drains only on first window creation, which
@@ -891,7 +905,12 @@ wrap_dev_tools_message_observer! {
                 guard.note_result(result);
                 known_allowed = guard.url_known_allowed();
             }
-            if known_allowed && !READY.swap(true, Ordering::SeqCst) {
+            // The gate is ready *and* loaded. The method result alone says
+            // nothing about the document: `Page.reload`'s own result arrives
+            // here while the old document is still up, and opening on it was
+            // how a reload drained its queue into a page that was going away.
+            if known_allowed && LOADED.load(Ordering::SeqCst) && !READY.swap(true, Ordering::SeqCst)
+            {
                 if let Some(browser) = _browser {
                     let waiting: Vec<String> = QUEUE
                         .lock()
@@ -934,7 +953,11 @@ wrap_task! {
                     // `Page.loadEventFired`, which the DevTools observer
                     // watches for: events that arrive meanwhile would land in
                     // a document that is going away and never be seen again.
+                    // `LOADED` with it — the reload's own method result flows
+                    // through the result path above, which reads it, and a
+                    // stale `true` there was how this gate reopened itself.
                     READY.store(false, Ordering::SeqCst);
+                    LOADED.store(false, Ordering::SeqCst);
                     send(browser, &json!({
                         "id": next_id(),
                         "method": "Page.reload",
