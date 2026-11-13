@@ -1466,15 +1466,87 @@ impl smithay::wayland::xdg_toplevel_icon::XdgToplevelIconHandler for ViewportSta
 /// Games and virtual machines ask for this so that the chords they use inside
 /// themselves are not taken by the desktop around them. The grab itself is
 /// Smithay's; what it needs from here is which focus target the X11 surface
-/// belongs to, which is the surface itself — this compositor's keyboard focus
-/// is a `WlSurface`, and an X11 window has one like any other client.
+/// belongs to.
+///
+/// That target is the X11 window, not its surface. Returning
+/// `KeyboardFocus::Wayland` — the shape this branch kept from before
+/// `keyboard_focus.rs` grew the X11 arm — made Smithay's grab replace a
+/// correct focus with a wrong one: on the first key it `set_focus`ed the
+/// surface form, `X11 != Wayland` fired `leave` on the X11 window, and the X
+/// server's focus went to `PointerRoot`, the exact fault that file exists to
+/// prevent. A game that had just called `XGrabKeyboard` lost the one thing
+/// the grab was for.
+///
+/// The grant is earned as well. The request carries no proof that the asking
+/// client is the focused one, and a background X11 client calling
+/// `XGrabKeyboard` would otherwise take every keystroke from whatever held
+/// them — Smithay's grab ignores compositor focus changes while it lives, so
+/// nothing could take the seat back until the client relented. The same rule
+/// `allow_selection_access` applies to the clipboard: an X window may have
+/// the keys while an X window holds them, and never while the session is
+/// locked.
 impl smithay::wayland::xwayland_keyboard_grab::XWaylandKeyboardGrabHandler for ViewportState {
     fn keyboard_focus_for_xsurface(
         &self,
         surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
     ) -> Option<Self::KeyboardFocus> {
-        Some(surface.clone().into())
+        let current = self.seat.get_keyboard().and_then(|k| k.current_focus());
+        // The view whose window paints into this surface — the managed X11
+        // case. An override-redirect window has no view; it is matched in the
+        // space below, and honoured only while it already holds the keys,
+        // which is what a menu taking keyboard input looks like.
+        let asking = self.views.iter().find_map(|view| {
+            let matches = view
+                .window
+                .x11_surface()
+                .and_then(|x11| x11.wl_surface())
+                .is_some_and(|candidate| &candidate == surface);
+            matches.then(|| (view.window.clone(), true))
+        });
+
+        if let Some((window, _)) = asking {
+            return xwayland_grab_focus(self.locked, current, Some(&window));
+        }
+
+        let element = self.space.elements().find_map(|element| {
+            let matches = element
+                .x11_surface()
+                .and_then(|x11| x11.wl_surface())
+                .is_some_and(|candidate| &candidate == surface);
+            matches.then(|| element.clone())
+        })?;
+        if !self.locked && current.is_some_and(|focus| focus.surface() == surface) {
+            crate::keyboard_focus::KeyboardFocus::for_window(&element)
+        } else {
+            None
+        }
     }
+}
+
+/// Whether an X11 surface's keyboard-grab request is granted, and as what.
+///
+/// Free-standing so the policy is testable without a seat. The pieces:
+///
+/// * A locked session grants nothing. The lock surface holds the keyboard,
+///   and an X grab over it is a way to take the password box's keys.
+/// * The grab belongs to the keyboard's own client: the asking window must
+///   be the one that already holds the focus. A background X11 client asking
+///   otherwise would hold the seat for the life of its grab.
+/// * Granted, it is answered with the `KeyboardFocus::X11` the seat already
+///   holds, so installing the grab's focus changes nothing and `leave` is
+///   never fired on the window that has the keys. That last part is what
+///   makes the return the enum rather than the surface.
+fn xwayland_grab_focus(
+    locked: bool,
+    current: Option<crate::keyboard_focus::KeyboardFocus>,
+    asking: Option<&smithay::desktop::Window>,
+) -> Option<crate::keyboard_focus::KeyboardFocus> {
+    if locked {
+        return None;
+    }
+    let focus = crate::keyboard_focus::KeyboardFocus::for_window(asking?)?;
+    let holds = current.as_ref() == Some(&focus);
+    holds.then_some(focus)
 }
 
 /// A sandbox asking for a socket of its own.
@@ -1877,6 +1949,56 @@ fn warp_target(
         }
     }
     Some(to)
+}
+
+#[cfg(test)]
+mod grab_focus_tests {
+    use super::*;
+
+    /// A `KeyboardFocus` over a real X11 window cannot be built in a unit
+    /// test — it needs a live Xwm — so the policy is asserted on its halves:
+    /// the two refusals that need no object identity, here; and the
+    /// grant-with-resolution half, which is pinned against the source below.
+    #[test]
+    fn a_locked_or_unfocused_grab_is_refused() {
+        // A locked session grants nothing, asking window or not.
+        assert_eq!(xwayland_grab_focus(true, None, None), None);
+        // An unlocked session with no focus grants nothing: the grab would be
+        // the first holder of keys nobody gave away.
+        assert_eq!(xwayland_grab_focus(false, None, None), None);
+    }
+
+    /// The grant resolves to the X11 arm and only for the focused window.
+    ///
+    /// The helper needs a live window to decide the third half, so the shape
+    /// is checked against the source: the resolution goes through
+    /// `KeyboardFocus::for_window` (the X11 arm — the whole point), and the
+    /// grant is the comparison against what the seat already holds.
+    #[test]
+    fn a_grant_resolves_through_the_x11_arm() {
+        let source = include_str!("mod.rs");
+        let source = source.split("#[cfg(test)]").next().unwrap_or(source);
+        let start = source
+            .find("fn xwayland_grab_focus(")
+            .expect("the policy helper");
+        let body = &source[start
+            ..start
+                + source[start..]
+                    .find("\n/// Where a `wp_pointer_warp_v1")
+                    .expect("the end of the policy helper")];
+        assert!(
+            body.contains("KeyboardFocus::for_window(asking?)"),
+            "the grant must resolve through the X11 arm, not a bare surface"
+        );
+        assert!(
+            !body.contains(".into()"),
+            "the stale Wayland-surface shape must not come back"
+        );
+        assert!(
+            body.contains("current.as_ref() == Some(&focus)"),
+            "the grant belongs to the window that already holds the keys"
+        );
+    }
 }
 
 #[cfg(test)]
