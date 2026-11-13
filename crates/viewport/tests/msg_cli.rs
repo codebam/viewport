@@ -386,3 +386,41 @@ fn the_socket_is_found_from_the_environment() {
     assert!(output.status.success(), "{}", stderr(&output));
     assert_eq!(lines(&output)[0]["type"], "output.layout");
 }
+
+/// `--rules` is JSON on every message that takes it except the keymap's, where
+/// it is an xkb rules *name*.
+///
+/// The global string table used to hold `rules`, so the two rule setters sent
+/// `'[]'` as the string "[]" and the compositor refused them with a type
+/// error — the documented spelling, refused.
+#[test]
+fn the_rule_setters_take_json() {
+    let compositor = Compositor::for_msg("rules-json");
+
+    let output = compositor.msg(&["-t", "config.layer_rules", "--rules", "[]"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+
+    let output = compositor.msg(&["-t", "config.workspaces", "--rules", "{}"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+
+    // And the keymap's own rules keep being a name.
+    let output = compositor.msg(&["-t", "config.keyboard", "--rules", "evdev"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+}
+
+/// Two queries are answered with an event that arrives unasked-for, and the
+/// CLI used to send them and print nothing.
+#[test]
+fn the_history_queries_print_what_they_are_answered_with() {
+    let compositor = Compositor::for_msg("history-queries");
+
+    let output = compositor.msg(&["-t", "clipboard.query"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let printed = lines(&output);
+    assert_eq!(printed[0]["type"], "clipboard.history", "{printed:?}");
+
+    let output = compositor.msg(&["-t", "notification.list"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let printed = lines(&output);
+    assert_eq!(printed[0]["type"], "notification.history", "{printed:?}");
+}

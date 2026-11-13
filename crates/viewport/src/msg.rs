@@ -101,8 +101,6 @@ const STRING_FIELDS: &[&str] = &[
     // `--button 272` into the string `"272"`. The tray entry carries its own
     // copy instead, the same way its `id` does.
     "orientation",
-    // And a media button, which is a word with a hyphen in it.
-    "action",
     // A network's name, which is whatever somebody called their router: `5`
     // and `true` are both names a person has given a network, and read as
     // JSON they would be a number and a boolean rather than the network.
@@ -127,7 +125,6 @@ const STRING_FIELDS: &[&str] = &[
     "layout",
     "variant",
     "options",
-    "rules",
     "model",
     "lock_command",
     "device",
@@ -315,7 +312,10 @@ const TYPES: &[Type] = &[
     Type {
         name: "notification.action",
         fields: &["id", "action"],
-        strings: &[],
+        // An action key is whatever string the application published: `true`
+        // and `42` are keys an application is entitled to have chosen, and
+        // JSON would have turned both into something else.
+        strings: &["action"],
         hint: "--id N [--action KEY]",
     },
     Type {
@@ -386,7 +386,11 @@ const TYPES: &[Type] = &[
     Type {
         name: "mpris.control",
         fields: &["action"],
-        strings: &[],
+        // A verb with hyphens in it: `play-pause` parses as nothing, but the
+        // hyphenless `stop` is a verb too and JSON would have left it alone
+        // anyway — this one is about `play_pause`, which the D-Bus interface
+        // spells with a hyphen, and any future verb that parses as something.
+        strings: &["action"],
         hint: "--action play-pause|next|previous|stop",
     },
     Type {
@@ -404,7 +408,7 @@ const TYPES: &[Type] = &[
     Type {
         name: "power.action",
         fields: &["action"],
-        strings: &[],
+        strings: &["action"],
         hint: "--action suspend|reboot|poweroff   (quit is its own message)",
     },
     Type {
@@ -493,7 +497,10 @@ const TYPES: &[Type] = &[
             "x",
             "y",
         ],
-        strings: &[],
+        // `mirror` names an output, and outputs called `1` and `true` exist:
+        // read as JSON those become a number and a boolean, and the compositor
+        // answers "no such output" for a name it was actually given.
+        strings: &["mirror"],
         hint: "--name NAME [--enabled BOOL] [--mode.width N --mode.height N --mode.refresh N] [--scale F] [--transform T] [--vrr MODE] [--mirror NAME] [--x N --y N]",
     },
     Type {
@@ -585,13 +592,16 @@ const TYPES: &[Type] = &[
             "follow_mouse",
             "follow_mouse_threshold",
         ],
-        strings: &[],
+        strings: &["theme"],
         hint: "[--hide_after_ms N --theme NAME --size N --follow_mouse BOOL]   (bare toggles hide_after_ms 0 <-> 2000)",
     },
     Type {
         name: "config.motion",
         fields: &["enabled", "duration", "slow", "ease"],
-        strings: &[],
+        // A curve is a word: `linear`, `back-out`. `--ease true` is a name
+        // somebody could have given a custom curve, and JSON would have made
+        // it a boolean.
+        strings: &["ease"],
         hint: "[--enabled BOOL --duration N --slow N --ease FUNCTION]   (set shell animation pace; each is optional)",
     },
     Type {
@@ -603,7 +613,11 @@ const TYPES: &[Type] = &[
     Type {
         name: "config.clock",
         fields: &["locale", "hour12", "format"],
-        strings: &[],
+        // A locale tag and a format template are words with hyphens and
+        // percent signs in them, and a format template of `%s` parses as
+        // nothing while `en-GB` parses as nothing either — but a numeric
+        // locale or template is a name all the same.
+        strings: &["locale", "format"],
         hint: "[--locale TAG --hour12 BOOL --format TEMPLATE]   (set the clock's locale and format; each is optional)",
     },
     Type {
@@ -687,7 +701,7 @@ const TYPES: &[Type] = &[
     Type {
         name: "config.icon_theme",
         fields: &["theme"],
-        strings: &[],
+        strings: &["theme"],
         hint: "--theme NAME   (the icon theme tray and launcher icons resolve against)",
     },
     Type {
@@ -707,8 +721,7 @@ const TYPES: &[Type] = &[
         fields: &["rules"],
         strings: &[],
         hint: "--rules '[]'   (replace the layer-shell rules, as JSON)",
-    },
-    Type {
+    },    Type {
         name: "config.decorations",
         fields: &["mode"],
         strings: &[],
@@ -749,7 +762,13 @@ const TYPES: &[Type] = &[
             "repeat_rate",
             "repeat_delay",
         ],
-        strings: &[],
+        // xkb's rules are a *name* — `evdev`, `base` — and nothing else this
+        // message takes would parse as JSON, so the override restores what
+        // `--rules evdev` would have parsed into a boolean and lost. The two
+        // rule setters keep `rules` out of the global table for the same
+        // reason the other way: theirs is a document, and the tray's `id`
+        // needed this same mechanism for the same shape of clash.
+        strings: &["rules"],
         hint: "[--layout NAME --variant NAME --options OPTS --rules NAME --model NAME --repeat_rate N --repeat_delay N]   (set the seat's keymap; each is optional)",
     },
     Type {
@@ -938,6 +957,13 @@ fn reply_for(kind: &str) -> Reply {
         "session.query" => Reply::First("session.restore"),
         "view.query" => Reply::Until(&["config", "view.added"]),
         "launcher.query" => Reply::First("launcher.list"),
+        // Both are answered with an event rather than a reply, and both are
+        // the private events the CLI is trusted to read. Without these the
+        // `Reply::None` loop skipped everything that was not an error — so
+        // the two queries printed nothing and exited 0, which reads as an
+        // empty clipboard and an empty notification centre.
+        "clipboard.query" => Reply::First("clipboard.history"),
+        "notification.list" => Reply::First("notification.history"),
         _ => Reply::None,
     }
 }
