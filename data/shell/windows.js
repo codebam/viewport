@@ -416,6 +416,17 @@ function addView({ id, title, app_id, tag, output: outputName, min_width, min_he
     if (!replay && !view.minimized && rule?.focus !== false
         && (special === null || special === 'pinned')
         && target === output.workspace) {
+      /* Taken here rather than waited for. The compositor answers
+       `view.focus` with a `view.focused` event and that echo is what normally
+       moves `focusedId` — but the layout pass below runs before the echo can
+       come back, and the scrolling strip scrolls to wherever `focusedId`
+       points *while it renders*. Left to the echo, the first layout places a
+       new window as if the old one still had focus: a column at the end of
+       the strip, most of it off screen — the signing window that opened as a
+       ten-pixel sliver at the edge of the monitor until Mod4 relaid it out.
+       The echo still arrives and still corrects the rest of the state; this
+       only makes the first placement the right one. */
+      focusedId = id;
       send({ type: 'view.focus', id });
     }
   };
@@ -460,9 +471,9 @@ function addView({ id, title, app_id, tag, output: outputName, min_width, min_he
   /* If this application left a slot in the tree, it goes back into it. */
   if (!floating && claimSlot(id, app_id || title || tag, tag)) {
     treeGeneration++;
+    focusIt();
     relayoutAll();
     fadeIn(id);
-    focusIt();
     saveSession();
     return;
   }
@@ -470,9 +481,9 @@ function addView({ id, title, app_id, tag, output: outputName, min_width, min_he
 
   if (trySwallow(id, ancestors, rule, floating)) {
     treeGeneration++;
+    focusIt();
     relayoutAll();
     fadeIn(id);
-    focusIt();
     saveSession();
     return;
   }
@@ -501,9 +512,9 @@ function addView({ id, title, app_id, tag, output: outputName, min_width, min_he
   }
 
   treeGeneration++;
+  focusIt();
   relayoutAll();
   fadeIn(id);
-  focusIt();
   saveSession();
 }
 

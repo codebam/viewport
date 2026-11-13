@@ -12,6 +12,15 @@ to summarise rather than to duplicate.
 ## [Unreleased]
 
 ### Fixed
+- A new window is scrolled into view by the same layout pass that places it,
+  instead of waiting for the compositor to echo the focus request back. The
+  scrolling strip scrolls to whichever window it believes is focused while it
+  renders, and the shell only learned about a focus it had just asked for when
+  that echo arrived — a layout later at best, and in the reported case nine
+  seconds later, leaving a signing prompt as a ten-pixel column at the edge of
+  the monitor until something else (pressing Mod4) relaid the workspace out.
+  The shell now takes the focus it is about to be given before placing the
+  window; the echo still arrives and still corrects the rest of the state.
 - A window the shell placed no longer stays invisible when no submitted frame
   ever carries it. The compositor now records when a `view.layout` placed a
   window and when a queued flip last carried it, and a placement the frames

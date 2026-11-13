@@ -219,6 +219,12 @@ const sent = [];
  * event comes back — so the stub has to close the loop or every test runs with
  * a stale focus. */
 const pendingFocus = [];
+/* A focus echo a test wants *not* to arrive yet. The real compositor answers
+ * promptly and a test that always drains hides the window in which the shell
+ * has asked for focus but not been told: that is exactly the window in which a
+ * newly opened window used to be placed off screen, so it has to be reachable
+ * here too. See the scrolling test for what is asserted while it is held. */
+let holdFocusEcho = false;
 const outputsEl = new El('div');
 /* Held rather than made inline, so a test can look at what the chooser drew. */
 const screencastEl = new El('div');
@@ -487,6 +493,7 @@ const EXPORTS = ';globalThis.__shell = { views, workspaces, outputs, scrollOffse
      actually rebuild, which some layouts cap well below the windows open. */
   + ' get renderedIdsForTest() { return renderedIds; },'
   + ' get overviewActiveForTest() { return overviewActive; },'
+  + ' get focusedIdForTest() { return focusedId; },'
   + ' floatingForTest: (id) => views.get(id)?.floating ?? null,'
   /* The motion config: whether the reduced-motion switch is thrown, and the
      easing a tween would run on. The CSS properties applyMotion writes are
@@ -674,6 +681,7 @@ function emit(message) {
 /* Bounded, because a shell bug that focuses in a loop should fail the test
    rather than hang it. */
 function drainFocus() {
+  if (holdFocusEcho) return;
   for (let guard = 0; pendingFocus.length > 0 && guard < 20; guard++) {
     const id = pendingFocus.shift();
     for (const fn of windowListeners.viewport ?? []) {
@@ -2825,6 +2833,32 @@ check('windows laid out', new Set(layouts.map((m) => m.id)).size === 4);
         column?.width === 0.6);
       emit({ type: 'view.removed', id: 69 });
       emit({ type: 'config', layout: mode, rules: updatedFeatureRules });
+
+      /* A window opened before the compositor has answered the focus request.
+       *
+       * The strip scrolls to `focusedId` while it renders, and that used to
+       * move only when the `view.focused` echo came back — a layout *later*
+       * than the one that places the new window. That is how a signing prompt
+       * opened as a ten-pixel column at the edge of the monitor and stayed
+       * there until something else relaid the workspace out. The echo is
+       * withheld here, so the focus the placement pass sees has to be the one
+       * the shell set when it asked. */
+      holdFocusEcho = true;
+      const raceMark = sent.length;
+      open(74, 'focus-race');
+      const raceTail = sent.slice(raceMark);
+      const raceFocusAt = raceTail.findIndex((m) => m.type === 'view.focus'
+        && m.id === 74);
+      check('an opening window takes focus before its placement is reported',
+        raceFocusAt >= 0
+          && raceTail.some((m, i) => i > raceFocusAt
+            && m.type === 'view.layout' && m.id === 74));
+      check('and the placement pass already sees it as the focused window',
+        globalThis.__shell.focusedIdForTest === 74);
+      holdFocusEcho = false;
+      drainFocus();
+      emit({ type: 'view.removed', id: 74 });
+      drainFocus();
     }
     emit({ type: 'view.focused', id: 56 });
     emit({ type: 'shell.command', command: 'window.pseudotile.toggle', args: [] });
