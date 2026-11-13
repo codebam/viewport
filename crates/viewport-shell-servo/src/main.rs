@@ -59,10 +59,10 @@ use anyhow::{anyhow, Context as _, Result};
 use euclid::Scale;
 use servo::{
     Code, DeviceIndependentPixel, DevicePixel, DevicePoint, InputEvent, Key, KeyState,
-    KeyboardEvent, Location, Modifiers, MouseButton, MouseButtonAction, MouseButtonEvent,
-    MouseMoveEvent, NamedKey, RenderingContext, Servo, ServoBuilder, UserContentManager,
-    UserScript, WebResourceLoad, WebResourceResponse, WebView, WebViewBuilder, WebViewDelegate,
-    WheelDelta, WheelEvent, WheelMode, WindowRenderingContext,
+    KeyboardEvent, LoadStatus, Location, Modifiers, MouseButton, MouseButtonAction,
+    MouseButtonEvent, MouseMoveEvent, NamedKey, RenderingContext, Servo, ServoBuilder,
+    UserContentManager, UserScript, WebResourceLoad, WebResourceResponse, WebView, WebViewBuilder,
+    WebViewDelegate, WheelDelta, WheelEvent, WheelMode, WindowRenderingContext,
 };
 use url::Url;
 use viewport_shell_bridge::{Line, Options};
@@ -184,6 +184,42 @@ enum Wake {
     Compositor,
 }
 
+/// What the page the shell loaded is doing, as the delegate hears it.
+///
+/// Two facts and the answer they give, mirroring the load gate the chromium
+/// and CEF backends keep: which origin the document is on now, and whether
+/// it has loaded. Every other backend re-checks the origin policy before
+/// evaluating an event into the page, so that a document that navigated or
+/// was redirected away is not handed the desktop's clipboard, notifications
+/// or session state; this one evaluated whatever was queued with no check at
+/// all, and Servo's `notify_url_changed` is the hook that makes the same
+/// guard possible here.
+#[derive(Default)]
+struct PageState {
+    /// The URL the delegate last heard about. `None` until the first
+    /// `notify_url_changed`, which for a webview built with a URL arrives at
+    /// or before the first load.
+    url: Option<String>,
+    /// Whether the current document has loaded to `Complete`.
+    loaded: bool,
+}
+
+impl PageState {
+    /// Whether compositor events may be evaluated into the page.
+    ///
+    /// `None` — nothing heard yet — is the moment before the first load: the
+    /// URL the webview was built with already passed the policy, so events
+    /// waiting for the page are fine. Once a document exists it has to pass
+    /// the same policy, and the load event is what says the listener the
+    /// events are dispatched to exists.
+    fn events_allowed(&self) -> bool {
+        match self.url.as_deref() {
+            Some(url) => viewport_ipc::js::shell_url_allowed(url) && self.loaded,
+            None => true,
+        }
+    }
+}
+
 /// Servo's handle on the event loop.
 #[derive(Clone)]
 struct Waker(EventLoopProxy<Wake>);
@@ -237,6 +273,8 @@ struct Shell {
     pointer: Cell<DevicePoint>,
     /// Which modifiers are held, for the same reason.
     modifiers: Cell<ModifiersState>,
+    /// What the page is doing, as the delegate hears it. See [`PageState`].
+    page: RefCell<PageState>,
 }
 
 impl ApplicationHandler<Wake> for App {
@@ -258,6 +296,23 @@ impl ApplicationHandler<Wake> for App {
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: Wake) {
         let App::Running(shell) = self else {
+            // Arrived while the window was still coming up: the socket reader
+            // is live before `resumed` has built the shell, and a compositor
+            // that talks fast — or one that closes the socket because it is
+            // exiting — says its first word in exactly this window. Discarding
+            // the wake here meant the queued lines sat unread until the *next*
+            // compositor event, which for a `Line::Closed` never came: a
+            // servoshell-style hang where nothing ever exits.
+            if let App::Starting(starting) = self {
+                if let Ok(line) = starting.lines.try_recv() {
+                    // The socket closed before the page existed: there is
+                    // nothing left to draw for, whatever the event was.
+                    if matches!(line, Line::Closed) {
+                        tracing::info!("the compositor closed the socket; stopping");
+                        event_loop.exit();
+                    }
+                }
+            }
             return;
         };
         if matches!(event, Wake::Compositor) && !shell.drain_compositor() {
@@ -348,6 +403,7 @@ fn start(event_loop: &ActiveEventLoop, starting: &mut Starting) -> Result<Rc<She
         warned_bad_token: Cell::new(false),
         pointer: Cell::new(DevicePoint::new(0.0, 0.0)),
         modifiers: Cell::new(ModifiersState::empty()),
+        page: RefCell::new(PageState::default()),
     });
 
     let webview = WebViewBuilder::new(&shell.servo, rendering_context)
@@ -391,6 +447,27 @@ impl Shell {
                     if viewport_shell_bridge::is_reload(&json) {
                         tracing::info!("reloading the shell");
                         webview.reload();
+                        continue;
+                    }
+                    // The origin and load check every other backend makes:
+                    // a page that navigated or redirected away from a
+                    // file:/loopback origin must not be handed the desktop's
+                    // clipboard, notifications or session state, and a
+                    // document still loading has no listener to receive them.
+                    // Dropped, not queued: the events the page missed while it
+                    // was somewhere else are the ones it has no use for, and
+                    // the next `config` on any change re-establishes the state
+                    // the page actually draws from.
+                    if !self.page.borrow().events_allowed() {
+                        static DROP_WARNED: std::sync::atomic::AtomicBool =
+                            std::sync::atomic::AtomicBool::new(false);
+                        if !DROP_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                            tracing::warn!(
+                                "dropping a compositor event: the page is not a loaded \
+                                 file:/loopback shell; set {}=1 to allow a remote shell",
+                                viewport_ipc::js::ALLOW_REMOTE_SHELL_ENV
+                            );
+                        }
                         continue;
                     }
                     // The same script every other backend evaluates, built by
@@ -464,6 +541,27 @@ impl Shell {
 impl WebViewDelegate for Shell {
     fn notify_new_frame_ready(&self, _webview: WebView) {
         self.window.request_redraw();
+    }
+
+    /// Where the document is now, and whether events may go into it.
+    ///
+    /// Every navigation — including the load of the URL the webview was built
+    /// with — arrives here. The origin is what `drain_compositor` checks
+    /// before it evaluates anything; without it this backend was the one
+    /// backend that handed queued events to whatever the page had become.
+    fn notify_url_changed(&self, _webview: WebView, url: Url) {
+        let mut page = self.page.borrow_mut();
+        page.url = Some(url.to_string());
+        // A new document at a new URL has not loaded yet, whatever the last
+        // one had done.
+        page.loaded = false;
+    }
+
+    /// The load reaching `Complete` is the one thing that opens the event
+    /// path again, the same signal the chromium and CEF gates wait on.
+    fn notify_load_status_changed(&self, _webview: WebView, status: LoadStatus) {
+        let mut page = self.page.borrow_mut();
+        page.loaded = status == LoadStatus::Complete;
     }
 
     /// The outbound half of the bridge.
@@ -678,9 +776,12 @@ fn bridge_script(token: &str) -> String {
 
 fn mouse_button(button: winit::event::MouseButton) -> MouseButton {
     match button {
-        winit::event::MouseButton::Left => MouseButton::Left,
-        winit::event::MouseButton::Right => MouseButton::Right,
-        winit::event::MouseButton::Middle => MouseButton::Middle,
+        // Servo renamed the enum's buttons to the DOM's names (b633eb1); the
+        // old spellings stopped compiling here and this crate, being outside
+        // the workspace, was the only place that noticed.
+        winit::event::MouseButton::Left => MouseButton::Primary,
+        winit::event::MouseButton::Right => MouseButton::Secondary,
+        winit::event::MouseButton::Middle => MouseButton::Auxiliary,
         winit::event::MouseButton::Back => MouseButton::Back,
         winit::event::MouseButton::Forward => MouseButton::Forward,
         winit::event::MouseButton::Other(other) => MouseButton::Other(other),
@@ -846,5 +947,44 @@ mod tests {
         });
         assert!(forward_line(&tx, Line::Closed));
         assert!(closed.join().expect("the queue reader"));
+    }
+}
+
+#[cfg(test)]
+mod page_state_tests {
+    use super::*;
+
+    /// The origin and load gate `drain_compositor` asks before evaluating an
+    /// event into the page.
+    ///
+    /// Nothing was checked at all here: this backend was the only one that
+    /// handed queued events to whatever the page had become, and a document
+    /// still loading has no listener to receive them. `None` — nothing heard
+    /// yet — is the moment before the first load, which the built-in URL
+    /// already passed the policy for.
+    #[test]
+    fn events_wait_for_a_loaded_allowed_page() {
+        let mut page = PageState::default();
+        assert!(
+            page.events_allowed(),
+            "nothing has loaded yet: the built-in url governs"
+        );
+
+        // A navigation to an allowed origin, still loading: held.
+        page.url = Some("file:///shell/index.html".to_owned());
+        page.loaded = false;
+        assert!(
+            !page.events_allowed(),
+            "loading at an allowed origin still waits"
+        );
+
+        // Loaded: open.
+        page.loaded = true;
+        assert!(page.events_allowed());
+
+        // Navigated away: shut again, however loaded.
+        page.url = Some("https://example.com/".to_owned());
+        page.loaded = true;
+        assert!(!page.events_allowed(), "a remote origin is refused");
     }
 }
