@@ -412,18 +412,22 @@ where
     // locker draws its own or hides it, and the shell's lock screen has a
     // password box that has to be clickable. Nothing else is, so a cursor
     // cannot point at anything it should not.
-    //
-    // A capture carries neither. `window_elements` answers an empty list
-    // while the session is locked, and an output capture is the same picture
-    // at a wider angle: a recorder that kept a share running across a lock
-    // would otherwise stream the lock surface — and with it the password
-    // box being typed into — and the cursor over it, which shows which keys
-    // are being tapped. An empty list is what the caller composites as a
-    // black frame, the same answer a window share gives.
-    if capture {
-        return elements;
-    }
     if frame.locked_blank || frame.lock.is_some() {
+        // A capture carries neither the lock screen nor the pointer.
+        // `window_elements` answers an empty list while the session is locked,
+        // and an output capture is the same picture at a wider angle: a
+        // recorder that kept a share running across a lock would otherwise
+        // stream the lock surface — and with it the password box being typed
+        // into — and the cursor over it, which shows which keys are being
+        // tapped. An empty list is what the caller composites as a black
+        // frame, the same answer a window share gives.
+        //
+        // Inside this branch and not above it: above, an empty list would be
+        // the answer for every capture of an *unlocked* desktop too, which is
+        // a screenshot or a screen share of a black screen.
+        if capture {
+            return elements;
+        }
         push_cursor(&mut elements, frame, renderer, scale, effects);
         if let Some(surface) = frame.lock.as_ref() {
             elements.extend(
@@ -1698,6 +1702,11 @@ mod tests {
     /// lock surface streamed the password box being typed into, and streaming
     /// the cursor showed which keys were tapped.
     ///
+    /// The guard belongs *inside* that branch. At the top of the function it
+    /// answers an empty list for every capture of an unlocked desktop too, so
+    /// a screenshot or a screen share comes back black while the window
+    /// captures beside it still work — which is exactly what happened.
+    ///
     /// Building a real frame needs a renderer, so — like the lock-surface
     /// walks in `state/frame_barriers.rs` — the invariant is checked against
     /// the source the branch is written in.
@@ -1710,21 +1719,26 @@ mod tests {
         // elsewhere too, and a whole-source find would land before `layers`
         // even begins.
         let rest = &source[start..];
-        let end = rest
+        let branch_at = rest
+            .find("if frame.locked_blank || frame.lock.is_some() {")
+            .expect("the locked branch");
+        let branch = &rest[branch_at..];
+        let end = branch
             .find("push_cursor(&mut elements, frame, renderer, scale, effects);")
-            .expect("the end of the locked branch");
-        let body = &rest[..end];
+            .expect("the cursor the locked branch draws");
+        let drawn = &branch[..end];
+        let guard = drawn
+            .find("if capture {")
+            .expect("the locked branch must answer nothing when capture is asked for");
         assert!(
-            body.contains("if capture {"),
-            "the locked branch must answer nothing when capture is asked for"
+            drawn[guard..].contains("return elements;"),
+            "the capture guard must answer nothing, not merely skip a draw"
         );
-        // And before the branch that would draw it, so the answer cannot be
-        // overtaken by the lock surface being pushed on the way through.
-        let capture_guard = body.find("if capture {").unwrap();
-        let lock_branch = body.find("if frame.locked_blank").unwrap();
+        // And only there: an early return before the branch is a black
+        // screenshot of a desktop that is not locked at all.
         assert!(
-            capture_guard < lock_branch,
-            "the capture guard must answer before the locked branch draws anything"
+            !rest[..branch_at].contains("if capture {"),
+            "an unlocked capture must still carry the desktop"
         );
     }
 }
