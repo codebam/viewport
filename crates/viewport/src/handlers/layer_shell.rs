@@ -129,6 +129,14 @@ impl WlrLayerShellHandler for ViewportState {
         // A launcher's completion list. Tracked like any other popup; it is
         // positioned against its parent, which is not a window this compositor
         // has a rectangle for.
+        //
+        // And unconstrained like any other. Without this, a menu anchored to
+        // a bar near an output edge stayed wherever the client's positioner
+        // put it: the layer map never runs `get_unconstrained_geometry`, so a
+        // tray menu hanging off the right edge was clipped by the output
+        // instead of sliding into it. The resolver inside reads the layer's
+        // geometry from the surface's owner, which `get_popup` recorded.
+        self.unconstrain_popup(&surface);
         if let Err(error) = self.popups.track_popup(PopupKind::Xdg(surface.clone())) {
             tracing::warn!("could not track a layer popup: {error}");
             return;

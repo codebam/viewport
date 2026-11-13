@@ -731,57 +731,80 @@ impl ViewportState {
         });
     }
 
-    fn unconstrain_popup(&self, popup: &PopupSurface) {
+    /// Constrain a popup against the screen its parent is on.
+    ///
+    /// `pub(crate)`: a layer surface's popups go through the same resolver,
+    /// and `WlrLayerShellHandler::new_popup` lives in `layer_shell.rs`.
+    pub(crate) fn unconstrain_popup(&self, popup: &PopupSurface) {
         let Ok(root) = find_popup_root_surface(&PopupKind::Xdg(popup.clone())) else {
             return;
         };
-        let Some(view) = self.views.find_by_surface(&root) else {
-            return;
-        };
-        // The output this window is on, not the first one there is.
+        // The output the popup is constrained against, the rectangle that
+        // says where the root's screen ends, and the offset the positioner's
+        // target is stated from.
         //
-        // The positioner slides a menu until it fits the rectangle it is
-        // given. Handing it the first output's rectangle while the window sits
-        // on the second describes a screen that ends thousands of pixels to
-        // the left of the window, so the menu was pushed off the left edge to
+        // A toplevel's popup is constrained against the rectangle of the
+        // window the toplevel belongs to, on the output holding most of that
+        // window: the positioner slides a menu until it fits the rectangle it
+        // is given, so handing it the first output's rectangle while the
+        // window sits on the second described a screen ending thousands of
+        // pixels to the left, and the menu was pushed off the left edge to
         // "fit" — configured at -320,32 and invisible, which is a menu that
-        // does not open.
-        // The output holding most of the window, by area.
+        // does not open. By area rather than by first-touch, because a client
+        // with client-side decorations draws shadows outside its window and a
+        // shadow's overlap named the wrong screen.
         //
-        // Not the first one the window touches: a client with client-side
-        // decorations draws shadows outside its window, so a window ten
-        // pixels inside the right-hand monitor overlaps the left-hand one by
-        // the width of its shadow and was described by the wrong screen — the
-        // target came out as -2570,-10 and the positioner slid a menu that
-        // had asked for 909,32 off to -320,32 to fit it.
-        let window_rect = self
-            .space
-            .element_geometry(&view.window)
-            .unwrap_or_default();
-        let output = self
-            .space
-            .outputs()
-            .max_by_key(|output| {
+        // A layer surface's popup — a bar's tray menu, a launcher's
+        // completion list — has no view: its root is the layer surface
+        // itself, and its rectangle comes from the layer map, found through
+        // the owner `get_popup` recorded. There is no window offset to take
+        // off: the root sits where the layer sits, at the layer's rectangle
+        // moved onto the layout.
+        let (output, target) = if let Some(view) = self.views.find_by_surface(&root) {
+            let Some(window_rect) = self.space.element_geometry(&view.window) else {
+                return;
+            };
+            let Some(output) = self.space.outputs().max_by_key(|output| {
                 self.space
                     .output_geometry(output)
                     .and_then(|geometry| geometry.intersection(window_rect))
                     .map(|shared| shared.size.w as i64 * shared.size.h as i64)
                     .unwrap_or(0)
-            })
-            .cloned();
-        let Some(output) = output else {
+            }) else {
+                return;
+            };
+            let Some(output_geo) = self.space.output_geometry(&output) else {
+                return;
+            };
+            // The positioner's target is relative to the parent's geometry,
+            // which is the window's own origin within its surface.
+            let parent_offset = get_popup_toplevel_coords(&PopupKind::Xdg(popup.clone()));
+            (
+                output.clone(),
+                popup_target(output_geo, parent_offset, window_rect.loc),
+            )
+        } else if let Some((output, layer)) = crate::layer::owner(&root) {
+            // Borrowed for the geometry lookups, cloned for the target only
+            // after the borrows end: `layer_map_for_output` takes the output
+            // by reference and the returned tuple owns it.
+            let geometry = {
+                let map = smithay::desktop::layer_map_for_output(&output);
+                map.layer_geometry(&layer)
+            };
+            let Some(layer_geo) = geometry else {
+                return;
+            };
+            let Some(output_geo) = self.space.output_geometry(&output) else {
+                return;
+            };
+            let parent_offset = get_popup_toplevel_coords(&PopupKind::Xdg(popup.clone()));
+            (
+                output.clone(),
+                popup_target(output_geo, parent_offset, Point::from((0, 0))),
+            )
+        } else {
             return;
         };
-        let Some(output_geo) = self.space.output_geometry(&output) else {
-            return;
-        };
-        let Some(window_geo) = self.space.element_geometry(&view.window) else {
-            return;
-        };
-
-        // The positioner's target is relative to the parent's geometry.
-        let parent_offset = get_popup_toplevel_coords(&PopupKind::Xdg(popup.clone()));
-        let target = popup_target(output_geo, parent_offset, window_geo.loc);
 
         popup.with_pending_state(|state| {
             let asked = state.positioner.get_geometry();
@@ -792,8 +815,7 @@ impl ViewportState {
             // fit.
             tracing::debug!(
                 "popup: anchor {:?} {:?} gravity {:?} asked {},{} {}x{} \
-                 in target {},{} {}x{} (window at {},{}, parent offset {},{}) \
-                 becomes {},{}",
+                 in target {},{} {}x{} becomes {},{}",
                 state.positioner.anchor_rect,
                 state.positioner.anchor_edges,
                 state.positioner.gravity,
@@ -805,10 +827,6 @@ impl ViewportState {
                 target.loc.y,
                 target.size.w,
                 target.size.h,
-                window_geo.loc.x,
-                window_geo.loc.y,
-                parent_offset.x,
-                parent_offset.y,
                 state.geometry.loc.x,
                 state.geometry.loc.y,
             );
@@ -1058,6 +1076,108 @@ pub fn handle_commit(state: &mut ViewportState, surface: &WlSurface) {
             }
             PopupKind::InputMethod(_) => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod layer_popup_tests {
+    use super::*;
+
+    /// A layer surface's popup is unconstrained against the layer's own
+    /// rectangle, and the target is stated from the layer's screen position.
+    ///
+    /// The computation needs a live layer map and a committed layer surface,
+    /// so the two halves this can decide without one are the arithmetic —
+    /// `popup_target` with a zero window offset is the layer case — and the
+    /// positioner's answer for a menu that overhangs the edge it is anchored
+    /// to. That is the reported fault: a tray menu anchored at x=1850 on a
+    /// 1920 screen was left hanging off the edge rather than slid back in.
+    #[test]
+    fn a_popup_hanging_off_the_right_edge_is_slid_back_in() {
+        use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_positioner as xdg;
+        use smithay::wayland::shell::xdg::PositionerState;
+
+        // A top bar the width of the screen: the menu is anchored to its
+        // tray icon near the right edge.
+        let bar = Rectangle::new((0, 0).into(), (1920, 32).into());
+        // No window offset: the layer root sits where the layer sits. The
+        // popup's parent (the bar) is at the layout's origin, so the parent
+        // offset is zero too.
+        let target = popup_target(bar, Point::from((0, 0)), Point::from((0, 0)));
+
+        let mut positioner = PositionerState::default();
+        positioner.anchor_rect = Rectangle::new((1850, 32).into(), (20, 20).into());
+        positioner.anchor_edges = xdg::Anchor::BottomRight;
+        positioner.gravity = xdg::Gravity::BottomRight;
+        // The adjustments are what a client that wants to be usable asks
+        // for: slide in either axis.
+        positioner.constraint_adjustment =
+            xdg::ConstraintAdjustment::SlideX | xdg::ConstraintAdjustment::SlideY;
+        positioner.rect_size = (300, 200).into();
+        let asked = positioner.get_geometry();
+        assert!(
+            asked.loc.x + asked.size.w > 1920,
+            "the asked-for geometry hangs off the screen: {asked:?}"
+        );
+
+        let unconstrained = positioner.get_unconstrained_geometry(target);
+        assert!(
+            unconstrained.loc.x >= 0 && unconstrained.loc.x + unconstrained.size.w <= 1920,
+            "slid back inside the output, not clipped at the edge: {unconstrained:?}"
+        );
+    }
+
+    /// And the same target arithmetic through the window path, which is the
+    /// shape the xdg case already took: the output's origin, less the
+    /// parent's offset, less the window's own.
+    #[test]
+    fn the_target_arithmetic_is_the_one_the_positioner_takes() {
+        let output = Rectangle::new((1920, 0).into(), (1920, 1080).into());
+        let target = popup_target(output, Point::from((10, 5)), Point::from((1950, 20)));
+        assert_eq!(target.loc, (-40, -25).into());
+        assert_eq!(target.size, output.size, "the size is the screen's");
+    }
+
+    /// Both hooks reach the unconstrainer: the xdg path did; the layer path
+    /// did not, and a layer-anchored menu was the one case nothing ever
+    /// slid back.
+    #[test]
+    fn both_popup_hooks_unconstrain() {
+        let xdg = include_str!("xdg_shell.rs");
+        let xdg = xdg.split("#[cfg(test)]").next().unwrap_or(xdg);
+        let start = xdg.find("fn new_popup(").expect("the xdg new_popup hook");
+        let body = &xdg[start
+            ..start
+                + xdg[start..]
+                    .find("fn reposition_request(")
+                    .expect("the end of the xdg hook")];
+        assert!(
+            body.contains("self.unconstrain_popup(&surface)"),
+            "an xdg popup is unconstrained when it arrives"
+        );
+
+        let layer = include_str!("layer_shell.rs");
+        let layer = layer.split("#[cfg(test)]").next().unwrap_or(layer);
+        let start = layer
+            .find("fn new_popup(")
+            .expect("the layer new_popup hook");
+        // The hook is the last member of the trait impl; the body runs to the
+        // impl's closing brace, which is the one followed by a blank line and
+        // the state impl below.
+        let end = layer
+            .find("impl ViewportState {")
+            .expect("the state impl that follows the hook");
+        let body = &layer[start..end];
+        assert!(
+            body.contains("self.unconstrain_popup(&surface)"),
+            "a layer popup must be unconstrained when it arrives too"
+        );
+        // And the resolver knows the layer case: the owner lookup lives in
+        // the xdg file, where the resolver is.
+        assert!(
+            xdg.contains("crate::layer::owner(&root)"),
+            "the unconstrainer must find a layer root's rectangle through its owner"
+        );
     }
 }
 
