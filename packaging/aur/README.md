@@ -34,9 +34,15 @@ All nine repositories exist on the AUR, each one a copy of a directory here,
 and each carrying the version its last release commit named. A push is not the
 making of a repository: it is the directory's two files committed on top of the
 package's own history, which is what "Pushing to the AUR" at the end of this
-file is about. Everything a push needs is here — a release carries one artifact
-per engine, the three `-bin` recipes carry those artifacts' real checksums, and
-every package has a `.SRCINFO` beside its PKGBUILD.
+file is about. Every package has a `.SRCINFO` beside its PKGBUILD, and a release updates the
+six source and `-git` packages. Binary artifacts are the exception: GitHub
+release storage is a fixed budget, so since 0.6.0 a release does not carry new
+artifacts every time, and the three `-bin` recipes stay at the last release
+whose artifacts were published (0.4.0 at the time of writing) — they keep
+installing what they installed before rather than breaking on a version whose
+asset was never uploaded. Publishing a binary release again means building the
+three packages, uploading them, refreshing `sha256sums_x86_64` and bumping the
+`-bin` recipes, as steps 3–5 below describe.
 
 `.SRCINFO` is generated, never edited, and goes stale the moment a PKGBUILD
 changes — regenerate it in the same commit:
@@ -89,6 +95,10 @@ script, and the libraries this compositor opens at runtime rather than linking
 4. Upload the three `.pkg.tar.zst` to the GitHub release.
 5. Update the AUR packages — `pkgver`, and for the `-bin` packages the
    `sha256sums_x86_64` of the uploaded artifact.
+
+Steps 3–5 only apply when the release publishes binaries. A release that does
+not still updates the six source and `-git` packages; the `-bin` recipes are
+left alone, pointing at the last release whose artifacts are on GitHub.
 
 ## Pushing to the AUR
 
