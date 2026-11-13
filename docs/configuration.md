@@ -3009,9 +3009,9 @@ What counts as HDR is the buffer's declared transfer function: PQ or HLG, which
 a client states through `wp_color_management_v1` or one of the Windows
 descriptions the compositor offers. Wide primaries with an sRGB curve are
 wide-gamut SDR and do not relight the screen. The check runs when a window's
-fullscreen state changes, and once more on every configuration reload, so a
-window that declares HDR after it went fullscreen switches the screen at its
-next fullscreen transition rather than mid-frame.
+fullscreen state changes, when a surface's declared description changes — a
+game that enters fullscreen first and enables HDR from its options afterwards
+is exactly that case — and once more on every configuration reload.
 
 ### Turning colour management off
 

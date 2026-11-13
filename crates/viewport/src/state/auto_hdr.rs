@@ -108,9 +108,7 @@ impl ViewportState {
         let Some(surface) = view.window.wl_surface() else {
             return false;
         };
-        viewport_vulkan::color::description_for(&surface)
-            .transfer
-            .is_absolute()
+        crate::color_management::is_hdr(viewport_vulkan::color::description_for(&surface))
     }
 
     /// Whether a `no_auto_hdr` rule claims this window.

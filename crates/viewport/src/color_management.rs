@@ -317,7 +317,13 @@ fn park_unset_colour(surface: &WlSurface) {
 /// Runs from the post-commit hook; the value stays parked rather than being
 /// taken, so a commit that carries nothing still re-applies the last request,
 /// which is what double-buffered state does when it is committed again.
-fn apply_pending_colour(surface: &WlSurface) {
+///
+/// Answers whether the live description changed, which is what tells the loop
+/// to look at automatic HDR again: a client changing what its buffers are is
+/// the moment it can start saying "this is HDR", and waiting for a fullscreen
+/// transition to notice would leave a game that enables HDR from its options
+/// screen — fullscreen already — on an SDR output.
+fn apply_pending_colour(surface: &WlSurface) -> bool {
     with_states(surface, |states| {
         let pending = states
             .data_map
@@ -326,12 +332,37 @@ fn apply_pending_colour(surface: &WlSurface) {
         states
             .data_map
             .insert_if_missing_threadsafe(SurfaceColor::default);
-        if let Some(color) = states.data_map.get::<SurfaceColor>() {
-            if let Ok(mut slot) = color.0.lock() {
-                *slot = pending;
-            }
-        }
-    });
+        let Some(color) = states.data_map.get::<SurfaceColor>() else {
+            return false;
+        };
+        let Ok(mut slot) = color.0.lock() else {
+            return false;
+        };
+        let changed = *slot != pending;
+        *slot = pending;
+        changed
+    })
+}
+
+/// Whether a description says its content is HDR.
+///
+/// PQ is HDR by construction — absolute, with 1.0 worth 10,000 cd/m². HLG is
+/// HDR too even though it is relative: it exists to carry more than SDR can
+/// show, and it is what broadcast HDR is encoded with, so a fullscreen client
+/// using it wants the same switch a PQ one does. Everything else here is an
+/// SDR encoding, possibly wide-gamut — sRGB, a power curve, or the linear
+/// extended light scRGB uses — and wide gamut is not a reason to relight a
+/// screen.
+///
+/// `TransferFunction::is_absolute` is not this question: it is about whether a
+/// curve's code words are an absolute luminance (used where the renderer has
+/// to divide one description's light by another's), and HLG fails it while
+/// still being HDR content.
+pub(crate) fn is_hdr(description: Description) -> bool {
+    matches!(
+        description.transfer,
+        TransferFunction::Pq | TransferFunction::Hlg
+    )
 }
 
 /// Whether a description may be asked what it is made of.
@@ -477,7 +508,15 @@ impl Dispatch<WpColorManagerV1, ()> for ViewportState {
                 if first {
                     smithay::wayland::compositor::add_post_commit_hook::<ViewportState, _>(
                         &surface,
-                        |_, _, surface| apply_pending_colour(surface),
+                        |state, _, surface| {
+                            if apply_pending_colour(surface) {
+                                // What the surface contains just changed, and
+                                // the window may already be fullscreen: ask
+                                // the loop whether a screen should follow it
+                                // into HDR, or out of it.
+                                state.auto_hdr_pending = true;
+                            }
+                        },
                     );
                 }
             }
@@ -1754,6 +1793,23 @@ mod tests {
         drop(output);
         assert!(described_output(Some(&weak)).is_none());
         assert!(described_output(None).is_none());
+    }
+
+    #[test]
+    fn hdr_is_pq_and_hlg_and_not_the_rest() {
+        use viewport_vulkan::color::{Description, Primaries, TransferFunction};
+
+        let hdr = |transfer| Description {
+            transfer,
+            primaries: Primaries::BT2020,
+            reference_luminance: 203.0,
+        };
+        assert!(super::is_hdr(hdr(TransferFunction::Pq)));
+        assert!(super::is_hdr(hdr(TransferFunction::Hlg)));
+        assert!(!super::is_hdr(hdr(TransferFunction::Srgb)));
+        assert!(!super::is_hdr(hdr(TransferFunction::Gamma22)));
+        assert!(!super::is_hdr(hdr(TransferFunction::Gamma28)));
+        assert!(!super::is_hdr(hdr(TransferFunction::Linear)));
     }
 
     #[test]

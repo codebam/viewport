@@ -14,6 +14,15 @@ to summarise rather than to duplicate.
 ## [0.6.0] - 2026-11-12
 
 ### Fixed
+- Automatic HDR now notices a fullscreen window that starts declaring HDR
+  while it is already fullscreen, and counts HLG as HDR content the way the
+  documentation always said it did. The switch used to be re-evaluated only on
+  a fullscreen transition and on a configuration reload, so a game that goes
+  fullscreen first and enables HDR from its options afterwards — Resident Evil 2
+  is one — sat on an SDR output with HDR content and looked dark until
+  something else caused a transition. A surface changing its image description
+  now schedules the same check, and `is_absolute` (which only PQ satisfies) is
+  no longer the test for "is this HDR": PQ and HLG are.
 - A new window is scrolled into view by the same layout pass that places it,
   instead of waiting for the compositor to echo the focus request back. The
   scrolling strip scrolls to whichever window it believes is focused while it
