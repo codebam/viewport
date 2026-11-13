@@ -10,7 +10,7 @@
 #
 # The argument names a recipe under `packaging/aur`, either by its package name
 # or by the engine alone — `wpe` is `viewport-wpe`, the source recipe for that
-# engine. The `-git` and `-bin` forms build here too, which is how a recipe is
+# engine. The `-git` forms build here too, which is how a recipe is
 # checked before it is pushed anywhere. The finished .pkg.tar.zst is copied to
 # the directory given (default ./out/<package>) and installs anywhere with
 # `pacman -U`.

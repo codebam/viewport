@@ -1,15 +1,13 @@
 # The AUR packages
 
-Nine of them: three engines, each in three forms.
+Six of them: three engines, each as a recipe that builds the tagged tree and a
+`-git` recipe that follows `main`.
 
 | AUR package | what it is | recipe |
 | --- | --- | --- |
 | `viewport-webkitgtk` | builds the tagged tree from source | `packaging/aur/viewport-webkitgtk/PKGBUILD` |
 | `viewport-wpe` | the same, with the engine inside the compositor | `packaging/aur/viewport-wpe/PKGBUILD` |
 | `viewport-chromium` | the same, driving a browser it does not link | `packaging/aur/viewport-chromium/PKGBUILD` |
-| `viewport-webkitgtk-bin` | unpacks the release artifact | `packaging/aur/viewport-webkitgtk-bin/PKGBUILD` |
-| `viewport-wpe-bin` | the same for WPE | `packaging/aur/viewport-wpe-bin/PKGBUILD` |
-| `viewport-chromium-bin` | the same for Chromium | `packaging/aur/viewport-chromium-bin/PKGBUILD` |
 | `viewport-webkitgtk-git` | follows `main` | `packaging/aur/viewport-webkitgtk-git/PKGBUILD` |
 | `viewport-wpe-git` | the same for WPE | `packaging/aur/viewport-wpe-git/PKGBUILD` |
 | `viewport-chromium-git` | the same for Chromium | `packaging/aur/viewport-chromium-git/PKGBUILD` |
@@ -30,19 +28,21 @@ either — nixpkgs' `servo` has no Arch counterpart.
 
 ## What is published
 
-All nine repositories exist on the AUR, each one a copy of a directory here,
-and each carrying the version its last release commit named. A push is not the
+The six repositories exist on the AUR, each one a copy of a directory here, and
+each carrying the version its last release commit named. A push is not the
 making of a repository: it is the directory's two files committed on top of the
 package's own history, which is what "Pushing to the AUR" at the end of this
-file is about. Every package has a `.SRCINFO` beside its PKGBUILD, and a release updates the
-six source and `-git` packages. Binary artifacts are the exception: GitHub
-release storage is a fixed budget, so since 0.6.0 a release does not carry new
-artifacts every time, and the three `-bin` recipes stay at the last release
-whose artifacts were published (0.4.0 at the time of writing) — they keep
-installing what they installed before rather than breaking on a version whose
-asset was never uploaded. Publishing a binary release again means building the
-three packages, uploading them, refreshing `sha256sums_x86_64` and bumping the
-`-bin` recipes, as steps 3–5 below describe.
+file is about. Every package has a `.SRCINFO` beside its PKGBUILD, and a
+release updates all six.
+
+There are no `-bin` packages. Three used to exist, unpacking the binary
+artifacts a release attached to GitHub; since 0.6.0 no binaries are published —
+GitHub release storage is a fixed budget and re-uploading the same three
+packages every release spends it on nothing new — so the three `-bin` packages
+were deleted from the AUR and the old release assets removed. A binary release
+can be brought back by building the three packages, uploading them and adding
+recipes with their real `sha256sums_x86_64`, but nothing here depends on that
+happening.
 
 `.SRCINFO` is generated, never edited, and goes stale the moment a PKGBUILD
 changes — regenerate it in the same commit:
@@ -70,15 +70,14 @@ then regenerate the `.SRCINFO`, since that is what the AUR displays.
 
 | recipe | built | how |
 | --- | --- | --- |
-| `viewport-{webkitgtk,wpe,chromium}` | yes | they built the v0.4.0 artifacts, which the release carries |
-| `viewport-{webkitgtk,wpe,chromium}-bin` | yes | built against those artifacts: the sums check, and the tree that comes out matches the source package's file for file apart from the license directory the recipe renames |
+| `viewport-{webkitgtk,wpe,chromium}` | yes | they built the 0.4.0 binary packages, when binary packages were still published |
 | `viewport-chromium-git` | yes | `0.1.5.r1.gf5fe7d2`, so `pkgver()` and the branch fetch work |
 | `viewport-{webkitgtk,wpe}-git` | no | identical to `viewport-chromium-git` apart from the engine, which their source twins prove |
 
-`namcap` is clean on the three chromium recipes and on the packages they
-produce, apart from warnings it cannot avoid: the wrapper is a `/bin/sh`
-script, and the libraries this compositor opens at runtime rather than linking
-(Vulkan, EGL, pipewire) read to it as dependencies that "may not be needed".
+`namcap` is clean on the chromium recipes and on the packages they produce,
+apart from warnings it cannot avoid: the wrapper is a `/bin/sh` script, and the
+libraries this compositor opens at runtime rather than linking (Vulkan, EGL,
+pipewire) read to it as dependencies that "may not be needed".
 
 ## Cutting a release
 
@@ -91,14 +90,11 @@ script, and the libraries this compositor opens at runtime rather than linking
    which one — which is what a snapshot built for someone to try should say on
    sight. The version bump itself goes in the same commit the tag names, so the
    recipes in the tagged tree already point at their own commit.
-3. Build all three: `./packaging/build-in-container.sh <package>`.
-4. Upload the three `.pkg.tar.zst` to the GitHub release.
-5. Update the AUR packages — `pkgver`, and for the `-bin` packages the
-   `sha256sums_x86_64` of the uploaded artifact.
+3. Bring the `-git` recipes' `pkgver=` marker forward (see above), regenerate
+   `.SRCINFO`, and push all six repositories.
 
-Steps 3–5 only apply when the release publishes binaries. A release that does
-not still updates the six source and `-git` packages; the `-bin` recipes are
-left alone, pointing at the last release whose artifacts are on GitHub.
+No binary artifacts are built or uploaded: `.github/workflows/ci.yml` has no
+release job, and nothing in this directory reads a GitHub release asset.
 
 ## Pushing to the AUR
 
