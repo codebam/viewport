@@ -1164,3 +1164,37 @@ fn a_shell_command_comes_back_out_as_the_event_a_keybinding_sends() {
         "absent args must arrive as an empty list, not as null"
     );
 }
+
+/// `config.layout_extensions` is held to the same rules the config file is.
+///
+/// The socket path used to accept whatever arrived: a remote URL would have
+/// been loaded by the privileged shell — the one place a script could run
+/// compositor commands from — and written into the settings overlay by
+/// `config.save`, so every restart after that would load it again.
+#[test]
+fn a_layout_extension_with_a_remote_url_is_refused() {
+    let compositor = Compositor::start("layout-ext-remote");
+    let mut client = compositor.connect();
+
+    // The connect-time config broadcast is on the socket ahead of any answer;
+    // a query round trip reads it away and leaves the client synchronised,
+    // which is what every other config test here does before asserting.
+    client.config();
+
+    client.send(
+        r#"{"type":"config.layout_extensions","extensions":[{"name":"wave","url":"https://example.com/wave.js"}]}"#,
+    );
+    client.send(r#"{"type":"view.query"}"#);
+    let error = client.expect("error");
+    assert!(
+        error.to_string().contains("config.layout_extensions"),
+        "{error}"
+    );
+
+    // And a built-in layout is not replaced, the same way the file refuses.
+    client.send(
+        r#"{"type":"config.layout_extensions","extensions":[{"name":"tiling","url":"/tmp/wave.js"}]}"#,
+    );
+    let error = client.expect("error");
+    assert!(error.to_string().contains("tiling"), "{error}");
+}

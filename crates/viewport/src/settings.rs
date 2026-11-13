@@ -534,23 +534,36 @@ pub fn apply(into: &mut crate::config::File, overlay: &Overlay) {
         }
     }
     if let Some(motion) = overlay.motion.as_ref() {
-        if let Some(value) = motion.enabled {
-            into.motion.enabled = Some(value);
-        }
-        if let Some(value) = motion.duration {
-            into.motion.duration = Some(value);
-        }
-        if let Some(value) = motion.slow {
-            into.motion.slow = Some(value);
-        }
-        if let Some(value) = motion.ease.as_ref() {
-            into.motion.ease = Some(value.clone());
+        // The overlay's block lands in the config file's own shape — every
+        // field, not the four an earlier copy of this code wrote by hand
+        // while dropping the curve tree. The validation the file's block
+        // gets (unknown styles dropped with a warning, non-physical springs
+        // inherited over) happens in the one conversion both paths share:
+        // `motion_event`, which `apply_config` builds the wire event from.
+        // An overlay that wrote nothing keeps the default, and the
+        // `!=` gate below is what lets a file's block stand.
+        let file_block = crate::config::MotionConfig {
+            enabled: motion.enabled,
+            duration: motion.duration,
+            slow: motion.slow,
+            ease: motion.ease.clone(),
+            bezier: motion.bezier,
+            windows: motion.windows.clone().map(wire_category_to_config),
+            windows_in: motion.windows_in.clone().map(wire_category_to_config),
+            windows_move: motion.windows_move.clone().map(wire_category_to_config),
+            workspaces: motion.workspaces.clone().map(wire_category_to_config),
+            layers: motion.layers.clone().map(wire_category_to_config),
+            border: motion.border.clone().map(wire_category_to_config),
+        };
+        if file_block != crate::config::MotionConfig::default() {
+            into.motion = file_block;
         }
     }
     if let Some(group) = overlay.group.as_ref() {
-        if let Some(value) = group.auto_group {
-            into.group.auto_group = Some(value);
-        }
+        into.group.auto_group = group.auto_group;
+        into.group.drag_into_group = group.drag_into_group;
+        into.group.merge_groups_on_drag = group.merge_groups_on_drag;
+        into.group.group_on_movetoworkspace = group.group_on_movetoworkspace;
     }
     if let Some(clock) = overlay.clock.as_ref() {
         if let Some(value) = clock.locale.as_ref() {
@@ -771,6 +784,31 @@ pub fn apply(into: &mut crate::config::File, overlay: &Overlay) {
         if let Some(value) = monitor.vrr {
             entry.vrr = Some(value);
         }
+    }
+}
+
+/// The shell's motion category as the config file's own.
+///
+/// The overlay is written and read in the wire shape (`viewport_ipc`), and
+/// the config file carries its own near-identical one; the fields map one to
+/// one, and the spring's optional numbers stay optional here — the
+/// validation that resolves them happens in the shared conversion
+/// (`motion_event` in `state/config_apply.rs`) when the block reaches the
+/// shell.
+fn wire_category_to_config(
+    category: viewport_ipc::event::MotionCategory,
+) -> crate::config::MotionCategory {
+    crate::config::MotionCategory {
+        style: category.style,
+        duration: category.duration,
+        ease: category.ease,
+        bezier: category.bezier,
+        spring: category.spring.map(|spring| crate::config::MotionSpring {
+            mass: Some(spring.mass),
+            stiffness: Some(spring.stiffness),
+            damping: Some(spring.damping),
+        }),
+        enabled: category.enabled,
     }
 }
 
@@ -1310,5 +1348,56 @@ mod tests {
         // And a monitor it did not name keeps the file's block.
         assert_eq!(base.outputs.get("DP-2").and_then(|o| o.scale), Some(2.0));
         assert_eq!(base.outputs.get("DP-1").and_then(|o| o.scale), Some(1.5));
+    }
+    /// Every field the overlay carries reaches the config file.
+    ///
+    /// `settings::apply` used to copy four of `motion`'s eleven fields and
+    /// one of `group`'s four, so a settings-panel save dropped the curve
+    /// tree and the group drag flags on the next load — the panel wrote a
+    /// complete document and the loader read half of it.
+    #[test]
+    fn every_motion_and_group_field_survives_the_overlay() {
+        let mut into = crate::config::File::default();
+        apply(&mut into, &full());
+
+        let motion = into.motion;
+        assert_eq!(
+            motion.bezier, None,
+            "the fixture leaves it unset; the point is it is carried when set"
+        );
+        let windows = motion.windows.as_ref().expect("the fixture sets windows");
+        assert_eq!(windows.style.as_deref(), Some("popin"));
+        assert_eq!(
+            windows
+                .spring
+                .as_ref()
+                .expect("the fixture sets a spring")
+                .stiffness,
+            Some(400.0)
+        );
+
+        assert_eq!(into.group.drag_into_group, Some(false));
+        assert_eq!(into.group.group_on_movetoworkspace, Some(true));
+    }
+
+    /// And the round trip the panel depends on: a full overlay written out
+    /// and read back through `apply` keeps those fields too, which is where
+    /// the dropped copy actually bit — `every_key_written_is_a_key_the_
+    /// config_reader_reads` parsed the JSON directly and never ran `apply`.
+    #[test]
+    fn a_saved_overlay_reads_back_whole_through_apply() {
+        let text = serde_json::to_string(&full()).expect("should serialise");
+        let overlay: Overlay = serde_json::from_str(&text).expect("should parse");
+
+        let mut into = crate::config::File::default();
+        apply(&mut into, &overlay);
+
+        let windows = into
+            .motion
+            .windows
+            .as_ref()
+            .expect("windows survive the save and the apply");
+        assert_eq!(windows.style.as_deref(), Some("popin"));
+        assert_eq!(into.group.drag_into_group, Some(false));
     }
 }

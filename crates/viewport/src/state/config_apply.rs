@@ -274,43 +274,7 @@ impl ViewportState {
             // validated one by one — one bad category drops that field, not
             // the whole motion block.
             let prior = self.config.motion.clone().unwrap_or_default();
-            let mut motion = viewport_ipc::event::Motion {
-                enabled: file.motion.enabled,
-                duration: file.motion.duration,
-                slow: file.motion.slow,
-                ease: validated_ease("config.motion.ease", file.motion.ease.clone()),
-                bezier: validated_bezier("config.motion.bezier", file.motion.bezier),
-                windows: motion_category(
-                    "config.motion.windows",
-                    file.motion.windows.as_ref(),
-                    &MOTION_WINDOW_STYLES,
-                ),
-                windows_in: motion_category(
-                    "config.motion.windows_in",
-                    file.motion.windows_in.as_ref(),
-                    &MOTION_WINDOW_STYLES,
-                ),
-                windows_move: motion_category(
-                    "config.motion.windows_move",
-                    file.motion.windows_move.as_ref(),
-                    &[],
-                ),
-                workspaces: motion_category(
-                    "config.motion.workspaces",
-                    file.motion.workspaces.as_ref(),
-                    &MOTION_WORKSPACE_STYLES,
-                ),
-                layers: motion_category(
-                    "config.motion.layers",
-                    file.motion.layers.as_ref(),
-                    &MOTION_LAYER_STYLES,
-                ),
-                border: motion_category(
-                    "config.motion.border",
-                    file.motion.border.as_ref(),
-                    &[],
-                ),
-            };
+            let mut motion = motion_event("config.motion", &file.motion);
             for (name, value, fallback) in [
                 ("duration", &mut motion.duration, prior.duration),
                 ("slow", &mut motion.slow, prior.slow),
@@ -1321,6 +1285,53 @@ const MOTION_LAYER_STYLES: [&str; 1] = ["fade"];
 /// A field is dropped rather than taking the category with it, for the same
 /// reason a bad workspace rule does not take the rest of the set: one
 /// mistyped curve should not turn the whole desktop's motion off.
+/// The config file's motion block as the wire event the shell draws from.
+///
+/// The one conversion, used by both paths that read a motion block: the
+/// config file at load and reload (`apply_config` above), and the settings
+/// overlay (`settings::apply`, which used to copy four fields by hand and
+/// drop the rest of the tree on the floor). `what` prefixes the warnings so
+/// a bad value names where it came from.
+pub(crate) fn motion_event(what: &str, block: &crate::config::MotionConfig) -> viewport_ipc::event::Motion {
+    viewport_ipc::event::Motion {
+        enabled: block.enabled,
+        duration: block.duration,
+        slow: block.slow,
+        ease: validated_ease(&format!("{what}.ease"), block.ease.clone()),
+        bezier: validated_bezier(&format!("{what}.bezier"), block.bezier),
+        windows: motion_category(
+            &format!("{what}.windows"),
+            block.windows.as_ref(),
+            &MOTION_WINDOW_STYLES,
+        ),
+        windows_in: motion_category(
+            &format!("{what}.windows_in"),
+            block.windows_in.as_ref(),
+            &MOTION_WINDOW_STYLES,
+        ),
+        windows_move: motion_category(
+            &format!("{what}.windows_move"),
+            block.windows_move.as_ref(),
+            &[],
+        ),
+        workspaces: motion_category(
+            &format!("{what}.workspaces"),
+            block.workspaces.as_ref(),
+            &MOTION_WORKSPACE_STYLES,
+        ),
+        layers: motion_category(
+            &format!("{what}.layers"),
+            block.layers.as_ref(),
+            &MOTION_LAYER_STYLES,
+        ),
+        border: motion_category(
+            &format!("{what}.border"),
+            block.border.as_ref(),
+            &[],
+        ),
+    }
+}
+
 fn motion_category(
     what: &str,
     category: Option<&crate::config::MotionCategory>,

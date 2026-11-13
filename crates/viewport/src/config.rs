@@ -1261,6 +1261,28 @@ fn valid_layout_name(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_'))
 }
 
+/// Whether a layout extension name is one at all: non-empty, ASCII, and
+/// without the characters a path or a shell word could sneak through.
+///
+/// `pub(crate)`: the config file path enforces it inline; the socket path
+/// (`config.layout_extensions` in `apply.rs`) asks the same question here,
+/// because a name that skipped it would be a rule nobody could spell.
+pub(crate) fn layout_extension_name_allowed(name: &str) -> bool {
+    valid_layout_name(name)
+}
+
+/// The local path of a layout extension value, as a `file://` URL the shell
+/// loads.
+///
+/// The config file path runs every extension through this; the socket path
+/// does too, or a `config.layout_extensions` message naming `https://…`
+/// would hand the privileged shell a script from wherever the message said —
+/// and `config.save` would write it into the overlay, so every restart after
+/// that would load it again.
+pub(crate) fn layout_extension_path(value: &str, config_path: &Path) -> anyhow::Result<String> {
+    layout_extension_url(value, config_path)
+}
+
 fn layout_extension_url(value: &str, config_path: &Path) -> anyhow::Result<String> {
     let value = value.trim();
     anyhow::ensure!(!value.is_empty(), "path is empty");

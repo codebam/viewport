@@ -1401,6 +1401,49 @@ pub fn apply(state: &mut ViewportState, request: Request) {
 
         Request::ConfigLayoutExtensions { extensions } => {
             if let Some(extensions) = extensions {
+                // The same rules the config file enforces, which the socket
+                // path used to skip entirely: a name that is not one, a
+                // built-in being replaced, and — the one that matters — a
+                // remote URL, which the file path refuses with "only local
+                // script paths are accepted" and this path handed straight
+                // to the shell. The privileged shell would then load a
+                // script from anywhere the message named, `config.save`
+                // would write it into the overlay, and every restart after
+                // that would load it again. Resolved beside the config file
+                // so the file:// the shell receives is the same encoding
+                // both paths produce.
+                let config_path = state.config_file_path.clone().unwrap_or_default();
+                for extension in &extensions {
+                    if !crate::config::layout_extension_name_allowed(&extension.name) {
+                        reject(
+                            state,
+                            "config.layout_extensions",
+                            &format!("invalid layout extension name {:?}", extension.name),
+                        );
+                        return;
+                    }
+                    if crate::config::BUILTIN_LAYOUTS.contains(&extension.name.as_str()) {
+                        reject(
+                            state,
+                            "config.layout_extensions",
+                            &format!(
+                                "layout extension {:?} cannot replace a built-in layout",
+                                extension.name
+                            ),
+                        );
+                        return;
+                    }
+                    if let Err(e) =
+                        crate::config::layout_extension_path(&extension.url, &config_path)
+                    {
+                        reject(
+                            state,
+                            "config.layout_extensions",
+                            &format!("layout extension {:?}: {e}", extension.name),
+                        );
+                        return;
+                    }
+                }
                 let mut extensions = extensions;
                 extensions.sort_by(|a, b| a.name.cmp(&b.name));
                 // If the layout in use names something no longer registered,
