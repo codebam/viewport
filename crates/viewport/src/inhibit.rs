@@ -171,17 +171,30 @@ impl Registry {
     /// somebody else's.
     fn hold(&self, owner: Option<String>, app: &str, reason: &str) -> u32 {
         let mut inner = self.inner();
-        // Zero is the value a client that never got one has, so cookies start
-        // at one and a zero handed back is always this compositor's fault
-        // rather than an ambiguity.
-        inner.next = inner.next.wrapping_add(1).max(1);
-        let cookie = inner.next;
+        // The ceiling is checked *before* the counter moves: a refused hold
+        // spends nothing. Advancing first let a client hammering a full table
+        // push `next` round the whole `u32` space and back onto a cookie
+        // somebody has been holding for months — which the insert below then
+        // overwrote, and the old holder's release released the newcomer's
+        // hold instead.
         if inner.cookies.len() + inner.requests.len() >= MAX_HOLDS
             || held_by(&inner, owner.as_deref()) >= MAX_HOLDS_PER_OWNER
         {
             tracing::debug!("inhibit: refusing a hold from {owner:?}: the ceiling is reached");
             return 0;
         }
+        // Zero is the value a client that never got one has, so cookies start
+        // at one and a zero handed back is always this compositor's fault
+        // rather than an ambiguity. And the wrap skips values already in the
+        // table: a cookie that lives for the session sits where `next`
+        // arrives back at, and taking the row would turn the old holder's
+        // release into the newcomer's.
+        let cookie = loop {
+            inner.next = inner.next.wrapping_add(1).max(1);
+            if !inner.cookies.contains_key(&inner.next) {
+                break inner.next;
+            }
+        };
         inner.cookies.insert(cookie, held(owner, app, reason));
         cookie
     }
@@ -202,6 +215,11 @@ impl Registry {
             return None;
         }
         inner.cookies.remove(&cookie)
+    }
+
+    /// The stored row for a cookie, for logging it after the fact.
+    fn held_for(&self, cookie: u32) -> Option<Held> {
+        self.inner().cookies.get(&cookie).cloned()
     }
 
     /// Take a hold named by the portal request that will end it.
@@ -318,9 +336,21 @@ impl ScreenSaver {
         let cookie = self
             .registry
             .hold(owner, application_name, reason_for_inhibit);
-        tracing::info!(
-            "inhibit: {application_name} is holding the screen awake ({reason_for_inhibit})"
-        );
+        // The stored, truncated form is what is logged, and only when a hold
+        // was actually taken: the raw strings are untrusted bus input, and
+        // logging them before the caps let any session peer write
+        // multi-megabyte, escape-laden lines into the compositor's journal at
+        // INFO — while also being logged as "holding the screen awake" when
+        // it had been refused.
+        if cookie != 0 {
+            if let Some(held) = self.registry.held_for(cookie) {
+                tracing::info!(
+                    "inhibit: {} is holding the screen awake ({})",
+                    held.app,
+                    held.reason
+                );
+            }
+        }
         cookie
     }
 
@@ -479,19 +509,44 @@ impl PortalInhibit {
         let path = OwnedObjectPath::from(handle);
         let owner = header.sender().map(|name| name.to_string());
 
-        if flags & INHIBIT_IDLE == 0 {
-            tracing::info!(
-                "inhibit: {app_id} asked for flags {flags} ({reason}); \
-                 only idle is honoured here"
-            );
-        } else {
-            tracing::info!("inhibit: {app_id} is holding the screen awake ({reason})");
-        }
-
-        if !self
+        // The hold decides its own fate; what was accepted is what is logged,
+        // in the truncated form it was stored in. The strings are the
+        // frontend's passthrough of an application's own words — unbounded
+        // bus input, logged raw at INFO before the caps — and a refused hold
+        // is not one "holding the screen awake".
+        let taken = self
             .registry
-            .hold_request(path.clone(), owner.clone(), app_id, &reason)
-        {
+            .hold_request(path.clone(), owner.clone(), app_id, &reason);
+        if taken {
+            if flags & INHIBIT_IDLE == 0 {
+                // Held anyway — see the comment on `hold_request` — but said
+                // honestly, at debug: a screen that stays lit for a hold
+                // naming logout is the caller's information to have.
+                tracing::debug!(
+                    "inhibit: {} asked for flags {flags}; only idle is honoured here",
+                    self.registry
+                        .inner()
+                        .requests
+                        .get(&path)
+                        .map(|held| held.app.clone())
+                        .unwrap_or_default()
+                );
+            } else {
+                let held = self.registry.inner().requests.get(&path).cloned();
+                if let Some(held) = held {
+                    tracing::info!(
+                        "inhibit: {} is holding the screen awake ({})",
+                        held.app,
+                        held.reason
+                    );
+                }
+            }
+        } else {
+            tracing::debug!(
+                "inhibit: refusing a portal hold from {owner:?}: the ceiling is reached"
+            );
+        }
+        if !taken {
             return;
         }
         let request = RequestObject {
@@ -858,5 +913,59 @@ mod tests {
         assert!(registry.inhibited(), "the portal hold is still there");
         registry.release_request(&path);
         assert!(!registry.inhibited());
+    }
+
+    /// A refused hold does not spend a cookie.
+    ///
+    /// The counter was advanced before the ceiling was checked, so a client
+    /// hammering a full table pushed `next` round the whole `u32` space and
+    /// landed it back on a cookie somebody has been holding for months —
+    /// which `cookies.insert` then overwrote, and the old holder's release
+    /// released the newcomer's hold instead.
+    #[test]
+    fn a_refused_hold_does_not_advance_the_cookie_counter() {
+        let registry = registry();
+        let first = registry.hold(None, "a", "");
+        for _ in 0..MAX_HOLDS {
+            registry.hold(None, "filler", "");
+        }
+        // The table is full now. Refused holds do not spend counters.
+        assert_eq!(registry.hold(None, "refused", ""), 0);
+        assert_eq!(registry.hold(None, "refused again", ""), 0);
+        // And releasing the first still works: nothing overwrote it.
+        assert!(registry.release(first, None).is_some());
+    }
+
+    /// The counter wraps past occupied cookies rather than onto them.
+    ///
+    /// A cookie that lives for the session (a browser's, holding the screen
+    /// awake) sits in the table while `next` counts through the rest of the
+    /// space; when it arrives back at the occupied value, the insert used to
+    /// take the row. Driven by seeding the counter rather than by spinning
+    /// four billion holds through the mutex.
+    #[test]
+    fn a_wrapped_counter_skips_live_cookies() {
+        let registry = registry();
+        // The live hold: cookie 1, held for the session. The counter sits at
+        // one after it, as it would after a full trip round the space.
+        let live = registry.hold(None, "live", "");
+        assert_eq!(live, 1);
+        {
+            let mut inner = registry.inner();
+            inner.next = u32::MAX;
+        }
+        // The next hold wraps onto one — the value the live hold owns. It
+        // must skip past instead of taking the row.
+        let other = registry.hold(None, "other", "");
+        assert_ne!(
+            other, live,
+            "the wrapped counter took the live cookie's row"
+        );
+        // Both holds are live in the table: the newcomer did not replace it.
+        assert_eq!(registry.holds(), 2);
+        assert!(
+            registry.release(live, None).is_some(),
+            "the live hold survived"
+        );
     }
 }

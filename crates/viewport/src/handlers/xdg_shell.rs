@@ -760,7 +760,7 @@ impl ViewportState {
         // the owner `get_popup` recorded. There is no window offset to take
         // off: the root sits where the layer sits, at the layer's rectangle
         // moved onto the layout.
-        let (output, target) = if let Some(view) = self.views.find_by_surface(&root) {
+        let (_output, target) = if let Some(view) = self.views.find_by_surface(&root) {
             let Some(window_rect) = self.space.element_geometry(&view.window) else {
                 return;
             };
@@ -773,7 +773,7 @@ impl ViewportState {
             }) else {
                 return;
             };
-            let Some(output_geo) = self.space.output_geometry(&output) else {
+            let Some(output_geo) = self.space.output_geometry(output) else {
                 return;
             };
             // The positioner's target is relative to the parent's geometry,
@@ -784,14 +784,14 @@ impl ViewportState {
                 popup_target(output_geo, parent_offset, window_rect.loc),
             )
         } else if let Some((output, layer)) = crate::layer::owner(&root) {
-            // Borrowed for the geometry lookups, cloned for the target only
+            // Borrowed for the geometry lookups, moved for the target only
             // after the borrows end: `layer_map_for_output` takes the output
-            // by reference and the returned tuple owns it.
+            // by reference and the tuple owns it.
             let geometry = {
                 let map = smithay::desktop::layer_map_for_output(&output);
                 map.layer_geometry(&layer)
             };
-            let Some(layer_geo) = geometry else {
+            let Some(_layer_geo) = geometry else {
                 return;
             };
             let Some(output_geo) = self.space.output_geometry(&output) else {
@@ -799,7 +799,7 @@ impl ViewportState {
             };
             let parent_offset = get_popup_toplevel_coords(&PopupKind::Xdg(popup.clone()));
             (
-                output.clone(),
+                output,
                 popup_target(output_geo, parent_offset, Point::from((0, 0))),
             )
         } else {
@@ -1105,15 +1105,17 @@ mod layer_popup_tests {
         // offset is zero too.
         let target = popup_target(bar, Point::from((0, 0)), Point::from((0, 0)));
 
-        let mut positioner = PositionerState::default();
-        positioner.anchor_rect = Rectangle::new((1850, 32).into(), (20, 20).into());
-        positioner.anchor_edges = xdg::Anchor::BottomRight;
-        positioner.gravity = xdg::Gravity::BottomRight;
-        // The adjustments are what a client that wants to be usable asks
-        // for: slide in either axis.
-        positioner.constraint_adjustment =
-            xdg::ConstraintAdjustment::SlideX | xdg::ConstraintAdjustment::SlideY;
-        positioner.rect_size = (300, 200).into();
+        let positioner = PositionerState {
+            anchor_rect: Rectangle::new((1850, 32).into(), (20, 20).into()),
+            anchor_edges: xdg::Anchor::BottomRight,
+            gravity: xdg::Gravity::BottomRight,
+            // The adjustments are what a client that wants to be usable asks
+            // for: slide in either axis.
+            constraint_adjustment: xdg::ConstraintAdjustment::SlideX
+                | xdg::ConstraintAdjustment::SlideY,
+            rect_size: (300, 200).into(),
+            ..Default::default()
+        };
         let asked = positioner.get_geometry();
         assert!(
             asked.loc.x + asked.size.w > 1920,

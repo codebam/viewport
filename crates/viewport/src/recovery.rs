@@ -1365,8 +1365,10 @@ mod tests {
             body.contains("seat_fd.take()"),
             "the seat fd must go back when the card goes"
         );
+        // Spelled without the call's punctuation, which rustfmt reflows: the
+        // assertion is about the release happening, not about one line shape.
         assert!(
-            body.contains("session.close("),
+            body.contains(".session") && body.contains(".close(seat_fd)"),
             "closing, not just dropping: the session remembers the device by the fd"
         );
     }
