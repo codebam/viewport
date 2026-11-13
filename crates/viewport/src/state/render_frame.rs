@@ -738,7 +738,7 @@ impl ViewportState {
             // Anything short of all three is a black screen, which is the side
             // to fail on.
             shell_lock: self.locked
-                && self.lock_mode.is_built_in()
+                && self.lock_owned_by_shell
                 && shell_covers_output
                 && self.lock_screen_is_drawing(),
         }

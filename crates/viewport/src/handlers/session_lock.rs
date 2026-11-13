@@ -172,7 +172,12 @@ impl SessionLockHandler for ViewportState {
         // but it does after a takeover of a built-in lock that had stopped
         // drawing, and a page left holding one over an unlocked session is a
         // desktop nobody can click.
-        if self.lock_shell_drawn.take().is_some() || self.lock_mode.is_built_in() {
+        // Ownership, not the configured mode — the same rule every other
+        // built-in-screen gate asks. A session configured for the built-in
+        // screen can still have been taken by an external locker; telling the
+        // shell to put a lock screen away then drew a page that owned nothing
+        // over a session somebody else holds, and one nobody could click.
+        if self.lock_shell_drawn.take().is_some() || self.lock_owned_by_shell {
             self.notify(&viewport_ipc::Event::SessionUnlock);
         }
         self.lock_attempt = None;

@@ -201,7 +201,13 @@ impl ViewportState {
             // it drew the lock screen is not on screen either, and handing the
             // pointer to a surface nobody can see is a click landing on
             // whatever the page happens to be showing.
-            if self.lock_mode.is_built_in() && self.lock_screen_is_drawing() {
+            //
+            // Ownership, not the configured mode — the same rule `refocus_lock`
+            // and `focus_lock_shell` state. A session configured for the
+            // built-in screen can still be locked by an `ext-session-lock-v1`
+            // locker, and asking the mode alone here routed that locker's
+            // clicks and taps through to the shell page behind it.
+            if self.lock_owned_by_shell && self.lock_screen_is_drawing() {
                 return self.shell_under(pos);
             }
             return None;

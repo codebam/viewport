@@ -490,4 +490,90 @@ mod lock_power_tests {
         assert!(lock_frame_has_landed(10, 11), "the next frame is");
         assert!(lock_frame_has_landed(0, 1));
     }
+
+    /// Every built-in-lock-screen gate asks ownership, not the configured
+    /// mode.
+    ///
+    /// `shell_owns_lock` is the rule (`lock_power.rs`'s own doc comment names
+    /// the bug it fixes), and four gates outside this file were written
+    /// before it or missed by it: the locked-session hit test, the `shell_lock`
+    /// frame gate, the `session.query` re-ask and the `unlock` notification.
+    /// Each asked `lock_mode.is_built_in()`, which is true on the default
+    /// configuration whatever took the lock — so an `ext-session-lock-v1`
+    /// locker got its clicks routed to the shell behind it, had the shell's
+    /// desktop buffer composited over it as a "lock screen", and was told by
+    /// `session.query` to draw a second lock screen of its own.
+    ///
+    /// A `ViewportState` cannot be built in a unit test, so — like the
+    /// lock-surface walks in `state/frame_barriers.rs` — the invariant is
+    /// checked against the sources the gates are written in.
+    #[test]
+    fn every_builtin_lock_gate_asks_ownership_not_the_configured_mode() {
+        let capture = include_str!("capture.rs");
+        let capture = capture.split("#[cfg(test)]").next().unwrap_or(capture);
+        let start = capture.find("pub fn surface_under(").expect("surface_under");
+        let rest = &capture[start..];
+        let body = &rest[..rest
+            .find("fn layer_surface_under(")
+            .expect("the end of the locked branch")];
+        assert!(
+            !body.contains("lock_mode.is_built_in()"),
+            "the locked hit test must not ask the configured mode"
+        );
+        assert!(
+            body.contains("self.lock_owned_by_shell && self.lock_screen_is_drawing()"),
+            "the locked hit test must ask whether the shell owns the lock"
+        );
+
+        let frame = include_str!("render_frame.rs");
+        let frame = frame.split("#[cfg(test)]").next().unwrap_or(frame);
+        let start = frame
+            .find("shell_lock: self.locked")
+            .expect("the shell_lock frame gate");
+        let end = start
+            + frame[start..]
+                .find("\n        }\n")
+                .expect("the end of the frame record");
+        let body = &frame[start..end];
+        assert!(
+            !body.contains("lock_mode.is_built_in()"),
+            "the shell_lock gate must not ask the configured mode"
+        );
+        assert!(
+            body.contains("self.lock_owned_by_shell"),
+            "the shell_lock gate must ask whether the shell owns the lock"
+        );
+
+        let apply = include_str!("../apply.rs");
+        let apply = apply.split("#[cfg(test)]").next().unwrap_or(apply);
+        let start = apply.find("Request::SessionQuery => {").expect("SessionQuery");
+        let end = start
+            + apply[start..]
+                .find("Request::SessionLock =>")
+                .expect("the end of SessionQuery");
+        let body = &apply[start..end];
+        assert!(
+            !body.contains("lock_mode.is_built_in()"),
+            "session.query must not re-arm a lock screen under an external locker"
+        );
+        assert!(
+            body.contains("state.lock_owned_by_shell"),
+            "session.query must ask whether the shell owns the lock"
+        );
+
+        let lock = include_str!("../handlers/session_lock.rs");
+        let lock = lock.split("#[cfg(test)]").next().unwrap_or(lock);
+        let start = lock.find("fn unlock(&mut self) {").expect("unlock");
+        let body = &lock[start..lock
+            .find("fn new_surface(")
+            .expect("the end of unlock")];
+        assert!(
+            !body.contains("lock_mode.is_built_in()"),
+            "unlock must not consult the configured mode"
+        );
+        assert!(
+            body.contains("self.lock_owned_by_shell"),
+            "unlock must ask whether the shell owns the lock"
+        );
+    }
 }

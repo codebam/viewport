@@ -465,7 +465,13 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             // because the page that was told to lock is gone and the one that
             // replaced it has no idea the session is locked; without this it
             // draws the desktop and waits to be clicked.
-            if state.locked && state.lock_mode.is_built_in() {
+            // Ownership, not the configured mode — the same rule
+            // `shell_owns_lock` states. An `ext-session-lock-v1` locker can
+            // hold a session configured for the built-in screen; telling this
+            // shell to draw a lock screen over it made a second, unreachable
+            // one, and its `session.unlock` was (correctly) ignored by
+            // `try_unlock`.
+            if state.locked && state.lock_owned_by_shell {
                 state.forget_lock_screen();
                 let generation = state.lock_generation;
                 let can_authenticate = state.authenticator.online();
