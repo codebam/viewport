@@ -11,9 +11,11 @@
 # mechanism through the control socket, and asks what is actually on the screen.
 #
 # It is a regression test rather than a smoke test. Run against 194735ff — the
-# commit before the healing landed — every broken state reproduces the report:
-# the sampled pixel goes to the background colour and nothing is logged. Run
-# against a fixed tree, all three heal, and each says which one it was.
+# commit before the healing landed — a fade left at zero leaves the pixel at the
+# background colour with nothing logged. Run against a fixed tree, the fade heals
+# and says so, an impossible crop heals and says so, and a crop the shell means
+# (empty, a column scrolled out of its strip) hides the window rather than
+# painting it over the monitor beside it.
 set -u
 
 viewport=$(realpath "${1:?usage: see-through.test.sh VIEWPORT PAINT-CLIENT CAPTURE-CLIENT}")
@@ -147,6 +149,17 @@ want() { # want LABEL ARGB
 		status=1
 	fi
 }
+want_not() { # want_not LABEL ARGB
+	local label=$1 colour=$2
+	if "$capture_client" --output-pixel-not "$cx" "$cy" "$colour" \
+		>"$workdir/capture.log" 2>&1; then
+		echo "ok   $label"
+	else
+		echo "FAIL $label" >&2
+		tail -3 "$workdir/capture.log" >&2
+		status=1
+	fi
+}
 saw() { # saw PATTERN LABEL — wait for a log line, bounded
 	local pattern=$1 label=$2
 	for _ in $(seq 1 100); do
@@ -162,12 +175,23 @@ saw() { # saw PATTERN LABEL — wait for a log line, bounded
 
 want "the window is drawn before anything is broken" "$body_rgb"
 
-# 1. A crop with no area. The client must still be on screen, uncropped.
+# 1. A crop with no area. That is the shell hiding a column scrolled out of
+#    its strip, so it is honoured: the window is not drawn over whatever is
+#    beside it. Drawing it anyway is how a column from one monitor appears on
+#    the next one over.
 place '{"x":0,"y":0,"width":0,"height":0}'
-saw "clipped it to a rectangle that does not meet it" "a zero-area crop is refused and logged"
-want "the window is still drawn under a zero-area crop" "$body_rgb"
+want_not "a zero-area crop hides the window instead of drawing it" "$body_rgb"
+if grep -q "does not meet it" "$workdir/viewport.log"; then
+	echo "FAIL a zero-area crop was treated as a disagreement" >&2
+	status=1
+else
+	echo "ok   a zero-area crop is honoured without a warning"
+fi
+place
+want "an ordinary layout brings the window back" "$body_rgb"
 
-# 2. A crop that has an area and lands somewhere the window is not.
+# 2. A crop that has area and lands somewhere the window is not. That cannot
+#    be the shell's own intersection, so it is dropped and the window drawn.
 place '{"x":5000,"y":5000,"width":300,"height":200}'
 saw "does not meet it" "a crop that misses the window is refused and logged"
 want "the window is still drawn under a crop that misses it" "$body_rgb"

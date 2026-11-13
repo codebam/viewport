@@ -2350,18 +2350,23 @@ fn configure_size(box_: (i32, i32), min: (i32, i32)) -> (i32, i32) {
     (box_.0.max(min.0), box_.1.max(min.1))
 }
 
-/// Drop a clip that cuts everything away.
+/// Keep the clip the shell meant, drop one that cannot be one.
 ///
 /// A window is cropped to the hole the shell drew for it so that a window
 /// scrolled half off its column, or mid-animation, cannot paint over its
-/// neighbours. A clip of zero area is that same idea taken to the point of
-/// drawing nothing: the frame remains, the contents do not, and the desktop
-/// shows through — the reported "window I can see the wallpaper through". The
-/// empty intersection means the shell's rectangle and its reserved area
-/// disagreed, not that somebody wanted a window cropped into nothing, so the
-/// window is drawn uncropped instead. At worst that is a rectangle standing a
-/// little proud of the area it should have been kept inside; at best it is the
-/// window somebody was looking for.
+/// neighbours — and a column scrolled *entirely* out of its strip is cropped to
+/// nothing on purpose. That empty crop is how the scrolling layout hides the
+/// columns on either side of the focused one, so it is honoured: drawing such a
+/// window "uncropped to be safe" is how a column from the right monitor ends up
+/// painted onto the left one.
+///
+/// What cannot be an intended crop is one with area that does not meet the
+/// window at all: the shell computes the clip as an intersection with the area
+/// reserved for windows, and an intersection that misses its own rectangle
+/// means the rectangle and the area disagreed — the window would be cropped
+/// away while the shell's frame stayed drawn, which is the see-through hole
+/// with a border around it. That one is dropped, once per window, so the
+/// window is visible while the disagreement is still worth a warning.
 fn usable_clip(
     id: u32,
     clip: Option<viewport_ipc::geometry::Box>,
@@ -2369,23 +2374,16 @@ fn usable_clip(
     warn: bool,
 ) -> Option<viewport_ipc::geometry::Box> {
     let clip = clip?;
-    /* A crop that touches the window is the crop the shell meant. Neither an
-    empty one nor one that lands somewhere else entirely is: both leave
-    every surface cropped away while the shell's frame — which the shell
-    draws itself — stays on screen, which is the see-through hole with a
-    border around it. A window scrolled half out of its column still meets
-    its own clip; a window whose clip is over there does not, and that is a
-    disagreement between the rectangle and the crop worth drawing anyway. */
+    // Empty in either direction: the shell means "none of this window". Honoured
+    // exactly as sent, which is the whole point of a crop.
+    if clip.width <= 0 || clip.height <= 0 {
+        return Some(clip);
+    }
     let right = clip.x.saturating_add(clip.width);
     let bottom = clip.y.saturating_add(clip.height);
     let box_right = box_.x.saturating_add(box_.width);
     let box_bottom = box_.y.saturating_add(box_.height);
-    let meets = clip.width > 0
-        && clip.height > 0
-        && clip.x < box_right
-        && clip.y < box_bottom
-        && right > box_.x
-        && bottom > box_.y;
+    let meets = clip.x < box_right && clip.y < box_bottom && right > box_.x && bottom > box_.y;
     if meets {
         return Some(clip);
     }
@@ -3275,31 +3273,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_crop_that_does_not_meet_the_window_is_not_a_crop() {
+    fn an_empty_crop_is_a_crop_and_a_misplaced_one_is_not() {
         let window = viewport_ipc::geometry::Box::new(10, 20, 300, 200);
         let full = viewport_ipc::geometry::Box::new(0, 0, 1920, 1080);
         assert_eq!(super::usable_clip(1, Some(full), window, true), Some(full));
-        // Empty in either direction: nothing to draw through.
+        // Empty in either direction is how the scrolling strip hides a column
+        // scrolled out of view. Honoured, not "fixed".
+        let empty_width = viewport_ipc::geometry::Box::new(10, 20, 0, 200);
+        let empty_height = viewport_ipc::geometry::Box::new(10, 20, 300, 0);
         assert_eq!(
-            super::usable_clip(
-                1,
-                Some(viewport_ipc::geometry::Box::new(10, 20, 0, 200)),
-                window,
-                true
-            ),
-            None
+            super::usable_clip(1, Some(empty_width), window, true),
+            Some(empty_width)
         );
         assert_eq!(
-            super::usable_clip(
-                1,
-                Some(viewport_ipc::geometry::Box::new(10, 20, 300, 0)),
-                window,
-                true
-            ),
-            None
+            super::usable_clip(1, Some(empty_height), window, true),
+            Some(empty_height)
         );
-        // Somewhere else entirely: the same result as an empty one, because
-        // the intersection the renderer would take is empty too.
+        // Has area and lands somewhere else entirely: that cannot be the
+        // shell's own intersection, so it is dropped and the window drawn.
         assert_eq!(
             super::usable_clip(
                 1,
@@ -3309,7 +3300,7 @@ mod tests {
             ),
             None
         );
-        // Touching only at an edge is still nothing to draw.
+        // Touching only at an edge cannot carry any of the window either.
         assert_eq!(
             super::usable_clip(
                 1,

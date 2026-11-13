@@ -154,17 +154,19 @@ takes is now drawn opaque:
 view 42: drawn see-through — its fade left it at opacity 0 for 750ms; drawing it opaque
 ```
 
-The other two are the crop. A `view.layout` carries the rectangle the shell
-wants the client clipped to, and a crop with no area — or one that lands
-somewhere the window is not — crops every surface away while the frame stays
-drawn. The compositor drops such a crop and draws the window uncropped:
+The other is the crop. A `view.layout` carries the rectangle the shell wants the
+client clipped to — and an *empty* one is a crop the shell means: that is how
+the scrolling layout hides a column scrolled out of its strip, so it is
+honoured. What cannot be meant is a crop that has area and still does not meet
+the window: the shell computes it as an intersection with the area reserved for
+windows, so that can only be a disagreement between the two. The compositor
+drops it and draws the window uncropped:
 
 ```
-view 42: the shell clipped it to a rectangle that does not meet it (0x0 at +0+0 against 300x200 at +10+20); drawing it uncropped
+view 42: the shell clipped it to a rectangle that does not meet it (300x200 at +5000+5000 against 300x200 at +10+20); drawing it uncropped
 ```
 
-All three mean the shell and the compositor disagreed about where the window's
-hole is, and all three are worth a bug report with the line in it. None should
+Both are worth a bug report with the line in it. None should
 cost more than the grace period: the healing happens on the next frame after
 it, not when something else forces a redraw.
 

@@ -33,14 +33,12 @@ to summarise rather than to duplicate.
   opaque, with a warning naming how long it waited. The watch survives a blank
   or a lock rather than being lost with the screen. Dimming a layout does is
   untouched: a window the shell means to keep dim rests above zero.
-- The other way the same symptom appears is now covered too: a `view.layout`
-  whose crop for the window has no area at all cuts every surface away while
-  the shell's frame stays drawn. That is never a crop worth honouring — it
-  means the shell's rectangle and its reserved area disagreed — so the window
-  is drawn uncropped instead, with a warning naming the empty clip. The same
-  applies to a crop that does not meet the window at all: it crops every
-  surface away just as surely as an empty one, so the window is drawn
-  uncropped and the log says so.
+- A `view.layout` whose crop for the window has area but does not meet it is
+  dropped and the window drawn uncropped, with a warning naming the crop — that
+  cannot be the shell's own intersection with its reserved area, so it is a
+  disagreement between the two. An *empty* crop is honoured instead: that is
+  how the scrolling layout hides a column scrolled out of its strip, and
+  drawing it anyway is how one monitor's column gets painted onto the next.
 
 ### Added
 - `render:cm_enabled` (Hyprland's master switch, absent on): off means no
