@@ -32,7 +32,23 @@ impl ViewportState {
                 let Some(name) = self.output_covering(view.box_) else {
                     continue;
                 };
-                if !self.hdr_capable(&name) || !self.view_wants_hdr(view.id) {
+                if !self.hdr_capable(&name) {
+                    continue;
+                }
+                if !self.view_wants_hdr(view.id) {
+                    // Says what the client does declare, which is the only way to
+                    // tell "asked for HDR and was given an SDR window" from
+                    // "never asked" without guessing from the buffer format.
+                    let description = {
+                        use smithay::wayland::seat::WaylandFocus as _;
+                        view.window
+                            .wl_surface()
+                            .map(|surface| viewport_vulkan::color::description_for(&surface))
+                    };
+                    tracing::debug!(
+                        "auto-hdr: view {} is fullscreen on {name} but its content is {description:?}",
+                        view.id
+                    );
                     continue;
                 }
                 wanted.insert(name, view.id);

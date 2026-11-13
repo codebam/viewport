@@ -340,6 +340,9 @@ fn apply_pending_colour(surface: &WlSurface) -> bool {
         };
         let changed = *slot != pending;
         *slot = pending;
+        if changed {
+            tracing::debug!("surface colour description is now {pending:?}");
+        }
         changed
     })
 }
