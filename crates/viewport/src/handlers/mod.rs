@@ -420,8 +420,17 @@ impl crate::foreign_toplevel::ForeignToplevelHandler for ViewportState {
     }
 
     fn close_toplevel(&mut self, id: u32) {
-        if let Some(toplevel) = self.views.get(id).and_then(|view| view.window.toplevel()) {
-            toplevel.send_close();
+        // An X11 window has no xdg toplevel, and a close that reaches for
+        // `toplevel()` alone did nothing for it — the same gap `view.close`
+        // had and the apply arm fixed (see FIXES.md 15's twin).
+        if let Some(view) = self.views.get(id) {
+            if let Some(toplevel) = view.window.toplevel() {
+                toplevel.send_close();
+            } else if let Some(x11) = view.window.x11_surface() {
+                if let Err(e) = x11.close() {
+                    tracing::warn!("could not close X11 view {id} at a taskbar's ask: {e}");
+                }
+            }
         }
     }
 

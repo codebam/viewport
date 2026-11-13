@@ -297,18 +297,42 @@ impl XwmHandler for ViewportState {
         self.answer_x11_fullscreen(&window, false);
     }
 
-    /// A client changed `_NET_WM_STATE` itself — Wine's fullscreen, usually.
+    /// A client changed a property we keep. Most of them are the shell's
+    /// business.
     ///
-    /// Wine writes the property directly rather than sending the ClientMessage
-    /// EWMH describes, so `fullscreen_request` never fired for a game: it asked
-    /// and nothing answered, and it came up inside its tile. The fork reads the
-    /// write back and only forwards a value that actually differs, so none of
-    /// the compositor's own writes re-arrive here; what is handed over gets the
-    /// same answer the request path gives, because the client has already
-    /// committed to the state it wrote.
+    /// Wine writes `_NET_WM_STATE` directly rather than sending the
+    /// ClientMessage EWMH describes, so `fullscreen_request` never fired for
+    /// a game: it asked and nothing answered, and it came up inside its
+    /// tile. The fork reads the write back and only forwards a value that
+    /// actually differs, so none of the compositor's own writes re-arrive
+    /// here; what is handed over gets the same answer the request path
+    /// gives, because the client has already committed to the state it
+    /// wrote.
+    ///
+    /// The rest reach the same paths an xdg-shell client's changes do. A
+    /// title a browser changes while loading used to stop at the X server:
+    /// titlebars and taskbars froze at the map title, and — the half that is
+    /// not cosmetic — the conservative re-derivation of `capture: false`
+    /// rules in `notify_props` never ran, so a window whose title turned
+    /// sensitive after map stayed capturable. `TransientFor` drives
+    /// `notify_parent`, which is how a dialog opened by an X11 client after
+    /// its parent learns it belongs to one.
     fn property_notify(&mut self, _xwm: XwmId, window: X11Surface, property: WmWindowProperty) {
-        if matches!(property, WmWindowProperty::NetWmState) {
-            self.answer_x11_fullscreen(&window, window.is_fullscreen());
+        match property {
+            WmWindowProperty::NetWmState => {
+                self.answer_x11_fullscreen(&window, window.is_fullscreen());
+            }
+            WmWindowProperty::Title | WmWindowProperty::Class => {
+                if let Some(surface) = window.wl_surface() {
+                    self.notify_props(&surface);
+                }
+            }
+            WmWindowProperty::TransientFor => {
+                if let Some(surface) = window.wl_surface() {
+                    self.notify_parent(&surface);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -678,5 +702,40 @@ mod drag_tests {
         assert!(!x11_button_matches(4, 0x113));
         assert!(!x11_button_matches(1, 0x111));
         assert!(!x11_button_matches(u32::MAX, 0x110));
+    }
+
+    /// A property change an X11 client writes is routed like the xdg one.
+    ///
+    /// `property_notify` used to look at `_NET_WM_STATE` alone, so a title a
+    /// browser changes while loading never reached the shell — titlebars and
+    /// taskbars froze at the map title — and the conservative re-derivation
+    /// of `capture: false` rules in `notify_props` never ran for an X11
+    /// window, so one whose title turned sensitive after map stayed
+    /// capturable. The routing is checked against the source, as the
+    /// lock-walk tests are: the handler needs a live Xwm to exercise.
+    #[test]
+    fn an_x11_property_change_is_routed_to_the_shell() {
+        let source = include_str!("xwayland.rs");
+        let source = source.split("#[cfg(test)]").next().unwrap_or(source);
+        let start = source
+            .find("fn property_notify(")
+            .expect("property_notify in xwayland.rs");
+        let end = start
+            + source[start..]
+                .find("fn maximize_request(")
+                .expect("the end of property_notify");
+        let body = &source[start..end];
+        assert!(
+            body.contains("WmWindowProperty::Title | WmWindowProperty::Class"),
+            "a title or class change must reach notify_props"
+        );
+        assert!(
+            body.contains("WmWindowProperty::TransientFor"),
+            "a transient-for change must reach notify_parent"
+        );
+        assert!(
+            body.contains("NetWmState"),
+            "and the fullscreen read-back the fork exists for stays"
+        );
     }
 }
