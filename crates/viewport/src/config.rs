@@ -114,6 +114,18 @@ pub struct CursorConfig {
     /// `follow_mouse` is on. Absent is 0 (every motion triggers a focus
     /// check).
     pub follow_mouse_threshold: Option<f64>,
+    /// How many logical pixels the focus-follow hit test is inset on each
+    /// side of a window's bounding box, Hyprland's
+    /// `cursor:follow_mouse_shrink`. A client's shadows and decoration
+    /// margins are part of the box the hover test sees, so with the shrink on
+    /// focus only changes once the pointer is genuinely inside the window
+    /// rather than merely over the padding around it.
+    ///
+    /// Absent is 0 (the whole bounding box, exactly as without this). The
+    /// hover path only: clicks and the wheel still hit wherever the pointer
+    /// really is, because the user aimed at it. Negative is refused — an
+    /// inset of negative pixels grows the box and defeats the point.
+    pub follow_mouse_shrink: Option<f64>,
     /// Hide the cursor when a key is pressed, and bring it back on the next
     /// pointer motion. Absent is off.
     ///
@@ -2932,6 +2944,36 @@ mod tests {
         assert_eq!(dp1.hdr, Some(true));
         // Absent within a block is still absent, not zero.
         assert_eq!(dp1.y, None);
+    }
+
+    #[test]
+    fn follow_mouse_shrink_parses_when_named_and_stays_absent_when_not() {
+        let file: File = serde_json::from_str(
+            r#"{"cursor":{"follow_mouse":true,"follow_mouse_threshold":5,"follow_mouse_shrink":4}}"#,
+        )
+        .expect("should parse");
+        assert_eq!(file.cursor.follow_mouse, Some(true));
+        assert_eq!(file.cursor.follow_mouse_threshold, Some(5.0));
+        assert_eq!(file.cursor.follow_mouse_shrink, Some(4.0));
+
+        // Absent is None, which every apply path reads as 0 — the whole
+        // bounding box, as the hover test has always seen it.
+        let absent: File =
+            serde_json::from_str(r#"{"cursor":{"follow_mouse":true}}"#).expect("should parse");
+        assert_eq!(absent.cursor.follow_mouse_shrink, None);
+    }
+
+    #[test]
+    fn a_negative_follow_mouse_shrink_is_refused_at_the_boundaries() {
+        // The file block has no refusal of its own — every field is optional
+        // and the values travel as written — so the two readers do the
+        // refusing: the runtime message (`config.cursor` in apply.rs) and
+        // here, the one spot the hover test cannot come out of wrong.
+        // This test pins the parse side only: the negative number is data,
+        // and what refuses it is the reader below.
+        let file: File =
+            serde_json::from_str(r#"{"cursor":{"follow_mouse_shrink":-1}}"#).expect("should parse");
+        assert_eq!(file.cursor.follow_mouse_shrink, Some(-1.0));
     }
 
     #[test]

@@ -643,6 +643,19 @@ Zero — the default — means every motion triggers a focus check. Focus does n
 follow the pointer while the session is locked, while a window is being dragged,
 or while the overview is shown.
 
+`follow_mouse_shrink` shrinks the invisible rectangle a window presents to the
+hover test — not the window itself — by the given number of logical pixels on
+each side, Hyprland's `cursor:follow_mouse_shrink`. A client's shadows and
+decoration margins are part of the box the hover test sees, so with a shrink on
+focus only changes once the pointer is genuinely inside the window rather than
+merely over the padding around it. Zero — the default — keeps the whole
+bounding box. Clicks, the wheel and drags are unaffected: they still land
+wherever the pointer really is, because the user aimed at them.
+
+```jsonc
+"cursor": { "follow_mouse": true, "follow_mouse_shrink": 4 }
+```
+
 ## The magnifier
 
 `Mod4+Alt+equal` blows up the part of the screen under the pointer, one step at

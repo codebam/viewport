@@ -1187,9 +1187,10 @@ pub struct Border {
 /// `hide_on_*` booleans are Hyprland's immediate triggers — while typing,
 /// and while touched. `theme` and `size` name the cursor images the
 /// compositor draws, and `follow_mouse` is whether keyboard focus follows
-/// the pointer with `follow_mouse_threshold` the travel before it changes.
-/// Every field optional so an absent one leaves what the compositor had
-/// standing.
+/// the pointer with `follow_mouse_threshold` the travel before it changes
+/// and `follow_mouse_shrink` the inset the hover test keeps off each side
+/// of a window's box. Every field optional so an absent one leaves what
+/// the compositor had standing.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Cursor {
@@ -1204,6 +1205,8 @@ pub struct Cursor {
     pub follow_mouse: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub follow_mouse_threshold: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub follow_mouse_shrink: Option<f64>,
 }
 
 /// When the session locks and when the outputs go dark, as `idle` in the

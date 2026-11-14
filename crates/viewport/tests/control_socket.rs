@@ -241,13 +241,26 @@ fn the_cursor_hide_deadline_is_announced_as_well_as_set() {
     // The rest of the cursor block arrives the same way: only the fields
     // given change.
     client.send(
-        r#"{"type":"config.cursor","size":24,"follow_mouse":true,"follow_mouse_threshold":1.5}"#,
+        r#"{"type":"config.cursor","size":24,"follow_mouse":true,"follow_mouse_threshold":1.5,"follow_mouse_shrink":4}"#,
     );
     let config = client.wait_for("config");
     assert_eq!(config["cursor"]["size"], 24);
     assert_eq!(config["cursor"]["follow_mouse"], true);
     assert_eq!(config["cursor"]["follow_mouse_threshold"], 1.5);
+    assert_eq!(config["cursor"]["follow_mouse_shrink"], 4.0);
     assert_eq!(config["cursor"]["hide_after_ms"], 2000);
+
+    // The shrink is refused negative like the threshold is: an inset that
+    // grows the box defeats the whole feature, and the prior value stands.
+    client.send(r#"{"type":"config.cursor","follow_mouse_shrink":-2}"#);
+    let error = client.wait_for("error");
+    assert!(error.to_string().contains("follow_mouse_shrink"));
+    client.send(r#"{"type":"view.query"}"#);
+    assert_eq!(
+        client.wait_for("config")["cursor"]["follow_mouse_shrink"],
+        4.0,
+        "the refused half got applied anyway"
+    );
 
     // And a message that names only another field no longer toggles.
     client.send(r#"{"type":"config.cursor","hide_after_ms":3000}"#);

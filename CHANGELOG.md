@@ -11,6 +11,14 @@ to summarise rather than to duplicate.
 
 ## [Unreleased]
 
+### Added
+- `cursor.follow_mouse_shrink`, Hyprland's `cursor:follow_mouse_shrink`: the
+  invisible rectangle a window presents to focus-follows-the-pointer is inset
+  by the given logical pixels on each side, so a pointer over a client's
+  shadow or decoration margin no longer moves the keyboard. Clicks, the wheel
+  and drags hit the window wherever the pointer really is; only the hover
+  focus is shrunk. Zero — the default — keeps the whole bounding box.
+
 ## [0.6.0] - 2026-11-12
 
 ### Fixed

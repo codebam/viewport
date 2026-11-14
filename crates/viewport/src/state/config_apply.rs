@@ -256,6 +256,7 @@ impl ViewportState {
                 size: file.cursor.size,
                 follow_mouse: file.cursor.follow_mouse,
                 follow_mouse_threshold: file.cursor.follow_mouse_threshold,
+                follow_mouse_shrink: file.cursor.follow_mouse_shrink,
             };
             if cursor.hide_after_ms.is_some_and(|v| v < 0) {
                 tracing::warn!(
@@ -681,6 +682,12 @@ impl ViewportState {
             self.follow_mouse_pos = None;
         }
         self.follow_mouse_threshold = file.cursor.follow_mouse_threshold.unwrap_or(0.0);
+        // The shrink rides the threshold's treatment: read straight, with no
+        // reset of its own. It only makes the hover test stricter, so the
+        // worst a mid-session change does is move the boundary of where the
+        // next hover lands — `follow_mouse_pos` already records wherever the
+        // pointer was the last time the test accepted it.
+        self.follow_mouse_shrink = file.cursor.follow_mouse_shrink.unwrap_or(0.0);
         // A file that turned it on gets a countdown without waiting for the
         // pointer to move first, which for a desk nobody is at is never.
         self.arm_cursor_hide();

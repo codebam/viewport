@@ -4149,6 +4149,25 @@ impl ViewportState {
                 }
             }
             if let Some(window) = self.window_under(pos) {
+                // The hover test is inset, not the click test: this block is
+                // the only caller that asks, and the click, wheel and drag
+                // paths call `window_under` directly — the user aimed at what
+                // they clicked, so a decoration margin still takes the hit.
+                // `window_under` itself is shared with the click path and is
+                // left alone for exactly that reason. A point in the margin
+                // answers "no window under", which the threshold logic below
+                // already treats as not-yet-arrived: `follow_mouse_pos`
+                // stays where it was, so focus only changes when the pointer
+                // is genuinely inside the window.
+                if self.follow_mouse_shrink > 0.0
+                    && !ViewportState::inside_shrunk(
+                        self.space.element_bbox(&window).unwrap_or_default(),
+                        pos,
+                        self.follow_mouse_shrink,
+                    )
+                {
+                    return;
+                }
                 let id = self
                     .views
                     .iter()
@@ -4532,6 +4551,40 @@ impl smithay::wayland::virtual_keyboard::VirtualKeyboardHandler for ViewportStat
             }
             _ => (),
         }
+    }
+}
+
+impl ViewportState {
+    /// Whether a point survives the hover test's inset of a window's box.
+    ///
+    /// `bbox` is in space coordinates and `pos` in the same, both logical —
+    /// `element_bbox` is where `window_under` itself takes the box from, and
+    /// that walk's test is against the *raw* pointer position, so this one is
+    /// too: an inset that moved in a scaled frame would not agree with what
+    /// `window_under` just accepted. Negative shrinks are refused at the
+    /// config and runtime boundaries, and the caller passes a positive one
+    /// only — a zero or negative here would be an inset of nothing or an
+    /// outward one, neither of which this gate should ever ask for.
+    ///
+    /// A pure function so the arithmetic — the part that decides when the
+    /// keyboard moves under the pointer — is checkable without a `Space`, a
+    /// window or a client, like `unscale_about` in state.rs before it.
+    fn inside_shrunk(bbox: Rectangle<i32, Logical>, pos: Point<f64, Logical>, shrink: f64) -> bool {
+        let bbox = bbox.to_f64();
+        // A box inset past its own middle is empty rather than inside-out:
+        // the strips would cross and no point would be inside both, so the
+        // test just fails and the hover answers "not yet arrived".
+        let left = bbox.loc.x + shrink;
+        let right = bbox.loc.x + bbox.size.w - shrink;
+        let top = bbox.loc.y + shrink;
+        let bottom = bbox.loc.y + bbox.size.h - shrink;
+        if right < left || bottom < top {
+            return false;
+        }
+        // Half-open on the right and bottom edges, as `Rectangle::contains`
+        // is, so a pointer on the shared edge of two side-by-side windows
+        // answers one of them rather than both or neither.
+        pos.x >= left && pos.x < right && pos.y >= top && pos.y < bottom
     }
 }
 
@@ -5120,5 +5173,90 @@ mod tests {
             ),
             None
         );
+    }
+
+    /// The box every shrink test uses: a window at (100, 50), 200 by 100.
+    fn inset_box() -> Rectangle<i32, Logical> {
+        Rectangle::from_extremities((100, 50), (300, 150))
+    }
+
+    fn inset_at(x: f64, y: f64) -> Point<f64, Logical> {
+        (x, y).into()
+    }
+
+    #[test]
+    fn a_point_well_inside_survives_the_shrink() {
+        // 10px off each edge of the 200x100 box: comfortably inside even
+        // with 10px taken off every side.
+        assert!(ViewportState::inside_shrunk(
+            inset_box(),
+            inset_at(110.0, 60.0),
+            10.0
+        ));
+        assert!(ViewportState::inside_shrunk(
+            inset_box(),
+            inset_at(289.0, 139.0),
+            10.0
+        ));
+    }
+
+    #[test]
+    fn a_point_in_the_margin_strip_is_outside() {
+        // The original corners are the strips a shrink is meant to keep
+        // out — a decoration or shadow lives there.
+        assert!(!ViewportState::inside_shrunk(
+            inset_box(),
+            inset_at(105.0, 55.0),
+            10.0
+        ));
+        assert!(!ViewportState::inside_shrunk(
+            inset_box(),
+            inset_at(295.0, 145.0),
+            10.0
+        ));
+        // Ten pixels in is the boundary itself; the right edge is
+        // half-open, so a point exactly on it is outside.
+        assert!(!ViewportState::inside_shrunk(
+            inset_box(),
+            inset_at(290.0, 100.0),
+            10.0
+        ));
+    }
+
+    #[test]
+    fn a_zero_shrink_accepts_the_whole_box() {
+        // The edges themselves behave as `Rectangle::contains` does — the
+        // top-left corner in, the far edges out.
+        assert!(ViewportState::inside_shrunk(
+            inset_box(),
+            inset_at(100.0, 50.0),
+            0.0
+        ));
+        assert!(ViewportState::inside_shrunk(
+            inset_box(),
+            inset_at(150.0, 100.0),
+            0.0
+        ));
+        assert!(!ViewportState::inside_shrunk(
+            inset_box(),
+            inset_at(300.0, 100.0),
+            0.0
+        ));
+        assert!(!ViewportState::inside_shrunk(
+            inset_box(),
+            inset_at(150.0, 150.0),
+            0.0
+        ));
+    }
+
+    #[test]
+    fn a_shrink_bigger_than_half_the_box_empties_it() {
+        // 200 wide inset 100 from each side leaves no point inside; the
+        // strips cross rather than the box turning inside-out.
+        assert!(!ViewportState::inside_shrunk(
+            inset_box(),
+            inset_at(200.0, 100.0),
+            100.0
+        ));
     }
 }
