@@ -11,6 +11,8 @@ to summarise rather than to duplicate.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-14
+
 ### Added
 - Per-device `scroll_button`, `scroll_button_lock` and `drag_3fg` under the
   `input` block (Hyprland's `input:scroll_button`, `input:scroll_button_lock`
