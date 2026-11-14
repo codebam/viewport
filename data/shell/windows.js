@@ -379,9 +379,10 @@ function addView({ id, title, app_id, tag, output: outputName, min_width, min_he
    * reload, including an old denial whose rule may just have been removed. */
   view.ruleCapture = typeof rule?.capture === 'boolean' ? rule.capture : true;
   send({ type: 'view.capture', id, capture: view.ruleCapture });
-  /* Hyprland's `tearing` and `idle_inhibit` rule effects. Both are current
-     policy, resolved whenever a rule matches, the same as capture. */
+  /* Hyprland's `tearing`, `blur` and `idle_inhibit` rule effects. All are
+     current policy, resolved whenever a rule matches, the same as capture. */
   send({ type: 'view.tearing', id, tearing: rule?.tearing === true });
+  send({ type: 'view.blur', id, blur: rule?.blur === true });
   send({ type: 'view.idle_inhibit', id, inhibit: rule?.idle_inhibit === true });
   /* And `decorate`: null hands the decision back to the global policy, so a
      rule that stopped matching takes its override with it. */
@@ -543,6 +544,7 @@ function reapplyWindowRule(id) {
   /* Unconditional, like capture: the compositor keeps the last value, and a
      rule that stopped matching has to be able to turn it back off. */
   send({ type: 'view.tearing', id, tearing: rule?.tearing === true });
+  send({ type: 'view.blur', id, blur: rule?.blur === true });
   send({ type: 'view.idle_inhibit', id, inhibit: rule?.idle_inhibit === true });
   send({ type: 'view.decorations', id,
     decorate: typeof rule?.decorate === 'boolean' ? rule.decorate : null });

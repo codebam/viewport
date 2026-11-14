@@ -252,6 +252,12 @@ pub struct View {
     /// effect. Consulted by `output_wants_tearing` alongside the client's own
     /// `wp-tearing-control-v1` request.
     pub rule_tearing: bool,
+    /// The current first-matching rule asks for blur behind this window,
+    /// Hyprland's `blur` effect: the same framebuffer effect a client gets
+    /// from `ext-background-effect-v1`, forced onto a window that never
+    /// asked for it. Read by `render_frame` and carried per window like
+    /// `rule_opacity`, because only the compositor can draw it.
+    pub rule_blur: bool,
     /// The current first-matching rule keeps the session awake, Hyprland's
     /// `idle_inhibit` effect. Consulted by `refresh_idle_inhibit` alongside the
     /// protocol and bus inhibitors.
@@ -731,6 +737,7 @@ impl Views {
             opacity: 1.0,
             rule_opacity: 1.0,
             rule_tearing: false,
+            rule_blur: false,
             rule_idle_inhibit: false,
             rule_decorate: None,
             configured: None,

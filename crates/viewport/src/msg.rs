@@ -228,6 +228,12 @@ const TYPES: &[Type] = &[
         hint: "--id N --tearing BOOL",
     },
     Type {
+        name: "view.blur",
+        fields: &["id", "blur"],
+        strings: &[],
+        hint: "--id N --blur BOOL",
+    },
+    Type {
         name: "view.idle_inhibit",
         fields: &["id", "inhibit"],
         strings: &[],

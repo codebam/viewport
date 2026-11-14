@@ -2429,8 +2429,8 @@ re-evaluated as the window moves in and out of a group, not only at map time.
 
 The effects this shell can apply are the workspace, floating and its rect,
 `pinned`, `pseudotile`, `swallow`, `capture`, `opacity`, `focus`, `animation`,
-`tearing`, `idle_inhibit`, `decorate`, `no_auto_hdr`, `tonemap` and a size
-floor and ceiling. `focus:
+`tearing`, `blur`, `idle_inhibit`, `decorate`, `no_auto_hdr`, `tonemap` and a
+size floor and ceiling. `focus:
 false` opens a window without taking the keyboard — a launcher, or a
 picture-in-picture window that should appear without interrupting. `animation:
 false` gives it the reduced-motion treatment: no fade, but it still appears.
@@ -2456,7 +2456,16 @@ shown in HDR.
 `tearing: true` asks the compositor to present the window as soon as a frame
 is ready, the same as `wp-tearing-control-v1` does when the client asks; it is
 granted only when the window covers its output and nothing is layered over it,
-and never while the session is locked or the overview is up. `idle_inhibit:
+and never while the session is locked or the overview is up. `blur: true`
+draws the framebuffer blur behind the window — the same effect a client gets
+from `ext-background-effect-v1` — whether or not the window asked for it, so an
+opaque terminal over a blurred rule is glass rather than a rule the window
+opts out of. The whole surface tree is affected, popups included, so a menu
+over a blurred window blurs too; X11 windows do not, because their surfaces
+carry no per-surface effect metadata to hang the request on. Like
+[Layer-surface rules](#layer-surface-rules), the effect is drawn only where
+the renderer can run it, and a session whose renderer cannot draws the window
+sharp rather than failing the rule. `idle_inhibit:
 true` keeps the session awake for as long as the window is mapped, beside the
 protocol and `org.freedesktop.ScreenSaver` inhibitors the compositor already
 honours. `decorate: false` hands this window's frame to the client — the same

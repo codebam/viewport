@@ -272,6 +272,19 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             }
         }
 
+        Request::ViewBlur { id, blur } => {
+            if let Some(view) = state.views.get_mut(id) {
+                if view.rule_blur != blur {
+                    view.rule_blur = blur;
+                    // Unlike tearing, blur changes what the frame is made of:
+                    // the effect element behind the surface appears or goes,
+                    // and no client commits with that change — the client never
+                    // asked. This is the same mark a rule opacity change gets.
+                    state.needs_render = true;
+                }
+            }
+        }
+
         Request::ViewIdleInhibit { id, inhibit } => {
             let Some(view) = state.views.get_mut(id) else {
                 return;
@@ -3635,5 +3648,11 @@ mod tests {
         assert!(!acts_while_locked(&Request::ViewQuery));
         assert!(!moves_focus(&Request::SessionQuery));
         assert!(!acts_while_locked(&Request::SessionQuery));
+        // The draw hints belong to the same negative space: they change what
+        // a frame is made of, not where the keyboard is or what the session
+        // does, and behind a lock screen there is nothing to blur anyway —
+        // the windows are not drawn.
+        assert!(!moves_focus(&Request::ViewBlur { id: 1, blur: true }));
+        assert!(!acts_while_locked(&Request::ViewBlur { id: 1, blur: true }));
     }
 }

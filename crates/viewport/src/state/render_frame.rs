@@ -536,6 +536,7 @@ impl ViewportState {
                             )
                         })
                         .unwrap_or(1.0),
+                    blur: view.map(|view| view.rule_blur).unwrap_or(false),
                     redaction,
                     overlay,
                     corners,
