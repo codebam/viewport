@@ -263,6 +263,19 @@ impl Worker {
                         // The list BlueZ already has, then the radio: a picker
                         // that showed nothing until discovery found something
                         // would hide the headset that is already paired.
+                        //
+                        // The snapshot is forgotten first, so the open always
+                        // answers. A machine with no BlueZ reads as the
+                        // default snapshot — `available` false and no
+                        // devices — which is exactly what the last close left
+                        // in `last`; a picker opening on a machine like that
+                        // would otherwise be told nothing and draw its empty
+                        // list as "no devices" rather than "no radio", which
+                        // is the difference between waiting for a scan that
+                        // cannot find anything and knowing there is nobody to
+                        // ask. The network worker does the same with
+                        // `known_at` for the same reason.
+                        self.last = BluetoothSnapshot::default();
                         self.refresh();
                         self.error = self.set_discovery(Some(true)).err();
                         self.refresh();
@@ -305,7 +318,16 @@ impl Worker {
     /// The whole tree in one call, turned into the two things a picker draws.
     fn read(&self) -> BluetoothSnapshot {
         let Some(objects) = self.objects() else {
-            return BluetoothSnapshot::default();
+            // The error still belongs in this: "there is no Bluetooth
+            // adapter" is what a picker opening on a desktop with no radio
+            // should be told, and dropping it here made that snapshot
+            // identical to the one the previous close left — so the open
+            // answered nothing at all and the picker drew "no devices"
+            // where it meant "no radio".
+            return BluetoothSnapshot {
+                error: self.error.clone(),
+                ..BluetoothSnapshot::default()
+            };
         };
 
         let mut snapshot = BluetoothSnapshot {
