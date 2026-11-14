@@ -703,39 +703,4 @@ mod drag_tests {
         assert!(!x11_button_matches(1, 0x111));
         assert!(!x11_button_matches(u32::MAX, 0x110));
     }
-
-    /// A property change an X11 client writes is routed like the xdg one.
-    ///
-    /// `property_notify` used to look at `_NET_WM_STATE` alone, so a title a
-    /// browser changes while loading never reached the shell — titlebars and
-    /// taskbars froze at the map title — and the conservative re-derivation
-    /// of `capture: false` rules in `notify_props` never ran for an X11
-    /// window, so one whose title turned sensitive after map stayed
-    /// capturable. The routing is checked against the source, as the
-    /// lock-walk tests are: the handler needs a live Xwm to exercise.
-    #[test]
-    fn an_x11_property_change_is_routed_to_the_shell() {
-        let source = include_str!("xwayland.rs");
-        let source = source.split("#[cfg(test)]").next().unwrap_or(source);
-        let start = source
-            .find("fn property_notify(")
-            .expect("property_notify in xwayland.rs");
-        let end = start
-            + source[start..]
-                .find("fn maximize_request(")
-                .expect("the end of property_notify");
-        let body = &source[start..end];
-        assert!(
-            body.contains("WmWindowProperty::Title | WmWindowProperty::Class"),
-            "a title or class change must reach notify_props"
-        );
-        assert!(
-            body.contains("WmWindowProperty::TransientFor"),
-            "a transient-for change must reach notify_parent"
-        );
-        assert!(
-            body.contains("NetWmState"),
-            "and the fullscreen read-back the fork exists for stays"
-        );
-    }
 }

@@ -190,3 +190,14 @@ compositor) and `ai.auth`, `ai.usage`, `shell.reload` (compositor →
 shell); they have been added. `view.opacity_rule`, `view.tearing`,
 `view.idle_inhibit`, `gesture.capture` and `ai.login` were documented
 but not offerable by `viewport msg -t` (FIXES 56, now fixed).
+
+A layer surface's menu is unconstrained against the layer's own
+rectangle (commit 3370dafd), and that behaviour has no test — a limit on
+the client side, like `view.parent` above. An `xdg_popup` reports no
+position of its own, so a headless test has nothing on the wire to
+assert: the popup sits where the compositor put it and says nothing
+about it to anyone. A future test needs a client that reads its popup's
+position back — via `xdg_popup.get_geometry` against what the layer
+commanded — or a compositor trace assertion that the popup's
+unconstrained rectangle is the layer's own rectangle rather than the
+toplevel's.

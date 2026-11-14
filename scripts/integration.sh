@@ -236,6 +236,10 @@ run xwayland-clipboard "$root/tests/xwayland-clipboard.test.sh" "$VIEWPORT"
 run xwayland-fullscreen "$root/tests/xwayland-fullscreen.test.sh" \
 	"$VIEWPORT" "$work/foreign-toplevel-client"
 run xwayland-warp-hint "$root/tests/xwayland-warp-hint.test.sh" "$VIEWPORT"
+# An X11 title change reaches the shell, and a keyboard grab is only the
+# focused window's.
+run xwayland-props "$root/tests/xwayland-props.test.sh" "$VIEWPORT"
+run xwayland-grab "$root/tests/xwayland-grab.test.sh" "$VIEWPORT"
 # The other half of the same dance: a capture that is still held while the
 # shell changes what it draws. Pressing Mod4 must not reach the game as aim.
 run xwayland-capture-overlay "$root/tests/xwayland-capture-overlay.test.sh" "$VIEWPORT"
