@@ -174,24 +174,22 @@ jobs:
       # is Mesa's software rasteriser.
       #
       # The default-features binary, deliberately — no `wpe`, so no WebKit
-      # in the compositor's own process. But the out-of-process shell is
-      # another matter: tests/window-rule-blur.test.sh is the one test that
-      # needs the *real* shell process, because the chain it pins — a config
-      # rule, the shell's rule resolution, the `view.blur` message, the
-      # compositor's render — starts in the shell's own JavaScript. Without
-      # the binary beside the compositor, that test falls back to the
-      # built-in layout and its rule is never resolved at all. `.#rust`
-      # already carries gtk4 and webkitgtk_6_0 prebuilt (a download, not a
-      # compile — the entire point of that backend), so this build costs the
-      # runner the link step and nothing else. `VIEWPORT_SHELL_BIN` is not
-      # needed: `shell_binary` finds the shell beside the compositor binary
-      # in target/debug first.
+      # in the compositor's own process. The out-of-process shell is
+      # built too (see VIEWPORT_RULE_TEST_SKIP_SHELL below: this runner
+      # cannot run it, a developer machine can).
       - name: Wayland integration tests
         env:
           # No GPU on a hosted runner, so this is where it lands anyway.
           # Named rather than left to chance: a machine that does have one
           # would otherwise test a different driver than CI does.
           LIBGL_ALWAYS_SOFTWARE: '1'
+          # The shell binary is built here because a machine that can run
+          # it should — but this runner cannot: WebKitGTK's network
+          # service dies on bwrap's missing loopback and SIGABRTs before
+          # anything is placed. tests/window-rule-blur.test.sh skips
+          # under this flag rather than reporting a fallback layout's
+          # answers as the rule's.
+          VIEWPORT_RULE_TEST_SKIP_SHELL: '1'
         run: |
           nix develop .#rust --command bash -euo pipefail -c '
             cargo build --bin viewport --bin viewport-shell-gtk

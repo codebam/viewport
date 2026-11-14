@@ -34,6 +34,20 @@ for binary in "$viewport" "$paint_client" "$capture_client"; do
 	fi
 done
 
+# This is the one integration test that needs the real shell process, and the
+# shell needs what a hosted runner cannot give it: WebKitGTK's own network
+# service dies there on the sandbox's missing loopback (`bwrap: loopback:
+# Failed RTM_NEWADDR: Operation not permitted`, then `failed to receive
+# credentials` and a SIGABRT), so the shell never places anything and the
+# compositor falls back to the built-in layout where no rule is ever
+# resolved. Rather than pretend that answers anything about the blur, the test
+# skips wherever the shell cannot run — the same deal the X11 tests get — and
+# says why. A machine that can run the shell runs this for real.
+if [ -n "${VIEWPORT_RULE_TEST_SKIP_SHELL:-}" ]; then
+	echo "SKIP: VIEWPORT_RULE_TEST_SKIP_SHELL is set — the shell this test drives will not be started"
+	exit 77
+fi
+
 # The two windows. The backdrop paints red left of its own middle, blue right
 # (`split`); the glass is transparent everywhere (margin 0, alpha 0 body) so
 # whatever the compositor draws behind it is what the screen shows.
