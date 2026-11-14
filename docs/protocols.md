@@ -565,14 +565,18 @@ resolved before mapping and refreshed synchronously on config reload, including
 maps retained by disabled outputs. A missing policy attachment is initialized
 from the active rules rather than an unrelated permissive default.
 
-`blur` uses the GLES framebuffer effect described above on nested and headless
-backends. It remains intent only on DRM/Vulkan, where Viewport advertises no
-background-effect capability rather than silently accepting client requests it
-cannot render.
+`blur` runs wherever the renderer can draw it. GLES does it with the framebuffer
+effect described above — nested and headless backends prove it by blitting and
+compiling the blur shader before the global is created — and Vulkan has the
+capture and the pipeline built in, so the DRM backend advertises the global for
+either renderer that can run it (`crates/viewport/src/udev.rs:1496-1504`), a
+card that cannot draw it included. A renderer that cannot keeps
+`background_effects_available()` false, so its blur intent is a no-op rather
+than a promise it cannot render.
 
 ## Status
 
-The architecture is grounded in the real 2.52.5 headers: the `WPEDisplay` and
+The architecture is grounded in the real 2.54.2 headers: the `WPEDisplay` and
 `WPEView` vfunc tables, `wpe_buffer_dma_buf_get_*`, `WebKitWebView`'s `display`
 construct property, and wlroots 0.20's `wlr_buffer_impl` and
 `wlr_scene_buffer_set_buffer_with_options`.

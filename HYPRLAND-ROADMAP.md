@@ -44,11 +44,19 @@ socket.
 
 7 is the one to read twice, because it is not the entry the tree had before.
 The old framing was that blur was missing for the shell only. What the sweep
-found is that `ext-background-effect-v1` is never advertised on DRM at all —
-correctly, since a compositor-wide global cannot promise an effect that only
-some of the outputs would draw, and Vulkan is preferred per card — which leaves
-blur running on nested and headless sessions and nowhere else. Item 3 is
-downstream of that: the shell cannot get what no client on the machine gets.
+found then was that `ext-background-effect-v1` was never advertised on DRM at
+all — correctly, since a compositor-wide global cannot promise an effect that
+only some of the outputs would draw, and Vulkan is preferred per card — which
+left blur running on nested and headless sessions and nowhere else. That is no
+longer the state of the tree: `VulkanFrame` grew `FrameContext`, a
+render-pass-safe capture and a nine-tap blur pipeline, so the DRM backend now
+advertises the global when its renderer can draw it (`crates/viewport/src/udev.rs:1496-1504`),
+and item 3 landed with it — an `OverlayRect` carries `blur: true` and the
+compositor draws the same effect element under that piece of the shell's
+texture (`crates/viewport/src/render.rs:473-503`), so the shell no longer waits
+on what a client on the machine gets. Both rows read done, and the old text is
+here only because the reasoning it recorded is why the fix took the shape it
+did.
 
 The rest, named so that the next sweep does not have to rediscover them, and
 not worth a row each: `scroll_button` with its lock, and `drag_3fg`;
