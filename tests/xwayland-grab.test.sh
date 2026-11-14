@@ -40,7 +40,7 @@ if ! command -v Xwayland >/dev/null 2>&1; then
 fi
 
 root=$(cd "$(dirname "$0")/.." && pwd)
-workdir=$(mktemp -d)
+workdir=${VIEWPORT_WORK:-$(mktemp -d)}
 viewport_pid=
 target_pid=
 background_pid=
@@ -51,7 +51,7 @@ cleanup() {
 		[ -n "$pid" ] && kill "$pid" 2>/dev/null
 	done
 	wait 2>/dev/null
-	rm -rf "$workdir"
+	[ -z "${VIEWPORT_KEEP_WORK:-}" ] && rm -rf "$workdir"
 }
 trap cleanup EXIT
 
@@ -77,7 +77,14 @@ log=$workdir/viewport.log
 socket=$workdir/control.sock
 config=$workdir/config.json
 focused=$workdir/focused.jsonl
-printf '{ "layout": "tiling", "tray": false }\n' >"$config"
+# The background window must arrive without the keyboard: the shell focuses
+# every new window on open (data/shell/windows.js, the focus-on-open pass),
+# so without a rule saying otherwise the "never focused" premise is broken by
+# the shell's own welcome, and the grab-refusal check below would test a
+# window that already holds the seat. `focus: false` is the window-rule way
+# to keep a new window from taking the keyboard — a launcher or a
+# picture-in-picture window opens through the same door.
+printf '{ "layout": "tiling", "tray": false, "rules": [ { "app_id": "viewportgrab", "focus": false } ] }\n' >"$config"
 "$viewport" --headless --socket "$socket" --config "$config" >"$log" 2>&1 &
 viewport_pid=$!
 
