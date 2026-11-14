@@ -34,33 +34,40 @@
 # answer on the system bus; the assertions are on the wire fields, never on
 # which networks exist.
 #
-#   tests/services-ipc.test.sh target/debug/viewport
+#   tests/services-ipc.test.sh target/debug/viewport \
+#     target/debug/examples/notification-sender
 set -u
 
 viewport=${1:-target/debug/viewport}
-if [ ! -x "$viewport" ]; then
-	echo "missing $viewport — build first" >&2
-	exit 2
-fi
+sender=${2:-target/debug/examples/notification-sender}
+for binary in "$viewport" "$sender"; do
+	if [ ! -x "$binary" ]; then
+		echo "missing $binary — build first" >&2
+		exit 2
+	fi
+done
 viewport=$(realpath "$viewport")
+sender=$(realpath "$sender")
 
 if ! command -v dbus-run-session >/dev/null; then
 	echo "SKIP: no dbus-run-session to hold the private bus"
 	exit 77
 fi
-if [ ! -f /etc/dbus-1/session.conf ]; then
-	echo "SKIP: no /etc/dbus-1/session.conf for the private bus to start from"
-	exit 77
+bus_config=$(cd "$(dirname "$0")" && pwd)/private-session.conf
+if [ ! -f "$bus_config" ]; then
+	echo "missing private bus configuration: $bus_config" >&2
+	exit 2
 fi
 if ! command -v gdbus >/dev/null; then
 	echo "SKIP: no gdbus to send the notification with"
 	exit 77
 fi
-# gdbus sends both Notify and CloseNotification (see the withdrawal check).
+# gdbus sends both Notify and CloseNotification (see the stranger-refusal
+# check); the sender example sends and closes on one connection.
 
 if [ "${VIEWPORT_SERVICES_TEST_BUS:-}" != yes ]; then
 	export VIEWPORT_SERVICES_TEST_BUS=yes
-	exec dbus-run-session -- "$0" "$viewport"
+	exec dbus-run-session --config-file="$bus_config" -- "$0" "$viewport" "$sender"
 fi
 
 workdir=$(mktemp -d)
@@ -207,27 +214,52 @@ check "and an expired one stays as well" yes \
 
 # Withdrawal: the sender closes its own notification. Unlike a dismiss or
 # an expire, this *does* arrive as `notification.close` and it *does*
-# leave the history.
+# leave the history. A notification id is owned by the D-Bus unique name
+# that created it, so first a stranger's close of the same id must do
+# nothing at all: no close event, no history change.
 if [ -n "$second_id" ]; then
 	if gdbus call --session --dest org.freedesktop.Notifications \
 		--object-path /org/freedesktop/Notifications \
 		--method org.freedesktop.Notifications.CloseNotification \
 		"uint32 $second_id" >/dev/null 2>&1; then
-		echo "ok: CloseNotification was sent (setup for notification.close)"
+		echo "ok: a stranger's CloseNotification was sent (setup for the refusal)"
 	else
-		echo "FAIL: CloseNotification could not be sent" >&2
+		echo "FAIL: the stranger's CloseNotification could not be sent" >&2
 		failures=$((failures + 1))
 	fi
+	sleep 0.5
+	check "and a stranger's close did not arrive as a notification.close for that id" no \
+		"$(grep '"type":"notification.close"' "$workdir/events.json" | grep -q "\"id\":$second_id" && echo yes || echo no)"
+	HISTORY=$(history_now)
+	check "and a stranger's close does not take it out of the history" yes \
+		"$(printf '%s' "$HISTORY" | grep -q 'to be expired' && echo yes || echo no)"
+
+	if "$sender" withdraw "to be expired" >"$workdir/withdraw.txt" 2>&1; then
+		third_id=$(sed -n 's/^id=\([0-9]\{1,\}\)$/\1/p' "$workdir/withdraw.txt")
+		if [ -n "$third_id" ]; then
+			echo "ok: the sender sent and closed its own notification (id $third_id)"
+		else
+			echo "FAIL: the sender's withdrawal printed no id; got: $(head -3 "$workdir/withdraw.txt")" >&2
+			failures=$((failures + 1))
+		fi
+	else
+		echo "FAIL: the sender's withdrawal could not be sent; got: $(head -3 "$workdir/withdraw.txt")" >&2
+		failures=$((failures + 1))
+	fi
+	# The withdrawal is a fresh id: ownership is the unique name, and the
+	# sender example is another connection, so it cannot name second_id —
+	# the stranger's close above proved the daemon would refuse that. What
+	# is pinned is the sender's own close, by its own id.
 	for _ in $(seq 1 50); do
 		grep '"type":"notification.close"' "$workdir/events.json" 2>/dev/null |
-			grep -q "\"id\":$second_id" && break
+			grep -q "\"id\":$third_id" && break
 		sleep 0.1
 	done
 	check "and it arrived as a notification.close for that id" yes \
-		"$(grep '"type":"notification.close"' "$workdir/events.json" | grep -q "\"id\":$second_id" && echo yes || echo no)"
+		"$(grep '"type":"notification.close"' "$workdir/events.json" | grep -q "\"id\":$third_id" && echo yes || echo no)"
 	HISTORY=$(history_now)
 	check "and a withdrawn notification leaves the history (unlike an expired one)" yes \
-		"$(printf '%s' "$HISTORY" | grep -q 'to be expired' && echo no || echo yes)"
+		"$(printf '%s' "$HISTORY" | grep -q "\"id\":$third_id" && echo no || echo yes)"
 fi
 
 # A dismiss naming no notification is silently ignored (a stale id is a race,
