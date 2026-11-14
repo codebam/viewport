@@ -407,6 +407,16 @@ else
 fi
 check "view.tearing is offerable with -t" "0" \
 	"$(msg -t view.tearing --id "$VID" --tearing true >/dev/null 2>&1; echo "$?")"
+# The blur effect is render-only state too, with the same two observables:
+# acceptance of both the raw and the typed form.
+if msg --raw "{\"type\":\"view.blur\",\"id\":$VID,\"blur\":true}" >/dev/null 2>&1; then
+	echo "ok: view.blur (via --raw) was accepted"
+else
+	echo "FAIL: view.blur (via --raw) was refused" >&2
+	failures=$((failures + 1))
+fi
+check "view.blur is offerable with -t" "0" \
+	"$(msg -t view.blur --id "$VID" --blur true >/dev/null 2>&1; echo "$?")"
 if msg --raw "{\"type\":\"view.idle_inhibit\",\"id\":$VID,\"inhibit\":true}" >/dev/null 2>&1; then
 	echo "ok: view.idle_inhibit (via --raw) was accepted"
 else
@@ -425,7 +435,7 @@ else
 	echo "FAIL: view.decorations (null) was refused" >&2
 	failures=$((failures + 1))
 fi
-check "and the window is still listed after all five" "$VID" \
+check "and the window is still listed after all six" "$VID" \
 	"$(view_id_for "viewport-view-ipc")"
 
 # --- view.props, from an identity change ----------------------------------

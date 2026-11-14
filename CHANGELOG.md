@@ -11,6 +11,20 @@ to summarise rather than to duplicate.
 
 ## [Unreleased]
 
+### Added
+- Per-window `blur` rules (Hyprland's rule effect of the same name): the
+  compositor draws the framebuffer blur behind the window's whole surface
+  tree — the same effect a client gets from `ext-background-effect-v1` —
+  whether or not the window asked for it, popups included, so a menu over a
+  blurred window blurs too. The shell resolves the rule per window and sends
+  it over a new `view.blur` message, the way it already does for `tearing`
+  and `opacity`; a rule that stops matching turns the blur back off, because
+  the shell re-sends current policy on every rule match. Drawn only where the
+  renderer can run the effect — a renderer that cannot draws the window
+  sharp, exactly as it would a layer-rule blur. X11 windows keep their
+  existing path: their surfaces carry no per-surface effect metadata for the
+  request to hang on.
+
 ## [0.6.0] - 2026-11-12
 
 ### Fixed

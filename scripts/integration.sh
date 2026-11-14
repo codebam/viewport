@@ -129,6 +129,8 @@ run see-through "$root/tests/see-through.test.sh" \
 	"$VIEWPORT" "$work/paint-client" "$work/capture-client"
 run background-effect "$root/tests/background-effect.test.sh" \
 	"$VIEWPORT" "$work/background-effect-client" "$work/capture-client"
+run window-rule-blur "$root/tests/window-rule-blur.test.sh" \
+	"$VIEWPORT" "$work/paint-client" "$work/capture-client"
 run color-representation "$root/tests/color-representation.test.sh" \
 	"$VIEWPORT" "$work/color-representation-client"
 run color-management "$root/tests/color-management.test.sh" \

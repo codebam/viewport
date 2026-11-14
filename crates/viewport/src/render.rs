@@ -168,6 +168,11 @@ pub struct WindowFrame {
     pub scale: f64,
     /// What the shell asked this window to be drawn at, 0.0 to 1.0.
     pub opacity: f32,
+    /// The current rule asks this window's surfaces to be drawn with the
+    /// framebuffer blur behind them, whether or not the client asked — the
+    /// same effect a background-effect client gets. The shell resolves the
+    /// rule and sends it per window, like `opacity`.
+    pub blur: bool,
     /// `Some` only for a private window. The rectangle includes its surface
     /// tree, popups and frame, already transformed into output coordinates.
     pub redaction: Option<(Id, Rectangle<i32, Physical>)>,
@@ -515,6 +520,7 @@ where
         clip,
         scale: window_scale,
         opacity: frame_opacity,
+        blur,
         redaction,
         overlay,
         corners,
@@ -584,13 +590,17 @@ where
                         .to_f64()
                         .to_physical(scale)
                         .to_i32_round();
-                let drawn = render_surface_tree(
+                let drawn = render_surface_tree_with_effect(
                     renderer,
                     popup.wl_surface(),
                     at,
                     scale,
                     1.0,
                     Kind::Unspecified,
+                    // A menu over a blurred window blurs too: the popup
+                    // inherits the rule the window was drawn under, so the
+                    // glass does not end at the window's own surface.
+                    *blur,
                     effects,
                 );
                 // Shrunk with the window it belongs to. Uncropped still — a
@@ -615,16 +625,23 @@ where
         // the one that is not cropped — leaving both is a menu drawn twice.
         //
         // X11 windows keep the Smithay path, which has no popups of its own to
-        // duplicate: an X11 menu is a separate override-redirect window.
+        // duplicate: an X11 menu is a separate override-redirect window. They
+        // also keep it because it carries no per-surface effect metadata for
+        // a forced blur to hang off — an X11 window asked for none.
         let alpha = frame_opacity.clamp(0.0, 1.0);
         let surfaces: Vec<SurfaceElement<R>> = match window.wl_surface() {
-            Some(surface) if window.toplevel().is_some() => render_surface_tree(
+            Some(surface) if window.toplevel().is_some() => render_surface_tree_with_effect(
                 renderer,
                 &surface,
                 *location,
                 scale,
                 alpha,
                 Kind::Unspecified,
+                // The rule's answer, the same effect a client's
+                // `ext-background-effect-v1` request gets, whether or not
+                // this one asked: `render_surface_tree_with_effect` drops it
+                // where the renderer cannot draw the effect.
+                *blur,
                 effects,
             ),
             _ => window

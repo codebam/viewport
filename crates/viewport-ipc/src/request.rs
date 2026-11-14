@@ -196,6 +196,17 @@ pub enum Request {
         tearing: bool,
     },
 
+    /// The current first-matching rule asks for blur behind this window,
+    /// Hyprland's `blur` effect: the same framebuffer effect a client gets
+    /// from `ext-background-effect-v1`, forced onto a surface that never
+    /// asked for it. Required, so a malformed rule cannot silently grant it.
+    #[serde(rename = "view.blur")]
+    ViewBlur {
+        #[serde(deserialize_with = "view_id")]
+        id: u32,
+        blur: bool,
+    },
+
     /// The current first-matching rule keeps the session awake, Hyprland's
     /// `idle_inhibit` effect. Required for the same reason.
     #[serde(rename = "view.idle_inhibit")]
@@ -1979,6 +1990,21 @@ mod tests {
             r#"{"type":"view.capture","id":7,"capture":"false"}"#
         )
         .is_err());
+    }
+
+    #[test]
+    fn view_blur_requires_an_explicit_boolean() {
+        // Like `view.capture` and `view.tearing`: a rule that asks for blur
+        // must say so, so a malformed one cannot silently grant it.
+        assert_eq!(
+            parse(r#"{"type":"view.blur","id":7,"blur":true}"#),
+            Request::ViewBlur { id: 7, blur: true }
+        );
+        assert!(serde_json::from_str::<Request>(r#"{"type":"view.blur","id":7}"#).is_err());
+        assert!(
+            serde_json::from_str::<Request>(r#"{"type":"view.blur","id":7,"blur":"true"}"#)
+                .is_err()
+        );
     }
 
     #[test]

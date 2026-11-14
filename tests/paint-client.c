@@ -56,6 +56,12 @@ struct paint_client {
 	 * window moving, and nothing else in this harness produces that motion. */
 	bool pulse;
 	bool popup;
+	/* Paint the window's own body colour on the left half and the edge colour
+	 * on the right, without the popup `popup` also creates — a hard colour
+	 * boundary inside one surface, for a rule-forced blur to smear. The split
+	 * is what `popup` paints inside its window; this is that half alone, so
+	 * the blur under test is the rule's and not a client request. */
+	bool split;
 	int pulse_phase;
 
 	/* Change the title when sent SIGUSR1. The harness drives the timing, so
@@ -154,7 +160,7 @@ static struct wl_buffer *make_buffer(struct paint_client *client)
 				x < client->margin + client->width &&
 				y >= client->margin &&
 				y < client->margin + client->height;
-			if (client->popup && inside) {
+			if ((client->popup || client->split) && inside) {
 				pixels[y * width + x] = x < client->margin + client->width / 2
 					? client->body : client->edge;
 			} else {
@@ -378,7 +384,7 @@ int main(int argc, char *argv[])
 	if (argc < 7) {
 		fprintf(stderr,
 			"usage: %s APP_ID WIDTH HEIGHT MARGIN BODY_ARGB EDGE_ARGB "
-			"[pulse] [popup] [retitle]\n"
+			"[pulse] [popup] [split] [retitle]\n"
 			"\n"
 			"Paints a WIDTH x HEIGHT window in BODY_ARGB inside a surface\n"
 			"grown by MARGIN on every side and painted EDGE_ARGB, the way a\n"
@@ -387,20 +393,26 @@ int main(int argc, char *argv[])
 			"With `pulse`, changes its own width every frame, so the shell\n"
 			"has to lay the whole workspace out again each time. With `popup`,\n"
 			"draws a transparent blur popup over a sharp colour boundary.\n"
-			"With `retitle`, changes its title when sent SIGUSR1, so a harness\n"
-			"can produce an identity change on timing of its own choosing.\n",
+			"With `split`, paints that boundary inside the window itself —\n"
+			"body colour left of the middle, edge colour right — without the\n"
+			"popup, so a rule-forced blur has a hard edge to smear and nothing\n"
+			"of its own asking for one. With `retitle`, changes its title when\n"
+			"sent SIGUSR1, so a harness can produce an identity change on\n"
+			"timing of its own choosing.\n",
 			argv[0]);
 		return 2;
 	}
 
 	/* Each mode is a separate flag, so a caller may ask for more than one
 	 * (a private run whose window both draws a popup and retitles). */
-	bool pulse = false, popup = false, retitle = false;
+	bool pulse = false, popup = false, retitle = false, split = false;
 	for (int i = 7; i < argc; i++) {
 		if (strcmp(argv[i], "pulse") == 0) {
 			pulse = true;
 		} else if (strcmp(argv[i], "popup") == 0) {
 			popup = true;
+		} else if (strcmp(argv[i], "split") == 0) {
+			split = true;
 		} else if (strcmp(argv[i], "retitle") == 0) {
 			retitle = true;
 		} else {
@@ -418,6 +430,7 @@ int main(int argc, char *argv[])
 		.edge = (uint32_t)strtoul(argv[6], NULL, 16),
 		.pulse = pulse,
 		.popup = popup,
+		.split = split,
 		.retitle = retitle,
 		.retitle_to = "viewport-capture-retitled",
 	};

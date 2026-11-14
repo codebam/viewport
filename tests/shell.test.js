@@ -7850,9 +7850,12 @@ if (mode === 'scrolling') {
     sized.el.style.minWidth === '400px' && sized.el.style.maxWidth === '900px');
 
   /* Hyprland's `tearing` and `idle_inhibit` effects: the shell tells the
-     compositor, which is the only side that can act on either. */
+     compositor, which is the only side that can act on either. `blur` is
+     the same kind of effect — only the compositor can draw it — so it rides
+     the same message. */
   emit({ type: 'config', layout: mode, rules: [
     { app_id: 'tear-me', tearing: true, idle_inhibit: true },
+    { app_id: 'blur-me', blur: true },
   ] });
   const policyMark = sent.length;
   open(79, 'tear-me');
@@ -7862,6 +7865,19 @@ if (mode === 'scrolling') {
   check('an idle_inhibit rule sends view.idle_inhibit',
     sent.slice(policyMark).some((m) => m.type === 'view.idle_inhibit'
       && m.id === 79 && m.inhibit === true));
+  const blurMark = sent.length;
+  open(80, 'blur-me');
+  check('a blur rule sends view.blur',
+    sent.slice(blurMark).some((m) => m.type === 'view.blur'
+      && m.id === 80 && m.blur === true));
+  /* And a window no rule claims sends blur off: the compositor keeps the
+     last value, so the shell re-states the policy either way. */
+  const unblurredMark = sent.length;
+  open(81, 'plain');
+  check('a window with no rule sends view.blur false',
+    sent.slice(unblurredMark).some((m) => m.type === 'view.blur'
+      && m.id === 81 && m.blur === false));
+  for (const id of [79, 80, 81]) emit({ type: 'view.removed', id });
 
   /* Hyprland's `content` matcher, from `wp_content_type_v1`. It can change
      while the window is open, through `view.props`. */
