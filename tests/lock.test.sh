@@ -119,6 +119,9 @@ if "$CAPTURE_CLIENT" --output 000000 >"$WORK/precheck.log" 2>&1; then
 	exit 2
 fi
 echo "ok   there is something on screen for the lock to hide"
+# The precheck just proved it: an all-black desktop would have succeeded at
+# --output 000000, so its failure means the unlocked capture carries pixels.
+echo "ok   an unlocked capture is not black"
 
 # Lock, then die without unlocking.
 if ! "$LOCK_CLIENT" crash; then
@@ -139,6 +142,10 @@ echo "ok   the compositor survives the locker"
 sleep 1
 
 # The whole point: what is on the screen now.
+#
+# With the unlocked half above this is the pair that pins both halves of the
+# fix: unlocked captures carry the desktop (2c1ccd45) and locked ones are
+# black (85d0e676) — the pre-fix in between had exactly one of the two right.
 if "$CAPTURE_CLIENT" --output 000000; then
 	echo "ok   the screen stays covered after the locker dies"
 	status=0

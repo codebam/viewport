@@ -25,9 +25,11 @@ WORK=$(mktemp -d)
 LOG="$WORK/viewport.log"
 COMPOSITOR_PID=
 HOLD_PID=
+SUB_PID=
 
 cleanup() {
 	[ -n "$HOLD_PID" ] && kill "$HOLD_PID" 2>/dev/null
+	[ -n "$SUB_PID" ] && kill "$SUB_PID" 2>/dev/null
 	if [ -n "$COMPOSITOR_PID" ] && kill -0 "$COMPOSITOR_PID" 2>/dev/null; then
 		kill -TERM "$COMPOSITOR_PID" 2>/dev/null
 		# By pid, never by name: this runs on developer machines where the
@@ -48,6 +50,22 @@ export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp}"
 
 "$VIEWPORT" --headless --timeout 1 >"$LOG" 2>&1 &
 COMPOSITOR_PID=$!
+
+# The control socket's path is printed at startup and read back out of the
+# log, the way shell-session-ipc.test.sh reads it: unlike the wayland socket
+# its name carries the wayland name, so it cannot be guessed either.
+SOCKET=
+for _ in $(seq 100); do
+	SOCKET=$(sed -n 's/.*control socket at \(.*\)$/\1/p' "$LOG" | head -1)
+	[ -n "$SOCKET" ] && break
+	kill -0 "$COMPOSITOR_PID" 2>/dev/null || break
+	sleep 0.1
+done
+if [ -z "$SOCKET" ]; then
+	echo "FAIL the compositor never published its control socket"
+	tail -20 "$LOG"
+	exit 2
+fi
 
 WAYLAND_DISPLAY=
 for _ in $(seq 100); do
@@ -134,5 +152,55 @@ if ! kill -0 "$COMPOSITOR_PID" 2>/dev/null; then
 	sed -n '1,60p' "$LOG"
 	status=1
 fi
+
+# And one boundary on who the lock belongs to. The takeover above ended with
+# `lock_owned_by_shell` false: the session is locked by an ext-session-lock-v1
+# client, not by the shell's own screen. A `session.query` from a trusted
+# sender must then answer without re-asking for the shell's lock screen — a
+# compositor that reads its *configured* lock mode here announced a
+# `session.lock` the shell never asked for, and the page drew its own screen
+# under a locker's.
+HOLD_PID=
+"$LOCK_CLIENT" hold >"$WORK/hold2.log" 2>&1 &
+HOLD_PID=$!
+
+for _ in $(seq 100); do
+	grep -q "locked and drawing" "$WORK/hold2.log" && break
+	kill -0 "$HOLD_PID" 2>/dev/null || break
+	sleep 0.1
+done
+
+if ! grep -q "locked and drawing" "$WORK/hold2.log"; then
+	echo "FAIL the second hold locker never drew a lock screen"
+	cat "$WORK/hold2.log"
+	sed -n '1,60p' "$LOG"
+	status=1
+fi
+
+# The event is watched for from before the query, so an announcement cannot
+# slip past between the query and the first read.
+"$VIEWPORT" msg --socket "$SOCKET" --timeout 0 -t subscribe session.lock \
+	>"$WORK/f1-sub.jsonl" 2>&1 &
+SUB_PID=$!
+sleep 0.5
+
+"$VIEWPORT" msg --socket "$SOCKET" -t session.query >/dev/null 2>&1
+sleep 0.5
+kill "$SUB_PID" 2>/dev/null
+wait "$SUB_PID" 2>/dev/null
+
+if grep -q '"type":"session.lock"' "$WORK/f1-sub.jsonl"; then
+	echo "FAIL an external lock was announced as the shell's own"
+	echo "     — the subscriber saw, whole:"
+	cat "$WORK/f1-sub.jsonl"
+	status=1
+else
+	echo "ok   an external lock is not announced as the shell's own"
+fi
+
+# Leave the session as it was found: the second locker dies like the first.
+kill -KILL "$HOLD_PID" 2>/dev/null
+wait "$HOLD_PID" 2>/dev/null
+HOLD_PID=
 
 exit $status

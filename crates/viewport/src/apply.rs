@@ -3566,4 +3566,51 @@ mod tests {
         ));
         assert_eq!(bindings.len(), 2);
     }
+
+    /// `launcher.launch` acts on the host — the same `spawn_with_env` path
+    /// `shell.exec` is refused for — and was missing from
+    /// `acts_while_locked`, so behind a lock screen the picker could run a
+    /// `.desktop`'s `Exec=` line as the user. Asked of the predicate itself,
+    /// so a variant that slips out of the list fails here rather than being
+    /// read back out of the source it came from.
+    #[test]
+    fn launcher_launch_acts_while_locked() {
+        assert!(acts_while_locked(&Request::LauncherLaunch {
+            id: 1,
+            generation: 1
+        }));
+    }
+
+    /// `shell.overview` drops the seat keyboard exactly as `shell.focus`
+    /// does and was missing from `moves_focus`, so the in-flight keystroke
+    /// landed nowhere instead of on the lock screen. Behavioural, for the
+    /// same reason as the test above.
+    #[test]
+    fn shell_overview_moves_focus() {
+        assert!(moves_focus(&Request::ShellOverview { active: true }));
+    }
+
+    /// The negative space around those two. `view.focus` names a window the
+    /// lock screen is drawn over, so it moves the keyboard when unlocked
+    /// and is refused when locked — but it never *acts*, and a gate that
+    /// treated it as acting would refuse it outright.
+    #[test]
+    fn view_focus_moves_focus_but_never_acts() {
+        let request = Request::ViewFocus { id: 1 };
+        assert!(moves_focus(&request));
+        assert!(!acts_while_locked(&request));
+    }
+
+    /// A query changes nothing and moves nothing, so it is answered for any
+    /// same-user client and never hits either gate. `SessionQuery` is the
+    /// interesting half: while locked it withdraws the lock screen state and
+    /// asks the page to draw again, which is why it is privileged rather
+    /// than `reads_only` — but privileged is not the same as gated.
+    #[test]
+    fn queries_neither_move_focus_nor_act() {
+        assert!(!moves_focus(&Request::ViewQuery));
+        assert!(!acts_while_locked(&Request::ViewQuery));
+        assert!(!moves_focus(&Request::SessionQuery));
+        assert!(!acts_while_locked(&Request::SessionQuery));
+    }
 }
