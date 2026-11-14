@@ -12,6 +12,16 @@ to summarise rather than to duplicate.
 ## [Unreleased]
 
 ### Added
+- Per-device `scroll_button`, `scroll_button_lock` and `drag_3fg` under the
+  `input` block (Hyprland's `input:scroll_button`, `input:scroll_button_lock`
+  and `input:drag_3fg`): the button scrolling waits for while
+  `scroll_method` is `on_button_down` — an evdev button code, not an X11 one,
+  so the middle button is 274 and not 2 — whether that button toggles scroll
+  mode instead of having to be held, and dragging with three fingers down
+  instead of a tap followed by a drag. libinput makes the last of these the
+  same device setting `tap_drag` programs, so the two share one state. Also
+  set at runtime through `config.input` on the control socket, and carried in
+  the `config` event's `input`.
 - `cursor.follow_mouse_shrink`, Hyprland's `cursor:follow_mouse_shrink`: the
   invisible rectangle a window presents to focus-follows-the-pointer is inset
   by the given logical pixels on each side, so a pointer over a client's
@@ -30,6 +40,14 @@ to summarise rather than to duplicate.
   sharp, exactly as it would a layer-rule blur. X11 windows keep their
   existing path: their surfaces carry no per-surface effect metadata for the
   request to hang on.
+
+### Fixed
+- A tablet pen's position maps across every connected output — the bounding
+  box of the layout, the same region the pointer is clamped to — instead of
+  being folded onto the first output: with a second monitor plugged in, half
+  of every tablet's surface was unreachable. Pressure is unchanged and needs
+  nothing: libinput normalizes it to 0..1 and the compositor passes it
+  through as it is.
 
 ## [0.6.0] - 2026-11-12
 

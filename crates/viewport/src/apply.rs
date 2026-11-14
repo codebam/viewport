@@ -1879,6 +1879,9 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             scroll_method,
             scroll_factor,
             emulate_discrete_scroll,
+            scroll_button,
+            scroll_button_lock,
+            drag_3fg,
         } => {
             // Validated as a whole before anything changes, like ConfigGaps:
             // an unnamed device, an acceleration outside libinput's range, a
@@ -1954,6 +1957,18 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             }
             if let Some(v) = emulate_discrete_scroll {
                 entry.emulate_discrete_scroll = Some(v);
+            }
+            // Any u32 is a legal evdev button code, so there is nothing to
+            // reject: a code the device cannot honour is refused by libinput
+            // on the device and logged, like every other refused setting.
+            if let Some(v) = scroll_button {
+                entry.scroll_button = Some(v);
+            }
+            if let Some(v) = scroll_button_lock {
+                entry.scroll_button_lock = Some(v);
+            }
+            if let Some(v) = drag_3fg {
+                entry.drag_3fg = Some(v);
             }
             // The devices already connected are reconfigured at once, as a
             // reload does; a device that arrives later reads the same map.

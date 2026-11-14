@@ -1535,6 +1535,23 @@ pub enum Request {
         /// `emulate_discrete_scroll`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         emulate_discrete_scroll: Option<bool>,
+        /// The button scrolling is pinned to while `scroll_method` is
+        /// `on_button_down`, as `scroll_button`. An evdev button code, not an
+        /// X11 one — the middle button is 274 here and 2 on the X11 side — so
+        /// anything read off an X11 mapping needs translating. Absent lets
+        /// libinput choose; zero disables button scrolling.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scroll_button: Option<u32>,
+        /// Whether the scroll button toggles scroll mode rather than being
+        /// held, as `scroll_button_lock`. Only does anything while
+        /// `scroll_method` is `on_button_down` with a button set.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scroll_button_lock: Option<bool>,
+        /// Drag with three fingers down instead of a tap followed by a drag,
+        /// as `drag_3fg`. The same device setting `tap_drag` programs, so the
+        /// two share one state.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        drag_3fg: Option<bool>,
     },
 
     /// Set what a notification that names no sound of its own sounds like at
@@ -2935,9 +2952,12 @@ mod tests {
             accel_speed,
             accel_profile,
             scroll_factor,
+            scroll_button,
+            scroll_button_lock,
+            drag_3fg,
             ..
         } = parse(
-            r#"{"type":"config.input","device":"046d:c52b:USB Receiver","tap":true,"accel_speed":0.5,"accel_profile":"adaptive","scroll_factor":1.5}"#,
+            r#"{"type":"config.input","device":"046d:c52b:USB Receiver","tap":true,"accel_speed":0.5,"accel_profile":"adaptive","scroll_factor":1.5,"scroll_button":274,"scroll_button_lock":true,"drag_3fg":false}"#,
         )
         else {
             panic!("not a config.input message");
@@ -2947,6 +2967,9 @@ mod tests {
         assert_eq!(accel_speed, Some(0.5));
         assert_eq!(accel_profile.as_deref(), Some("adaptive"));
         assert_eq!(scroll_factor, Some(1.5));
+        assert_eq!(scroll_button, Some(274));
+        assert_eq!(scroll_button_lock, Some(true));
+        assert_eq!(drag_3fg, Some(false));
 
         let Request::ConfigNotifications {
             sound_file,

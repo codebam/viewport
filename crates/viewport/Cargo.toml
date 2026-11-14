@@ -11,8 +11,24 @@ name = "viewport"
 path = "src/main.rs"
 
 [features]
-default = []
+# `input-1-28` is on by default: `drag_3fg` calls libinput 1.27's
+# three-finger-drag setter unconditionally, and a feature meant to be a
+# setting nobody turns on would leave the default build broken.
+default = ["input-1-28"]
 wpe = ["viewport-web/wpe"]
+# Three-finger drag (`drag_3fg`) needs libinput 1.27's
+# `libinput_device_config_3fg_drag_set_enabled`, which the `input` crate only
+# compiles in above its `libinput_1_28` feature — and smithay pins that crate
+# at `libinput_1_19`. Turning the feature on through the dependency below
+# unions it into the whole graph (cargo unions features per crate, whatever
+# asked), which is safe: the system libinput this builds against is newer, so
+# the symbols are there, and the feature only adds API — nothing the code
+# already calls changes meaning. The `input` crate is an optional dependency
+# of smithay's, and the bare `smithay/input` on the right-hand side names that
+# path: it is this crate's own optional `input` dependency below whose only
+# job is carrying `libinput_1_28` into the same copy of the crate smithay
+# re-exports from.
+input-1-28 = ["smithay/input", "dep:input", "input/libinput_1_28"]
 
 [dependencies]
 xcursor = "0.3"
@@ -87,6 +103,15 @@ version = "0.6"
 
 [build-dependencies]
 pkg-config = "0.3"
+
+# Not used by name anywhere: the same copy of the crate smithay re-exports,
+# named only so the `input-1-28` feature above can turn `libinput_1_28` on
+# for it. Version and source are pinned by the lockfile through smithay's own
+# dependency on it, and cargo unifies the two into one build.
+[dependencies.input]
+version = "0.10"
+default-features = false
+optional = true
 
 [dev-dependencies]
 # For `examples/workspaces.rs`, which is a client rather than the compositor:

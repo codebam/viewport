@@ -1295,6 +1295,16 @@ pub struct Input {
     pub scroll_factor: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub emulate_discrete_scroll: Option<bool>,
+    /// An evdev button code, not an X11 one — the middle button is 274 here
+    /// and 2 on the X11 side.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scroll_button: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scroll_button_lock: Option<bool>,
+    /// The same device setting `tap_drag` programs, so the two share one
+    /// state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drag_3fg: Option<bool>,
 }
 
 /// What a notification that names no sound of its own sounds like, and how

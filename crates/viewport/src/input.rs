@@ -11,10 +11,10 @@
 // and cannot go stale mid-animation.
 
 use smithay::backend::input::{
-    AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, GestureBeginEvent,
-    GestureEndEvent, GesturePinchUpdateEvent as _, GestureSwipeUpdateEvent as _, InputBackend,
-    InputEvent, InputTime, KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent,
-    PointerMotionEvent, TouchEvent,
+    Axis, AxisSource, ButtonState, Event, GestureBeginEvent, GestureEndEvent,
+    GesturePinchUpdateEvent as _, GestureSwipeUpdateEvent as _, InputBackend, InputEvent,
+    InputTime, KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
+    TouchEvent,
 };
 use smithay::input::keyboard::{keysyms, FilterResult, Keysym, ModifiersState};
 use smithay::input::pointer::{
@@ -2145,19 +2145,14 @@ impl ViewportState {
             }
 
             InputEvent::PointerMotionAbsolute { event, .. } => {
-                let Some(output) = self.space.outputs().next() else {
+                let Some(pos) = self.touch_position(&event) else {
                     return;
                 };
-                let Some(output_geo) = self.space.output_geometry(output) else {
-                    return;
-                };
-                let pos = event.position_transformed(output_geo.size) + output_geo.loc.to_f64();
                 // A tablet in absolute mode names a place on the glass, and
                 // under the magnifier the glass is showing a blown-up piece of
                 // the layout. A relative mouse does not come through here and
                 // must not be put through this — see
                 // `ViewportState::glass_to_content`.
-                let pos = self.glass_to_content(pos);
                 self.pointer_absolute_to(pos, event.time());
             }
 
@@ -3222,25 +3217,33 @@ impl ViewportState {
         }
     }
 
-    /// Where a touch event landed, in the layout's own coordinates.
+    /// Where an absolute event landed, in the layout's own coordinates.
     ///
-    /// Touch positions arrive as a fraction of the screen, so they mean
-    /// nothing without an output to scale them against — and the output has to
-    /// be the one the touchscreen is attached to, which for now is the first
-    /// one. A tablet with a second monitor plugged in would want the mapping
-    /// libinput reports, and that is a device property this does not read yet.
+    /// Both absolute devices this compositor serves — a touchscreen and a
+    /// tablet's pen — report a fraction of the glass, and the glass here is
+    /// the whole layout, not one screen: the event is scaled across the
+    /// bounding box of every mapped output (the same union a pointer is
+    /// clamped to, see `cursor::clamp`), so the pen reaches the second and
+    /// third monitor instead of folding every stroke onto the first. The
+    /// scaling itself is [`tablet_to_layout`]; this wraps it with the
+    /// geometry to scale against and the magnifier, because a pen is aimed at
+    /// what is on the screen. This is the one input path that needs the
+    /// transform at all: a mouse reports a movement, and the compositor's
+    /// cursor is at a real place whatever the screen is doing with the
+    /// picture. See `ViewportState::glass_to_content`.
     fn touch_position<E: smithay::backend::input::AbsolutePositionEvent<I>, I: InputBackend>(
         &self,
         event: &E,
     ) -> Option<Point<f64, Logical>> {
-        let output = self.space.outputs().next()?;
-        let geometry = self.space.output_geometry(output)?;
-        let at = event.position_transformed(geometry.size) + geometry.loc.to_f64();
-        // Through the magnifier, because a finger is aimed at what is on the
-        // screen. This is the one input path that needs the transform at all:
-        // a mouse reports a movement, and the compositor's cursor is at a
-        // real place whatever the screen is doing with the picture. See
-        // `ViewportState::glass_to_content`.
+        // The bounding box of every mapped output, folded with
+        // `Rectangle::merge` — `None` only when nothing is mapped, which is
+        // also when there is no glass to land on.
+        let extent = self
+            .space
+            .outputs()
+            .filter_map(|o| self.space.output_geometry(o))
+            .reduce(|box_, next| box_.merge(next))?;
+        let at = tablet_to_layout(extent, event.x(), event.y());
         Some(self.glass_to_content(at))
     }
 
@@ -4444,6 +4447,33 @@ fn confinement_rects(rects: &[(RectangleKind, Rectangle<i32, Logical>)]) -> Opti
     (!additive.is_empty()).then_some(additive)
 }
 
+/// Where an absolute device's [0, 1]×[0, 1] lands in a layout box.
+///
+/// An absolute event reports the pen or finger as a fraction of the glass.
+/// The glass is the bounding box of the outputs — `touch_position` builds it
+/// from the space — and the fraction is stretched across that whole box, so
+/// the pen reaches every screen rather than folding onto whichever one the
+/// iterator named first. Whether a tablet's own surface spans the box the way
+/// the outputs do is the device's business and libinput's; what a compositor
+/// owes the client is a point in the layout.
+///
+/// Pure so a tablet is not needed to test it: inside the box it maps
+/// proportionally, out of it it clamps to the edge — some devices report
+/// negative or oversize values off the active area
+/// (libinput's "tablet-bounds"), and a pen held past the left edge should sit
+/// at the left edge, not wrap. An empty box has no inside, and the origin is
+/// the only answer that keeps a caller's following arithmetic whole.
+fn tablet_to_layout(extent: Rectangle<i32, Logical>, x: f64, y: f64) -> Point<f64, Logical> {
+    let (origin, size) = (extent.loc.to_f64(), extent.size.to_f64());
+    if size.w <= 0.0 || size.h <= 0.0 {
+        return origin;
+    }
+    Point::new(
+        origin.x + x.clamp(0.0, 1.0) * size.w,
+        origin.y + y.clamp(0.0, 1.0) * size.h,
+    )
+}
+
 /// What a tablet event says about the pen, for the axes that changed.
 ///
 /// Only the ones that changed: the protocol is a delta, and reporting an
@@ -5258,5 +5288,65 @@ mod tests {
             inset_at(200.0, 100.0),
             100.0
         ));
+    }
+
+    /// Two side-by-side 1920-wide outputs: the shape of the multi-monitor
+    /// desk the first-output bug lost the right half of.
+    fn two_outputs() -> Rectangle<i32, Logical> {
+        Rectangle::from_extremities((0, 0), (3840, 1080))
+    }
+
+    #[test]
+    fn a_pen_reaches_across_the_whole_layout_box() {
+        // Dead centre is the centre of the box, not of the first output:
+        // 0.5 across two 1920-wide outputs lands at x 1920, on the second
+        // screen's first column.
+        let at = tablet_to_layout(two_outputs(), 0.5, 0.5);
+        assert_eq!(at, Point::new(1920.0, 540.0));
+
+        // The corners are the corners of the box.
+        assert_eq!(
+            tablet_to_layout(two_outputs(), 0.0, 0.0),
+            Point::new(0.0, 0.0)
+        );
+        assert_eq!(
+            tablet_to_layout(two_outputs(), 1.0, 1.0),
+            Point::new(3840.0, 1080.0)
+        );
+    }
+
+    #[test]
+    fn an_offset_layout_maps_into_itself() {
+        // Outputs that do not start at the origin: a row whose left edge is
+        // another monitor's right edge. The fraction stretches the box, so
+        // the origin travels with it.
+        let extent = Rectangle::from_extremities((-1920, 0), (1920, 2160));
+        assert_eq!(
+            tablet_to_layout(extent, 0.25, 1.0),
+            Point::new(-960.0, 2160.0)
+        );
+    }
+
+    #[test]
+    fn a_pen_off_the_tablet_clamps_to_the_edge() {
+        // libinput lets some devices report outside the active area; a
+        // negative fraction is the left edge, not a wrap into nowhere.
+        assert_eq!(
+            tablet_to_layout(two_outputs(), -0.5, 1.5),
+            Point::new(0.0, 1080.0)
+        );
+        // Oversize on the right clamps the same way.
+        assert_eq!(
+            tablet_to_layout(two_outputs(), 2.0, 0.0),
+            Point::new(3840.0, 0.0)
+        );
+    }
+
+    #[test]
+    fn an_empty_extent_collapses_to_its_origin() {
+        // No outputs means no inside; the origin is the answer that keeps a
+        // caller's following arithmetic whole rather than an infinity.
+        let empty = Rectangle::from_extremities((100, 100), (100, 100));
+        assert_eq!(tablet_to_layout(empty, 0.5, 0.5), Point::new(100.0, 100.0));
     }
 }

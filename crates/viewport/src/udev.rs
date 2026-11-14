@@ -1163,6 +1163,9 @@ pub(crate) fn merged_input_config(
         scroll_method,
         scroll_factor,
         emulate_discrete_scroll,
+        scroll_button,
+        scroll_button_lock,
+        drag_3fg,
     );
     config
 }
@@ -1171,7 +1174,9 @@ fn apply_input_config(
     device: &mut smithay::reexports::input::Device,
     configs: &HashMap<String, crate::config::InputConfig>,
 ) {
-    use smithay::reexports::input::{AccelProfile, ClickMethod, ScrollMethod};
+    use smithay::reexports::input::{
+        AccelProfile, ClickMethod, ScrollButtonLockState, ScrollMethod, ThreeFingerDragState,
+    };
 
     let identifier = input_device_identifier(device);
     let config = merged_input_config(configs, &identifier);
@@ -1224,6 +1229,23 @@ fn apply_input_config(
     if let Some(method) = device.config_scroll_default_method() {
         report("scroll_method", device.config_scroll_set_method(method));
     }
+    // The scroll button resets to "no button", which is libinput's own
+    // default: an unset field lets the device keep what it would have chosen
+    // (the middle button on most), rather than nothing at all.
+    report(
+        "scroll_button",
+        device.config_scroll_set_button(device.config_scroll_default_button()),
+    );
+    // Scroll button lock and three-finger drag are plain on/off switches with
+    // device defaults of off, like tap and tap_drag above.
+    report(
+        "scroll_button_lock",
+        device.config_scroll_set_button_lock(device.config_scroll_default_button_lock()),
+    );
+    report(
+        "drag_3fg",
+        device.config_3fg_drag_set_enabled(device.config_3fg_drag_get_default_enabled()),
+    );
 
     if let Some(enabled) = config.tap {
         report("tap", device.config_tap_set_enabled(enabled));
@@ -1301,6 +1323,33 @@ fn apply_input_config(
         if let Some(method) = method {
             report("scroll_method", device.config_scroll_set_method(method));
         }
+    }
+    if let Some(button) = config.scroll_button {
+        report("scroll_button", device.config_scroll_set_button(button));
+    }
+    if let Some(enabled) = config.scroll_button_lock {
+        report(
+            "scroll_button_lock",
+            device.config_scroll_set_button_lock(if enabled {
+                ScrollButtonLockState::Enabled
+            } else {
+                ScrollButtonLockState::Disabled
+            }),
+        );
+    }
+    // Three-finger drag is the same device setting `tap_drag` programs —
+    // see the `drag_3fg` field's doc comment in config.rs for why it is an
+    // alias and not a second setter — so a value set here and not in
+    // `tap_drag` still lands, and one set in both goes to `tap_drag`'s.
+    if let Some(enabled) = config.drag_3fg {
+        report(
+            "drag_3fg",
+            device.config_3fg_drag_set_enabled(if enabled {
+                ThreeFingerDragState::EnabledThreeFinger
+            } else {
+                ThreeFingerDragState::Disabled
+            }),
+        );
     }
 }
 

@@ -341,12 +341,17 @@ stale one.
 A stylus reports pressure, tilt, distance, its own buttons and whether it is
 hovering or touching. `tablet-v2` carries all of it, and a drawing program that
 gets only x and y has a pressure-sensitive brush reduced to one width of line.
+Pressure arrives from libinput already normalized to 0..1 and is passed
+through as it is, so a stroke's width is the device's own answer.
 
 The stylus also drives the cursor, which is what makes it work in the many
 programs that only understand a pointer. Tablets are absolute devices, so the
 cursor jumps to where the pen lands rather than moving relative to where it was,
 and touching the tablet focuses what is under the pen — otherwise drawing in a
-window would mean clicking it with a mouse first.
+window would mean clicking it with a mouse first. A pen position is stretched
+across the whole desktop — the bounding box of every mapped output, the same
+region a pointer is clamped to — so a pen reaches a second and third monitor
+instead of folding every stroke onto the first one.
 
 A tool's own cursor image is carried through as well. The pen and the mouse are
 two devices sharing one visible cursor, so they keep separate images and the pen

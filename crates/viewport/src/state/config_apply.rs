@@ -1275,6 +1275,9 @@ pub(crate) fn input_event_map(
                     scroll_method: config.scroll_method.clone(),
                     scroll_factor: config.scroll_factor,
                     emulate_discrete_scroll: config.emulate_discrete_scroll,
+                    scroll_button: config.scroll_button,
+                    scroll_button_lock: config.scroll_button_lock,
+                    drag_3fg: config.drag_3fg,
                 },
             )
         })

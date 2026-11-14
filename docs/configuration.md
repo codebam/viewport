@@ -455,7 +455,8 @@ Available fields are `tap`, `tap_drag`, `natural_scroll`, `left_handed`,
 `middle_emulation`, `disable_while_typing`, `accel_speed` (from -1 to 1),
 `accel_profile` (`adaptive` or `flat`), `click_method` (`button_areas` or
 `clickfinger`), `scroll_method` (`none`, `two_finger`, `edge`, or
-`on_button_down`), `scroll_factor` and `emulate_discrete_scroll`. Unsupported
+`on_button_down`), `scroll_factor`, `emulate_discrete_scroll`, `scroll_button`,
+`scroll_button_lock` and `drag_3fg`. Unsupported
 settings are logged and ignored. Settings apply when a device appears and again
 on config reload.
 
@@ -477,6 +478,18 @@ device sends — Hyprland's `input:scroll_factor`, which is the number a touchpa
 usually wants below 1. Zero is refused and a negative value reverses the
 direction. `emulate_discrete_scroll` sends wheel-like steps for a touchpad that
 only reports a continuous amount, for a client that reads nothing else.
+
+`scroll_button` — Hyprland's `input:scroll_button` — pins the button scrolling
+waits for while `scroll_method` is `on_button_down`. Absent lets libinput
+choose, which is usually the middle button. The number is an evdev button code,
+not an X11 one: the middle button is 274 here and 2 on the X11 side, so a value
+read off an X11 mapping needs translating. Zero disables button scrolling.
+`scroll_button_lock` — Hyprland's `input:scroll_button_lock` — makes that
+button toggle scroll mode on and off instead of having to be held; absent is
+held. `drag_3fg` — Hyprland's `input:drag_3fg` — drags with three fingers down
+instead of a tap followed by a drag. libinput makes the two the same device
+setting, so `drag_3fg` and `tap_drag` share one state: either set on its own
+wins over the default, and both set differently leaves `tap_drag`'s value.
 
 Asking for the workspace you are already on takes you back to the one before
 it, so `Mod4+2` pressed twice from workspace 1 goes to 2 and then back to 1 —
