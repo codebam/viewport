@@ -81,14 +81,19 @@ fixed. What the audit that found this out *did* find is below: the places
 where one card is still assumed, all of which now have an answer, and the one
 that does not.
 
-**The built-in shell cannot use the background effect it motivated.**
-`ext-background-effect-v1` now gives ordinary Wayland surfaces real blur on the
-nested and headless GLES backends, but the shell is rendered from an imported
-DMA-BUF as `render::Shell`, not from a `WaylandSurfaceRenderElement`. Its frame
-needs to carry blur-region metadata into the compositor before translucent web
-chrome can use the same framebuffer effect. Vulkan support is separate again:
-until `viewport-vulkan` can capture an active frame into a sampleable image and
-draw the blur, the DRM backend deliberately advertises no capability.
+**The built-in shell's blur is in.** The shell is rendered from an imported
+DMA-BUF as `render::Shell`, not from a `WaylandSurfaceRenderElement`, so no
+`wl_surface` survives for `ext-background-effect-v1` to extend. Its blur-region
+metadata now rides the socket instead: `OverlayRect` grew an optional `blur`
+field (`crates/viewport-ipc/src/request.rs:1720`), the shell sets it on the
+pieces that are meant to be glass — `data/shell/geometry.js:1224` asks for the
+floating bar — and `crates/viewport/src/render.rs:473-503` pushes the same
+framebuffer-effect element a client's request would under that piece of the
+shell's texture. Vulkan support is in too: `VulkanFrame` captures an active
+frame into a sampleable image and runs a nine-tap blur, and the DRM backend
+advertises the global whenever its renderer can draw the effect
+(`crates/viewport/src/udev.rs:1496-1504`), so translucent web chrome and
+ordinary Wayland clients get the same blur on real hardware.
 
 **A buffer no scanout card can import is a hole in one screen.** Per-surface
 feedback tells a client which card is displaying it, and `cross_gpu =
@@ -117,64 +122,88 @@ That is what a settings panel, a keybinding, a verification tool and a
 wallpaper cycler all want, and it is why the runtime tier sits between the
 bootstrap file and the overlay in `docs/configuration.md`.
 
-This section is the list of what does not have a setter yet, grouped by
-what landing each one costs. When one lands it comes off this list and is
-documented where the rest of that subject is, exactly as the other entries
-in this file do.
+This section is the startup-only list: what deliberately has no runtime
+setter, and why. Everything else the config file can set can now also be
+changed over the control socket, and this section is no longer where the
+rest of those live — when a setter lands it is documented where the rest of
+that subject is, in `docs/ipc.md` and `docs/configuration.md`.
 
-The first of the three groups below — "just another `config.*` setter, the
-`config.gaps` shape" — has come off whole. Every shell-carried block now has
-its setter: `config.motion` and `config.group`, `config.clock`, `config.bar`
-and `config.bar_blur`, `config.bar_widgets` and `config.bar_items`,
-`config.logo` and `config.tutorial`, `config.tiling_mode`, `config.layout`
-and `config.layout_extensions`, `config.focus_crosses_outputs`, `config.osk`,
-`config.tray`, `config.clipboard_history`, `config.icon_theme`,
-`config.theme`, `config.rules`, `config.layer_rules`, `config.decorations`,
-`config.workspaces` and `config.opacity`, plus the cursor's remaining keys
-(`theme`, `size`, `follow_mouse`, `follow_mouse_threshold`, on the same
-`config.cursor` message the hide trio landed on). Each is a request variant,
-an apply arm, a `Config` field and an overlay field, and each is documented
-in `docs/ipc.md` and beside its subject in `docs/configuration.md`. What
-went in that shaped like its own sentence: the booleans with a natural
-opposite (`config.bar_blur`, `config.logo`, `config.tutorial`,
-`config.focus_crosses_outputs`, `config.tray`) toggle on a bare message, the
-same terms `config.dark_mode` set; whole-list setters (`config.bar_widgets`,
-`config.bar_items`, `config.layout_extensions`, `config.rules`,
-`config.layer_rules`, `config.workspaces`, `config.theme`) take the file's
-own JSON and replace, so an empty value is a clear rather than a no-op; the
-validation a file only warns about (an unknown tiling mode, layout or osk
-policy) is refused over the socket instead. Two carry more than a value:
-`config.bar_widgets` and `config.bar_items` re-price the status sampler
-through the same `apply_bar_config` the file's reload uses, and
-`config.layer_rules` compiles before anything changes. One familiar loss
-came with the ride and is written down where it happens (`config.save` in
-`docs/ipc.md`): an `ai` bar widget's credential env names do not cross back
-into the overlay, because only the provider reaches the shell.
+Two groups have come off this list whole, and are worth one paragraph each
+as the record of what they cost, because the shapes are the templates the
+next group will be judged against:
 
-The second of the three groups below — "a setter plus new machinery" — has
-come off whole too: `config.idle` and `config.lid`, `config.keyboard`,
-per-device `config.input`, `config.notifications` and `config.magnify`. Each
-is a request variant, an apply arm, a `Config` field and an overlay field,
-and each is documented in `docs/ipc.md` and beside its subject in
-`docs/configuration.md`. What the machinery cost: `config.idle` re-arms the
-timers (`Idle::rearm`) rather than just storing values, so a deadline turned
-on while the desk has been quiet gets a full period and nothing is woken;
-`config.keyboard` replaces the seat's keyboard through the same
-`apply_keyboard` the file's reload uses, and a keymap xkb refuses is
-rejected over the socket rather than warned about; `config.input` names its
-device the way `input_config_for` does and reconfigures the connected
-devices at once; `config.notifications` re-reads the sound player and the
-history through the same `apply_notifications_config` a reload uses;
-`config.magnify` reads its effective, clamped values back off the
-magnifier, and lowering the ceiling repaints as a reload does.
+* "Just another `config.*` setter, the `config.gaps` shape" — every
+  shell-carried block now has one: `config.motion` and `config.group`,
+  `config.clock`, `config.bar` and `config.bar_blur`, `config.bar_widgets`
+  and `config.bar_items`, `config.logo` and `config.tutorial`,
+  `config.tiling_mode`, `config.layout` and `config.layout_extensions`,
+  `config.focus_crosses_outputs`, `config.osk`, `config.tray`,
+  `config.clipboard_history`, `config.icon_theme`, `config.theme`,
+  `config.rules`, `config.layer_rules`, `config.decorations`,
+  `config.workspaces` and `config.opacity`, plus the cursor's remaining keys
+  (`theme`, `size`, `follow_mouse`, `follow_mouse_threshold`, on the same
+  `config.cursor` message the hide trio landed on). Each is a request
+  variant, an apply arm, a `Config` field and an overlay field. What went in
+  that shaped like its own sentence: the booleans with a natural opposite
+  (`config.bar_blur`, `config.logo`, `config.tutorial`,
+  `config.focus_crosses_outputs`, `config.tray`) toggle on a bare message;
+  whole-list setters (`config.bar_widgets`, `config.bar_items`,
+  `config.layout_extensions`, `config.rules`, `config.layer_rules`,
+  `config.workspaces`, `config.theme`) take the file's own JSON and replace,
+  so an empty value is a clear rather than a no-op; the validation a file
+  only warns about (an unknown tiling mode, layout or osk policy) is refused
+  over the socket instead. Two carry more than a value:
+  `config.bar_widgets` and `config.bar_items` re-price the status sampler
+  through the same `apply_bar_config` the file's reload uses, and
+  `config.layer_rules` compiles before anything changes. One familiar loss
+  came with the ride and is written down where it happens (`config.save` in
+  `docs/ipc.md`): an `ai` bar widget's credential env names do not cross
+  back into the overlay, because only the provider reaches the shell.
 
-**Startup-only by design.** `url`, `url_span`, `shell_backend` and its
-fallback, `env`, `gpu`, `pixel_format`, `cross_gpu` and `startup` are read
-before backends open and before anything is spawned — a runtime setter
-could not move the session onto another card or shell without a restart,
-and a typo arriving over the socket would be a worse failure than one in
-the file. They stay on the file, and on `reload` where the file re-read
-already applies them; this list is where it says so.
+* "A setter plus new machinery" — `config.idle` and `config.lid`,
+  `config.keyboard`, per-device `config.input`, `config.notifications` and
+  `config.magnify`. Each is a request variant, an apply arm, a `Config` field
+  and an overlay field. What the machinery cost: `config.idle` re-arms the
+  timers (`Idle::rearm`) rather than just storing values, so a deadline
+  turned on while the desk has been quiet gets a full period and nothing is
+  woken; `config.keyboard` replaces the seat's keyboard through the same
+  `apply_keyboard` the file's reload uses, and a keymap xkb refuses is
+  rejected over the socket rather than warned about; `config.input` names its
+  device the way `input_config_for` does and reconfigures the connected
+  devices at once; `config.notifications` re-reads the sound player and the
+  history through the same `apply_notifications_config` a reload uses;
+  `config.magnify` reads its effective, clamped values back off the
+  magnifier, and lowering the ceiling repaints as a reload does.
+
+What has no setter yet, and why:
+
+* **Startup-only by design.** `url`, `url_span`, `shell_backend` and its
+  fallback, `env`, `gpu`, `pixel_format`, `cross_gpu` and `startup` are read
+  before backends open and before anything is spawned (`main.rs`, before
+  the backend choice; re-read only by `reload`) — a runtime setter could not
+  move the session onto another card or shell without a restart, and a typo
+  arriving over the socket would be a worse failure than one in the file.
+  They stay on the file, and on `reload` where the file re-read already
+  applies them.
+
+* **Carried by the file's own format, not by a message.** `binds` and
+  `binds_override` (the keymap is a list the config event already replays in
+  full — `config` in `docs/ipc.md` — so a setter would be a second writer of
+  the same list), `gestures` and `drag_threshold` (seat behaviour the file
+  sets at startup and no settings panel has asked to move at runtime).
+
+* **Per-output where the message is per-session.** `adaptive_sync` and
+  `vt_switching` are per-output toggles, and what already moves them is the
+  per-output `output.configure` request, so a session-wide setter would
+  either lie or fight it.
+
+* **Blocks the file owns with the compositor acting only on the result.**
+  `render` (which backend draws; a file key), `xwayland` (the X server
+  flags), `outputs` (the startup layout), `terminal`, `menu` and
+  `background_terminal` (commands the shell substitutes verbatim),
+  `timeout_ms` (a deadline the callers of the socket read once), and
+  `widget_extensions` (sent to the shell with the `config` event rather
+  than stored as state to change).
 
 ## What is deliberately not on this list
 

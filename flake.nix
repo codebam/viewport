@@ -724,7 +724,7 @@
             # Both are prebuilt in cache.nixos.org, which is the entire point
             # of that backend: it costs this shell a download, where the WPE
             # backend costs a four-hour WebKit build no cache has. Same WebKit
-            # version underneath — 2.52.5 — different port.
+            # version underneath — 2.54.2 — different port.
             gtk4
             webkitgtk_6_0
 

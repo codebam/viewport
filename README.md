@@ -88,7 +88,7 @@ nixpkgs ships `libwpe` and `libwpe-fdo`, and neither is a browser engine —
 ABI and one implementation of it. The engine, `libWPEWebKit`, is not packaged in
 nixpkgs at all, and the `webkitgtk` tarball cannot be rebuilt with `-DPORT=WPE`
 because it ships the GTK port only. So the flake builds WPE WebKit from the
-separate upstream `wpewebkit-2.52.5.tar.xz`.
+separate upstream `wpewebkit-2.54.2.tar.xz`.
 
 Since we compile the engine either way, we build it with
 `-DENABLE_WPE_PLATFORM=ON`. That drops `libwpe` and `libwpe-fdo` entirely and
@@ -240,7 +240,7 @@ The reference material lives in `docs/`:
 
 | | |
 | --- | --- |
-| [`docs/configuration.md`](docs/configuration.md) | the two config tiers, the command-line flags, the default keybindings, dark mode and the portal, media keys, window rules, and the two layout models |
+| [`docs/configuration.md`](docs/configuration.md) | the three config tiers, the command-line flags, the default keybindings, dark mode and the portal, media keys, window rules, and the five layout models |
 | [`docs/layout-extension.md`](docs/layout-extension.md) | the contract a sixth layout implements — what it must plan, render and clear, what it may not transform, how session restore works |
 | [`docs/custom-widgets.md`](docs/custom-widgets.md) | the contract a custom bar widget implements — how a local script registers one, what the shell hands it, when each callback runs, and how the manifest places it on the bar |
 | [`docs/ipc.md`](docs/ipc.md) | both transports and every message in each direction, what a shell has to do to place a window, and how the layout is remembered across a restart — plus the overview, logging and the shell tests |
@@ -248,7 +248,7 @@ The reference material lives in `docs/`:
 | [`docs/debugging.md`](docs/debugging.md) | screenshotting the session from inside it, pointer capture, XWayland, and what happens when the shell stops answering |
 | [`docs/shell-backends.md`](docs/shell-backends.md) | the six engines the shell can be drawn by — WPE, WebKitGTK, Chromium driven, Chromium embedded, Servo driven, Servo embedded — what changes between them and what does not, and how to run the shell process by hand against a live session |
 | [`docs/benchmarks.md`](docs/benchmarks.md) | Viewport measured against sway and niri on real scanout — frame rate, CPU per frame, memory, and the second monitor while the first is saturated |
-| [`docs/roadmap.md`](docs/roadmap.md) | what is missing — the applets, RemoteDesktop, the on-screen keyboard — and why each belongs in here rather than in a daemon beside it |
+| [`docs/roadmap.md`](docs/roadmap.md) | what is still missing — the cross-GPU fallback copy, the multi-GPU path's testing — the settings that are file-only by design rather than by a missing setter, and why each open one belongs in here rather than in a daemon beside it |
 
 Two shells ship with it, at opposite ends of the same protocol:
 
