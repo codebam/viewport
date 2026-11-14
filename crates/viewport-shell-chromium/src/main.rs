@@ -1065,6 +1065,37 @@ mod tests {
         assert!(gate.ready());
     }
 
+    /// A replaced execution context closes the gate on a document that had
+    /// already loaded.
+    ///
+    /// The sibling test above pins that context bookkeeping is not a load —
+    /// but before this fix `context_created` was a no-op on the state and
+    /// never wired into the note handler, so it asserted nothing at all:
+    /// the gate was already shut for the reload and stayed shut for the
+    /// wrong reason. A cleared or replaced main-frame context is the old
+    /// document going away — `Page.frameNavigated` drops the tracked
+    /// contexts (`guard.main_context.is_none()`) before the new document's
+    /// `executionContextCreated` arrives — so a gate that is *open* must
+    /// close when one is announced, and only the new document's own load
+    /// event may open it again.
+    #[test]
+    fn a_replaced_context_closes_the_reload_gate() {
+        let mut gate = LoadGate::default();
+        // The gate is a conjunction, so the URL half has to be satisfied
+        // before "open" means anything: without this the test would fail at
+        // both commits for the wrong reason.
+        gate.frame_navigated(Some("file:///shell/index.html"));
+        gate.load_event_fired(); // gate open, document loaded
+        assert!(gate.ready(), "the gate is open on the loaded document");
+        gate.context_created(); // a NEW context replaced the old one
+        assert!(
+            !gate.ready(),
+            "a replaced execution context closes the gate until the new document loads"
+        );
+        gate.load_event_fired();
+        assert!(gate.ready(), "the new document's own load reopens it");
+    }
+
     /// And the initial attach: the frame tree naming a good URL does not
     /// open the gate before the document has loaded, either.
     #[test]
