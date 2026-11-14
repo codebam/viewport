@@ -56,8 +56,14 @@ start_viewport() {
 	local config=$1 log=$2
 	"$viewport" --headless --config "$config" >"$log" 2>&1 &
 	viewport_pid=$!
+	# Both lines, not the socket alone: the wayland socket's name arrives on
+	# the log after the control socket's, and a caller that greps for it the
+	# moment the control socket appears races the compositor's stdout. The
+	# shell is what made the gap wide enough to lose — its spawn sits between
+	# the two lines on a machine that has one.
 	for _ in $(seq 1 100); do
-		grep -q "control socket at" "$log" && return 0
+		grep -q "control socket at" "$log" \
+			&& grep -q "WAYLAND_DISPLAY=" "$log" && return 0
 		kill -0 "$viewport_pid" 2>/dev/null || break
 		sleep 0.1
 	done

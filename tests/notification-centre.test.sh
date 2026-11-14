@@ -79,8 +79,13 @@ check() {
 log="$workdir/viewport.log"
 "$viewport" --headless >"$log" 2>&1 &
 viewport_pid=$!
+# Both lines, for the reason clipboard.test.sh's start_viewport waits for
+# both: the wayland name arrives after the control socket's line, and a
+# grep the moment the first appears races the compositor's stdout — the
+# shell's spawn between the two is what made the gap wide enough to lose.
 for _ in $(seq 1 100); do
-	grep -q "control socket at " "$log" && break
+	grep -q "control socket at " "$log" \
+		&& grep -q "WAYLAND_DISPLAY=" "$log" && break
 	kill -0 "$viewport_pid" 2>/dev/null || break
 	sleep 0.1
 done
