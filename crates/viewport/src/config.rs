@@ -174,6 +174,31 @@ pub struct InputConfig {
     /// Hyprland's `emulate_discrete_scroll`, for a client that only reads the
     /// discrete value.
     pub emulate_discrete_scroll: Option<bool>,
+    /// The button scrolling is pinned to while `scroll_method` is
+    /// `on_button_down`. Absent lets libinput choose, which is usually the
+    /// middle button.
+    ///
+    /// Hyprland's `input:scroll_button`. The number is an evdev button code,
+    /// not an X11 one — the middle button libinput picks by default is 274
+    /// (`BTN_MIDDLE`), where X11 calls it 2 — so anything read off an X11
+    /// button mapping needs translating before it lands here. Any `u32` is a
+    /// legal code, and libinput refuses on the device if it is not, logging
+    /// like every other refused setting. Zero disables button scrolling.
+    pub scroll_button: Option<u32>,
+    /// Whether the scroll button toggles scroll mode rather than having to be
+    /// held. Hyprland's `input:scroll_button_lock`. Absent is off — the
+    /// button is held, which is what libinput does — and it only does
+    /// anything while `scroll_method` is `on_button_down` with a button set.
+    pub scroll_button_lock: Option<bool>,
+    /// Drag with three fingers down instead of a tap followed by a drag.
+    /// Hyprland's `input:drag_3fg`. Absent is off.
+    ///
+    /// libinput has no separate two-setting story here: its three-finger drag
+    /// replaces tap-and-drag rather than sitting beside it, so this is a
+    /// user-facing alias for the same device setting `tap_drag` programs —
+    /// either one set on its own wins over the default, and setting both to
+    /// different values makes the last one applied (`tap_drag`) the state.
+    pub drag_3fg: Option<bool>,
 }
 
 /// The `magnify` block: the screen magnifier's step and its ceiling.
@@ -2579,6 +2604,28 @@ mod tests {
         let device = &file.input.as_ref().expect("input block")["*"];
         assert_eq!(device.scroll_factor, Some(0.5));
         assert_eq!(device.emulate_discrete_scroll, Some(true));
+    }
+
+    #[test]
+    fn a_device_can_pin_a_scroll_button_lock_it_and_drag_with_three_fingers() {
+        // Hyprland's scroll_button, scroll_button_lock and drag_3fg, spelled
+        // the way the file spells everything else.
+        let file: File = serde_json::from_str(
+            r#"{"input":{"*":{"scroll_button":274,"scroll_button_lock":true,"drag_3fg":true}}}"#,
+        )
+        .expect("should parse");
+        let device = &file.input.as_ref().expect("input block")["*"];
+        assert_eq!(device.scroll_button, Some(274));
+        assert_eq!(device.scroll_button_lock, Some(true));
+        assert_eq!(device.drag_3fg, Some(true));
+
+        // Absent is absent, as with every other per-device field: the
+        // compositor leaves the device's own default standing.
+        let absent: File = serde_json::from_str(r#"{"input":{"*":{}}}"#).expect("should parse");
+        let device = &absent.input.as_ref().expect("input block")["*"];
+        assert_eq!(device.scroll_button, None);
+        assert_eq!(device.scroll_button_lock, None);
+        assert_eq!(device.drag_3fg, None);
     }
 
     #[test]

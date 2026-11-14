@@ -2783,6 +2783,7 @@ dependencies = [
  "base64",
  "futures-core",
  "futures-util",
+ "input",
  "libc",
  "ordered-stream",
  "pipewire",

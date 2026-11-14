@@ -741,6 +741,15 @@ pub fn apply(into: &mut crate::config::File, overlay: &Overlay) {
             if let Some(value) = settings.emulate_discrete_scroll {
                 entry.emulate_discrete_scroll = Some(value);
             }
+            if let Some(value) = settings.scroll_button {
+                entry.scroll_button = Some(value);
+            }
+            if let Some(value) = settings.scroll_button_lock {
+                entry.scroll_button_lock = Some(value);
+            }
+            if let Some(value) = settings.drag_3fg {
+                entry.drag_3fg = Some(value);
+            }
         }
     }
     if let Some(notifications) = overlay.notifications.as_ref() {
@@ -971,6 +980,9 @@ mod tests {
                         scroll_method: None,
                         scroll_factor: Some(1.5),
                         emulate_discrete_scroll: Some(true),
+                        scroll_button: Some(274),
+                        scroll_button_lock: Some(true),
+                        drag_3fg: Some(true),
                     },
                 )]
                 .into_iter()
@@ -1090,6 +1102,9 @@ mod tests {
         assert_eq!(device.accel_profile.as_deref(), Some("adaptive"));
         assert_eq!(device.scroll_factor, Some(1.5));
         assert_eq!(device.emulate_discrete_scroll, Some(true));
+        assert_eq!(device.scroll_button, Some(274));
+        assert_eq!(device.scroll_button_lock, Some(true));
+        assert_eq!(device.drag_3fg, Some(true));
         assert_eq!(
             file.notifications.sound_file.as_deref(),
             Some("/sounds/notify.ogg")
