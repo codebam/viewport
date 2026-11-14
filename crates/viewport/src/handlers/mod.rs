@@ -1956,9 +1956,12 @@ mod grab_focus_tests {
     use super::*;
 
     /// A `KeyboardFocus` over a real X11 window cannot be built in a unit
-    /// test — it needs a live Xwm — so the policy is asserted on its halves:
-    /// the two refusals that need no object identity, here; and the
-    /// grant-with-resolution half, which is pinned against the source below.
+    /// test — it needs a live Xwm — so the refusals that need no object
+    /// identity are asserted here. The grant-with-resolution half is
+    /// exercised end to end by tests/xwayland-grab.test.sh, which drives a
+    /// real compositor: an unfocused window's grab is refused, the focused
+    /// one's granted, and no focusout fires on the window that holds the
+    /// keys.
     #[test]
     fn a_locked_or_unfocused_grab_is_refused() {
         // A locked session grants nothing, asking window or not.
@@ -1966,38 +1969,6 @@ mod grab_focus_tests {
         // An unlocked session with no focus grants nothing: the grab would be
         // the first holder of keys nobody gave away.
         assert_eq!(xwayland_grab_focus(false, None, None), None);
-    }
-
-    /// The grant resolves to the X11 arm and only for the focused window.
-    ///
-    /// The helper needs a live window to decide the third half, so the shape
-    /// is checked against the source: the resolution goes through
-    /// `KeyboardFocus::for_window` (the X11 arm — the whole point), and the
-    /// grant is the comparison against what the seat already holds.
-    #[test]
-    fn a_grant_resolves_through_the_x11_arm() {
-        let source = include_str!("mod.rs");
-        let source = source.split("#[cfg(test)]").next().unwrap_or(source);
-        let start = source
-            .find("fn xwayland_grab_focus(")
-            .expect("the policy helper");
-        let body = &source[start
-            ..start
-                + source[start..]
-                    .find("\n/// Where a `wp_pointer_warp_v1")
-                    .expect("the end of the policy helper")];
-        assert!(
-            body.contains("KeyboardFocus::for_window(asking?)"),
-            "the grant must resolve through the X11 arm, not a bare surface"
-        );
-        assert!(
-            !body.contains(".into()"),
-            "the stale Wayland-surface shape must not come back"
-        );
-        assert!(
-            body.contains("current.as_ref() == Some(&focus)"),
-            "the grant belongs to the window that already holds the keys"
-        );
     }
 }
 
