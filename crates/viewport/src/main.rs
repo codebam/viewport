@@ -20,6 +20,7 @@ mod ai_usage;
 mod color_management;
 mod color_representation;
 mod config;
+mod cross_gpu;
 mod cursor;
 mod dbus;
 mod dbus_util;

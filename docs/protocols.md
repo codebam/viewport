@@ -684,8 +684,9 @@ disconnects clients. Judging by the primary alone did exactly that on a two-card
 machine: a window on the second card's monitor was told by its per-surface
 feedback to allocate for the second card, and the buffer that came back was
 handed to the first card's renderer to be approved. A buffer that some cards
-read and others do not is accepted, and the window is missing from the screens
-on the cards that refused it; that is logged once per format, modifier and card.
+read and others do not is accepted; the screens on the cards that refused it
+show a copy (`crates/viewport/src/cross_gpu.rs`), or nothing if even the copy
+cannot be made. Either way it is logged once per format, modifier and card.
 
 ## wp-drm-lease-v1
 

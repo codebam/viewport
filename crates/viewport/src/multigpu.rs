@@ -35,31 +35,20 @@
 //
 // ## What happens to a buffer the scanout card cannot import
 //
-// It is dropped from that screen: the surface does not appear there, and every
-// other screen still shows it. That is the decision, and it is the same one the
-// code made before this module existed — the difference is that it is now said
-// out loud, once, naming the format, the modifier and the two cards, instead of
-// being a window that is mysteriously missing from one monitor.
+// It is copied. The buffer is imported on a card that takes it, drawn into
+// a shadow buffer allocated on the scanout card in a format it can import
+// (see [`shadow_format`]), and the shadow is shown. The copy is cached for
+// as long as the client keeps the source buffer, so the price is a blit per
+// buffer, not a blit per frame; `crate::cross_gpu` is the machinery, and its
+// header says why the shape is a wrapper around the scanout renderer with
+// the other cards' renderers moved out for the pass. If even the copy
+// cannot be made — no helper takes the buffer, or no copy path between the
+// cards works — the surface is dropped from that screen and the log says
+// so, once, naming the format, the modifier and the two cards. Every other
+// screen still shows it.
 //
-// The alternative is a copy: import the buffer on the card that allocated it,
-// blit it into a buffer allocated on the scanout card with a modifier both of
-// them understand, and sample that. It is what most compositors do and it is
-// not free — a full-surface copy across PCIe every frame, per surface, per
-// screen it is foreign to. It is deliberately not implemented here, and the
-// reasons are worth writing down so the next person does not rediscover them:
-//
-//   * The render path is generic over one renderer at a time (`render_pass` in
-//     `udev.rs` is compiled once for Vulkan and once for GLES). A copy needs
-//     two renderers live in the same pass, which is a different shape.
-//   * Smithay's own multi-GPU renderer is built on its GLES `GraphicsApi`, and
-//     this compositor's renderer is Vulkan wherever Vulkan works — the whole
-//     colour-management and explicit-sync path depends on it.
-//   * Two of the three mitigations below make the copy unnecessary for a client
-//     that follows the protocol, and the protocol is how this is *supposed* to
-//     be solved: per-surface dmabuf feedback exists precisely so a client
-//     reallocates when its window moves to another card.
-//
-// So, in order of what actually fixes it:
+// The copy is the mitigation, not the fix, and the order of what actually
+// fixes it is unchanged:
 //
 //   1. Per-surface feedback names the card the window is being shown on. A
 //      client that honours it — everything on Mesa does — reallocates and the
@@ -70,8 +59,10 @@
 //      understands. Off by default, because that cost is paid by every client
 //      on a machine where most windows never leave the card they were
 //      allocated on.
-//   3. Failing both, the surface is missing from that one screen and the log
-//      says so.
+//   3. Failing both, the copy keeps the window on every screen anyway, at
+//      the cost of a full-surface allocation on the scanout card and a blit
+//      per buffer — and if the copy fails too, the surface is missing from
+//      that one screen and the log says so.
 
 use std::collections::HashSet;
 
@@ -136,8 +127,8 @@ pub fn unique_output_name(base: &str, device: usize, taken: &HashSet<String>) ->
 ///
 ///   * every card takes it — ordinary, and the single-GPU case by definition;
 ///   * some do and some do not — the buffer is usable, the client is told so,
-///     and its window will be missing from the screens on the cards that
-///     refused. This is the one worth a word in the log.
+///     and the screens on the cards that refused it show a copy
+///     (`crate::cross_gpu`). This is the one worth a word in the log.
 ///   * none does — the buffer is unusable and the client has to be told, which
 ///     is what `linux-dmabuf`'s import notifier is for. Telling it anything
 ///     else means a window that never appears anywhere, with no error.
@@ -178,7 +169,8 @@ impl Reach {
     /// Whether this buffer works on some cards and not others.
     ///
     /// The one state that is neither fine nor fatal: the client keeps its
-    /// buffer, and a window carrying it is missing from some monitors.
+    /// buffer, the screens that took it show it directly, and the rest show
+    /// a copy — or, if the copy cannot be made, nothing.
     pub fn split(&self) -> bool {
         !self.taken_by.is_empty() && !self.refused_by.is_empty()
     }
@@ -279,6 +271,42 @@ pub fn default_formats(policy: CrossGpu, per_device: &[Vec<Format>]) -> Vec<Form
             }
         }
     }
+}
+
+/// The format a cross-GPU copy is allocated in on the scanout card.
+///
+/// The copy is drawn by the helper renderer, which samples the client's
+/// buffer whatever its format and writes ordinary RGBA pixels — so the
+/// shadow does not need the client's format, it needs one the scanout card
+/// can both import and render into. ARGB8888 is that format everywhere; the
+/// question is only the modifier.
+///
+/// Linear first: it is the one modifier every driver understands, and the
+/// helper has to bind this buffer too, which a tiled or compressed modifier
+/// the scanout card alone understands would refuse. `Invalid` second, for
+/// the GLES-only case — a driver without the modifier extension allocates
+/// implicitly and imports implicitly, and a Vulkan renderer refuses such a
+/// buffer (see `dump::owned_image` for the incident that proved it), so a
+/// Vulkan scanout card that advertises no linear ARGB8888 gets no GPU copy
+/// at all rather than a shadow it cannot sample.
+///
+/// `None` means the GPU path is unavailable and the copy goes through the
+/// CPU: read back on the helper, upload on the scanout card. Slower, and
+/// the only path that needs no format agreement between the cards at all.
+pub fn shadow_format(
+    scanout_formats: &smithay::backend::allocator::format::FormatSet,
+) -> Option<Format> {
+    use smithay::backend::allocator::{Fourcc, Modifier};
+    for modifier in [Modifier::Linear, Modifier::Invalid] {
+        let format = Format {
+            code: Fourcc::Argb8888,
+            modifier,
+        };
+        if scanout_formats.contains(&format) {
+            return Some(format);
+        }
+    }
+    None
 }
 
 /// What has already been said, so it is not said again every frame.
@@ -485,5 +513,44 @@ mod tests {
         assert!(reported.first_time(0x34325241, 0, 1));
         assert_eq!(reported.len(), 3);
         assert!(!reported.is_empty());
+    }
+
+    fn format_set(formats: &[Format]) -> smithay::backend::allocator::format::FormatSet {
+        formats.iter().copied().collect()
+    }
+
+    #[test]
+    fn the_shadow_is_linear_when_the_scanout_card_can_take_it() {
+        // Linear is the modifier both cards are most likely to agree on,
+        // which matters because the helper binds the shadow too.
+        let formats = format_set(&[
+            format(Fourcc::Argb8888, 0x100000000000001),
+            format(Fourcc::Argb8888, u64::from(Modifier::Linear)),
+        ]);
+        assert_eq!(
+            shadow_format(&formats),
+            Some(format(Fourcc::Argb8888, u64::from(Modifier::Linear)))
+        );
+    }
+
+    #[test]
+    fn an_implicit_shadow_is_the_gles_only_answer() {
+        // A driver without the modifier extension: implicit allocation is
+        // all it has, and a Vulkan scanout would refuse it — which is why
+        // linear is asked for first and this is the second choice.
+        let formats = format_set(&[format(Fourcc::Argb8888, u64::from(Modifier::Invalid))]);
+        assert_eq!(
+            shadow_format(&formats),
+            Some(format(Fourcc::Argb8888, u64::from(Modifier::Invalid)))
+        );
+    }
+
+    #[test]
+    fn no_argb8888_at_all_means_the_cpu_path() {
+        // The GPU copy needs a format the scanout card can import; without
+        // one the caller reads back on the helper and uploads instead.
+        let formats = format_set(&[format(Fourcc::Xrgb8888, 0)]);
+        assert_eq!(shadow_format(&formats), None);
+        assert_eq!(shadow_format(&format_set(&[])), None);
     }
 }

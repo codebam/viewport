@@ -2974,19 +2974,25 @@ protocol has room for both:
 **What goes wrong without `portable`, and how you would know.** A client that
 ignores per-surface feedback keeps allocating for the primary. Drag its window
 to a monitor on the other card and the buffer arrives at a renderer that cannot
-read its modifier, and the surface is simply missing from that screen — the
-window is still there on its old monitor, and there is a hole where it should
-be on the new one. The compositor says so, once, naming the format and both
-cards:
+read its modifier. The compositor copies it: the buffer is imported on a card
+that takes it, drawn into a buffer allocated on the scanout card in a format it
+can read, and that copy is shown — once per buffer, cached for as long as the
+client keeps it, so the cost is a blit per buffer and not a blit per frame. The
+compositor says so, once, naming the format and both cards:
 
 ```
 a client buffer (Argb8888, modifier 0x100000000000006) imports on gpu [0] and not on
-gpu [1]; a window showing it will be missing from the screens on the cards that
-refused it. Set cross_gpu = "portable" to advertise only what every card can read
+gpu [1]; the screens on the cards that refused it will show a copy, which costs a
+blit per buffer. Set cross_gpu = "portable" to advertise only what every card can read
 ```
 
 Once per format, modifier and card, not once per frame — so a line like that
-in the log is one condition and not one frame.
+in the log is one condition and not one frame. `portable` is still the fix:
+the copy is the mitigation for the client that ignores its feedback, and it
+costs memory and a blit that a client following the protocol never pays. If
+even the copy cannot be made — no helper card takes the buffer, or the two
+cards share no renderable format and the CPU readback fails too — the surface
+is missing from that one screen, and a second warning says so.
 
 A buffer *no* card can read is a different thing: the client is told the import
 failed, which over `linux-dmabuf` is a protocol error, because the alternative

@@ -313,33 +313,49 @@ everything on the primary and copying each frame across PCIe.
 
 The cost of that choice is that a client buffer allocated against the primary
 has to be importable by the secondary, which is what a shared modifier is for.
-Where it cannot be, that surface does not appear on that screen — the session
+Where it cannot be, the buffer is copied through a card that can import it
+(`crates/viewport/src/cross_gpu.rs`) and the copy is shown; if even the copy
+cannot be made, that surface does not appear on that screen — the session
 carries on. A GPU that cannot be opened at all is skipped with a warning, on the
 same reasoning: one card failing is a monitor that stays dark, and refusing to
 start is every monitor dark.
 
 ### A window missing from one monitor and not the other
 
-That is what a buffer the scanout card cannot read looks like from the desk, and
-it is the one multi-GPU symptom nobody would connect to a buffer modifier. The
-compositor says it out loud, once per format, modifier and card:
+That is what a buffer the scanout card cannot read looks like from the desk
+when the copy failed too, and it is the one multi-GPU symptom nobody would
+connect to a buffer modifier. The compositor says it out loud, once per
+format, modifier and card — first when the split import is noticed:
 
 ```
 a client buffer (Argb8888, modifier 0x100000000000006) imports on gpu [0] and not on
-gpu [1]; a window showing it will be missing from the screens on the cards that
-refused it. Set cross_gpu = "portable" to advertise only what every card can read
+gpu [1]; the screens on the cards that refused it will show a copy, which costs a
+blit per buffer. Set cross_gpu = "portable" to advertise only what every card can read
+```
+
+and then, only if no copy path worked:
+
+```
+a client buffer (Argb8888, modifier 0x100000000000006) imports on no helper card either,
+or no copy path between the cards works; it stays missing from gpu 1's screens. ...
 ```
 
 Once per case, not once per frame — one line like that is a condition that will
 hold for as long as the client keeps allocating that way, not one bad frame.
+A successful copy logs at debug level (`cross-GPU copy:`), naming the helper
+and the scanout card.
 
 `cross_gpu = "portable"` in the config file (or `--cross-gpu portable`) narrows
 the *default* advertisement to the formats every card can import, which fixes
 the client that ignores per-surface feedback and costs every other client the
 modifiers only one card understands. See
-[Graphics cards](configuration.md#graphics-cards). The copy through the primary
-renderer that would make the question go away entirely is deliberately not
-implemented; `crates/viewport/src/multigpu.rs` says why.
+[Graphics cards](configuration.md#graphics-cards). The copy is the mitigation,
+not the fix: it is a blit per buffer plus a full-surface allocation on the
+scanout card, cached for as long as the client keeps the source buffer
+(`MAX_COPIED_BUFFERS` caps the cache). The shape of the copy — a wrapper around
+the scanout renderer, the other cards' renderers moved out for the pass, the
+GPU blit preferred and a CPU readback behind it — is written down in
+`crates/viewport/src/cross_gpu.rs` and `crates/viewport/src/multigpu.rs`.
 
 A buffer that *no* card can import is refused instead, which over
 `linux-dmabuf` disconnects the client. That is the honest answer: the

@@ -331,24 +331,37 @@ pub trait BackgroundEffectRenderer: Renderer {
         false
     }
 
-    fn draw_background_effect(
+    // The frame's lifetimes are named, with the GAT's own bounds stated:
+    // an elided `Self::Frame<'_, '_>` leaves them late-bound, and a
+    // renderer that borrows anything (the cross-GPU wrapper) cannot prove
+    // `Self: 'frame` for a late-bound lifetime — the impl would be
+    // rejected before a single frame was drawn.
+    fn draw_background_effect<'frame, 'buffer>(
         _effect: &BackgroundEffectRenderElement,
-        _frame: &mut Self::Frame<'_, '_>,
+        _frame: &mut Self::Frame<'frame, 'buffer>,
         _src: Rectangle<f64, Buffer>,
         _dst: Rectangle<i32, Physical>,
         _damage: &[Rectangle<i32, Physical>],
         _cache: Option<&UserDataMap>,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<(), Self::Error>
+    where
+        'buffer: 'frame,
+        Self: 'frame,
+    {
         Ok(())
     }
 
-    fn capture_background_effect(
+    fn capture_background_effect<'frame, 'buffer>(
         _effect: &BackgroundEffectRenderElement,
-        _frame: &mut Self::Frame<'_, '_>,
+        _frame: &mut Self::Frame<'frame, 'buffer>,
         _src: Rectangle<f64, Buffer>,
         _dst: Rectangle<i32, Physical>,
         _cache: &UserDataMap,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<(), Self::Error>
+    where
+        'buffer: 'frame,
+        Self: 'frame,
+    {
         Ok(())
     }
 }
@@ -358,24 +371,32 @@ impl BackgroundEffectRenderer for viewport_vulkan::VulkanRenderer {
         true
     }
 
-    fn draw_background_effect(
+    fn draw_background_effect<'frame, 'buffer>(
         effect: &BackgroundEffectRenderElement,
-        frame: &mut viewport_vulkan::VulkanFrame<'_, '_>,
+        frame: &mut viewport_vulkan::VulkanFrame<'frame, 'buffer>,
         src: Rectangle<f64, Buffer>,
         dst: Rectangle<i32, Physical>,
         damage: &[Rectangle<i32, Physical>],
         cache: Option<&UserDataMap>,
-    ) -> Result<(), viewport_vulkan::Error> {
+    ) -> Result<(), viewport_vulkan::Error>
+    where
+        'buffer: 'frame,
+        Self: 'frame,
+    {
         effect.draw_vulkan(frame, src, dst, damage, cache)
     }
 
-    fn capture_background_effect(
+    fn capture_background_effect<'frame, 'buffer>(
         effect: &BackgroundEffectRenderElement,
-        frame: &mut viewport_vulkan::VulkanFrame<'_, '_>,
+        frame: &mut viewport_vulkan::VulkanFrame<'frame, 'buffer>,
         src: Rectangle<f64, Buffer>,
         dst: Rectangle<i32, Physical>,
         cache: &UserDataMap,
-    ) -> Result<(), viewport_vulkan::Error> {
+    ) -> Result<(), viewport_vulkan::Error>
+    where
+        'buffer: 'frame,
+        Self: 'frame,
+    {
         effect.capture_vulkan(frame, src, dst, cache)
     }
 }
@@ -388,24 +409,32 @@ impl BackgroundEffectRenderer for GlesRenderer {
             .is_some()
     }
 
-    fn draw_background_effect(
+    fn draw_background_effect<'frame, 'buffer>(
         effect: &BackgroundEffectRenderElement,
-        frame: &mut GlesFrame<'_, '_>,
+        frame: &mut GlesFrame<'frame, 'buffer>,
         src: Rectangle<f64, Buffer>,
         dst: Rectangle<i32, Physical>,
         damage: &[Rectangle<i32, Physical>],
         cache: Option<&UserDataMap>,
-    ) -> Result<(), GlesError> {
+    ) -> Result<(), GlesError>
+    where
+        'buffer: 'frame,
+        Self: 'frame,
+    {
         effect.draw_gles(frame, src, dst, damage, cache)
     }
 
-    fn capture_background_effect(
+    fn capture_background_effect<'frame, 'buffer>(
         effect: &BackgroundEffectRenderElement,
-        frame: &mut GlesFrame<'_, '_>,
+        frame: &mut GlesFrame<'frame, 'buffer>,
         src: Rectangle<f64, Buffer>,
         dst: Rectangle<i32, Physical>,
         cache: &UserDataMap,
-    ) -> Result<(), GlesError> {
+    ) -> Result<(), GlesError>
+    where
+        'buffer: 'frame,
+        Self: 'frame,
+    {
         effect.capture_gles(frame, src, dst, cache)
     }
 }

@@ -1149,11 +1149,12 @@ impl smithay::wayland::dmabuf::DmabufHandler for ViewportState {
         });
 
         // A buffer some cards take and others refuse is usable — the client
-        // keeps it and every screen on a card that took it shows it — but the
-        // window is going to be missing from the rest, which is a symptom
-        // nobody would connect to a buffer modifier without being told. Said
-        // once per format, modifier and card; see `Reported` for why not once
-        // per frame.
+        // keeps it and every screen on a card that took it shows it. The
+        // screens on the cards that refused it get a copy (`cross_gpu`),
+        // which costs a blit per buffer and is worth a word in the log: it
+        // is the symptom of a client ignoring its per-surface feedback, and
+        // the copy is the mitigation, not the fix. Said once per format,
+        // modifier and card; see `Reported` for why not once per frame.
         if let Some(reach) = reach.as_ref().filter(|reach| reach.split()) {
             let format = dmabuf.format();
             let code = format.code as u32;
@@ -1171,9 +1172,9 @@ impl smithay::wayland::dmabuf::DmabufHandler for ViewportState {
             if first {
                 tracing::warn!(
                     "a client buffer ({:?}, modifier {modifier:#x}) imports on gpu {:?} and \
-                     not on gpu {:?}; a window showing it will be missing from the screens on \
-                     the cards that refused it. Set cross_gpu = \"portable\" to advertise only \
-                     what every card can read — see docs/configuration.md.",
+                     not on gpu {:?}; the screens on the cards that refused it will show a \
+                     copy, which costs a blit per buffer. Set cross_gpu = \"portable\" to \
+                     advertise only what every card can read — see docs/configuration.md.",
                     format.code,
                     reach.taken_by,
                     reach.refused_by,

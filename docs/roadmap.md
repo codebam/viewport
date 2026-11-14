@@ -95,17 +95,17 @@ advertises the global whenever its renderer can draw the effect
 (`crates/viewport/src/udev.rs:1496-1504`), so translucent web chrome and
 ordinary Wayland clients get the same blur on real hardware.
 
-**A buffer no scanout card can import is a hole in one screen.** Per-surface
+**A buffer no scanout card can import is copied, not dropped.** Per-surface
 feedback tells a client which card is displaying it, and `cross_gpu =
 "portable"` narrows the default advertisement to what every card can import,
 which between them cover every client that listens. A client that ignores
-both hands over a buffer the scanout card cannot take, and the surface is
-dropped from that screen with one line in the log. The fallback that would
-close it — a copy through the primary renderer — is not written, and
-`crates/viewport/src/multigpu.rs`'s header argues the shape of it:
-`render_pass` is generic over one renderer and compiled twice, a blit needs
-two live in one pass, and smithay's own multi-GPU renderer is on its GLES
-`GraphicsApi` where this tree is Vulkan wherever Vulkan works.
+both hands over a buffer the scanout card cannot take: it is imported on a
+card that can, drawn into a shadow buffer allocated on the scanout card, and
+the shadow is shown — cached per buffer, with a CPU readback behind the GPU
+blit for cards that share no renderable format (`crates/viewport/src/cross_gpu.rs`,
+and the rules in `crates/viewport/src/multigpu.rs`). Only if even the copy
+cannot be made is the surface dropped from that screen, with one line in the
+log naming the format, the modifier and the cards.
 
 **None of the multi-GPU path has run on two cards.** Everything above is
 reasoned and unit-tested against a machine with one. `docs/debugging.md` has

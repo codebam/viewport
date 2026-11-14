@@ -689,6 +689,10 @@ pub struct Udev {
     /// painting at the refresh rate says it once. See
     /// [`crate::multigpu::Reported`].
     pub cross_gpu_reported: crate::multigpu::Reported,
+    /// Copies made for buffers the scanout card could not import, keyed by
+    /// the buffer they copy. Moved out for each render pass and put back,
+    /// the way the renderers are. See [`crate::cross_gpu`].
+    pub cross_gpu_copies: crate::cross_gpu::CopyCache,
     /// Cards that have never opened, waiting to be tried again.
     ///
     /// A GPU this session has not seen has no slot in `devices` to hang the
@@ -1705,6 +1709,7 @@ pub fn init(
         committed_since_flip: false,
         first_commit_at: None,
         cross_gpu_reported: Default::default(),
+        cross_gpu_copies: Default::default(),
         pending_adds: Vec::new(),
     });
     if state
@@ -3551,21 +3556,73 @@ impl ViewportState {
             };
             renderer.set_output_description(description);
         }
-        crate::with_gpu!(&mut gpu, |renderer| self.render_pass(
-            &mut udev,
-            renderer,
-            id,
-            &output,
-            frame,
-            wants_tearing,
-            settled_for,
-            start,
-            &mut pending_dump,
-        ));
-        // Back to the device it came from, for the same reason.
+        // The other online cards' renderers, out for the pass exactly like
+        // this one: a buffer the scanout card cannot import is copied
+        // through one of theirs (`cross_gpu`), and the wrapper that does it
+        // cannot borrow them out of `udev` while `render_pass` holds the
+        // rest of it. Nothing else touches them meanwhile — recovery runs
+        // on the event loop, not mid-pass — and each goes back to its slot
+        // below, the same contract the scanout renderer keeps.
+        let mut helpers: Vec<(usize, Gpu)> = udev
+            .devices
+            .iter_mut()
+            .enumerate()
+            .filter(|(index, device)| *index != id.device && device.online)
+            .map(|(index, device)| {
+                (
+                    index,
+                    std::mem::replace(&mut device.renderer, Gpu::Placeholder),
+                )
+            })
+            .collect();
+        let cross_gbm = udev.devices[id.device].gbm.clone();
+        let mut copies = std::mem::take(&mut udev.cross_gpu_copies);
+        crate::with_gpu!(&mut gpu, |renderer| {
+            if helpers.is_empty() {
+                // One card: nothing to copy through, and no wrapper between
+                // the pass and its renderer.
+                self.render_pass(
+                    &mut udev,
+                    renderer,
+                    id,
+                    &output,
+                    frame,
+                    wants_tearing,
+                    settled_for,
+                    start,
+                    &mut pending_dump,
+                );
+            } else {
+                let mut fallback = crate::cross_gpu::FallbackRenderer {
+                    scanout: renderer,
+                    helpers: &mut helpers,
+                    gbm: &cross_gbm,
+                    cache: &mut copies,
+                    device: id.device,
+                };
+                self.render_pass(
+                    &mut udev,
+                    &mut fallback,
+                    id,
+                    &output,
+                    frame,
+                    wants_tearing,
+                    settled_for,
+                    start,
+                    &mut pending_dump,
+                );
+            }
+        });
+        // Back to the devices they came from, for the same reason.
+        for (index, gpu) in helpers {
+            if let Some(device) = udev.devices.get_mut(index) {
+                device.renderer = gpu;
+            }
+        }
         if let Some(device) = udev.devices.get_mut(id.device) {
             device.renderer = gpu;
         }
+        udev.cross_gpu_copies = copies;
         self.udev = Some(udev);
     }
 
