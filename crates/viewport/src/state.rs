@@ -751,6 +751,11 @@ pub struct ViewportState {
     /// Minimum pointer travel before focus changes (from
     /// `cursor.follow_mouse_threshold`).
     pub follow_mouse_threshold: f64,
+    /// How many logical pixels each side of a window's bounding box is
+    /// inset by before the hover focus test accepts the pointer (from
+    /// `cursor.follow_mouse_shrink`). Zero is the whole box, as the hover
+    /// test has always seen it; the click path never reads this.
+    pub follow_mouse_shrink: f64,
 
     /// When the shell last moved a window, so a diagnostic capture can wait
     /// for the open animation to finish. Five shell frames is the middle of
@@ -2020,6 +2025,7 @@ impl ViewportState {
             follow_mouse_pos: None,
             follow_mouse: false,
             follow_mouse_threshold: 0.0,
+            follow_mouse_shrink: 0.0,
             last_layout: None,
             needs_render: false,
             dirty_outputs: std::collections::HashSet::new(),

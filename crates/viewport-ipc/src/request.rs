@@ -1021,6 +1021,11 @@ pub enum Request {
         /// are rejected.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         follow_mouse_threshold: Option<f64>,
+        /// How many logical pixels the hover focus test keeps off each side
+        /// of a window's box, as `cursor.follow_mouse_shrink`. Negative
+        /// values are rejected.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        follow_mouse_shrink: Option<f64>,
     },
 
     /// Set how the shell animates at runtime, as the `motion` block in the
@@ -2712,8 +2717,9 @@ mod tests {
             size,
             follow_mouse,
             follow_mouse_threshold,
+            follow_mouse_shrink,
         } = parse(
-            r#"{"type":"config.cursor","hide_after_ms":0,"hide_on_key_press":true,"theme":"Adwaita","size":24,"follow_mouse":true,"follow_mouse_threshold":1.5}"#,
+            r#"{"type":"config.cursor","hide_after_ms":0,"hide_on_key_press":true,"theme":"Adwaita","size":24,"follow_mouse":true,"follow_mouse_threshold":1.5,"follow_mouse_shrink":4}"#,
         )
         else {
             panic!("not a config.cursor message");
@@ -2725,6 +2731,18 @@ mod tests {
         assert_eq!(size, Some(24));
         assert_eq!(follow_mouse, Some(true));
         assert_eq!(follow_mouse_threshold, Some(1.5));
+        assert_eq!(follow_mouse_shrink, Some(4.0));
+
+        // The shrink is optional like the rest: absent leaves it out of the
+        // message rather than answering a default the sender never named.
+        let Request::ConfigCursor {
+            follow_mouse_shrink,
+            ..
+        } = parse(r#"{"type":"config.cursor","follow_mouse":true}"#)
+        else {
+            panic!("not a config.cursor message");
+        };
+        assert_eq!(follow_mouse_shrink, None);
 
         // Zero is off, not immediate — the value a verification tool sends
         // when it needs the cursor drawn in every capture.

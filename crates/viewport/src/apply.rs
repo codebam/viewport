@@ -1070,6 +1070,7 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             size,
             follow_mouse,
             follow_mouse_threshold,
+            follow_mouse_shrink,
         } => {
             // Validated as a whole before anything changes, like ConfigGaps:
             // a negative deadline, a zero size or a negative threshold takes
@@ -1094,6 +1095,15 @@ pub fn apply(state: &mut ViewportState, request: Request) {
                     return;
                 }
             }
+            // The shrink refuses a negative for the same reason: an inset
+            // measured inwards cannot be negative, and one that is would
+            // hand the hover test a box bigger than the window itself.
+            if let Some(v) = follow_mouse_shrink {
+                if v < 0.0 {
+                    reject(state, "config.cursor", &format!("follow_mouse_shrink {v}"));
+                    return;
+                }
+            }
             // A bare message toggles the deadline, on the same terms as
             // `config.dark_mode` — a keybinding wants to flip a switch without
             // knowing the number. On becomes never-hide (0) and off becomes
@@ -1106,7 +1116,8 @@ pub fn apply(state: &mut ViewportState, request: Request) {
                     && theme.is_none()
                     && size.is_none()
                     && follow_mouse.is_none()
-                    && follow_mouse_threshold.is_none() =>
+                    && follow_mouse_threshold.is_none()
+                    && follow_mouse_shrink.is_none() =>
                 {
                     Some(if state.cursor_hide.after().is_some() {
                         0
@@ -1145,6 +1156,15 @@ pub fn apply(state: &mut ViewportState, request: Request) {
                     changed = true;
                 }
             }
+            // Same shape as the threshold: no reset of its own, the change
+            // just takes effect on the next motion. It only ever makes the
+            // hover test stricter or looser, and the pointer is where it is.
+            if let Some(v) = follow_mouse_shrink {
+                if state.follow_mouse_shrink != v {
+                    state.follow_mouse_shrink = v;
+                    changed = true;
+                }
+            }
             let current = state
                 .config
                 .cursor
@@ -1178,6 +1198,9 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             }
             if let Some(v) = follow_mouse_threshold {
                 current.follow_mouse_threshold = Some(v);
+            }
+            if let Some(v) = follow_mouse_shrink {
+                current.follow_mouse_shrink = Some(v);
             }
             if changed {
                 // The shell draws nothing from this — the cursor is the

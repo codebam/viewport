@@ -591,9 +591,10 @@ const TYPES: &[Type] = &[
             "size",
             "follow_mouse",
             "follow_mouse_threshold",
+            "follow_mouse_shrink",
         ],
         strings: &["theme"],
-        hint: "[--hide_after_ms N --theme NAME --size N --follow_mouse BOOL]   (bare toggles hide_after_ms 0 <-> 2000)",
+        hint: "[--hide_after_ms N --theme NAME --size N --follow_mouse BOOL --follow_mouse_shrink N]   (bare toggles hide_after_ms 0 <-> 2000)",
     },
     Type {
         name: "config.motion",
@@ -1855,6 +1856,8 @@ mod tests {
                 "true",
                 "--follow_mouse_threshold",
                 "1.5",
+                "--follow_mouse_shrink",
+                "4.0",
             ]),
             serde_json::json!({
                 "type": "config.cursor",
@@ -1862,6 +1865,7 @@ mod tests {
                 "size": 24,
                 "follow_mouse": true,
                 "follow_mouse_threshold": 1.5,
+                "follow_mouse_shrink": 4.0,
             })
         );
     }
