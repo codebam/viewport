@@ -45,6 +45,10 @@ workdir=$(mktemp -d)
 viewport_pid=
 
 cleanup() {
+	if [ -n "${client_pid:-}" ] && kill -0 "$client_pid" 2>/dev/null; then
+		kill "$client_pid" 2>/dev/null
+		wait "$client_pid" 2>/dev/null
+	fi
 	if [ -n "$viewport_pid" ] && kill -0 "$viewport_pid" 2>/dev/null; then
 		kill "$viewport_pid" 2>/dev/null
 		wait "$viewport_pid" 2>/dev/null
@@ -63,9 +67,13 @@ fi
 export XDG_RUNTIME_DIR="$workdir/runtime"
 mkdir -p "$XDG_RUNTIME_DIR"
 chmod 700 "$XDG_RUNTIME_DIR"
+export XDG_STATE_HOME="$workdir/state"
+export XDG_CONFIG_HOME="$workdir/config"
+mkdir -p "$XDG_STATE_HOME" "$XDG_CONFIG_HOME"
 
 log=$workdir/viewport.log
-"$viewport" --headless --width 1920 --height 1080 >"$log" 2>&1 &
+socket=$workdir/control.sock
+"$viewport" --headless --width 1920 --height 1080 --socket "$socket" >"$log" 2>&1 &
 viewport_pid=$!
 
 display=
@@ -115,7 +123,40 @@ check() {
 check "a Wayland client's copy is what Wayland clients paste" \
 	"copied in a wayland client" "$pasted"
 
-x_pasted=$(DISPLAY="$display" timeout 30 "$client" 2>"$workdir/client.err")
+# The X client starts first and waits for the input focus before it asks the
+# selection for anything. Whose welcome the focus turns out to be is not this
+# test's subject — the shell focuses every new window on open
+# (data/shell/windows.js) and the built-in fallback focuses a waiting window
+# at its 2500ms tick, and CI's runner cannot keep a shell alive at all — so
+# the focus and the placement are both sent here, in that order, and the
+# client's poll can only succeed once both have landed. Placement first
+# because a focus without one is what a dying shell leaves behind: the seat
+# and the X server both name the window while `allow_selection_access` walks
+# the space and finds nothing mapped there yet.
+DISPLAY="$display" timeout 30 "$client" >"$workdir/x-paste.out" 2>"$workdir/client.err" &
+client_pid=$!
+for _ in $(seq 1 100); do
+	view_id=$("$viewport" msg --socket "$socket" -t view.query 2>/dev/null \
+		| grep '"title":"viewport-clipboard-test"' \
+		| sed -n 's/.*"id":\([0-9]*\).*/\1/p' | head -1)
+	[ -n "$view_id" ] && break
+	kill -0 "$client_pid" 2>/dev/null || break
+	sleep 0.1
+done
+if [ -z "$view_id" ]; then
+	echo "the X window never became a view" >&2
+	kill "$client_pid" 2>/dev/null
+	wait "$client_pid" 2>/dev/null
+	tail -20 "$log" >&2
+	exit 1
+fi
+"$viewport" msg --socket "$socket" -t view.layout --id "$view_id" \
+	--x 100 --y 100 --width 400 --height 300 >/dev/null 2>&1
+sleep 0.2
+"$viewport" msg --socket "$socket" -t view.focus --id "$view_id" >/dev/null 2>&1
+
+wait "$client_pid"
+x_pasted=$(cat "$workdir/x-paste.out")
 x_status=$?
 if [ "$x_status" -ne 0 ]; then
 	echo "FAIL: the X11 client could not paste — $(cat "$workdir/client.err")" >&2
