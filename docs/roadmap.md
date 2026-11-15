@@ -239,7 +239,7 @@ change. The gradient demo's class hook moves from `html.<class>` to the root
 element so it paints one output. The page-level selection stays as the default
 for outputs that name none.
 
-### 2. An OLED drive-budget guard in the extension loader — planned
+### 2. An OLED drive-budget guard in the extension loader — done
 
 Fold the `bake.mjs verify` methodology (mean linear drive < 8%, fraction over
 half drive < 0.8%, peak 0.40–0.95, fraction over 25% grey < 62%) into the shell:
@@ -248,6 +248,13 @@ canvas, measure the same metrics, and warn on the error stream — or refuse,
 configurably — when a frame blows the budget. Turns a manual headless check into
 a built-in safety net for any future extension. Shares the pixel-sampling code
 with the panel-drive widget below.
+
+Landed: `data/shell/panel.js` measures the four metrics in linear drive and
+rasterises the live wallpaper through an SVG `foreignObject` (computed styles
+inlined property by property — `cssText` is empty in CEF). The guard
+(`wallpaper_oled_guard`: off / warn / refuse, default warn) samples once on apply
+and warns or takes the extension down. Documented in
+`docs/wallpaper-extension.md` ("The OLED drive-budget guard").
 
 ### 3. A live panel-drive bar widget — planned
 

@@ -82,6 +82,44 @@ The extension is applied to the output's own `.desktop` element, so `root` (see
 below) is that element, not the document — a script paints one monitor and need
 not know about the others.
 
+## The OLED drive-budget guard
+
+On an OLED panel, burn-in is exposure — light × time in one place — so a
+wallpaper that holds a bright frame in the same pixels ages them. The shell can
+check an extension against the panel-drive budgets the
+[`wallpapers/oled/`](https://github.com/codebam/nixos) art is built to:
+
+| metric    | meaning                              | budget   |
+|-----------|--------------------------------------|----------|
+| `apl`     | mean linear drive over the frame     | < 8%     |
+| `drive50` | fraction of pixels over half drive   | < 0.8%   |
+| `max`     | brightest pixel (sRGB)               | ≤ 0.95   |
+| `over25`  | fraction over 25% grey (a wash)      | < 62%    |
+
+Drive is measured in **linear** light, not sRGB: sRGB 0.5 is linear 0.214, so a
+frame that looks half-bright is really a fifth of the drive.
+
+`wallpaper_oled_guard` sets what happens when an applied extension is sampled
+and a frame blows a budget:
+
+```json
+{ "wallpaper_oled_guard": "warn" }
+```
+
+- `warn` (the default) — log the offending frame and its metrics; the wallpaper
+  stays up.
+- `refuse` — log it and take the extension down, returning to the ordinary
+  wallpaper.
+- `off` — do not sample.
+
+The sample is a still of the current frame, rasterised through an SVG
+`foreignObject` with the computed styles inlined (the only way to read back what
+CSS painted), at a bounded resolution so the cost stays small. It is taken once
+when the extension is applied, not per frame. An animated wallpaper is measured
+at one moment of its drift; a scene built to the budgets above passes at every
+moment. The measurement lives in `data/shell/panel.js` and is shared with the
+panel-drive bar widget.
+
 ## Writing one
 
 A script registers exactly one wallpaper with `registerWallpaper`:

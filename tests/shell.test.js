@@ -630,6 +630,11 @@ const EXPORTS = ';globalThis.__shell = { views, workspaces, outputs, scrollOffse
   + ' applyWallpaperExtension: typeof applyWallpaperExtension !== "undefined" ? applyWallpaperExtension : undefined,'
   + ' applyOutputWallpaperExtension: typeof applyOutputWallpaperExtension !== "undefined" ? applyOutputWallpaperExtension : undefined,'
   + ' activeWallpaperExtensions: typeof activeWallpaperExtensions !== "undefined" ? activeWallpaperExtensions : undefined,'
+  + ' measureImageData: typeof measureImageData !== "undefined" ? measureImageData : undefined,'
+  + ' oledBudgetViolations: typeof oledBudgetViolations !== "undefined" ? oledBudgetViolations : undefined,'
+  + ' applyWallpaperOledGuard: typeof applyWallpaperOledGuard !== "undefined" ? applyWallpaperOledGuard : undefined,'
+  + ' guardWallpaperExtension: typeof guardWallpaperExtension !== "undefined" ? guardWallpaperExtension : undefined,'
+  + ' handleWallpaperSample: typeof handleWallpaperSample !== "undefined" ? handleWallpaperSample : undefined,'
   /* The initial-config gate and the queue behind it, so a test can put the
      page back in the state a fresh load starts in — before the first config —
      and watch what opens the gate again. That gate is what a throwing
@@ -7167,6 +7172,86 @@ if (mode === 'scrolling') {
 
   /* Back to the default desktop for everything after this. */
   emit({ type: 'config', layout: mode, rules: HARNESS_RULES });
+}
+
+/* --- OLED panel-drive measurement and the guard -------------------------
+ *
+ * measureImageData and oledBudgetViolations are pure: synthetic pixels in,
+ * metrics and budget reasons out. The guard's decision (handleWallpaperSample)
+ * is checked on its own with a measurement handed to it, so warn and refuse are
+ * verified without a real rasteriser. Guarded like the rest: if the shell has
+ * not landed the API the checks fail without throwing.
+ * --------------------------------------------------------------------- */
+{
+  const sh = globalThis.__shell;
+  const measure = sh.measureImageData;
+  const violations = sh.oledBudgetViolations;
+  const setGuard = sh.applyWallpaperOledGuard;
+  const decide = sh.handleWallpaperSample;
+  const hasApi = typeof measure === 'function' && typeof violations === 'function'
+    && typeof setGuard === 'function' && typeof decide === 'function';
+
+  const pixels = (n, r, g, b) => {
+    const d = new Uint8ClampedArray(n * 4);
+    for (let i = 0; i < n; i++) { d[i * 4] = r; d[i * 4 + 1] = g; d[i * 4 + 2] = b; d[i * 4 + 3] = 255; }
+    return d;
+  };
+
+  const black = hasApi ? measure(pixels(100, 0, 0, 0), 10, 10) : null;
+  check('a black frame has zero drive',
+    hasApi && black.apl === 0 && black.drive50 === 0 && black.max === 0);
+  check('a black frame is within budget', hasApi && violations(black).length === 0);
+
+  const white = hasApi ? measure(pixels(100, 255, 255, 255), 10, 10) : null;
+  check('a white frame is full drive',
+    hasApi && white.apl === 1 && white.drive50 === 1 && white.max === 1);
+  check('a white frame blows every budget', hasApi && violations(white).length === 4);
+
+  const mid = hasApi ? measure(pixels(100, 128, 128, 128), 10, 10) : null;
+  check('drive is linear light, not sRGB (0.5 sRGB ~ 0.21 linear)',
+    hasApi && mid.apl > 0.2 && mid.apl < 0.25);
+
+  /* The guard decision: a bright frame warns in warn mode and is taken down in
+     refuse mode; a within-budget frame is left alone. */
+  const out = sh.outputs.get('DP-1');
+  const reg = sh.registerWallpaper;
+  const applyOut = sh.applyOutputWallpaperExtension;
+  const active = sh.activeWallpaperExtensions;
+  const bright = { apl: 0.5, drive50: 0.5, max: 1, over25: 0.9 };
+  const calm = { apl: 0.01, drive50: 0, max: 0.5, over25: 0.05 };
+  const realError = console.error;
+  let logged = [];
+  console.error = (msg) => { logged.push(String(msg)); };
+
+  if (hasApi) {
+    reg('guardprobe', {
+      apply(ctx) { ctx.root.classList.add('guardprobe'); },
+      clear(ctx) { ctx.root.classList.remove('guardprobe'); },
+    });
+    applyOut(out, 'guardprobe', {});
+  }
+
+  logged = [];
+  if (hasApi) { setGuard('warn'); decide(out, 'guardprobe', bright); }
+  check('warn mode logs a frame over budget',
+    hasApi && logged.some((m) => m.includes('OLED drive budget')));
+  check('warn mode keeps the extension up', hasApi && active.get('DP-1') === 'guardprobe');
+
+  logged = [];
+  if (hasApi) { setGuard('refuse'); decide(out, 'guardprobe', bright); }
+  check('refuse mode logs the refusal',
+    hasApi && logged.some((m) => m.includes('taking it down')));
+  check('refuse mode takes the extension down', hasApi && !active.has('DP-1'));
+
+  /* A within-budget frame is left alone even in refuse mode. */
+  if (hasApi) { applyOut(out, 'guardprobe', {}); setGuard('refuse'); }
+  logged = [];
+  if (hasApi) decide(out, 'guardprobe', calm);
+  check('a within-budget frame is not flagged', hasApi && logged.length === 0);
+  check('and stays up', hasApi && active.get('DP-1') === 'guardprobe');
+
+  console.error = realError;
+  if (hasApi) { setGuard('warn'); applyOut(out, null); }
 }
 
 /* --- the settings panel ------------------------------------------------

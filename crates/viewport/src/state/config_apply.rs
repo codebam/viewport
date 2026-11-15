@@ -90,6 +90,9 @@ impl ViewportState {
             overrides.sort_by(|a, b| a.name.cmp(&b.name));
             self.config.output_wallpapers = overrides;
         }
+        if let Some(mode) = file.wallpaper_oled_guard {
+            self.config.wallpaper_oled_guard = Some(mode);
+        }
         if let Some(layout) = file.layout {
             // Checked here for the same reason tiling_mode is, below: this is
             // where the name can be rejected while the file it came from is

@@ -112,6 +112,13 @@
     "demo: colors (array), angle (degrees), duration (seconds per loop).",
     "  \"wallpaper_options\": { \"duration\": 24 }"
   ],
+  "_wallpaper_oled_guard": [
+    "Check an applied wallpaper extension against the OLED panel-drive budgets",
+    "(mean drive < 8%, pixels over half drive < 0.8%, peak <= 0.95, wash < 62%).",
+    "warn (default) logs a frame that blows them; refuse also takes it down;",
+    "off does not sample. See docs/wallpaper-extension.md."
+  ],
+  "wallpaper_oled_guard": "warn",
 
   "_tiling_mode": [
     "How the tiling tree arranges itself. Only meaningful with",

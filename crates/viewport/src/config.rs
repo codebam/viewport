@@ -867,6 +867,12 @@ pub struct File {
     /// Options handed to the selected wallpaper extension untouched. The
     /// compositor never reads it; the script does.
     pub wallpaper_options: Option<serde_json::Value>,
+    /// The OLED drive-budget guard for wallpaper extensions: `off`, `warn`
+    /// (the default) or `refuse`. When an extension is applied the shell
+    /// samples it and measures the panel-drive budgets; `warn` logs a frame
+    /// that blows them, `refuse` also takes the extension down. The shell does
+    /// the measuring; the compositor only carries the mode.
+    pub wallpaper_oled_guard: Option<String>,
     /// Which engine draws the shell: `wpe`, `webkitgtk`, `chromium`, `cef`,
     /// `servo` or `servoshell`.
     /// See `crate::shell_backend`.
@@ -3751,6 +3757,16 @@ mod tests {
         // An output that names none follows the page-level selection.
         let dp5 = file.outputs.get("DP-5").expect("DP-5");
         assert_eq!(dp5.wallpaper_extension, None);
+    }
+
+    #[test]
+    fn the_wallpaper_oled_guard_mode_parses() {
+        let file: File =
+            serde_json::from_str(r#"{"wallpaper_oled_guard":"refuse"}"#).expect("should parse");
+        assert_eq!(file.wallpaper_oled_guard.as_deref(), Some("refuse"));
+        // Absent is the shell's default (warn), carried as absent.
+        let absent: File = serde_json::from_str("{}").expect("should parse");
+        assert_eq!(absent.wallpaper_oled_guard, None);
     }
 
     #[test]

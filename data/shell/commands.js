@@ -869,6 +869,7 @@ function applyOutputWallpaperExtension(output, name, options) {
       try {
         descriptor.apply({ root, options: options ?? {} });
         activeWallpaperExtensions.set(output.name, wanted);
+        guardWallpaperExtension(output, wanted);
       } catch (error) {
         console.error(`wallpaper extension ${wanted}: ${error?.message ?? error}`);
       }
@@ -937,6 +938,43 @@ function clearOutputWallpaperExtension(output) {
     console.error(`wallpaper extension: ${error?.message ?? error}`);
   }
   activeWallpaperExtensions.delete(output.name);
+}
+
+/* The OLED drive-budget guard: "off", "warn" (default) or "refuse". When a
+ * wallpaper extension goes up it is sampled once and measured against the
+ * panel-drive budgets (panel.js); "warn" logs a frame that blows them, "refuse"
+ * also takes the extension down. Sampling is async and bounded, so it never
+ * blocks the apply. */
+let wallpaperOledGuard = 'warn';
+function applyWallpaperOledGuard(value) {
+  wallpaperOledGuard = value === 'off' || value === 'refuse' ? value : 'warn';
+}
+
+/* The decision once a sample is in: warn, or refuse and take the extension
+ * down. Split from the sampling so it can be checked on its own. */
+function handleWallpaperSample(output, name, m) {
+  /* The extension may have been taken down while the sample was in flight. */
+  if (activeWallpaperExtensions.get(output.name) !== name) return;
+  const violations = oledBudgetViolations(m);
+  if (violations.length === 0) return;
+  const detail = violations.join('; ');
+  if (wallpaperOledGuard === 'refuse') {
+    console.error(`wallpaper extension ${name} on ${output.name} exceeds the OLED drive budget (${detail}); taking it down`);
+    applyOutputWallpaperExtension(output, null);
+  } else {
+    console.error(`wallpaper extension ${name} on ${output.name} exceeds the OLED drive budget (${detail})`);
+  }
+}
+
+function guardWallpaperExtension(output, name) {
+  if (wallpaperOledGuard === 'off') return Promise.resolve();
+  if (!activeWallpaperExtensions.has(output.name)) return Promise.resolve();
+  if (typeof sampleWallpaper !== 'function') return Promise.resolve();
+  return sampleWallpaper(output.el)
+    .then((m) => handleWallpaperSample(output, name, m))
+    .catch((error) => {
+      console.error(`wallpaper extension ${name}: could not measure panel drive: ${error?.message ?? error}`);
+    });
 }
 
 function finishLayoutConfig(message, extensionsLoaded) {
@@ -1056,6 +1094,9 @@ function dispatchViewport(message) {
           });
         }
       }
+      /* The OLED drive-budget guard mode, read before the extension is applied
+         so the first sample already honours it. */
+      applyWallpaperOledGuard(message.wallpaper_oled_guard);
       /* Wallpaper extensions load the way widget extensions do: the manifest
          script for each name is fetched before the selected one is applied.
          The extension draws the desktop background in the page, so it works

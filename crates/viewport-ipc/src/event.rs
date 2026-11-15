@@ -897,6 +897,13 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub output_wallpapers: Vec<OutputWallpaper>,
 
+    /// The OLED drive-budget guard mode for wallpaper extensions: `off`,
+    /// `warn` (the default) or `refuse`. The shell samples an applied extension
+    /// and measures the panel-drive budgets; the compositor only carries the
+    /// mode. Absent is `warn`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wallpaper_oled_guard: Option<String>,
+
     /// Whether the on-screen keyboard may raise itself, and whether
     /// `Mod4+Shift+k` still works if not: `"auto"`, `"manual"` or `"off"`.
     ///
@@ -2236,6 +2243,7 @@ mod tests {
             wallpaper_extension: None,
             wallpaper_options: None,
             output_wallpapers: Vec::new(),
+            wallpaper_oled_guard: None,
             logo: true,
             tutorial: false,
             binds: Vec::new(),
@@ -2631,6 +2639,7 @@ mod tests {
             wallpaper_extension: None,
             wallpaper_options: None,
             output_wallpapers: Vec::new(),
+            wallpaper_oled_guard: None,
             logo: true,
             tutorial: true,
             binds: Vec::new(),
@@ -2706,6 +2715,7 @@ mod tests {
             wallpaper_extension: None,
             wallpaper_options: None,
             output_wallpapers: Vec::new(),
+            wallpaper_oled_guard: None,
             logo: true,
             tutorial: true,
             binds: Vec::new(),
@@ -2778,6 +2788,7 @@ mod tests {
             wallpaper_extension: None,
             wallpaper_options: None,
             output_wallpapers: Vec::new(),
+            wallpaper_oled_guard: None,
             logo: true,
             tutorial: true,
             binds: Vec::new(),
@@ -2827,6 +2838,7 @@ mod tests {
             wallpaper_extension: None,
             wallpaper_options: None,
             output_wallpapers: Vec::new(),
+            wallpaper_oled_guard: None,
             logo: false,
             tutorial: false,
             binds: Vec::new(),
@@ -3002,6 +3014,7 @@ mod tests {
                 wallpaper_extension: None,
                 wallpaper_options: None,
                 output_wallpapers: Vec::new(),
+                wallpaper_oled_guard: None,
                 logo: false,
                 tutorial: false,
                 binds: Vec::new(),
