@@ -287,12 +287,20 @@ gradient demo declares `angle` and `duration`. Widget extensions already carry
 per-instance options in `bar_items`; drawing those as panel controls is the same
 schema pattern left as a follow-up. Documented in `docs/wallpaper-extension.md`.
 
-### 5. A notification extension hook — planned
+### 5. A notification extension hook — done
 
 Complete the extension trio (layout, widget, wallpaper) with notifications: a
 `notification_extensions` manifest and a `registerNotification` API letting a
 script draw or filter notification popups the same way the others draw their
 piece. Mirrors the existing loader / registry / lifecycle shape.
+
+Landed: the manifest + selection ride the config path (`notification_extensions`
+/ `notification_extension`), the shell loads and registers descriptors
+(`registerNotification`, validated), and the selected extension's `filter`
+(return false to keep a popup off screen) and `render` (decorate the popup the
+shell built) run per notification, both contained so a bad script cannot silence
+the desktop. The shell keeps the popup, its actions and the history. Documented
+in `docs/notification-extension.md`, demo at `examples/notifications/badges.js`.
 
 ### 6. An idle dim ramp — planned
 

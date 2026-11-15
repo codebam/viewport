@@ -119,6 +119,18 @@
     "off does not sample. See docs/wallpaper-extension.md."
   ],
   "wallpaper_oled_guard": "warn",
+  "_notification_extensions": [
+    "User notification scripts, keyed by the name they register with",
+    "registerNotification. A script may filter a popup off screen and/or",
+    "decorate the popup the shell built. See docs/notification-extension.md.",
+    "  \"notification_extensions\": { \"badges\": \"notifications/badges.js\" }"
+  ],
+  "notification_extensions": {},
+  "_notification_extension": [
+    "The name of a notification_extensions script to draw or filter popups",
+    "with. Empty or absent uses the shell's own popups."
+  ],
+  "notification_extension": "",
 
   "_tiling_mode": [
     "How the tiling tree arranges itself. Only meaningful with",

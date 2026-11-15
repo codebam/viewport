@@ -461,6 +461,38 @@ function registerWallpaper(name, descriptor) {
   if (wallpaperRegistry.has(name)) throw new Error(`wallpaper ${name} is already registered`);
   wallpaperRegistry.set(name, Object.freeze({ ...descriptor, name }));
 }
+
+/* Notification extensions: the fourth member of the extension family (layout,
+ * widget, wallpaper, notification). A script registers one descriptor that may
+ * `filter` a notification (return false to keep its popup off screen) and/or
+ * `render` it (customize the popup element the shell built). Both are optional,
+ * but a descriptor with neither does nothing and is refused. The popup itself
+ * is still the shell's — the extension decorates or suppresses it, it does not
+ * replace the notification machinery. */
+const notificationRegistry = new Map();
+const notificationSources = new Map();
+
+function validNotificationDescriptor(name, descriptor) {
+  return typeof name === 'string' && /^[A-Za-z0-9_-]+$/.test(name)
+    && descriptor
+    && (typeof descriptor.filter === 'function' || typeof descriptor.render === 'function');
+}
+
+function registerNotification(name, descriptor) {
+  if (!validNotificationDescriptor(name, descriptor)) {
+    throw new TypeError('registerNotification requires a valid name and a filter or render function');
+  }
+  const script = document.currentScript;
+  if (script?.dataset?.notificationName) {
+    if (script.dataset.notificationName !== name
+        || Number(script.dataset.notificationGeneration) !== notificationLoadGeneration) {
+      throw new Error(`stale or mismatched notification registration: ${name}`);
+    }
+  }
+  if (notificationRegistry.has(name)) throw new Error(`notification ${name} is already registered`);
+  notificationRegistry.set(name, Object.freeze({ ...descriptor, name }));
+}
+
 let layoutMode = 'tiling';
 /* How the tiling tree arranges itself: 'manual' is the splits you make, and
  * 'master-stack', 'spiral', 'bsp' and 'grid' derive the shape from which

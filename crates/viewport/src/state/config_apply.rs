@@ -93,6 +93,18 @@ impl ViewportState {
         if let Some(mode) = file.wallpaper_oled_guard {
             self.config.wallpaper_oled_guard = Some(mode);
         }
+        if let Some(extensions) = file.notification_extensions {
+            let mut extensions: Vec<_> = extensions
+                .into_iter()
+                .map(|(name, url)| viewport_ipc::event::NotificationExtension { name, url })
+                .collect();
+            extensions.sort_by(|a, b| a.name.cmp(&b.name));
+            self.config.notification_extensions = extensions;
+        }
+        if let Some(name) = file.notification_extension {
+            self.config.notification_extension =
+                if name.trim().is_empty() { None } else { Some(name) };
+        }
         if let Some(layout) = file.layout {
             // Checked here for the same reason tiling_mode is, below: this is
             // where the name can be rejected while the file it came from is

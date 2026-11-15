@@ -1823,6 +1823,8 @@ impl ViewportState {
                 wallpaper_options: None,
                 output_wallpapers: Vec::new(),
                 wallpaper_oled_guard: None,
+                notification_extensions: Vec::new(),
+                notification_extension: None,
                 // Both true, as in src/main.c:69 — "the empty desktop explains
                 // itself until told not to". These set no-logo and no-tutorial
                 // on the document when false, and on a desktop with no windows

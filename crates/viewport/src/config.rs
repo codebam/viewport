@@ -911,6 +911,13 @@ pub struct File {
     /// Relative paths are resolved beside this config file by [`load`]. The
     /// selected one is named by [`Self::wallpaper_extension`].
     pub wallpaper_extensions: Option<std::collections::HashMap<String, String>>,
+    /// User notification scripts, keyed by the name they register with the
+    /// shell. Relative paths are resolved beside this config file by [`load`].
+    /// The selected one is named by [`Self::notification_extension`].
+    pub notification_extensions: Option<std::collections::HashMap<String, String>>,
+    /// The name of a [`Self::notification_extensions`] script to draw or filter
+    /// notification popups with. Absent means the shell's own popups.
+    pub notification_extension: Option<String>,
     pub logo: Option<bool>,
     pub tutorial: Option<bool>,
     pub bar: Option<String>,
@@ -1212,6 +1219,18 @@ pub fn load(path: &Path) -> anyhow::Result<Option<File>> {
             );
             *value = layout_extension_url(value, path).map_err(|e| {
                 anyhow::anyhow!("{}: wallpaper extension {name:?}: {e}", path.display())
+            })?;
+        }
+    }
+    if let Some(extensions) = file.notification_extensions.as_mut() {
+        for (name, value) in extensions {
+            anyhow::ensure!(
+                valid_layout_name(name),
+                "{}: invalid notification extension name {name:?}",
+                path.display()
+            );
+            *value = layout_extension_url(value, path).map_err(|e| {
+                anyhow::anyhow!("{}: notification extension {name:?}: {e}", path.display())
             })?;
         }
     }
@@ -3732,6 +3751,33 @@ mod tests {
         assert!(url.ends_with("/my%20wallpapers/gradient.js"), "{url}");
         assert_eq!(file.wallpaper_extension.as_deref(), Some("gradient"));
         assert_eq!(file.wallpaper_options.expect("options")["duration"], 24);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn notification_extension_paths_resolve_beside_the_config() {
+        let dir = std::env::temp_dir().join(format!(
+            "viewport-notification-extension-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        std::fs::write(
+            dir.join("badges.js"),
+            "registerNotification('badges', { render() {} })",
+        )
+        .expect("script");
+        let path = dir.join("config.json");
+        std::fs::write(
+            &path,
+            r#"{"notification_extensions":{"badges":"badges.js"},"notification_extension":"badges"}"#,
+        )
+        .expect("config");
+
+        let file = load(&path).expect("valid config").expect("present");
+        let url = &file.notification_extensions.expect("manifest")["badges"];
+        assert!(url.starts_with("file:///"), "{url}");
+        assert!(url.ends_with("/badges.js"), "{url}");
+        assert_eq!(file.notification_extension.as_deref(), Some("badges"));
         let _ = std::fs::remove_dir_all(dir);
     }
 

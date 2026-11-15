@@ -829,6 +829,84 @@ function loadWallpaperExtensions(entries, generation) {
   })();
 }
 
+/* Notification extensions load the way the wallpaper ones do: a manifest of
+ * {name, url}, each script fetched and registering its descriptor, a generation
+ * guard so a stale load cannot register over a newer config. The selected
+ * extension's filter/render are then called per notification in session.js. */
+let notificationLoadGeneration = 0;
+
+function loadNotificationScript(entry, generation) {
+  return new Promise((resolve, reject) => {
+    if (!entry || typeof entry.name !== 'string' || typeof entry.url !== 'string') {
+      reject(new Error('invalid notification extension manifest entry'));
+      return;
+    }
+    if (notificationSources.get(entry.name) === entry.url) {
+      resolve();
+      return;
+    }
+    if (notificationRegistry.has(entry.name)) {
+      reject(new Error(`notification ${entry.name} was already registered by another script`));
+      return;
+    }
+    const script = document.createElement('script');
+    script.src = entry.url;
+    script.async = false;
+    script.dataset.notificationName = entry.name;
+    script.dataset.notificationGeneration = String(generation);
+    script.onload = () => {
+      if (generation !== notificationLoadGeneration) {
+        reject(new Error(`stale load of ${entry.url}`));
+        return;
+      }
+      if (!notificationRegistry.has(entry.name)) {
+        reject(new Error(`${entry.url} did not register notification ${entry.name}`));
+        return;
+      }
+      notificationSources.set(entry.name, entry.url);
+      resolve();
+    };
+    script.onerror = () => reject(new Error(`could not load ${entry.url}`));
+    document.head.append(script);
+  });
+}
+
+function loadNotificationExtensions(entries, generation) {
+  const manifest = Array.isArray(entries) ? entries : [];
+  const pending = manifest.filter((entry) => notificationSources.get(entry?.name) !== entry?.url);
+  if (pending.length === 0) return null;
+  return (async () => {
+    let ok = true;
+    for (const entry of pending) {
+      try {
+        await loadNotificationScript(entry, generation);
+      } catch (error) {
+        ok = false;
+        console.error(`notification extension: ${error.message}`);
+      }
+    }
+    return ok;
+  })();
+}
+
+/* Which notification extension is selected, or null for the shell's own
+ * popups. Unlike a wallpaper there is nothing to apply now: the descriptor's
+ * filter/render are called per notification as it arrives. */
+let activeNotificationExtension = null;
+function applyNotificationExtension(name) {
+  const wanted = typeof name === 'string' && name.trim() !== '' ? name.trim() : null;
+  if (wanted !== null && !notificationRegistry.has(wanted)) {
+    console.error(`notification extension: ${wanted} is not registered`);
+  }
+  activeNotificationExtension = wanted;
+}
+
+/* The selected notification descriptor, or null. Read per notification. */
+function activeNotificationDescriptor() {
+  return activeNotificationExtension === null
+    ? null : notificationRegistry.get(activeNotificationExtension) ?? null;
+}
+
 /* Which wallpaper extension is drawing each output's background, keyed by
  * output name. The extension renders in the page on that output's own
  * `.desktop`, so it is renderer-agnostic (Vulkan included) and each monitor can
@@ -1117,6 +1195,26 @@ function dispatchViewport(message) {
           loading.then(applySelected);
         } else {
           applySelected();
+        }
+      }
+      /* Notification extensions: the manifest loads, then the selected one is
+         named. Its filter/render run per notification in session.js, so there
+         is nothing to draw here — only the selection to record. */
+      {
+        const generation = ++notificationLoadGeneration;
+        const loading = loadNotificationExtensions(message.notification_extensions, generation);
+        const selectNotification = () => {
+          if (generation !== notificationLoadGeneration) return;
+          try {
+            applyNotificationExtension(message.notification_extension);
+          } catch (error) {
+            console.error(`viewport: notification: ${error?.message ?? error}`);
+          }
+        };
+        if (loading) {
+          loading.then(selectNotification);
+        } else {
+          selectNotification();
         }
       }
       /* How the clock is written, and with it the calendar under it: the

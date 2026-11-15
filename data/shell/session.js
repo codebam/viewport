@@ -522,6 +522,22 @@ function showNotification(message) {
   const hostEl = output?.notificationsEl;
   if (!hostEl) return; // no outputs yet; a later layout will not replay this
 
+  /* A notification extension may keep this popup off screen. The notification
+     still reaches the centre and the history — only the popup is filtered. A
+     throw is contained and the popup shows, so a bad filter cannot silence the
+     desktop. */
+  const notifExt = typeof activeNotificationDescriptor === 'function'
+    ? activeNotificationDescriptor() : null;
+  if (notifExt && typeof notifExt.filter === 'function') {
+    let show = true;
+    try {
+      show = notifExt.filter(message) !== false;
+    } catch (error) {
+      console.error(`notification extension filter: ${error?.message ?? error}`);
+    }
+    if (!show) return;
+  }
+
   const el = document.createElement('div');
   el.className = 'notification urgency-' + (message.urgency ?? 1);
 
@@ -588,6 +604,18 @@ function showNotification(message) {
     }
     dropNotification(message.id, false);
   });
+
+  /* A notification extension may decorate the popup the shell built — add a
+     badge, recolour it, attach its own controls. It is handed the element and
+     the notification; a throw leaves the default popup intact rather than
+     taking the notification down with it. */
+  if (notifExt && typeof notifExt.render === 'function') {
+    try {
+      notifExt.render({ notification: message, el });
+    } catch (error) {
+      console.error(`notification extension render: ${error?.message ?? error}`);
+    }
+  }
 
   hostEl.append(el);
   animateNotificationIn(el);

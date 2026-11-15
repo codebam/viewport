@@ -699,6 +699,15 @@ pub struct Config {
     /// only validates the name and resolves the path.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub wallpaper_extensions: Vec<WallpaperExtension>,
+    /// User notification scripts, resolved to URLs the shell can load, the same
+    /// shape as the wallpaper manifest. The selected one is named by
+    /// `notification_extension`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notification_extensions: Vec<NotificationExtension>,
+    /// The name of a `notification_extensions` script to draw or filter
+    /// notification popups with. Absent means the shell's own popups.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notification_extension: Option<String>,
     pub logo: bool,
     pub tutorial: bool,
 
@@ -1059,6 +1068,14 @@ pub struct OutputWallpaper {
     pub extension: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub options: Option<serde_json::Value>,
+}
+
+/// A user notification script accepted by the compositor, with its local path
+/// resolved to a URL the shell can load directly.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NotificationExtension {
+    pub name: String,
+    pub url: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2244,6 +2261,8 @@ mod tests {
             wallpaper_options: None,
             output_wallpapers: Vec::new(),
             wallpaper_oled_guard: None,
+            notification_extensions: Vec::new(),
+            notification_extension: None,
             logo: true,
             tutorial: false,
             binds: Vec::new(),
@@ -2376,6 +2395,32 @@ mod tests {
         // absent options key is omitted rather than null.
         assert_eq!(value["output_wallpapers"][1]["extension"], "");
         assert!(value["output_wallpapers"][1].get("options").is_none());
+    }
+
+    #[test]
+    fn notification_extensions_are_carried_to_the_shell() {
+        let mut config: Config = serde_json::from_value(serde_json::json!({
+            "layout": "tiling",
+            "logo": true,
+            "tutorial": true
+        }))
+        .expect("minimal config");
+        let bare = json(&Event::Config(Box::new(config.clone())));
+        assert!(bare.get("notification_extensions").is_none());
+        assert!(bare.get("notification_extension").is_none());
+
+        config.notification_extensions.push(NotificationExtension {
+            name: "badges".into(),
+            url: "file:///home/me/badges.js".into(),
+        });
+        config.notification_extension = Some("badges".into());
+        let value = json(&Event::Config(Box::new(config)));
+        assert_eq!(value["notification_extensions"][0]["name"], "badges");
+        assert_eq!(
+            value["notification_extensions"][0]["url"],
+            "file:///home/me/badges.js"
+        );
+        assert_eq!(value["notification_extension"], "badges");
     }
 
     #[test]
@@ -2640,6 +2685,8 @@ mod tests {
             wallpaper_options: None,
             output_wallpapers: Vec::new(),
             wallpaper_oled_guard: None,
+            notification_extensions: Vec::new(),
+            notification_extension: None,
             logo: true,
             tutorial: true,
             binds: Vec::new(),
@@ -2716,6 +2763,8 @@ mod tests {
             wallpaper_options: None,
             output_wallpapers: Vec::new(),
             wallpaper_oled_guard: None,
+            notification_extensions: Vec::new(),
+            notification_extension: None,
             logo: true,
             tutorial: true,
             binds: Vec::new(),
@@ -2789,6 +2838,8 @@ mod tests {
             wallpaper_options: None,
             output_wallpapers: Vec::new(),
             wallpaper_oled_guard: None,
+            notification_extensions: Vec::new(),
+            notification_extension: None,
             logo: true,
             tutorial: true,
             binds: Vec::new(),
@@ -2839,6 +2890,8 @@ mod tests {
             wallpaper_options: None,
             output_wallpapers: Vec::new(),
             wallpaper_oled_guard: None,
+            notification_extensions: Vec::new(),
+            notification_extension: None,
             logo: false,
             tutorial: false,
             binds: Vec::new(),
@@ -3015,6 +3068,8 @@ mod tests {
                 wallpaper_options: None,
                 output_wallpapers: Vec::new(),
                 wallpaper_oled_guard: None,
+                notification_extensions: Vec::new(),
+                notification_extension: None,
                 logo: false,
                 tutorial: false,
                 binds: Vec::new(),

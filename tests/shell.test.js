@@ -638,6 +638,12 @@ const EXPORTS = ';globalThis.__shell = { views, workspaces, outputs, scrollOffse
   + ' syncPanelWidget: typeof syncPanelWidget !== "undefined" ? syncPanelWidget : undefined,'
   + ' panelWidgetOutputs: typeof panelWidgetOutputs !== "undefined" ? panelWidgetOutputs : undefined,'
   + ' drawPanelReading: typeof drawPanelReading !== "undefined" ? drawPanelReading : undefined,'
+  + ' registerNotification: typeof registerNotification !== "undefined" ? registerNotification : undefined,'
+  + ' notificationRegistry: typeof notificationRegistry !== "undefined" ? notificationRegistry : undefined,'
+  + ' applyNotificationExtension: typeof applyNotificationExtension !== "undefined" ? applyNotificationExtension : undefined,'
+  + ' activeNotificationDescriptor: typeof activeNotificationDescriptor !== "undefined" ? activeNotificationDescriptor : undefined,'
+  + ' showNotification: typeof showNotification !== "undefined" ? showNotification : undefined,'
+  + ' notificationsMap: typeof notifications !== "undefined" ? notifications : undefined,'
   /* The initial-config gate and the queue behind it, so a test can put the
      page back in the state a fresh load starts in — before the first config —
      and watch what opens the gate again. That gate is what a throwing
@@ -7380,6 +7386,89 @@ if (mode === 'scrolling') {
     hasApi && controls('duration').length === 0);
   emit({ type: 'shell.command', command: 'settings', args: [] });
   emit({ type: 'config', layout: mode, rules: HARNESS_RULES });
+}
+
+/* --- notification extensions -------------------------------------------
+ *
+ * The fourth extension family member: a script registers a descriptor that may
+ * filter a notification's popup off screen and/or render (decorate) the popup
+ * the shell built. Registration is validated; the filter and render run per
+ * notification; a throw is contained so a bad extension cannot silence the
+ * desktop or take a popup down.
+ * --------------------------------------------------------------------- */
+{
+  const sh = globalThis.__shell;
+  const reg = sh.registerNotification;
+  const registry = sh.notificationRegistry;
+  const select = sh.applyNotificationExtension;
+  const active = sh.activeNotificationDescriptor;
+  const hasApi = typeof reg === 'function' && registry instanceof Map
+    && typeof select === 'function' && typeof active === 'function';
+  const throws = (fn) => { try { fn(); return false; } catch (_) { return true; } };
+  const strip = () => sh.outputs.get('DP-1').notificationsEl;
+  const clearPopups = () => {
+    if (sh.notificationsMap) sh.notificationsMap.clear();
+    strip().replaceChildren();
+  };
+
+  const seen = { filtered: [], rendered: [] };
+  let registered = false;
+  if (hasApi) {
+    try {
+      reg('notifprobe', {
+        filter(n) { seen.filtered.push(n.summary); return n.summary !== 'hide'; },
+        render({ notification, el }) { seen.rendered.push(notification.summary); el.classList.add('notif-probe'); },
+      });
+      registered = registry.has('notifprobe');
+    } catch (_) { /* reported below */ }
+  }
+  check('a notification descriptor with filter and render registers', registered);
+  check('a descriptor with neither filter nor render is rejected',
+    hasApi && throws(() => reg('badnotif', {})));
+  check('an invalid notification name is rejected',
+    hasApi && throws(() => reg('bad name', { render() {} })));
+  check('a duplicate notification name is rejected',
+    hasApi && throws(() => reg('notifprobe', { render() {} })));
+
+  clearPopups();
+  if (hasApi) select('notifprobe');
+  check('selecting names the active descriptor', hasApi && active()?.name === 'notifprobe');
+
+  emit({ type: 'notification.add', id: 900, app_name: 'test', summary: 'show',
+    body: '', urgency: 1, timeout: 0, actions: [] });
+  check('a notification passing the filter is drawn', hasApi && strip().children.length === 1);
+  check('render decorated the popup', hasApi && strip().children[0]?._classes.has('notif-probe'));
+  check('filter saw the notification', hasApi && seen.filtered.includes('show'));
+  check('render saw the notification', hasApi && seen.rendered.includes('show'));
+
+  emit({ type: 'notification.add', id: 901, app_name: 'test', summary: 'hide',
+    body: '', urgency: 1, timeout: 0, actions: [] });
+  check('a filtered notification is not drawn', hasApi && strip().children.length === 1);
+  check('filter still saw the hidden one', hasApi && seen.filtered.includes('hide'));
+
+  if (hasApi) select(null);
+  check('deselecting clears the active descriptor', hasApi && active() === null);
+  emit({ type: 'notification.add', id: 902, app_name: 'test', summary: 'hide',
+    body: '', urgency: 1, timeout: 0, actions: [] });
+  check('with no extension the popup shows again', hasApi && strip().children.length === 2);
+
+  /* A throwing render leaves the default popup intact. */
+  if (hasApi) {
+    reg('notifboom', { render() { throw new Error('boom'); } });
+    select('notifboom');
+  }
+  clearPopups();
+  const realError = console.error;
+  let logged = false;
+  console.error = () => { logged = true; };
+  emit({ type: 'notification.add', id: 903, app_name: 'test', summary: 'boom',
+    body: '', urgency: 1, timeout: 0, actions: [] });
+  console.error = realError;
+  check('a throwing render does not take the popup down', hasApi && strip().children.length === 1);
+  check('and logs the failure', hasApi && logged);
+
+  clearPopups();
+  if (hasApi) select(null);
 }
 
 /* --- the settings panel ------------------------------------------------
