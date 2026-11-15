@@ -73,6 +73,23 @@ impl ViewportState {
         if let Some(options) = file.wallpaper_options {
             self.config.wallpaper_options = Some(options);
         }
+        {
+            // Per-output wallpaper overrides: one entry per output that names
+            // its own extension. An output absent here follows the page-level
+            // selection in the shell.
+            let mut overrides: Vec<_> = file
+                .outputs
+                .iter()
+                .filter(|(_, o)| o.wallpaper_extension.is_some())
+                .map(|(name, o)| viewport_ipc::event::OutputWallpaper {
+                    name: name.clone(),
+                    extension: o.wallpaper_extension.clone(),
+                    options: o.wallpaper_options.clone(),
+                })
+                .collect();
+            overrides.sort_by(|a, b| a.name.cmp(&b.name));
+            self.config.output_wallpapers = overrides;
+        }
         if let Some(layout) = file.layout {
             // Checked here for the same reason tiling_mode is, below: this is
             // where the name can be rejected while the file it came from is

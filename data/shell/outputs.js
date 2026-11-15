@@ -148,6 +148,11 @@ function syncOutputs(list) {
           && typeof applyWallpaperMediaTo === 'function') {
         applyWallpaperMediaTo(output.wallpaperEl, wallpaperVideoSrc);
       }
+      /* A wallpaper extension selected before this monitor arrived belongs on
+         it too — the page-level default or this output's own override. */
+      if (typeof applyStoredWallpaperExtension === 'function') {
+        applyStoredWallpaperExtension(output);
+      }
       output.workspace = startingWorkspace(info.name);
       if (activeOutput === null) activeOutput = info.name;
     }
@@ -208,6 +213,10 @@ function syncOutputs(list) {
     if (output.wallpaperEl
         && typeof applyWallpaperMediaTo === 'function') {
       applyWallpaperMediaTo(output.wallpaperEl, null);
+    }
+    /* The wallpaper extension this output was running comes down with it. */
+    if (typeof clearOutputWallpaperExtension === 'function') {
+      clearOutputWallpaperExtension(output);
     }
     /* A calendar hanging off this output's clock has to come down with it.
        closeCalendarOff is otherwise only reached from the per-output relayout

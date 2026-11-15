@@ -890,6 +890,13 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wallpaper_options: Option<serde_json::Value>,
 
+    /// Per-output wallpaper-extension overrides, one entry per output that
+    /// names its own. An output absent from this list follows the page-level
+    /// `wallpaper_extension`; an entry with an empty `extension` is no
+    /// extension (the ordinary picture wallpaper shows on that output).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub output_wallpapers: Vec<OutputWallpaper>,
+
     /// Whether the on-screen keyboard may raise itself, and whether
     /// `Mod4+Shift+k` still works if not: `"auto"`, `"manual"` or `"off"`.
     ///
@@ -1034,6 +1041,17 @@ pub struct WidgetExtension {
 pub struct WallpaperExtension {
     pub name: String,
     pub url: String,
+}
+
+/// One output's wallpaper-extension override. `extension` absent follows the
+/// page-level selection; an empty string is no extension on this output.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OutputWallpaper {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extension: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub options: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2217,6 +2235,7 @@ mod tests {
             wallpaper_extensions: Vec::new(),
             wallpaper_extension: None,
             wallpaper_options: None,
+            output_wallpapers: Vec::new(),
             logo: true,
             tutorial: false,
             binds: Vec::new(),
@@ -2317,6 +2336,38 @@ mod tests {
             value["widget_extensions"][0]["url"],
             "file:///home/me/battery.js"
         );
+    }
+
+    #[test]
+    fn per_output_wallpapers_are_carried_to_the_shell() {
+        let mut config: Config = serde_json::from_value(serde_json::json!({
+            "layout": "tiling",
+            "logo": true,
+            "tutorial": true
+        }))
+        .expect("minimal config");
+        // Absent is omitted, not null: a desk with no overrides carries nothing.
+        let bare = json(&Event::Config(Box::new(config.clone())));
+        assert!(bare.get("output_wallpapers").is_none());
+
+        config.output_wallpapers.push(OutputWallpaper {
+            name: "DP-1".into(),
+            extension: Some("gradient".into()),
+            options: Some(serde_json::json!({ "duration": 12 })),
+        });
+        config.output_wallpapers.push(OutputWallpaper {
+            name: "DP-3".into(),
+            extension: Some("".into()),
+            options: None,
+        });
+        let value = json(&Event::Config(Box::new(config)));
+        assert_eq!(value["output_wallpapers"][0]["name"], "DP-1");
+        assert_eq!(value["output_wallpapers"][0]["extension"], "gradient");
+        assert_eq!(value["output_wallpapers"][0]["options"]["duration"], 12);
+        // An empty extension is carried (no extension on that output), and an
+        // absent options key is omitted rather than null.
+        assert_eq!(value["output_wallpapers"][1]["extension"], "");
+        assert!(value["output_wallpapers"][1].get("options").is_none());
     }
 
     #[test]
@@ -2579,6 +2630,7 @@ mod tests {
             wallpaper_extensions: Vec::new(),
             wallpaper_extension: None,
             wallpaper_options: None,
+            output_wallpapers: Vec::new(),
             logo: true,
             tutorial: true,
             binds: Vec::new(),
@@ -2653,6 +2705,7 @@ mod tests {
             wallpaper_extensions: Vec::new(),
             wallpaper_extension: None,
             wallpaper_options: None,
+            output_wallpapers: Vec::new(),
             logo: true,
             tutorial: true,
             binds: Vec::new(),
@@ -2724,6 +2777,7 @@ mod tests {
             wallpaper_extensions: Vec::new(),
             wallpaper_extension: None,
             wallpaper_options: None,
+            output_wallpapers: Vec::new(),
             logo: true,
             tutorial: true,
             binds: Vec::new(),
@@ -2772,6 +2826,7 @@ mod tests {
             wallpaper_extensions: Vec::new(),
             wallpaper_extension: None,
             wallpaper_options: None,
+            output_wallpapers: Vec::new(),
             logo: false,
             tutorial: false,
             binds: Vec::new(),
@@ -2946,6 +3001,7 @@ mod tests {
                 wallpaper_extensions: Vec::new(),
                 wallpaper_extension: None,
                 wallpaper_options: None,
+                output_wallpapers: Vec::new(),
                 logo: false,
                 tutorial: false,
                 binds: Vec::new(),

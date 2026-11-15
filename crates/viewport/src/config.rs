@@ -56,6 +56,15 @@ pub struct OutputConfig {
     /// need a colour-management engine: it is a table, not a transform. See
     /// `crate::icc`. Relative paths are resolved beside the config file.
     pub icc: Option<String>,
+    /// A wallpaper extension to draw this output's background with, overriding
+    /// the page-level `wallpaper_extension`. Absent follows the page-level
+    /// selection; an empty string is no extension (the ordinary picture
+    /// wallpaper shows). The script renders in the shell, per output, so the
+    /// desk can be one continuous scene or two independent ones.
+    pub wallpaper_extension: Option<String>,
+    /// Options handed to this output's wallpaper extension untouched, the same
+    /// passthrough as the page-level `wallpaper_options`.
+    pub wallpaper_options: Option<serde_json::Value>,
 }
 
 /// The keyboard block.
@@ -3718,6 +3727,30 @@ mod tests {
         assert_eq!(file.wallpaper_extension.as_deref(), Some("gradient"));
         assert_eq!(file.wallpaper_options.expect("options")["duration"], 24);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn an_output_can_name_its_own_wallpaper_extension() {
+        let file: File = serde_json::from_str(
+            r#"{"outputs":{
+                "DP-1":{"wallpaper_extension":"gradient","wallpaper_options":{"duration":12}},
+                "DP-3":{"wallpaper_extension":""},
+                "DP-5":{"mode":"2560x1440@120"}
+            }}"#,
+        )
+        .expect("should parse");
+        let dp1 = file.outputs.get("DP-1").expect("DP-1");
+        assert_eq!(dp1.wallpaper_extension.as_deref(), Some("gradient"));
+        assert_eq!(
+            dp1.wallpaper_options.as_ref().expect("options")["duration"],
+            12
+        );
+        // An empty string is a decision (no extension on this output), not absent.
+        let dp3 = file.outputs.get("DP-3").expect("DP-3");
+        assert_eq!(dp3.wallpaper_extension.as_deref(), Some(""));
+        // An output that names none follows the page-level selection.
+        let dp5 = file.outputs.get("DP-5").expect("DP-5");
+        assert_eq!(dp5.wallpaper_extension, None);
     }
 
     #[test]

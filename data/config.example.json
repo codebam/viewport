@@ -384,7 +384,10 @@
     "beats \"*\" whichever order they appear in.",
     "Per-output vrr is off, always, fullscreen, or game-or-video and overrides",
     "the legacy global. mirror names a direct same-GPU source. This first",
-    "version requires matching transformed mode and scale; chains are refused."
+    "version requires matching transformed mode and scale; chains are refused.",
+    "wallpaper_extension / wallpaper_options override the page-level wallpaper",
+    "extension for this output (see docs/wallpaper-extension.md); an empty",
+    "extension shows the ordinary picture here. Absent follows the page default."
   ],
   "outputs": {
     "*": { "max_refresh": false, "vrr": "off" },

@@ -17,6 +17,19 @@
  *
  * The path resolves beside the config file. `wallpaper_options` is passed
  * through untouched; every key is optional and falls back to a default.
+ *
+ * `root` is the output's own `.desktop` element, so the gradient paints that
+ * monitor alone. Select it per output to give each screen its own scene:
+ *
+ *   "outputs": {
+ *     "DP-1": { "wallpaper_extension": "gradient",
+ *               "wallpaper_options": { "colors": ["#0f172a", "#7c3aed"] } },
+ *     "DP-3": { "wallpaper_extension": "gradient",
+ *               "wallpaper_options": { "colors": ["#0f172a", "#db2777"] } }
+ *   }
+ *
+ * The class, stylesheet and keyframes are named per output so two monitors can
+ * run different colours at different speeds without fighting over one rule.
  */
 registerWallpaper('gradient', {
   apply({ root, options }) {
@@ -28,39 +41,46 @@ registerWallpaper('gradient', {
     const duration = Number.isFinite(opts.duration) && opts.duration > 0
       ? opts.duration : 24;
 
+    /* One namespace per output (the page-level root has no output name), so
+     * each monitor's rule, class and keyframes are its own. */
+    const suffix = (root.dataset && root.dataset.output) || 'page';
+    const cls = `wallpaper-gradient-${suffix}`;
+    const styleId = `wallpaper-gradient-style-${suffix}`;
+    const anim = `wallpaper-gradient-shift-${suffix}`;
+
     /* A gradient larger than the screen, whose position is animated: the
      * colours slide through one another in a loop. This is the plain-CSS way
      * to get a moving gradient — no @property / Houdini needed, so it runs in
      * every engine the shell uses. */
-    const style = document.createElement('style');
-    style.id = 'wallpaper-gradient-style';
+    let style = document.getElementById(styleId);
+    if (!style) {
+      style = document.createElement('style');
+      style.id = styleId;
+      document.head.appendChild(style);
+    }
     style.textContent = `
-      html.wallpaper-gradient body,
-      html.wallpaper-gradient .desktop {
+      .${cls} {
         background-image: linear-gradient(${angle}deg, ${colors.join(', ')}) !important;
         background-size: 400% 400% !important;
         background-position: 0% 50%;
-        animation: wallpaper-gradient-shift ${duration}s ease-in-out infinite !important;
+        animation: ${anim} ${duration}s ease-in-out infinite !important;
       }
-      @keyframes wallpaper-gradient-shift {
+      @keyframes ${anim} {
         0%   { background-position: 0% 50%; }
         50%  { background-position: 100% 50%; }
         100% { background-position: 0% 50%; }
       }
       @media (prefers-reduced-motion: reduce) {
-        html.wallpaper-gradient body,
-        html.wallpaper-gradient .desktop {
-          animation: none !important;
-        }
+        .${cls} { animation: none !important; }
       }
     `;
-    document.head.appendChild(style);
-    root.classList.add('wallpaper-gradient');
+    root.classList.add(cls);
   },
 
   clear({ root }) {
-    root.classList.remove('wallpaper-gradient');
-    const style = document.getElementById('wallpaper-gradient-style');
+    const suffix = (root.dataset && root.dataset.output) || 'page';
+    root.classList.remove(`wallpaper-gradient-${suffix}`);
+    const style = document.getElementById(`wallpaper-gradient-style-${suffix}`);
     if (style) style.remove();
   },
 });

@@ -43,10 +43,44 @@ same bargain a missing layout script strikes.
 
 Names may contain ASCII letters, digits, `_` and `-`.
 
-While a wallpaper extension is selected it **replaces** the picture/film/colour
-wallpaper: the two are never both in force. Setting `wallpaper_extension` to
-`""` (or removing it) takes the extension down and returns to the ordinary
-`wallpaper` path.
+While a wallpaper extension is selected on an output it **replaces** the
+picture/film/colour wallpaper *on that output*: the two are never both in force
+on one screen. Setting `wallpaper_extension` to `""` (or removing it) takes the
+extension down and returns to the ordinary `wallpaper` path.
+
+## Per-output wallpapers
+
+`wallpaper_extension` is the page-level default: it applies to every output.
+Each output can override it in the `outputs` block, so a multi-monitor desk can
+run one continuous scene or several independent ones:
+
+```json
+{
+  "wallpaper_extensions": { "gradient": "wallpapers/gradient.js" },
+  "wallpaper_extension": "gradient",
+  "outputs": {
+    "DP-1": {
+      "wallpaper_extension": "gradient",
+      "wallpaper_options": { "colors": ["#0f172a", "#7c3aed"] }
+    },
+    "DP-3": {
+      "wallpaper_extension": "gradient",
+      "wallpaper_options": { "colors": ["#0f172a", "#db2777"], "duration": 30 }
+    }
+  }
+}
+```
+
+An output that names no `wallpaper_extension` follows the page-level default.
+An output whose `wallpaper_extension` is `""` runs no extension, so the ordinary
+picture wallpaper shows there even while its neighbours run a scene. The
+per-output `wallpaper_options` replaces the page-level options for that output
+(it is not merged). The compositor carries the overrides to the shell in the
+`config` event as `output_wallpapers: [{name, extension, options}]`.
+
+The extension is applied to the output's own `.desktop` element, so `root` (see
+below) is that element, not the document — a script paints one monitor and need
+not know about the others.
 
 ## Writing one
 
@@ -54,15 +88,14 @@ A script registers exactly one wallpaper with `registerWallpaper`:
 
 ```js
 registerWallpaper('gradient', {
-  // Draw the background. `root` is the document element the wallpaper
-  // properties land on; `options` is wallpaper_options, passed through
-  // untouched (an empty object when absent).
+  // Draw the background. `root` is the output's own `.desktop` element;
+  // `options` is wallpaper_options, passed through untouched (an empty object
+  // when absent).
   apply({ root, options }) {
     const style = document.createElement('style');
     style.id = 'my-wallpaper-style';
     style.textContent = `
-      html.my-wallpaper body,
-      html.my-wallpaper .desktop {
+      .my-wallpaper {
         background-image: linear-gradient(120deg, #1e3a8a, #7c3aed) !important;
       }
     `;
@@ -79,11 +112,14 @@ registerWallpaper('gradient', {
 });
 ```
 
-`apply` is the only required member. Target `html.<your-class> body` and
-`html.<your-class> .desktop` to paint the background — that is where the
-ordinary wallpaper lands, so you override it cleanly. Add `!important` if you
-need to beat a fitting class. Inject your own stylesheet and remove it in
-`clear` so the extension is self-contained and leaves nothing behind.
+`apply` is the only required member. `root` is the output's `.desktop`, so
+target `.<your-class>` — the class you add to `root` — to paint that monitor's
+background. That is where the ordinary wallpaper lands, so you override it
+cleanly; add `!important` if you need to beat a fitting class. If two outputs
+may run your extension with different options, name the class, stylesheet and
+keyframes per output (the demo keys them on `root.dataset.output`) so they do
+not fight over one rule. Inject your own stylesheet and remove it in `clear` so
+the extension is self-contained and leaves nothing behind.
 
 A working demo lives at [`examples/wallpapers/gradient.js`](../examples/wallpapers/gradient.js):
 an animated CSS gradient that slowly shifts across the desktop, with

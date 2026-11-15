@@ -122,12 +122,17 @@ function syncOutputWallpaper(output) {
   const el = output?.el;
   if (!el) return;
   const root = document.documentElement;
-  el.classList.toggle('wallpaper', root.classList.contains('wallpaper'));
+  /* An output running a wallpaper extension draws its own background, so the
+     ordinary picture/film classes are suppressed on it alone — its neighbours
+     without an extension still show the picture. */
+  const hasExt = activeWallpaperExtensions.has(output.name);
+  el.classList.toggle('wallpaper',
+    !hasExt && root.classList.contains('wallpaper'));
   el.classList.toggle('wallpaper-video',
-    root.classList.contains('wallpaper-video'));
+    !hasExt && root.classList.contains('wallpaper-video'));
   for (const mode of WALLPAPER_MODES) {
     el.classList.toggle(`wallpaper-${mode}`,
-      root.classList.contains(`wallpaper-${mode}`));
+      !hasExt && root.classList.contains(`wallpaper-${mode}`));
   }
 }
 
@@ -824,37 +829,114 @@ function loadWallpaperExtensions(entries, generation) {
   })();
 }
 
-/* Which wallpaper extension is currently drawing the background, or null. The
- * extension renders in the page, so it is renderer-agnostic (Vulkan included).
- * Taking one down calls its `clear` before another goes up, so two wallpapers
- * are never both in force — the same bargain the picture/film split strikes. */
-let activeWallpaperExtension = null;
-function applyWallpaperExtension(name, options) {
-  const root = document.documentElement;
-  const wanted = typeof name === 'string' && name.trim() !== '' ? name.trim() : null;
-  if (activeWallpaperExtension !== null) {
-    const prev = wallpaperRegistry.get(activeWallpaperExtension);
+/* Which wallpaper extension is drawing each output's background, keyed by
+ * output name. The extension renders in the page on that output's own
+ * `.desktop`, so it is renderer-agnostic (Vulkan included) and each monitor can
+ * run its own scene — one continuous panorama or two independent ones. Taking
+ * one down calls its `clear` before another goes up, so two wallpapers are
+ * never both in force on one output, the same bargain the picture/film split
+ * strikes. */
+const activeWallpaperExtensions = new Map();
+
+/* The last selection the config named, so an output that arrives later is
+ * given the same wallpaper: the page-level default plus the per-output
+ * overrides. */
+let wallpaperSelection = { extension: null, options: null, outputs: new Map() };
+
+/* Apply (or clear) one output's wallpaper extension. `root` is the output's
+ * own desktop element, so the extension paints that monitor alone. */
+function applyOutputWallpaperExtension(output, name, options) {
+  const root = output.el;
+  if (!root) return;
+  const prev = activeWallpaperExtensions.get(output.name);
+  if (prev !== undefined) {
+    const desc = wallpaperRegistry.get(prev);
     try {
-      if (prev && typeof prev.clear === 'function') prev.clear({ root });
+      if (desc && typeof desc.clear === 'function') desc.clear({ root });
     } catch (error) {
       console.error(`wallpaper extension: ${error?.message ?? error}`);
     }
-    activeWallpaperExtension = null;
+    activeWallpaperExtensions.delete(output.name);
   }
-  if (wanted === null) return;
-  const descriptor = wallpaperRegistry.get(wanted);
-  if (!descriptor) {
-    /* A name nothing registered draws nothing rather than aborting: the
-     * shell's own gradient shows, the same fallback a missing layout strikes. */
-    console.error(`wallpaper extension: ${wanted} is not registered`);
-    return;
+  const wanted = typeof name === 'string' && name.trim() !== '' ? name.trim() : null;
+  if (wanted !== null) {
+    const descriptor = wallpaperRegistry.get(wanted);
+    if (!descriptor) {
+      /* A name nothing registered draws nothing rather than aborting: the
+       * shell's own gradient shows, the same fallback a missing layout strikes. */
+      console.error(`wallpaper extension: ${wanted} is not registered`);
+    } else {
+      try {
+        descriptor.apply({ root, options: options ?? {} });
+        activeWallpaperExtensions.set(output.name, wanted);
+      } catch (error) {
+        console.error(`wallpaper extension ${wanted}: ${error?.message ?? error}`);
+      }
+    }
   }
+  /* A film on an output that has an extension is hidden — the extension draws
+     the background, so the film behind it is not wanted; clearing the
+     extension hands the film back. */
+  if (output.wallpaperEl) {
+    if (activeWallpaperExtensions.has(output.name)) {
+      output.wallpaperEl.hidden = true;
+    } else if (typeof applyWallpaperMediaTo === 'function') {
+      applyWallpaperMediaTo(output.wallpaperEl, wallpaperVideoSrc);
+    }
+  }
+  syncOutputWallpaper(output);
+}
+
+/* The page-level entry point: apply one selection to every output. The config
+ * handler uses the per-output refresh below, which honours each output's
+ * override; this is the whole-desk shorthand. */
+function applyWallpaperExtension(name, options) {
+  for (const output of outputs.values()) {
+    applyOutputWallpaperExtension(output, name, options);
+  }
+}
+
+/* Resolve and apply each output's wallpaper extension: its own override if it
+ * named one, else the page-level selection. An override whose extension is an
+ * empty string is no extension on that output, so the ordinary picture shows
+ * there while its neighbours run a scene. */
+function refreshWallpaperExtensions(message) {
+  const perOutput = new Map();
+  for (const ow of message.output_wallpapers ?? []) {
+    if (ow && typeof ow.name === 'string') perOutput.set(ow.name, ow);
+  }
+  wallpaperSelection = {
+    extension: message.wallpaper_extension,
+    options: message.wallpaper_options,
+    outputs: perOutput,
+  };
+  for (const output of outputs.values()) {
+    const ow = perOutput.get(output.name);
+    const ext = ow && ow.extension !== undefined ? ow.extension : message.wallpaper_extension;
+    const opts = ow && ow.options !== undefined ? ow.options : message.wallpaper_options;
+    applyOutputWallpaperExtension(output, ext, opts);
+  }
+}
+
+/* Give a newly-arrived output the wallpaper the last config selected. */
+function applyStoredWallpaperExtension(output) {
+  const ow = wallpaperSelection.outputs.get(output.name);
+  const ext = ow && ow.extension !== undefined ? ow.extension : wallpaperSelection.extension;
+  const opts = ow && ow.options !== undefined ? ow.options : wallpaperSelection.options;
+  applyOutputWallpaperExtension(output, ext, opts);
+}
+
+/* Take an unplugged output's wallpaper extension down with it. */
+function clearOutputWallpaperExtension(output) {
+  const prev = activeWallpaperExtensions.get(output.name);
+  if (prev === undefined) return;
+  const desc = wallpaperRegistry.get(prev);
   try {
-    descriptor.apply({ root, options: options ?? {} });
-    activeWallpaperExtension = wanted;
+    if (desc && typeof desc.clear === 'function') desc.clear({ root: output.el });
   } catch (error) {
-    console.error(`wallpaper extension ${wanted}: ${error?.message ?? error}`);
+    console.error(`wallpaper extension: ${error?.message ?? error}`);
   }
+  activeWallpaperExtensions.delete(output.name);
 }
 
 function finishLayoutConfig(message, extensionsLoaded) {
@@ -985,7 +1067,7 @@ function dispatchViewport(message) {
         const applySelected = () => {
           if (generation !== wallpaperLoadGeneration) return;
           try {
-            applyWallpaperExtension(message.wallpaper_extension, message.wallpaper_options);
+            refreshWallpaperExtensions(message);
           } catch (error) {
             console.error(`viewport: wallpaper: ${error?.message ?? error}`);
           }
@@ -1048,15 +1130,14 @@ function dispatchViewport(message) {
            the terminal is the one somebody asked for by running a program.
            Decided here rather than left to the order of two CSS rules, so that
            there is one place to read the answer off. */
-        /* A wallpaper extension draws the background itself, so the picture /
-           film / colour path is cleared while one is selected — the two are
-           never both in force, the same bargain the terminal behind the page
-           strikes. The extension is applied separately, once its script loads. */
+        /* A wallpaper extension draws an output's background itself, so the
+           picture is suppressed on the outputs that run one (see
+           syncOutputWallpaper) rather than cleared page-wide: an output without
+           an extension still shows the picture. The extension is applied
+           separately, once its script loads. */
         const value = typeof message.wallpaper === 'string'
           && message.wallpaper.trim() !== ''
           && message.background_terminal !== true
-          && !(typeof message.wallpaper_extension === 'string'
-            && message.wallpaper_extension.trim() !== '')
           ? message.wallpaper.trim() : null;
         /* A GIF — or an animated WebP or APNG — is a picture and stays one:
            the engine animates a `background-image` of it, which keeps all

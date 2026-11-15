@@ -217,7 +217,12 @@ subpixels. That is the same reasoning as the `border.animated` drift and the
 an entry comes off this list and is documented where its subject lives when it
 lands.
 
-### 1. Per-output wallpaper extensions — planned
+### 1. Per-output wallpaper extensions — done
+
+Landed: the per-output `outputs` block carries `wallpaper_extension` /
+`wallpaper_options`, the `config` event carries `output_wallpapers`, and the
+shell applies each output's extension to its own `.desktop`. Documented in
+`docs/wallpaper-extension.md` ("Per-output wallpapers").
 
 The wallpaper hook (`docs/wallpaper-extension.md`) is page-level: one extension
 draws `document.documentElement`, and every output's `.desktop` mirrors it. The
