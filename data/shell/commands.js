@@ -659,6 +659,7 @@ let initialConfigReady = false;
 let sessionRestored = false;
 let layoutLoadGeneration = 0;
 let widgetLoadGeneration = 0;
+let wallpaperLoadGeneration = 0;
 const pendingViewReplay = [];
 
 function loadLayoutScript(entry, generation) {
@@ -767,6 +768,93 @@ function loadWidgetExtensions(entries, generation) {
     }
     return ok;
   })();
+}
+
+function loadWallpaperScript(entry, generation) {
+  return new Promise((resolve, reject) => {
+    if (!entry || typeof entry.name !== 'string' || typeof entry.url !== 'string') {
+      reject(new Error('invalid wallpaper extension manifest entry'));
+      return;
+    }
+    if (wallpaperSources.get(entry.name) === entry.url) {
+      resolve();
+      return;
+    }
+    if (wallpaperRegistry.has(entry.name)) {
+      reject(new Error(`wallpaper ${entry.name} was already registered by another script`));
+      return;
+    }
+    const script = document.createElement('script');
+    script.src = entry.url;
+    script.async = false;
+    script.dataset.wallpaperName = entry.name;
+    script.dataset.wallpaperGeneration = String(generation);
+    script.onload = () => {
+      if (generation !== wallpaperLoadGeneration) {
+        reject(new Error(`stale load of ${entry.url}`));
+        return;
+      }
+      if (!wallpaperRegistry.has(entry.name)) {
+        reject(new Error(`${entry.url} did not register wallpaper ${entry.name}`));
+        return;
+      }
+      wallpaperSources.set(entry.name, entry.url);
+      resolve();
+    };
+    script.onerror = () => reject(new Error(`could not load ${entry.url}`));
+    document.head.append(script);
+  });
+}
+
+function loadWallpaperExtensions(entries, generation) {
+  const manifest = Array.isArray(entries) ? entries : [];
+  const pending = manifest.filter((entry) => wallpaperSources.get(entry?.name) !== entry?.url);
+  if (pending.length === 0) return null;
+  return (async () => {
+    let ok = true;
+    for (const entry of pending) {
+      try {
+        await loadWallpaperScript(entry, generation);
+      } catch (error) {
+        ok = false;
+        console.error(`wallpaper extension: ${error.message}`);
+      }
+    }
+    return ok;
+  })();
+}
+
+/* Which wallpaper extension is currently drawing the background, or null. The
+ * extension renders in the page, so it is renderer-agnostic (Vulkan included).
+ * Taking one down calls its `clear` before another goes up, so two wallpapers
+ * are never both in force — the same bargain the picture/film split strikes. */
+let activeWallpaperExtension = null;
+function applyWallpaperExtension(name, options) {
+  const root = document.documentElement;
+  const wanted = typeof name === 'string' && name.trim() !== '' ? name.trim() : null;
+  if (activeWallpaperExtension !== null) {
+    const prev = wallpaperRegistry.get(activeWallpaperExtension);
+    try {
+      if (prev && typeof prev.clear === 'function') prev.clear({ root });
+    } catch (error) {
+      console.error(`wallpaper extension: ${error?.message ?? error}`);
+    }
+    activeWallpaperExtension = null;
+  }
+  if (wanted === null) return;
+  const descriptor = wallpaperRegistry.get(wanted);
+  if (!descriptor) {
+    /* A name nothing registered draws nothing rather than aborting: the
+     * shell's own gradient shows, the same fallback a missing layout strikes. */
+    console.error(`wallpaper extension: ${wanted} is not registered`);
+    return;
+  }
+  try {
+    descriptor.apply({ root, options: options ?? {} });
+    activeWallpaperExtension = wanted;
+  } catch (error) {
+    console.error(`wallpaper extension ${wanted}: ${error?.message ?? error}`);
+  }
 }
 
 function finishLayoutConfig(message, extensionsLoaded) {
@@ -886,6 +974,28 @@ function dispatchViewport(message) {
           });
         }
       }
+      /* Wallpaper extensions load the way widget extensions do: the manifest
+         script for each name is fetched before the selected one is applied.
+         The extension draws the desktop background in the page, so it works
+         under every compositor renderer, Vulkan included. With nothing to
+         fetch the selected extension is applied synchronously. */
+      {
+        const generation = ++wallpaperLoadGeneration;
+        const loading = loadWallpaperExtensions(message.wallpaper_extensions, generation);
+        const applySelected = () => {
+          if (generation !== wallpaperLoadGeneration) return;
+          try {
+            applyWallpaperExtension(message.wallpaper_extension, message.wallpaper_options);
+          } catch (error) {
+            console.error(`viewport: wallpaper: ${error?.message ?? error}`);
+          }
+        };
+        if (loading) {
+          loading.then(applySelected);
+        } else {
+          applySelected();
+        }
+      }
       /* How the clock is written, and with it the calendar under it: the
          locale, the twelve-or-twenty-four-hour choice and an optional format
          string. Absent is not en-US and not any other tag written down here —
@@ -938,9 +1048,15 @@ function dispatchViewport(message) {
            the terminal is the one somebody asked for by running a program.
            Decided here rather than left to the order of two CSS rules, so that
            there is one place to read the answer off. */
+        /* A wallpaper extension draws the background itself, so the picture /
+           film / colour path is cleared while one is selected — the two are
+           never both in force, the same bargain the terminal behind the page
+           strikes. The extension is applied separately, once its script loads. */
         const value = typeof message.wallpaper === 'string'
           && message.wallpaper.trim() !== ''
           && message.background_terminal !== true
+          && !(typeof message.wallpaper_extension === 'string'
+            && message.wallpaper_extension.trim() !== '')
           ? message.wallpaper.trim() : null;
         /* A GIF — or an animated WebP or APNG — is a picture and stays one:
            the engine animates a `background-image` of it, which keeps all

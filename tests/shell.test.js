@@ -625,6 +625,9 @@ const EXPORTS = ';globalThis.__shell = { views, workspaces, outputs, scrollOffse
   + ' registerWidget: typeof registerWidget !== "undefined" ? registerWidget : undefined,'
   + ' widgetRegistry: typeof widgetRegistry !== "undefined" ? widgetRegistry : undefined,'
   + ' widgetSources: typeof widgetSources !== "undefined" ? widgetSources : undefined,'
+  + ' registerWallpaper: typeof registerWallpaper !== "undefined" ? registerWallpaper : undefined,'
+  + ' wallpaperRegistry: typeof wallpaperRegistry !== "undefined" ? wallpaperRegistry : undefined,'
+  + ' applyWallpaperExtension: typeof applyWallpaperExtension !== "undefined" ? applyWallpaperExtension : undefined,'
   /* The initial-config gate and the queue behind it, so a test can put the
      page back in the state a fresh load starts in — before the first config —
      and watch what opens the gate again. That gate is what a throwing
@@ -6952,6 +6955,128 @@ if (mode === 'scrolling') {
   check('and logs the failure', hasApi && logged);
 
   /* Back to the default bar for everything after this. */
+  emit({ type: 'config', layout: mode, rules: HARNESS_RULES });
+}
+
+/* --- custom wallpaper extensions ---------------------------------------
+ *
+ * A user script named in `wallpaper_extensions` registers a wallpaper through
+ * `registerWallpaper`, and `wallpaper_extension` selects which one draws the
+ * desktop background. The extension renders in the page — a class on the
+ * document element plus its own stylesheet — so it works under every
+ * compositor renderer, Vulkan included, with no GLSL and no GPU shader path.
+ * What is checkable from here is the lifecycle the contract states: apply once
+ * when selected, clear before it is taken away or replaced, options passed
+ * through untouched, and registration refusing the several ways a user script
+ * can be wrong so a bad script cannot take the desktop down with it. Guarded
+ * like the widget block: if the shell has not landed the API every check below
+ * fails without throwing, so the rest of the suite still runs.
+ * --------------------------------------------------------------------- */
+
+{
+  const sh = globalThis.__shell;
+  const reg = sh.registerWallpaper;
+  const registry = sh.wallpaperRegistry;
+  const apply = sh.applyWallpaperExtension;
+  const hasApi = typeof reg === 'function' && registry instanceof Map
+    && typeof apply === 'function';
+  const root = document.documentElement;
+  const throws = (fn) => { try { fn(); return false; } catch (_) { return true; } };
+
+  /* Kept in this block's closure so every lifecycle call lands in the same
+     counters, and the probe draws with a class the stub classList supports —
+     the real gradient demo injects a stylesheet, which is a browser's job to
+     check, not this harness's. */
+  const seen = { applies: 0, clears: 0, options: null };
+  const descriptor = {
+    apply(ctx) { seen.applies++; seen.options = ctx.options; ctx.root.classList.add('wallpaper-probe'); },
+    clear(ctx) { seen.clears++; ctx.root.classList.remove('wallpaper-probe'); },
+  };
+
+  let registered = false;
+  if (hasApi) {
+    try { reg('probe', descriptor); } catch (_) { /* reported below */ }
+    registered = registry.has('probe')
+      && registry.get('probe')?.apply === descriptor.apply;
+  }
+  check('a valid wallpaper descriptor registers and is kept', registered);
+  check('an invalid wallpaper name is rejected',
+    hasApi && throws(() => reg('bad name', descriptor)));
+  check('a descriptor with no apply is rejected',
+    hasApi && throws(() => reg('noapply', { clear() {} })));
+  check('a duplicate wallpaper name is rejected',
+    hasApi && throws(() => reg('probe', descriptor)));
+
+  /* Selected directly: apply runs once, the class lands on the document
+     element, and the options arrive untouched. */
+  if (hasApi) apply('probe', { tag: 'a' });
+  check('selecting a wallpaper applies it once', hasApi && seen.applies === 1);
+  check('it marks the document element',
+    hasApi && root.classList.contains('wallpaper-probe'));
+  check('the options are passed through untouched',
+    hasApi && seen.options?.tag === 'a');
+
+  /* Deselecting clears it and takes the class back off. */
+  if (hasApi) apply(null);
+  check('deselecting a wallpaper clears it', hasApi && seen.clears === 1);
+  check('and removes its mark',
+    hasApi && !root.classList.contains('wallpaper-probe'));
+
+  /* Replacing one wallpaper with another clears the first before the second
+     goes up, so two are never both in force. */
+  const second = {
+    apply(ctx) { ctx.root.classList.add('wallpaper-second'); },
+    clear(ctx) { ctx.root.classList.remove('wallpaper-second'); },
+  };
+  if (hasApi) { reg('second', second); apply('probe', {}); apply('second', {}); }
+  check('replacing a wallpaper clears the previous one',
+    hasApi && seen.clears === 2 && !root.classList.contains('wallpaper-probe'));
+  check('and applies the replacement',
+    hasApi && root.classList.contains('wallpaper-second'));
+  if (hasApi) apply(null);
+  check('the replacement is cleared on deselect',
+    hasApi && !root.classList.contains('wallpaper-second'));
+
+  /* A name nothing registered draws nothing rather than throwing: the shell's
+     own gradient shows, the same fallback a missing layout strikes. */
+  const realError = console.error;
+  let logged = false;
+  let threw = false;
+  console.error = () => { logged = true; };
+  try { if (hasApi) apply('nope', {}); } catch (_) { threw = true; }
+  console.error = realError;
+  check('an unregistered wallpaper does not throw', hasApi && !threw);
+  check('and logs the failure', hasApi && logged);
+
+  /* A throwing apply is contained: it logs and leaves nothing active, so the
+     next selection still works. */
+  if (hasApi) reg('boom', { apply() { throw new Error('boom'); } });
+  logged = false; threw = false;
+  console.error = () => { logged = true; };
+  try { if (hasApi) apply('boom', {}); } catch (_) { threw = true; }
+  console.error = realError;
+  check('a throwing wallpaper apply does not throw out', hasApi && !threw);
+  check('and logs the failure', hasApi && logged);
+
+  /* The config event wires it up: with no manifest to fetch the selected
+     extension is applied synchronously, an active extension suppresses the
+     picture/film/colour wallpaper, and an empty selection takes it down. */
+  const appliesBefore = seen.applies;
+  emit({ type: 'config', layout: mode, rules: HARNESS_RULES,
+    wallpaper: 'file:///tmp/pic.png',
+    wallpaper_extension: 'probe', wallpaper_options: { tag: 'b' } });
+  check('a config selecting a wallpaper applies it',
+    hasApi && seen.applies === appliesBefore + 1
+      && root.classList.contains('wallpaper-probe'));
+  check('and carries the config options', hasApi && seen.options?.tag === 'b');
+  check('an active extension suppresses the picture wallpaper',
+    hasApi && !root.classList.contains('wallpaper'));
+  emit({ type: 'config', layout: mode, rules: HARNESS_RULES,
+    wallpaper_extension: '' });
+  check('an empty config selection clears it',
+    hasApi && !root.classList.contains('wallpaper-probe'));
+
+  /* Back to the default desktop for everything after this. */
   emit({ type: 'config', layout: mode, rules: HARNESS_RULES });
 }
 

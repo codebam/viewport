@@ -843,6 +843,14 @@ pub struct File {
     /// can hand its setting over unchanged. A video cannot repeat, so the
     /// shell fills the screen for `tile`; see [`parse_wallpaper_mode`].
     pub wallpaper_mode: Option<String>,
+    /// The name of a [`Self::wallpaper_extensions`] script to draw the
+    /// wallpaper with, instead of a picture/film/colour. Absent means the
+    /// ordinary wallpaper path. The script renders in the shell, so it works
+    /// under every compositor renderer (Vulkan included).
+    pub wallpaper_extension: Option<String>,
+    /// Options handed to the selected wallpaper extension untouched. The
+    /// compositor never reads it; the script does.
+    pub wallpaper_options: Option<serde_json::Value>,
     /// Which engine draws the shell: `wpe`, `webkitgtk`, `chromium`, `cef`,
     /// `servo` or `servoshell`.
     /// See `crate::shell_backend`.
@@ -877,6 +885,10 @@ pub struct File {
     /// User widget scripts, keyed by the name they register with the shell.
     /// Relative paths are resolved beside this config file by [`load`].
     pub widget_extensions: Option<std::collections::HashMap<String, String>>,
+    /// User wallpaper scripts, keyed by the name they register with the shell.
+    /// Relative paths are resolved beside this config file by [`load`]. The
+    /// selected one is named by [`Self::wallpaper_extension`].
+    pub wallpaper_extensions: Option<std::collections::HashMap<String, String>>,
     pub logo: Option<bool>,
     pub tutorial: Option<bool>,
     pub bar: Option<String>,
@@ -1166,6 +1178,18 @@ pub fn load(path: &Path) -> anyhow::Result<Option<File>> {
             );
             *value = layout_extension_url(value, path).map_err(|e| {
                 anyhow::anyhow!("{}: widget extension {name:?}: {e}", path.display())
+            })?;
+        }
+    }
+    if let Some(extensions) = file.wallpaper_extensions.as_mut() {
+        for (name, value) in extensions {
+            anyhow::ensure!(
+                valid_layout_name(name),
+                "{}: invalid wallpaper extension name {name:?}",
+                path.display()
+            );
+            *value = layout_extension_url(value, path).map_err(|e| {
+                anyhow::anyhow!("{}: wallpaper extension {name:?}: {e}", path.display())
             })?;
         }
     }
@@ -3653,6 +3677,35 @@ mod tests {
         let url = &file.widget_extensions.expect("manifest")["battery_graph"];
         assert!(url.starts_with("file:///"), "{url}");
         assert!(url.ends_with("/my%20widgets/battery.js"), "{url}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn wallpaper_extension_paths_resolve_beside_the_config() {
+        let dir = std::env::temp_dir().join(format!(
+            "viewport-wallpaper-extension-{}",
+            std::process::id()
+        ));
+        let scripts = dir.join("my wallpapers");
+        std::fs::create_dir_all(&scripts).expect("mkdir");
+        std::fs::write(
+            scripts.join("gradient.js"),
+            "registerWallpaper('gradient', { apply() {} })",
+        )
+        .expect("script");
+        let path = dir.join("config.json");
+        std::fs::write(
+            &path,
+            r#"{"wallpaper_extensions":{"gradient":"my wallpapers/gradient.js"},"wallpaper_extension":"gradient","wallpaper_options":{"duration":24}}"#,
+        )
+        .expect("config");
+
+        let file = load(&path).expect("valid config").expect("present");
+        let url = &file.wallpaper_extensions.expect("manifest")["gradient"];
+        assert!(url.starts_with("file:///"), "{url}");
+        assert!(url.ends_with("/my%20wallpapers/gradient.js"), "{url}");
+        assert_eq!(file.wallpaper_extension.as_deref(), Some("gradient"));
+        assert_eq!(file.wallpaper_options.expect("options")["duration"], 24);
         let _ = std::fs::remove_dir_all(dir);
     }
 

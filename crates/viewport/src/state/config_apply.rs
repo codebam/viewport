@@ -55,6 +55,24 @@ impl ViewportState {
             extensions.sort_by(|a, b| a.name.cmp(&b.name));
             self.config.widget_extensions = extensions;
         }
+        if let Some(extensions) = file.wallpaper_extensions {
+            let mut extensions: Vec<_> = extensions
+                .into_iter()
+                .map(|(name, url)| viewport_ipc::event::WallpaperExtension { name, url })
+                .collect();
+            extensions.sort_by(|a, b| a.name.cmp(&b.name));
+            self.config.wallpaper_extensions = extensions;
+        }
+        if let Some(name) = file.wallpaper_extension {
+            // An empty string takes the extension away again, the same bargain
+            // the wallpaper itself strikes, without the key having to be a
+            // nullable string that also means absent.
+            self.config.wallpaper_extension =
+                if name.trim().is_empty() { None } else { Some(name) };
+        }
+        if let Some(options) = file.wallpaper_options {
+            self.config.wallpaper_options = Some(options);
+        }
         if let Some(layout) = file.layout {
             // Checked here for the same reason tiling_mode is, below: this is
             // where the name can be rejected while the file it came from is

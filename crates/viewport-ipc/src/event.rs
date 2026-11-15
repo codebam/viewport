@@ -693,6 +693,12 @@ pub struct Config {
     /// paths resolved to URLs the shell can load directly.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub widget_extensions: Vec<WidgetExtension>,
+    /// Explicit user wallpaper scripts accepted by the compositor, with local
+    /// paths resolved to URLs the shell can load directly. Same bargain as the
+    /// widget and layout manifests: the compositor never parses the script, it
+    /// only validates the name and resolves the path.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub wallpaper_extensions: Vec<WallpaperExtension>,
     pub logo: bool,
     pub tutorial: bool,
 
@@ -869,6 +875,21 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wallpaper_mode: Option<String>,
 
+    /// The name of a `wallpaper_extensions` script to draw the wallpaper with,
+    /// instead of a picture/film/colour. Absent means the ordinary wallpaper
+    /// path. When set, the shell hands the desktop background to that script
+    /// (for example an animated CSS gradient) and clears the picture wallpaper
+    /// so the two are never both in force. A name nothing registered draws the
+    /// shell's own gradient, the same fallback a missing layout script strikes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wallpaper_extension: Option<String>,
+
+    /// Options handed to the selected wallpaper extension untouched, the same
+    /// passthrough a custom widget's `options` is. The compositor never reads
+    /// it; the script does. Absent is an empty object to the script.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wallpaper_options: Option<serde_json::Value>,
+
     /// Whether the on-screen keyboard may raise itself, and whether
     /// `Mod4+Shift+k` still works if not: `"auto"`, `"manual"` or `"off"`.
     ///
@@ -1003,6 +1024,14 @@ pub struct LayoutExtension {
 /// resolved to a URL the shell can load directly.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WidgetExtension {
+    pub name: String,
+    pub url: String,
+}
+
+/// A user wallpaper script accepted by the compositor, with its local path
+/// resolved to a URL the shell can load directly.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WallpaperExtension {
     pub name: String,
     pub url: String,
 }
@@ -2180,6 +2209,9 @@ mod tests {
             layout: "tiling".into(),
             layout_extensions: Vec::new(),
             widget_extensions: Vec::new(),
+            wallpaper_extensions: Vec::new(),
+            wallpaper_extension: None,
+            wallpaper_options: None,
             logo: true,
             tutorial: false,
             binds: Vec::new(),
@@ -2539,6 +2571,9 @@ mod tests {
             layout: "tiling".into(),
             layout_extensions: Vec::new(),
             widget_extensions: Vec::new(),
+            wallpaper_extensions: Vec::new(),
+            wallpaper_extension: None,
+            wallpaper_options: None,
             logo: true,
             tutorial: true,
             binds: Vec::new(),
@@ -2609,6 +2644,9 @@ mod tests {
             layout: "tiling".into(),
             layout_extensions: Vec::new(),
             widget_extensions: Vec::new(),
+            wallpaper_extensions: Vec::new(),
+            wallpaper_extension: None,
+            wallpaper_options: None,
             logo: true,
             tutorial: true,
             binds: Vec::new(),
@@ -2677,6 +2715,9 @@ mod tests {
             layout: "scrolling".into(),
             layout_extensions: Vec::new(),
             widget_extensions: Vec::new(),
+            wallpaper_extensions: Vec::new(),
+            wallpaper_extension: None,
+            wallpaper_options: None,
             logo: true,
             tutorial: true,
             binds: Vec::new(),
@@ -2722,6 +2763,9 @@ mod tests {
             layout: "scrolling".into(),
             layout_extensions: Vec::new(),
             widget_extensions: Vec::new(),
+            wallpaper_extensions: Vec::new(),
+            wallpaper_extension: None,
+            wallpaper_options: None,
             logo: false,
             tutorial: false,
             binds: Vec::new(),
@@ -2893,6 +2937,9 @@ mod tests {
                 layout: "tiling".into(),
                 layout_extensions: Vec::new(),
                 widget_extensions: Vec::new(),
+                wallpaper_extensions: Vec::new(),
+                wallpaper_extension: None,
+                wallpaper_options: None,
                 logo: false,
                 tutorial: false,
                 binds: Vec::new(),

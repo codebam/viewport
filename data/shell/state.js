@@ -381,6 +381,12 @@ const BUILTIN_WIDGET_NAMES = ['disk', 'weather', 'volume', 'mic', 'mpris', 'batt
 const BUILTIN_MODULE_NAMES = ['mode', 'tray', 'net', 'disk', 'cpu', 'load', 'memory', 'clock'];
 const widgetRegistry = new Map();
 const widgetSources = new Map();
+/* The custom wallpapers a `wallpaper_extensions` script may add. A wallpaper
+ * extension draws the desktop background itself (an animated CSS gradient,
+ * say) instead of a picture/film/colour. It renders in the page, so it works
+ * under every compositor renderer, Vulkan included. */
+const wallpaperRegistry = new Map();
+const wallpaperSources = new Map();
 
 function validWidgetDescriptor(name, descriptor) {
   return typeof name === 'string' && /^[A-Za-z0-9_-]+$/.test(name)
@@ -415,6 +421,33 @@ function registerWidget(name, descriptor) {
   }
   if (widgetRegistry.has(name)) throw new Error(`widget ${name} is already registered`);
   widgetRegistry.set(name, Object.freeze({ ...descriptor, name }));
+}
+
+function validWallpaperDescriptor(name, descriptor) {
+  return typeof name === 'string' && /^[A-Za-z0-9_-]+$/.test(name)
+    && descriptor && typeof descriptor.apply === 'function';
+}
+
+/* Public extension API, the wallpaper half of registerLayout / registerWidget.
+ * One name has one owner for the life of the page. `apply` is the only required
+ * member: it is handed `{ root, options }` — `root` is the document element the
+ * wallpaper properties land on, `options` is whatever the config passed through
+ * untouched — and draws the desktop background (typically by adding a class and
+ * injecting its own stylesheet). `clear` is optional and is called when the
+ * wallpaper is taken away, to undo whatever `apply` set up. */
+function registerWallpaper(name, descriptor) {
+  if (!validWallpaperDescriptor(name, descriptor)) {
+    throw new TypeError('registerWallpaper requires a valid name and an apply function');
+  }
+  const script = document.currentScript;
+  if (script?.dataset?.wallpaperName) {
+    if (script.dataset.wallpaperName !== name
+        || Number(script.dataset.wallpaperGeneration) !== wallpaperLoadGeneration) {
+      throw new Error(`stale or mismatched wallpaper registration: ${name}`);
+    }
+  }
+  if (wallpaperRegistry.has(name)) throw new Error(`wallpaper ${name} is already registered`);
+  wallpaperRegistry.set(name, Object.freeze({ ...descriptor, name }));
 }
 let layoutMode = 'tiling';
 /* How the tiling tree arranges itself: 'manual' is the splits you make, and
