@@ -96,6 +96,8 @@ int main(int argc, char **argv) {
 
     int sequence = 0;
     int target_x = -9999, target_y = -9999, target_motions = 0;
+    int anchor_x = -9999, anchor_y = -9999, aim_dx = 0, aim_dy = 0;
+    int last_x = -9999, last_y = -9999;
     char line[256];
     while (fgets(line, sizeof line, stdin)) {
         int x, y;
@@ -108,10 +110,38 @@ int main(int argc, char **argv) {
             target_x = x;
             target_y = y;
             target_motions = 0;
+            /* A warp re-anchors aim. SDL2's warp fallback measures each
+             * event against the PREVIOUS event position (mouse->last_x),
+             * not the warp anchor; the warp echo resets that reference and
+             * is itself dropped. Measuring every event against the anchor
+             * instead double-counts each intermediate move between warps. */
+            anchor_x = x;
+            anchor_y = y;
+            last_x = x;
+            last_y = y;
             printf("ok %d\n", ++sequence);
         } else if (strncmp(line, "motioncount", 11) == 0) {
             printf("motioncount: %d\n", target_motions);
             target_motions = 0;
+        } else if (strncmp(line, "aimreset", 8) == 0) {
+            aim_dx = 0;
+            aim_dy = 0;
+            printf("ok %d\n", ++sequence);
+        } else if (strncmp(line, "aimreport", 9) == 0) {
+            /* What the game's aim math ingested since aimreset — every
+             * motion event measured against the previous event position
+             * (SDL2's warp fallback, mouse->last_x), the warp echo dropped.
+             * For a clean pipeline this equals the physical movement handed
+             * in, and nothing more; anything else is drift. */
+            printf("aim: %d %d\n", aim_dx, aim_dy);
+        } else if (strncmp(line, "cursorshow", 10) == 0) {
+            XFixesShowCursor(display, window);
+            XSync(display, False);
+            printf("ok %d\n", ++sequence);
+        } else if (strncmp(line, "cursorhide", 10) == 0) {
+            XFixesHideCursor(display, window);
+            XSync(display, False);
+            printf("ok %d\n", ++sequence);
         } else if (strncmp(line, "capture", 7) == 0) {
             /* Hidden cursor plus a grab is the game's capture: Xwayland sees
              * the pairing and takes its own pointer lock behind the warps.
@@ -168,7 +198,15 @@ int main(int argc, char **argv) {
                                       &ly, &child3);
                 if (lx == target_x && ly == target_y)
                     target_motions++;
+                int step_x = (last_x != -9999) ? lx - last_x : 0;
+                int step_y = (last_y != -9999) ? ly - last_y : 0;
+                aim_dx += step_x;
+                aim_dy += step_y;
                 printf("event: motion %d %d\n", lx, ly);
+                printf("aimtrace: %d %d prev %d %d step %d %d aim %d %d\n",
+                       lx, ly, last_x, last_y, step_x, step_y, aim_dx, aim_dy);
+                last_x = lx;
+                last_y = ly;
             } else if (event.type == ButtonPress || event.type == ButtonRelease) {
                 XButtonEvent *button = &event.xbutton;
                 Window child3;

@@ -234,9 +234,148 @@ run_phase() {
 	return 1
 }
 
+# The symptom quantity: what a warp-mode game's aim math ingests over a
+# shot clip. Three shots of "the hand moves, the game recenters by warping"
+# with known physical movements; the client sums every motion event against
+# the last warp, exactly as the game's own bookkeeping does. For a clean
+# pipeline the report equals the physical movement handed in — nothing more,
+# nothing less. A restore jump, a stale anchor, or an event at a drifted
+# position all appear here as a vector the user would feel as "the aim
+# moves when I shoot".
+run_aim_phase() {
+	local phase=aim
+
+	mark=$(wc -l <"$log")
+	: >"$client_out"
+	DISPLAY=$display "$client" >"$client_out" 2>&1 <"$fifo" &
+	client_pid=$!
+	exec 3>"$fifo"
+
+	local wx wy
+	for _ in $(seq 1 50); do
+		read -r wx wy < <(sed -n 's/^window: \([0-9-]*\) \([0-9-]*\) .*/\1 \2/p' "$client_out")
+		[ -n "${wx:-}" ] && break
+		sleep 0.1
+	done
+	local vid
+	vid=$("$viewport" msg --socket "$sock" -t view.query 2>/dev/null |
+		grep '"xwayland":true' |
+		sed -n 's/.*"id":\([0-9]*\).*/\1/p' | tail -1)
+	msg -t view.layout --id "$vid" --x "$wx" --y "$wy" --width 800 --height 600
+	sleep 0.3
+	msg -t input.pointer --x $((wx + 400)) --y $((wy + 300))
+	sleep 0.3
+
+	echo "capture" >&3
+	echo "warp 400 300" >&3
+	local locked= attempt=0
+	for _ in $(seq 1 12); do
+		sleep 0.5
+		if log_since -q "a client asked for a"; then
+			locked=1
+			break
+		fi
+		attempt=$((attempt + 1))
+		if [ "$attempt" = 4 ]; then
+			echo "capture" >&3
+			echo "warp 400 300" >&3
+		fi
+	done
+	if [ -z "$locked" ]; then
+		echo "FAIL($phase): the grab never became a pointer lock" >&2
+		exec 3>&-
+		wait "$client_pid" 2>/dev/null
+		client_pid=
+		return 1
+	fi
+
+	# The clip: hand moves interleaved with the game's recenter warps and,
+	# mid-grab, the cursor-visibility flip that tears Xwayland's warp-emulator
+	# mirror down and back up (its 5ms deferred-show timer's beat). The
+	# expected aim is read frame-honestly: the cursor's own movement in the
+	# game's coordinate system, snapshotted with `query` around each hand
+	# move. Aim must equal the hand, nothing else — a churned mirror re-imports
+	# whatever the compositor's cursor sits at as the game's aim anchor
+	# (xwayland dispatch_absolute_motion), and any creep shows up as the
+	# difference.
+	echo "aimreset" >&3
+	local step=0 expect_x=0 expect_y=0
+	# Each shot: creep off the anchor (no warp — the cursor must sit away
+	# when the mirror dies), flip the cursor visible and back (Xwayland
+	# tears its warp-emulator mirror down and rebuilds it, its deferred
+	# show-timer's beat), dispatch another move WHILE the mirror is down
+	# (Xwayland re-imports the compositor's cursor as the aim anchor —
+	# the drift's entry), then the game's own recenter warp.
+	for step in 1 2 3; do
+		local q0 q1 q0x q0y q1x q1y
+		echo "query" >&3
+		sleep 0.15
+		q0=$(sed -n 's/^query: \([0-9-]*\) \([0-9-]*\)$/\1 \2/p' "$client_out" | tail -1)
+		case $step in
+		1) msg -t input.pointer --x $((wx + 380)) --y $((wy + 282)) ;;
+		2) msg -t input.pointer --x $((wx + 412)) --y $((wy + 295)) ;;
+		3) msg -t input.pointer --x $((wx + 393)) --y $((wy + 309)) ;;
+		esac
+		sleep 0.2
+		echo "cursorshow" >&3
+		sleep 0.05
+		case $step in
+		1) msg -t input.pointer --x $((wx + 386)) --y $((wy + 277)) ;;
+		2) msg -t input.pointer --x $((wx + 419)) --y $((wy + 303)) ;;
+		3) msg -t input.pointer --x $((wx + 386)) --y $((wy + 316)) ;;
+		esac
+		sleep 0.1
+		echo "cursorhide" >&3
+		sleep 0.15
+		echo "query" >&3
+		sleep 0.15
+		q1=$(sed -n 's/^query: \([0-9-]*\) \([0-9-]*\)$/\1 \2/p' "$client_out" | tail -1)
+		read -r q0x q0y <<<"$q0"
+		read -r q1x q1y <<<"$q1"
+		expect_x=$((expect_x + q1x - q0x))
+		expect_y=$((expect_y + q1y - q0y))
+		echo "      phys[$step]: $q0 -> $q1"
+		echo "warp 400 300" >&3
+		sleep 0.3
+	done
+
+	echo "release" >&3
+	sleep 0.3
+	echo "aimreport" >&3
+	echo "query" >&3
+	sleep 0.2
+
+	local aim got
+	aim=$(sed -n 's/^aim: \([0-9-]*\) \([0-9-]*\)$/\1 \2/p' "$client_out" | tail -1)
+	got=$(sed -n 's/^query: \([0-9-]*\) \([0-9-]*\)$/\1 \2/p' "$client_out" | tail -1)
+	echo "quit" >&3
+	exec 3>&-
+	wait "$client_pid" 2>/dev/null
+	client_pid=
+
+	local fail=0
+	if [ "$aim" != "$expect_x $expect_y" ]; then
+		echo "FAIL($phase): the game's aim saw ($aim), the hand moved ($expect_x $expect_y)" >&2
+		echo "      The difference is the drift the user feels when shooting." >&2
+		fail=1
+	fi
+	if [ "$got" != "400 300" ]; then
+		echo "FAIL($phase): the cursor came back to ($got), not (400 300)" >&2
+		fail=1
+	fi
+	if [ "$fail" -eq 0 ]; then
+		echo "PASS($phase): aim = hand ($aim), cursor home ($got)"
+		return 0
+	fi
+	sed -n 's/^aimtrace: /      /p' "$client_out" | tail -40 >&2
+	sed -n 's/^event: /      /p' "$client_out" | tail -12 >&2
+	return 1
+}
+
 status=0
 run_phase noextents || status=1
 run_phase extents || status=1
+run_aim_phase || status=1
 
 if [ "$status" -eq 0 ]; then
 	echo "PASS: xwayland-warp-hint"
