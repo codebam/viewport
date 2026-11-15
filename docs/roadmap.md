@@ -302,7 +302,7 @@ shell built) run per notification, both contained so a bad script cannot silence
 the desktop. The shell keeps the popup, its actions and the history. Documented
 in `docs/notification-extension.md`, demo at `examples/notifications/badges.js`.
 
-### 6. An idle dim ramp — planned
+### 6. An idle dim ramp — done
 
 The desk blanks at `idle.blank_after`; add a configurable gradual dim before
 that, so the panel spends the idle window at falling drive instead of
@@ -310,6 +310,15 @@ full-brightness-then-off. An `idle.dim_after` / `idle.dim_floor` (or similar)
 ramps a brightness multiplier — compositor gamma, or a shell overlay — down from
 1 toward a floor as idle progresses, reset by any input. OLED-friendly and
 cheap.
+
+Landed: `idle.dim_after` / `idle.dim_floor` ramp a brightness multiplier from 1
+to the floor across the window from `dim_after` to `blank_after` (or the
+following minute with no blank), applied through the compositor gamma so it
+composes with the calibration and any night-light client rather than replacing
+them (`gamma::scaled`). The 1s idle tick drives the ramp; any deliberate input
+or bus simulate-activity brightens it again at once. Config-file and runtime
+`config.idle` paths both carry it; the idle tests cover the ramp, the floor
+clamping and the no-blank window.
 
 ### 7. A game mode — planned
 

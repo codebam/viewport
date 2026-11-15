@@ -946,7 +946,19 @@ impl ViewportState {
             self.gamma_ramps.get(&name),
             size as usize,
         );
+        // The idle dim scales whatever curve the output is wearing, so a dimmed
+        // desk keeps its calibration and night-light tint. 1.0 is a no-op.
+        let effective = crate::gamma::scaled(&effective, self.idle_dim);
         self.apply_gamma(output, &effective)
+    }
+
+    /// Re-apply the effective gamma to every output, so a change to the idle
+    /// dim reaches all the panels at once.
+    pub fn refresh_gamma_all(&mut self) {
+        let outputs: Vec<Output> = self.space.outputs().cloned().collect();
+        for output in outputs {
+            self.apply_effective_gamma(&output);
+        }
     }
 
     fn apply_gamma(&mut self, output: &Output, ramp: &crate::gamma::Ramp) -> bool {

@@ -633,6 +633,8 @@ impl ViewportState {
                 blank_after: file.idle.blank_after,
                 lock_delay: file.idle.lock_delay,
                 lock_command: file.idle.lock_command.clone(),
+                dim_after: file.idle.dim_after,
+                dim_floor: file.idle.dim_floor,
             };
             // Carried for the same reason the cursor block is: the panel
             // shows what it is, and `config.save` writes it back.
@@ -641,6 +643,8 @@ impl ViewportState {
                 blank_after: file.idle.blank_after,
                 lock_delay: file.idle.lock_delay,
                 lock_command: file.idle.lock_command.clone(),
+                dim_after: file.idle.dim_after,
+                dim_floor: file.idle.dim_floor,
             });
         }
 

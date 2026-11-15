@@ -385,6 +385,12 @@ pub struct ViewportState {
     /// Locking and blanking after a while, off unless the file asks.
     pub idle: crate::idle::Idle,
     pub idle_settings: crate::idle::Settings,
+    /// The idle dim brightness multiplier currently on the gamma ramps (1.0 is
+    /// no dim). Ramped down by `idle_tick` as the desk sits idle and reset to
+    /// 1.0 by any input; applied through `apply_effective_gamma` so it composes
+    /// with the calibration and any night-light client rather than replacing
+    /// them.
+    pub idle_dim: f64,
     /// Global shortcuts an application is allowed to hear, by session.
     ///
     /// Read on every key press that no binding claimed, which is why it is a
@@ -1940,6 +1946,7 @@ impl ViewportState {
             status: crate::status::Status::default(),
             idle: crate::idle::Idle::default(),
             idle_settings: crate::idle::Settings::default(),
+            idle_dim: 1.0,
             shortcuts: Vec::new(),
             shortcuts_held: Vec::new(),
             shortcuts_to_announce: Vec::new(),
@@ -3015,6 +3022,11 @@ impl ViewportState {
             return;
         }
         let elapsed = self.idle.since.elapsed();
+        // The idle dim: ramp the brightness down across the idle window so the
+        // panel spends it at falling drive rather than full-then-off. Applied
+        // every tick while the policy is on; any input resets it to 1.0.
+        let level = self.idle_settings.dim_level(elapsed);
+        self.set_idle_dim(level);
         let actions = self.idle.tick(&self.idle_settings, elapsed);
         if actions.lock {
             tracing::info!("idle for {}s; locking", elapsed.as_secs());
@@ -3027,6 +3039,17 @@ impl ViewportState {
             // used here to keep the deadline's bookkeeping in one place.
             self.set_outputs_enabled(false);
         }
+    }
+
+    /// Set the idle dim brightness multiplier and reach it to the panels. A
+    /// no-op when the level has not moved, so a tick that changes nothing
+    /// programmes no gamma.
+    pub fn set_idle_dim(&mut self, level: f64) {
+        if (self.idle_dim - level).abs() < 1e-9 {
+            return;
+        }
+        self.idle_dim = level;
+        self.refresh_gamma_all();
     }
 }
 

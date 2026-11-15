@@ -1129,6 +1129,8 @@ fn run() -> Result<()> {
                 if state.idle.simulate_activity() {
                     state.set_outputs_enabled(true);
                 }
+                // "Somebody is there" brightens a dimmed desk too.
+                state.set_idle_dim(1.0);
                 let seat = state.seat.clone();
                 state.idle_notifier_state.notify_activity(&seat);
             })

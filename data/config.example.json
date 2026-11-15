@@ -458,13 +458,20 @@
     "anything. Checked every 5 seconds, so thresholds round up to that.",
     "",
     "Idle inhibitors are honoured: a video player holding one keeps the",
-    "screen awake."
+    "screen awake.",
+    "",
+    "dim_after / dim_floor ramp the panel brightness down across the idle",
+    "window (from dim_after to blank_after) so an OLED spends it at falling",
+    "drive rather than full-then-off. dim_floor is 0..1 (0 = fully dark by the",
+    "blank); any input brightens it again. Omit dim_after for no dim."
   ],
   "idle": {
     "lock_after": 600,
     "lock_delay": 10,
     "lock_command": "swaylock -f",
-    "blank_after": 900
+    "blank_after": 900,
+    "dim_after": 300,
+    "dim_floor": 0.0
   },
 
   "_lid": [

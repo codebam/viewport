@@ -1738,6 +1738,8 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             blank_after,
             lock_delay,
             lock_command,
+            dim_after,
+            dim_floor,
         } => {
             // Validated as a whole before anything changes, like ConfigGaps:
             // a negative deadline takes the whole message with it.
@@ -1745,6 +1747,7 @@ pub fn apply(state: &mut ViewportState, request: Request) {
                 ("lock_after", lock_after),
                 ("blank_after", blank_after),
                 ("lock_delay", lock_delay),
+                ("dim_after", dim_after),
             ] {
                 if let Some(v) = value {
                     if v < 0 {
@@ -1753,10 +1756,18 @@ pub fn apply(state: &mut ViewportState, request: Request) {
                     }
                 }
             }
+            if let Some(v) = dim_floor {
+                if !(0.0..=1.0).contains(&v) {
+                    reject(state, "config.idle", &format!("dim_floor {v}"));
+                    return;
+                }
+            }
             let changed = lock_after.is_some()
                 || blank_after.is_some()
                 || lock_delay.is_some()
-                || lock_command.is_some();
+                || lock_command.is_some()
+                || dim_after.is_some()
+                || dim_floor.is_some();
             if let Some(v) = lock_after {
                 state.idle_settings.lock_after = Some(v);
             }
@@ -1768,6 +1779,12 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             }
             if let Some(v) = lock_command.as_ref() {
                 state.idle_settings.lock_command = Some(v.clone());
+            }
+            if let Some(v) = dim_after {
+                state.idle_settings.dim_after = Some(v);
+            }
+            if let Some(v) = dim_floor {
+                state.idle_settings.dim_floor = Some(v);
             }
             if changed {
                 // The lock mode, the re-armed timers and the inhibit state
@@ -1792,6 +1809,12 @@ pub fn apply(state: &mut ViewportState, request: Request) {
                 }
                 if let Some(v) = lock_command.as_ref() {
                     current.lock_command = Some(v.clone());
+                }
+                if let Some(v) = dim_after {
+                    current.dim_after = Some(v);
+                }
+                if let Some(v) = dim_floor {
+                    current.dim_floor = Some(v);
                 }
                 state.notify_config();
             }

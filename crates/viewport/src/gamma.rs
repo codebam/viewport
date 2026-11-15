@@ -161,6 +161,31 @@ fn fitted(ramp: Ramp, size: usize) -> Ramp {
     ramp.compose(&identity(size))
 }
 
+/// A brightness multiplier on a ramp: every entry scaled by `level` (0..1).
+///
+/// This is the idle dim — it scales whatever curve the output is already
+/// wearing (calibration, night-light client) rather than replacing it, so a
+/// dimmed desk keeps its colour profile. A level of 1 returns the ramp
+/// untouched, so the common case costs nothing and moves no value by a
+/// rounding step.
+pub fn scaled(ramp: &Ramp, level: f64) -> Ramp {
+    if level >= 1.0 {
+        return ramp.clone();
+    }
+    let level = level.clamp(0.0, 1.0);
+    let scale = |table: &[u16]| -> Vec<u16> {
+        table
+            .iter()
+            .map(|v| (f64::from(*v) * level).round() as u16)
+            .collect()
+    };
+    Ramp {
+        red: scale(&ramp.red),
+        green: scale(&ramp.green),
+        blue: scale(&ramp.blue),
+    }
+}
+
 /// What the compositor has to be able to do for a ramp to reach a monitor.
 pub trait GammaControlHandler {
     fn gamma_control_state(&mut self) -> &mut GammaControlState;

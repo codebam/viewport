@@ -239,6 +239,13 @@ pub struct IdleConfig {
     /// `crate::lock::Mode`, which every path that locks reads and which is the
     /// only place that reads this.
     pub lock_command: Option<String>,
+    /// Seconds of inactivity before the panel starts to dim, ramping the
+    /// brightness down toward `dim_floor` by `blank_after`. Zero or absent is
+    /// off. See `crate::idle::Settings::dim_level`.
+    pub dim_after: Option<i64>,
+    /// The brightness the dim ramps down to, 0..1. Absent is 0 (fully dark by
+    /// the end of the window).
+    pub dim_floor: Option<f64>,
 }
 
 /// The `notifications` block.
@@ -3813,6 +3820,20 @@ mod tests {
         // Absent is the shell's default (warn), carried as absent.
         let absent: File = serde_json::from_str("{}").expect("should parse");
         assert_eq!(absent.wallpaper_oled_guard, None);
+    }
+
+    #[test]
+    fn the_idle_dim_keys_parse() {
+        let file: File =
+            serde_json::from_str(r#"{"idle":{"blank_after":900,"dim_after":300,"dim_floor":0.1}}"#)
+                .expect("should parse");
+        assert_eq!(file.idle.dim_after, Some(300));
+        assert_eq!(file.idle.dim_floor, Some(0.1));
+        // Absent is no dim, distinct from a floor of 0.
+        let absent: File =
+            serde_json::from_str(r#"{"idle":{"blank_after":900}}"#).expect("should parse");
+        assert_eq!(absent.idle.dim_after, None);
+        assert_eq!(absent.idle.dim_floor, None);
     }
 
     #[test]

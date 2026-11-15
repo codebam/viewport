@@ -1441,6 +1441,14 @@ pub enum Request {
         /// draws.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         lock_command: Option<String>,
+        /// Seconds of inactivity before the panel starts to dim, as
+        /// `idle.dim_after`. Zero is off. Negative values are rejected.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        dim_after: Option<i64>,
+        /// The brightness the dim ramps down to (0..1), as `idle.dim_floor`.
+        /// Out-of-range values are rejected.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        dim_floor: Option<f64>,
     },
 
     /// Set what closing the laptop lid does at runtime, as `lid` in the
@@ -2947,8 +2955,10 @@ mod tests {
             blank_after,
             lock_delay,
             lock_command,
+            dim_after,
+            dim_floor,
         } = parse(
-            r#"{"type":"config.idle","lock_after":600,"lock_delay":10,"lock_command":"swaylock"}"#,
+            r#"{"type":"config.idle","lock_after":600,"lock_delay":10,"lock_command":"swaylock","dim_after":300,"dim_floor":0.1}"#,
         )
         else {
             panic!("not a config.idle message");
@@ -2957,6 +2967,8 @@ mod tests {
         assert_eq!(blank_after, None);
         assert_eq!(lock_delay, Some(10));
         assert_eq!(lock_command.as_deref(), Some("swaylock"));
+        assert_eq!(dim_after, Some(300));
+        assert_eq!(dim_floor, Some(0.1));
 
         let Request::ConfigLid { action } = parse(r#"{"type":"config.lid","action":"lock"}"#)
         else {

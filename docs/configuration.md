@@ -280,6 +280,23 @@ chord that asked for the lock does not cancel it. Every way of asking —
 idle deadline, `lock` binding, lid, `session.lock` — goes through the same
 delay, so there is one answer to whether the desk is about to lock.
 
+`idle.dim_after` and `idle.dim_floor` ramp the panel brightness down across the
+idle window instead of holding full brightness until the blank. From
+`dim_after` seconds of inactivity the brightness falls linearly from full to
+`dim_floor` (a 0..1 multiplier, absent is 0) by `blank_after` — or, with no
+blank set, over the minute following `dim_after` — and holds at the floor until
+the blank. It is applied through the compositor's gamma ramp, so it scales
+whatever curve the output is already wearing: a dimmed desk keeps its colour
+profile and any night-light tint. Any deliberate input brightens it again at
+once, as does a `SimulateUserActivity` on the bus. An OLED panel ages by
+exposure, so a desk left bright for the whole idle window is exposure nobody
+asked for; this spends that window at falling drive. Omit `dim_after` for no
+dim. Both keys ride `config.idle` at runtime like the deadlines:
+
+```console
+viewport msg -t config.idle --dim_after 300 --dim_floor 0.0
+```
+
 What locking means is one setting, `idle.lock_command`, and it has two answers.
 Set, it is the program to run — `swaylock -f`, or anything else that speaks
 `ext-session-lock-v1` — and the compositor's part is being a correct server for

@@ -36,12 +36,52 @@ pub struct Settings {
     /// unlocked black screen, so only a person who asked for it gets it.
     pub lock_delay: Option<i64>,
     pub lock_command: Option<String>,
+    /// Seconds of inactivity before the panel starts to dim. Zero or absent is
+    /// off. The dim ramps the brightness down from full toward `dim_floor`
+    /// across the window from here to `blank_after`, so the idle window is
+    /// spent at falling drive rather than full-brightness-then-off — an OLED
+    /// panel ages by exposure, and a desk left bright for the whole idle
+    /// window is exposure nobody asked for.
+    pub dim_after: Option<i64>,
+    /// The brightness the dim ramps down to, 0..1 (a multiplier on the gamma
+    /// ramp). Absent is 0 — fully dark by the end of the window, just before
+    /// the blank. Clamped to [0, 1]; a floor of 1 is no dim at all.
+    pub dim_floor: Option<f64>,
 }
 
 impl Settings {
     /// Whether anything here needs a timer at all.
     pub fn wanted(&self) -> bool {
-        self.lock_after.unwrap_or(0) > 0 || self.blank_after.unwrap_or(0) > 0
+        self.lock_after.unwrap_or(0) > 0
+            || self.blank_after.unwrap_or(0) > 0
+            || self.dim_after.unwrap_or(0) > 0
+    }
+
+    /// The brightness multiplier the panel should wear at this idle elapsed
+    /// time: 1.0 until `dim_after`, then a linear ramp down to `dim_floor` by
+    /// `blank_after` (or, with no blank set, over the minute following
+    /// `dim_after`), holding at the floor afterwards. Any input resets the
+    /// idle clock, which returns this to 1.0.
+    pub fn dim_level(&self, elapsed: Duration) -> f64 {
+        let Some(after) = self.dim_after.filter(|a| *a > 0) else {
+            return 1.0;
+        };
+        let floor = self.dim_floor.unwrap_or(0.0).clamp(0.0, 1.0);
+        let secs = elapsed.as_secs_f64();
+        let start = after as f64;
+        if secs <= start {
+            return 1.0;
+        }
+        let end = self
+            .blank_after
+            .filter(|b| *b > after)
+            .map(|b| b as f64)
+            .unwrap_or(start + 60.0);
+        if secs >= end {
+            return floor;
+        }
+        let t = (secs - start) / (end - start);
+        1.0 + (floor - 1.0) * t
     }
 
     /// How long a lock request stands black before it locks, or nothing.
@@ -270,7 +310,63 @@ mod tests {
             blank_after: blank,
             lock_delay: None,
             lock_command: Some("swaylock".to_owned()),
+            dim_after: None,
+            dim_floor: None,
         }
+    }
+
+    fn dim_settings(after: i64, blank: Option<i64>, floor: Option<f64>) -> Settings {
+        Settings {
+            dim_after: Some(after),
+            blank_after: blank,
+            dim_floor: floor,
+            ..Settings::default()
+        }
+    }
+
+    #[test]
+    fn the_dim_is_off_unless_asked_for() {
+        let s = settings(Some(300), Some(600));
+        assert_eq!(s.dim_level(Duration::from_secs(10_000)), 1.0);
+        assert!(!Settings::default().wanted());
+        // A dim deadline alone is enough to want the timer.
+        assert!(dim_settings(60, None, None).wanted());
+    }
+
+    #[test]
+    fn the_dim_ramps_from_full_to_the_floor_across_the_window() {
+        let s = dim_settings(100, Some(200), Some(0.0));
+        // Full brightness until the dim deadline.
+        assert_eq!(s.dim_level(Duration::from_secs(0)), 1.0);
+        assert_eq!(s.dim_level(Duration::from_secs(100)), 1.0);
+        // Halfway through the window, halfway down.
+        assert!((s.dim_level(Duration::from_secs(150)) - 0.5).abs() < 1e-9);
+        // At the blank deadline, the floor.
+        assert_eq!(s.dim_level(Duration::from_secs(200)), 0.0);
+        assert_eq!(s.dim_level(Duration::from_secs(900)), 0.0);
+    }
+
+    #[test]
+    fn the_dim_floor_is_honoured_and_clamped() {
+        let s = dim_settings(100, Some(200), Some(0.2));
+        assert!((s.dim_level(Duration::from_secs(150)) - 0.6).abs() < 1e-9);
+        assert_eq!(s.dim_level(Duration::from_secs(200)), 0.2);
+        // A nonsense floor clamps into [0, 1] rather than inverting the ramp.
+        let high = dim_settings(100, Some(200), Some(5.0));
+        assert_eq!(high.dim_level(Duration::from_secs(200)), 1.0);
+        let low = dim_settings(100, Some(200), Some(-1.0));
+        assert_eq!(low.dim_level(Duration::from_secs(200)), 0.0);
+    }
+
+    #[test]
+    fn the_dim_without_a_blank_ramps_over_the_following_minute() {
+        let s = dim_settings(100, None, Some(0.0));
+        assert_eq!(s.dim_level(Duration::from_secs(100)), 1.0);
+        assert!((s.dim_level(Duration::from_secs(130)) - 0.5).abs() < 1e-9);
+        assert_eq!(s.dim_level(Duration::from_secs(160)), 0.0);
+        // A blank at or before the dim deadline is no window at all.
+        let early = dim_settings(100, Some(50), Some(0.0));
+        assert_eq!(early.dim_level(Duration::from_secs(160)), 0.0);
     }
 
     #[test]

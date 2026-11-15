@@ -1305,6 +1305,10 @@ pub struct Idle {
     pub lock_delay: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lock_command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dim_after: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dim_floor: Option<f64>,
 }
 
 /// The seat's keymap, as `keyboard` in the config file, carried so the panel

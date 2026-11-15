@@ -1610,10 +1610,17 @@ impl ViewportState {
         ) {
             return;
         }
-        if self.idle.activity(activity_kind(event)) {
+        let woke = self.idle.activity(activity_kind(event));
+        if woke {
             // The screens were off. Bring them back through the same path the
             // deadline turned them off by.
             self.set_outputs_enabled(true);
+        }
+        // Any deliberate input brings the brightness back at once, rather than
+        // waiting for the next idle tick to notice the clock reset — a dimmed
+        // desk should brighten the moment somebody touches it.
+        if woke || activity_kind(event) == crate::idle::Activity::Deliberate {
+            self.set_idle_dim(1.0);
         }
         // And any client that asked to be told when the session goes idle —
         // a chat program marking you away, which is not the compositor's

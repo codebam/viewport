@@ -954,6 +954,8 @@ mod tests {
                 blank_after: Some(300),
                 lock_delay: Some(10),
                 lock_command: Some("swaylock".to_owned()),
+                dim_after: None,
+                dim_floor: None,
             }),
             lid: Some("lock".to_owned()),
             keyboard: Some(viewport_ipc::event::Keyboard {
