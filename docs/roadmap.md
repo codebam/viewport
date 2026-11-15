@@ -205,6 +205,85 @@ What has no setter yet, and why:
   `widget_extensions` (sent to the shell with the `config` event rather
   than stored as state to change).
 
+## OLED panel care and the extension ecosystem
+
+A focused batch, agreed all at once and being worked as one goal rather than
+rediscovered piecemeal. The thread through most of it is the OLED desk this
+compositor runs on: burn-in is exposure — light × time in one place — so the
+answers are dimness, motion that never settles, and spreading the load across
+subpixels. That is the same reasoning as the `border.animated` drift and the
+`wallpapers/oled/` art in the nixos config. The rest mature the extension hooks
+(layout, widget, wallpaper) into a small ecosystem. Status is marked per entry;
+an entry comes off this list and is documented where its subject lives when it
+lands.
+
+### 1. Per-output wallpaper extensions — planned
+
+The wallpaper hook (`docs/wallpaper-extension.md`) is page-level: one extension
+draws `document.documentElement`, and every output's `.desktop` mirrors it. The
+OLED desk is two monitors joined as one 5120×1440 surface, and its own notes
+call the mirror out ("one screen, not a panorama"). Let each output select its
+own wallpaper extension — or the same one seeded per-output — so the desk can be
+one continuous scene or two independent ones.
+
+Scope: the per-output `outputs` config block gains `wallpaper_extension` /
+`wallpaper_options`; the `config` event carries them per output; the shell
+applies the extension with the output's `.desktop` as `root` rather than the
+document element, tracking the active extension per output and clearing it on
+change. The gradient demo's class hook moves from `html.<class>` to the root
+element so it paints one output. The page-level selection stays as the default
+for outputs that name none.
+
+### 2. An OLED drive-budget guard in the extension loader — planned
+
+Fold the `bake.mjs verify` methodology (mean linear drive < 8%, fraction over
+half drive < 0.8%, peak 0.40–0.95, fraction over 25% grey < 62%) into the shell:
+when a wallpaper extension is applied, sample its first rendered frames into a
+canvas, measure the same metrics, and warn on the error stream — or refuse,
+configurably — when a frame blows the budget. Turns a manual headless check into
+a built-in safety net for any future extension. Shares the pixel-sampling code
+with the panel-drive widget below.
+
+### 3. A live panel-drive bar widget — planned
+
+A widget extension (or built-in module) that estimates the screen's current mean
+linear drive and peak, with a small sparkline, so the cost of a wallpaper or a
+bright application is visible in real time. Samples the wallpaper layer — the
+part the shell draws — on a slow interval; the metrics are the same as the
+guard. Depends on the sampling code in #2.
+
+### 4. Extension options in the settings panel — planned
+
+Let a wallpaper or widget extension declare its options (the gradient's
+`colors` / `angle` / `duration`) and render them as real controls in the settings
+panel, writing back through the runtime `config.*` setter, so tuning an
+extension does not mean editing JSON. The descriptor gains an optional `options`
+schema; the panel draws it; the value rides the existing config path.
+
+### 5. A notification extension hook — planned
+
+Complete the extension trio (layout, widget, wallpaper) with notifications: a
+`notification_extensions` manifest and a `registerNotification` API letting a
+script draw or filter notification popups the same way the others draw their
+piece. Mirrors the existing loader / registry / lifecycle shape.
+
+### 6. An idle dim ramp — planned
+
+The desk blanks at `idle.blank_after`; add a configurable gradual dim before
+that, so the panel spends the idle window at falling drive instead of
+full-brightness-then-off. An `idle.dim_after` / `idle.dim_floor` (or similar)
+ramps a brightness multiplier — compositor gamma, or a shell overlay — down from
+1 toward a floor as idle progresses, reset by any input. OLED-friendly and
+cheap.
+
+### 7. A game mode — planned
+
+One toggle (config `game_mode`, a runtime setter, and a bind) that strips shell
+animations, hides the bar, and pauses the wallpaper drift while gaming — cutting
+compositing overhead and distraction. Adjacent to `streamingMode` in the nixos
+config but compositor-side: it sets the motion durations to zero, hides the bar,
+and tells wallpaper extensions to pause. Restores on toggle-off.
+
 ## What is deliberately not on this list
 
 A file chooser stays with the GTK backend. `viewport-portals.conf` already
