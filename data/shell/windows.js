@@ -975,6 +975,92 @@ function applyWorkspaceRules(rules) {
   }
 }
 
+/* The focused border's hue drift, for an OLED panel (`border.animated`).
+ *
+ * A bright, saturated border held in one place while a window stays focused is
+ * a static shape that ages the subpixels under it — and a saturated colour
+ * grinds only one channel. The answer is not a brighter loop: it is a DIM,
+ * low-saturation border whose hue keeps moving, so the load is shared across
+ * the red, green and blue subpixels and no one of them carries it for hours.
+ *
+ * The hue is the theme's own focus hue, wandered by three sines whose periods
+ * are pairwise incommensurate (47/71/113s), so the composite never loops back
+ * to the same colour at the same time — the same bargain the OLED gradient
+ * wallpaper strikes. Saturation is capped and lightness fixed low, so even the
+ * brightest moment of the drift stays well under half drive.
+ *
+ * It is cheap: one custom property written five times a second, which the
+ * focused border and its ring read. Nothing is redrawn per frame. */
+let borderAnimated = false;
+let borderDriftTimer = null;
+let borderDriftStart = 0;
+
+/* The theme's focus colour as hue + saturation. Read from the document so a
+ * theme that names its own focus colour is followed; the fallback is the
+ * shell's own blue, for a desktop that has not themed it. */
+function borderFocusHue() {
+  let raw = '';
+  if (typeof getComputedStyle === 'function') {
+    raw = getComputedStyle(document.documentElement)
+      .getPropertyValue('--border-focus').trim();
+  }
+  let r, g, b;
+  const hex = raw.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+  if (hex) {
+    let h = hex[1];
+    if (h.length === 3) h = h.split('').map((c) => c + c).join('');
+    r = parseInt(h.slice(0, 2), 16) / 255;
+    g = parseInt(h.slice(2, 4), 16) / 255;
+    b = parseInt(h.slice(4, 6), 16) / 255;
+  } else {
+    const m = raw.match(/rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)/);
+    if (m) { r = +m[1] / 255; g = +m[2] / 255; b = +m[3] / 255; }
+    else return { h: 220, s: 0.5 };
+  }
+  const max = Math.max(r, g, b), min = Math.min(r, g, b);
+  const l = (max + min) / 2, d = max - min;
+  let h = 0, s = 0;
+  if (d !== 0) {
+    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    if (max === r) h = (g - b) / d + (g < b ? 6 : 0);
+    else if (max === g) h = (b - r) / d + 2;
+    else h = (r - g) / d + 4;
+    h *= 60;
+  }
+  return { h, s };
+}
+
+function tickBorderDrift() {
+  const { h, s } = borderFocusHue();
+  const t = (performance.now() - borderDriftStart) / 1000;
+  const hue = (h + 60 * Math.sin(2 * Math.PI * t / 47)
+                 + 40 * Math.sin(2 * Math.PI * t / 71)
+                 + 25 * Math.sin(2 * Math.PI * t / 113) + 360) % 360;
+  const sat = Math.min(s, 0.25);
+  const light = 0.42;
+  document.documentElement.style.setProperty('--border-focus-drift',
+    `hsl(${hue.toFixed(1)}, ${(sat * 100).toFixed(1)}%, ${(light * 100).toFixed(1)}%)`);
+}
+
+function setBorderAnimated(on) {
+  if (on === borderAnimated) return;
+  borderAnimated = on;
+  const root = document.documentElement;
+  if (on) {
+    root.classList.add('border-animated');
+    borderDriftStart = performance.now();
+    tickBorderDrift();
+    borderDriftTimer = setInterval(tickBorderDrift, 200);
+  } else {
+    root.classList.remove('border-animated');
+    if (borderDriftTimer !== null) {
+      clearInterval(borderDriftTimer);
+      borderDriftTimer = null;
+    }
+    root.style.removeProperty('--border-focus-drift');
+  }
+}
+
 /* The window border from the config file's `border` block. `radius` lands on
    `--window-radius` and `width` on `--window-border`, which `.window` draws
    its corners and its edge with.
@@ -1003,6 +1089,11 @@ function applyBorder(border) {
      why only a value that is actually there is read. */
   if (border.smart !== null && border.smart !== undefined) {
     borderSmart = border.smart === true;
+  }
+  /* The OLED hue drift. Absent leaves it as it was, the same bargain the other
+     border keys strike; an explicit false takes it down and stops the timer. */
+  if (border.animated !== null && border.animated !== undefined) {
+    setBorderAnimated(border.animated === true);
   }
 }
 

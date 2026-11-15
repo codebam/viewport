@@ -1945,6 +1945,19 @@ html.behind .desktop {
   outline-color: var(--focus-tint);
 }
 
+/* The OLED hue drift (`border.animated`). The focused border and its ring read
+   the dim, low-saturation colour the shell writes five times a second, whose
+   hue wanders on incommensurate periods so no subpixel carries a static load.
+   The border is dim by construction (lightness 42%, well under half drive); the
+   ring stays faint, the way --focus-tint is, rather than going full-strength.
+   The fallbacks keep the ordinary focus colour for the moment before the drift
+   has written, or on a shell that has not enabled it. */
+html.border-animated .window.focused {
+  border-color: var(--border-focus-drift, var(--border-focus));
+  outline-color: color-mix(in srgb,
+    var(--border-focus-drift, var(--border-focus)) 30%, transparent);
+}
+
 /* The ring arriving. A brighter, wider ring contracts onto the resting one, so
    focus landing somewhere is something that happens rather than something that
    is simply true a frame later.

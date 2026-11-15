@@ -387,6 +387,13 @@ pub struct BorderConfig {
     /// screen, and a rounded corner there is a notch of wallpaper in the
     /// corner of the monitor. Set it explicitly to have one without the other.
     pub smart: Option<bool>,
+    /// Drift the focused window's border colour slowly through dim, low-
+    /// saturation hues, for an OLED panel. A bright saturated border held in
+    /// one place while a window stays focused is a static shape that ages the
+    /// subpixels under it; this keeps the border dim and keeps its hue moving
+    /// so no one subpixel carries the load. Absent is off. The shell renders
+    /// it, so it works under every renderer.
+    pub animated: Option<bool>,
 }
 
 /// The `motion` block: how the shell animates.
@@ -3249,15 +3256,19 @@ mod tests {
 
     #[test]
     fn border_block_parses() {
-        let set: File = serde_json::from_str(r#"{"border":{"radius":12,"width":3,"smart":true}}"#)
-            .expect("should parse");
+        let set: File = serde_json::from_str(
+            r#"{"border":{"radius":12,"width":3,"smart":true,"animated":true}}"#,
+        )
+        .expect("should parse");
         assert_eq!(set.border.radius, Some(12));
         assert_eq!(set.border.width, Some(3));
         assert_eq!(set.border.smart, Some(true));
+        assert_eq!(set.border.animated, Some(true));
         // Absent is not false: it follows `gaps.smart`, and only the shell can
         // tell those apart, so it has to reach the wire as absent.
         let quiet: File = serde_json::from_str(r#"{"border":{}}"#).expect("should parse");
         assert_eq!(quiet.border.smart, None);
+        assert_eq!(quiet.border.animated, None);
         // Zero is a decision — square corners — and not an absent field.
         let square: File =
             serde_json::from_str(r#"{"border":{"radius":0}}"#).expect("should parse");

@@ -856,6 +856,7 @@ mod tests {
                 radius: Some(10),
                 width: Some(3),
                 smart: Some(false),
+                animated: None,
             }),
             cursor: Some(viewport_ipc::event::Cursor {
                 hide_after_ms: Some(0),

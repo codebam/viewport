@@ -1203,6 +1203,11 @@ pub struct Border {
     /// around, and rounding it after it has been pushed against the screen
     /// edge is what leaves wallpaper showing in the corners of the monitor.
     pub smart: Option<bool>,
+    /// Drift the focused border through dim, low-saturation hues (an OLED
+    /// measure). Absent is off. The shell renders it; the compositor only
+    /// carries the flag.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub animated: Option<bool>,
 }
 
 /// When the pointer image leaves the screen, as `cursor` in the config file,
@@ -2586,6 +2591,7 @@ mod tests {
                 radius: Some(12),
                 width: Some(3),
                 smart: Some(true),
+                animated: None,
             }),
             cursor: None,
             opacity: None,

@@ -932,6 +932,10 @@ pub enum Request {
         /// setting follows `gaps.smart`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         smart: Option<bool>,
+        /// Drift the focused border through dim hues, as `border.animated`.
+        /// Absent leaves whatever is set.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        animated: Option<bool>,
     },
 
     /// Set the wallpaper at runtime, as the `wallpaper` and `wallpaper_mode`
@@ -2692,13 +2696,15 @@ mod tests {
             radius,
             width,
             smart,
-        } = parse(r#"{"type":"config.border","radius":12,"width":3,"smart":true}"#)
+            animated,
+        } = parse(r#"{"type":"config.border","radius":12,"width":3,"smart":true,"animated":true}"#)
         else {
             panic!("not a config.border message");
         };
         assert_eq!(radius, Some(12));
         assert_eq!(width, Some(3));
         assert_eq!(smart, Some(true));
+        assert_eq!(animated, Some(true));
 
         // Square corners and no border at all, both asked for on purpose.
         let Request::ConfigBorder { radius, width, .. } =
@@ -2714,11 +2720,12 @@ mod tests {
             radius,
             width,
             smart,
+            animated,
         } = parse(r#"{"type":"config.border"}"#)
         else {
             panic!("not a config.border message");
         };
-        assert_eq!((radius, width, smart), (None, None, None));
+        assert_eq!((radius, width, smart, animated), (None, None, None, None));
     }
 
     #[test]

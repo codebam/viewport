@@ -240,6 +240,7 @@ impl ViewportState {
                 radius: file.border.radius,
                 width: file.border.width,
                 smart: file.border.smart,
+                animated: file.border.animated,
             };
             if border.radius.is_some_and(|v| v < 0) {
                 tracing::warn!(

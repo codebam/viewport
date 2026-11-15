@@ -238,7 +238,11 @@
     "compositor as well as the shell: the client is a surface the",
     "compositor draws, and it crops that surface to the same corner — the",
     "outer radius less the border — or the rounded frame would be hidden",
-    "behind a square client. Fullscreen windows keep square corners."
+    "behind a square client. Fullscreen windows keep square corners.",
+    "`animated` drifts the focused border through dim, low-saturation hues",
+    "for an OLED panel: a bright static border ages the subpixels under it,",
+    "so this keeps it dim and keeps the hue moving. Absent is off; the shell",
+    "renders it, so it works under every renderer."
   ],
   "border": {},
 

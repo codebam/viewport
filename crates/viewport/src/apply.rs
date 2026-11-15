@@ -955,6 +955,7 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             radius,
             width,
             smart,
+            animated,
         } => {
             // Validated as a whole before anything changes, like ConfigGaps
             // above: a refused message must not leave its valid half applied.
@@ -985,6 +986,10 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             }
             if let Some(v) = smart {
                 current.smart = Some(v);
+                changed = true;
+            }
+            if let Some(v) = animated {
+                current.animated = Some(v);
                 changed = true;
             }
             if changed {

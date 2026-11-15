@@ -5965,6 +5965,62 @@ if (mode === 'scrolling') {
     gapsStyle.getPropertyValue('--window-border') === '0px');
   emit({ type: 'config', layout: mode, border: { width: 2 } });
 
+  /* The OLED hue drift (border.animated). The focused border reads a dim,
+     low-saturation colour whose hue wanders on incommensurate periods, so no
+     subpixel carries a static load. What is checkable here is the wiring and
+     the budget: the class and the drift property appear on enable, the colour
+     is dim and desaturated, the hue actually moves with time, and disabling
+     takes the class, the property and the timer all away. */
+  {
+    const root = document.documentElement;
+    const realSetInterval = global.setInterval;
+    const realClearInterval = global.clearInterval;
+    const realGetComputedStyle = global.getComputedStyle;
+    const realPerfNow = global.performance.now;
+    let driftTick = null;
+    let timerCleared = false;
+    let nowVal = 1000;
+    global.setInterval = (fn) => { driftTick = fn; return 42; };
+    global.clearInterval = () => { timerCleared = true; };
+    global.getComputedStyle = () => ({
+      getPropertyValue: (k) => (k === '--border-focus' ? '#7aa2f7' : ''),
+    });
+    global.performance.now = () => nowVal;
+
+    emit({ type: 'config', layout: mode, border: { animated: true } });
+    check('border.animated marks the document',
+      root.classList.contains('border-animated'));
+    const drift0 = gapsStyle.getPropertyValue('--border-focus-drift');
+    const hsl = drift0.match(/^hsl\(([\d.]+), ([\d.]+)%, ([\d.]+)%\)$/);
+    check('the focused border is given a drift colour', hsl !== null);
+    check('the drift is dim (lightness 42%)', hsl !== null && hsl[3] === '42.0');
+    check('the drift is low-saturation (<= 25%)',
+      hsl !== null && parseFloat(hsl[2]) <= 25);
+
+    /* The hue moves with time: the same tick five seconds on is a different
+       colour, which is the whole point — a static colour is what ages a
+       subpixel. */
+    nowVal = 6000;
+    if (driftTick) driftTick();
+    const drift1 = gapsStyle.getPropertyValue('--border-focus-drift');
+    check('the hue drifts as time passes',
+      drift1 !== drift0 && /^hsl\(/.test(drift1));
+
+    emit({ type: 'config', layout: mode, border: { animated: false } });
+    check('disabling takes the class away',
+      !root.classList.contains('border-animated'));
+    check('and the drift property',
+      gapsStyle.getPropertyValue('--border-focus-drift') === '');
+    check('and stops the timer', timerCleared);
+
+    global.setInterval = realSetInterval;
+    global.clearInterval = realClearInterval;
+    if (realGetComputedStyle === undefined) delete global.getComputedStyle;
+    else global.getComputedStyle = realGetComputedStyle;
+    global.performance.now = realPerfNow;
+    emit({ type: 'config', layout: mode });
+  }
+
   /* Extra bar widgets from the config file. Each builds an element in the
      bar's right side, filled from the status sample: a disk widget shows the
      free space on its mount, a volume widget the sink's volume and mute. The
