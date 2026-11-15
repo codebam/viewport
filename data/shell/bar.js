@@ -810,6 +810,7 @@ function moduleTitle(name) {
     case 'cpu': return 'cpu';
     case 'load': return 'load average';
     case 'memory': return 'memory';
+    case 'panel': return 'panel drive';
     default: return '';
   }
 }
@@ -1522,6 +1523,10 @@ function condition(code) {
 
 function renderBars() {
   for (const name of outputs.keys()) renderBar(name);
+  /* The panel-drive widget samples on its own timer; start it when a bar asks
+     for it and stop it when none does. Defined in panel.js, which loads after
+     this file, so the call is guarded. */
+  if (typeof syncPanelWidget === 'function') syncPanelWidget();
 }
 
 function renderBarsModules() {

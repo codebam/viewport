@@ -635,6 +635,9 @@ const EXPORTS = ';globalThis.__shell = { views, workspaces, outputs, scrollOffse
   + ' applyWallpaperOledGuard: typeof applyWallpaperOledGuard !== "undefined" ? applyWallpaperOledGuard : undefined,'
   + ' guardWallpaperExtension: typeof guardWallpaperExtension !== "undefined" ? guardWallpaperExtension : undefined,'
   + ' handleWallpaperSample: typeof handleWallpaperSample !== "undefined" ? handleWallpaperSample : undefined,'
+  + ' syncPanelWidget: typeof syncPanelWidget !== "undefined" ? syncPanelWidget : undefined,'
+  + ' panelWidgetOutputs: typeof panelWidgetOutputs !== "undefined" ? panelWidgetOutputs : undefined,'
+  + ' drawPanelReading: typeof drawPanelReading !== "undefined" ? drawPanelReading : undefined,'
   /* The initial-config gate and the queue behind it, so a test can put the
      page back in the state a fresh load starts in — before the first config —
      and watch what opens the gate again. That gate is what a throwing
@@ -7252,6 +7255,59 @@ if (mode === 'scrolling') {
 
   console.error = realError;
   if (hasApi) { setGuard('warn'); applyOut(out, null); }
+}
+
+/* --- the panel-drive bar widget ----------------------------------------
+ *
+ * Opt-in via bar_items ("panel"): it samples each output's wallpaper on a slow
+ * timer and draws the mean drive. The draw is checked on its own; the timer is
+ * checked with setInterval/clearInterval stubbed to capture start/stop, the way
+ * the animated-border block does, and the sampler stubbed so no real
+ * rasteriser is needed.
+ * --------------------------------------------------------------------- */
+{
+  const sh = globalThis.__shell;
+  const sync = sh.syncPanelWidget;
+  const targets = sh.panelWidgetOutputs;
+  const draw = sh.drawPanelReading;
+  const hasApi = typeof sync === 'function' && typeof targets === 'function'
+    && typeof draw === 'function';
+  const out = sh.outputs.get('DP-1');
+
+  /* The draw: a measurement lands on the module as a mean-drive percentage,
+     with the full metrics in the tooltip. */
+  const panelEl = document.createElement('span');
+  if (hasApi) {
+    out.modules.panel = panelEl;
+    draw(out, { apl: 0.028, max: 0.5, drive50: 0, over25: 0.05 });
+  }
+  check('the panel module shows the mean drive',
+    hasApi && panelEl.textContent.includes('2.8%'));
+  check('the panel module tooltip carries the full metrics',
+    hasApi && /peak 50%/.test(panelEl.title) && /over half drive 0.00%/.test(panelEl.title));
+  check('the output is a widget target while it carries the module',
+    hasApi && targets().some((o) => o.name === 'DP-1'));
+
+  /* The timer: started when a bar carries the module, stopped when none does.
+     The sampler is stubbed so the initial render does not need a rasteriser. */
+  const realSample = globalThis.sampleWallpaper;
+  const realSetInterval = global.setInterval;
+  const realClearInterval = global.clearInterval;
+  globalThis.sampleWallpaper = () => Promise.resolve({ apl: 0.01, max: 0.4, drive50: 0, over25: 0 });
+  let started = 0, stopped = 0;
+  global.setInterval = () => { started++; return 7; };
+  global.clearInterval = () => { stopped++; };
+  if (hasApi) sync();
+  check('a bar with the module starts the sampling timer', hasApi && started === 1);
+  if (hasApi) sync();
+  check('and does not start a second one', hasApi && started === 1);
+  if (hasApi) { delete out.modules.panel; sync(); }
+  check('removing the module stops the timer', hasApi && stopped === 1);
+  check('and the output is no longer a target',
+    hasApi && !targets().some((o) => o.name === 'DP-1'));
+  global.setInterval = realSetInterval;
+  global.clearInterval = realClearInterval;
+  globalThis.sampleWallpaper = realSample;
 }
 
 /* --- the settings panel ------------------------------------------------

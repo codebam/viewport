@@ -146,3 +146,57 @@ function sampleWallpaper(rootEl) {
   }
   return rasterizeClone(clone, width, height);
 }
+
+/* The panel-drive bar widget: a live reading of what the wallpaper is costing
+ * the panel, opt-in by naming "panel" in `bar_items`. Unlike the cpu/memory
+ * modules, which the compositor feeds, this one feeds itself — it samples each
+ * output's wallpaper on a slow interval and draws the mean drive. The wallpaper
+ * drifts on periods of tens of seconds, so a few seconds between samples is
+ * live enough; the timer only runs while a bar actually carries the module, so
+ * a desk that never asks for it pays nothing. */
+const PANEL_WIDGET_INTERVAL = 5000;
+let panelWidgetTimer = null;
+
+/* The outputs whose bar carries a panel module right now. */
+function panelWidgetOutputs() {
+  const list = [];
+  for (const output of outputs.values()) {
+    if (output.modules && output.modules.panel) list.push(output);
+  }
+  return list;
+}
+
+/* Draw one measurement onto an output's panel module. Split from the sampling
+ * so it can be checked on its own. The module may have gone away while the
+ * sample was in flight, so it is read back fresh. */
+function drawPanelReading(output, m) {
+  const el = output.modules && output.modules.panel;
+  if (!el) return;
+  const apl = (m.apl * 100).toFixed(1);
+  setModule(el, ` 󰍹 ${apl}%`);
+  setModuleTitle(el,
+    `panel drive — mean ${apl}%, peak ${(m.max * 100).toFixed(0)}%, `
+    + `over half drive ${(m.drive50 * 100).toFixed(2)}%, `
+    + `wash ${(m.over25 * 100).toFixed(0)}%`);
+}
+
+function renderPanelWidget() {
+  for (const output of panelWidgetOutputs()) {
+    sampleWallpaper(output.el)
+      .then((m) => drawPanelReading(output, m))
+      .catch(() => { /* a sample that cannot rasterise leaves the last reading */ });
+  }
+}
+
+/* Start the sampling timer when a bar asks for the widget, stop it when none
+ * does. Called after every bar rebuild. */
+function syncPanelWidget() {
+  const wanted = panelWidgetOutputs().length > 0;
+  if (wanted && panelWidgetTimer === null) {
+    renderPanelWidget();
+    panelWidgetTimer = setInterval(renderPanelWidget, PANEL_WIDGET_INTERVAL);
+  } else if (!wanted && panelWidgetTimer !== null) {
+    clearInterval(panelWidgetTimer);
+    panelWidgetTimer = null;
+  }
+}

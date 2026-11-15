@@ -120,6 +120,24 @@ at one moment of its drift; a scene built to the budgets above passes at every
 moment. The measurement lives in `data/shell/panel.js` and is shared with the
 panel-drive bar widget.
 
+## The panel-drive bar widget
+
+The same measurement can sit on the bar as a live reading. Name `panel` in
+`bar_items` to add it:
+
+```json
+{ "bar_items": ["net", "cpu", "memory", "panel", "clock"] }
+```
+
+The module shows the wallpaper's current mean linear drive as a percentage
+(`󰍹 2.8%`); the tooltip carries the peak, the fraction over half drive and the
+wash. It samples each output's wallpaper every five seconds, and only while a
+bar actually carries the module — a desk that never asks for it pays nothing.
+Unlike the cpu/memory modules, which the compositor feeds, this one feeds itself
+from the shell's own rendering, so it reflects whatever the wallpaper extension
+is drawing right now. It is a still of the current moment, refreshed on the
+interval, not a per-frame meter.
+
 ## Writing one
 
 A script registers exactly one wallpaper with `registerWallpaper`:

@@ -370,8 +370,10 @@
   "_bar_items": [
     "Override the entire right side of the bar with an explicit, ordered list.",
     "Each entry is either a module the bar already draws — a bare string like",
-    "\"net\", \"cpu\", \"load\", \"memory\", \"disk\", \"clock\" or \"mode\" — or a widget,",
-    "an object exactly like a bar_widgets entry. When present (even empty) it",
+    "\"net\", \"cpu\", \"load\", \"memory\", \"disk\", \"clock\", \"panel\" or \"mode\" — or a",
+    "widget, an object exactly like a bar_widgets entry. \"panel\" shows the live",
+    "OLED mean drive of the wallpaper (see docs/wallpaper-extension.md). When",
+    "present (even empty) it",
     "replaces the default modules and any bar_widgets outright — the bar draws",
     "exactly what is listed, in order, and nothing else. That is how a widget",
     "ends up sitting in the middle of the modules rather than after them.",

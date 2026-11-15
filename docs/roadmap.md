@@ -256,13 +256,19 @@ inlined property by property — `cssText` is empty in CEF). The guard
 and warns or takes the extension down. Documented in
 `docs/wallpaper-extension.md` ("The OLED drive-budget guard").
 
-### 3. A live panel-drive bar widget — planned
+### 3. A live panel-drive bar widget — done
 
 A widget extension (or built-in module) that estimates the screen's current mean
 linear drive and peak, with a small sparkline, so the cost of a wallpaper or a
 bright application is visible in real time. Samples the wallpaper layer — the
 part the shell draws — on a slow interval; the metrics are the same as the
 guard. Depends on the sampling code in #2.
+
+Landed: a built-in `panel` bar module, opt-in by naming `"panel"` in `bar_items`.
+It samples each output's wallpaper every 5s (only while a bar carries it) and
+draws the mean drive as a percentage, with the peak / over-half / wash in the
+tooltip. The sparkline is left as optional polish — the live number and the
+full-metrics tooltip are the substance. Shares `panel.js` with the guard.
 
 ### 4. Extension options in the settings panel — planned
 
