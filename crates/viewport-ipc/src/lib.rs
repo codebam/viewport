@@ -211,6 +211,7 @@ fn is_known_type(name: &str) -> bool {
             | "config.wallpaper"
             | "config.wallpaper_options"
             | "config.dark_mode"
+            | "config.game_mode"
             | "config.cursor"
             | "config.motion"
             | "config.group"

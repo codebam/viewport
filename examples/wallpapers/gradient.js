@@ -91,4 +91,14 @@ registerWallpaper('gradient', {
     const style = document.getElementById(`wallpaper-gradient-style-${suffix}`);
     if (style) style.remove();
   },
+
+  /* Game mode pauses the drift (and resumes it on the way out). The shell also
+     pauses CSS animations under html.game-mode as a fallback, so an extension
+     that declares no hook still stops; these make it explicit. */
+  pause({ root }) {
+    root.style.animationPlayState = 'paused';
+  },
+  resume({ root }) {
+    root.style.animationPlayState = '';
+  },
 });

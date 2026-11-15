@@ -594,6 +594,12 @@ const TYPES: &[Type] = &[
         hint: "[--enabled BOOL]   (absent toggles)",
     },
     Type {
+        name: "config.game_mode",
+        fields: &["enabled"],
+        strings: &[],
+        hint: "[--enabled BOOL]   (absent toggles; strip animations, hide bar, pause wallpaper)",
+    },
+    Type {
         name: "config.cursor",
         fields: &[
             "hide_after_ms",

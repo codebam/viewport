@@ -991,6 +991,12 @@ pub struct File {
 
     pub dark_mode: Option<bool>,
 
+    /// Game mode: strip shell animations, hide the bar and pause the wallpaper
+    /// drift while gaming, cutting compositing overhead and distraction. The
+    /// shell does the work; the compositor carries the flag and the toggle.
+    /// Absent is off.
+    pub game_mode: Option<bool>,
+
     /// How many bits per colour channel a scanout buffer carries: `"8"`,
     /// `"10"`, or `"auto"`. Absent is `"auto"`.
     ///
@@ -3834,6 +3840,14 @@ mod tests {
             serde_json::from_str(r#"{"idle":{"blank_after":900}}"#).expect("should parse");
         assert_eq!(absent.idle.dim_after, None);
         assert_eq!(absent.idle.dim_floor, None);
+    }
+
+    #[test]
+    fn the_game_mode_key_parses() {
+        let file: File = serde_json::from_str(r#"{"game_mode":true}"#).expect("should parse");
+        assert_eq!(file.game_mode, Some(true));
+        let absent: File = serde_json::from_str("{}").expect("should parse");
+        assert_eq!(absent.game_mode, None);
     }
 
     #[test]

@@ -644,6 +644,8 @@ const EXPORTS = ';globalThis.__shell = { views, workspaces, outputs, scrollOffse
   + ' activeNotificationDescriptor: typeof activeNotificationDescriptor !== "undefined" ? activeNotificationDescriptor : undefined,'
   + ' showNotification: typeof showNotification !== "undefined" ? showNotification : undefined,'
   + ' notificationsMap: typeof notifications !== "undefined" ? notifications : undefined,'
+  + ' applyGameMode: typeof applyGameMode !== "undefined" ? applyGameMode : undefined,'
+  + ' get gameModeForTest() { return typeof gameMode !== "undefined" ? gameMode : undefined; },'
   /* The initial-config gate and the queue behind it, so a test can put the
      page back in the state a fresh load starts in — before the first config —
      and watch what opens the gate again. That gate is what a throwing
@@ -7469,6 +7471,52 @@ if (mode === 'scrolling') {
 
   clearPopups();
   if (hasApi) select(null);
+}
+
+/* --- game mode ---------------------------------------------------------
+ *
+ * One toggle strips shell animations, hides the bar and pauses the wallpaper
+ * drift, restoring them on the way out. The class, the wallpaper pause/resume
+ * hooks and the bar are checked directly; the motion pace and the config path
+ * are checked through a config event.
+ * --------------------------------------------------------------------- */
+{
+  const sh = globalThis.__shell;
+  const apply = sh.applyGameMode;
+  const hasApi = typeof apply === 'function';
+  const root = document.documentElement;
+  const out = sh.outputs.get('DP-1');
+
+  const seen = { paused: 0, resumed: 0 };
+  if (hasApi) {
+    sh.registerWallpaper('gmprobe', {
+      apply(ctx) { ctx.root.classList.add('gm-probe'); },
+      clear(ctx) { ctx.root.classList.remove('gm-probe'); },
+      pause() { seen.paused++; },
+      resume() { seen.resumed++; },
+    });
+    sh.applyOutputWallpaperExtension(out, 'gmprobe', {});
+  }
+
+  if (hasApi) apply(true);
+  check('game mode sets the flag', hasApi && sh.gameModeForTest === true);
+  check('game mode marks the document element', hasApi && root.classList.contains('game-mode'));
+  check('game mode pauses the wallpaper extension', hasApi && seen.paused === 1);
+  check('game mode hides the bar', hasApi && out.el.classList.contains('bar-hidden'));
+
+  if (hasApi) apply(false);
+  check('toggling off clears the flag', hasApi && sh.gameModeForTest === false);
+  check('and removes the mark', hasApi && !root.classList.contains('game-mode'));
+  check('and resumes the wallpaper extension', hasApi && seen.resumed === 1);
+
+  /* The config event drives it, and zeroes the motion pace while it is on. */
+  emit({ type: 'config', layout: mode, rules: HARNESS_RULES, game_mode: true });
+  check('a config with game_mode on applies it', hasApi && sh.gameModeForTest === true);
+  check('and zeroes the motion pace', hasApi && root.classList.contains('motion-off'));
+  emit({ type: 'config', layout: mode, rules: HARNESS_RULES, game_mode: false });
+  check('a config with game_mode off restores it', hasApi && sh.gameModeForTest === false);
+
+  if (hasApi) sh.applyOutputWallpaperExtension(out, null);
 }
 
 /* --- the settings panel ------------------------------------------------

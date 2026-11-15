@@ -1006,6 +1006,16 @@ pub enum Request {
         enabled: Option<bool>,
     },
 
+    /// Set game mode at runtime, as `game_mode` in the config file. Absent
+    /// *toggles*, on the same terms as `config.dark_mode` — what a `game-mode`
+    /// keybinding wants. The shell strips animations, hides the bar and pauses
+    /// the wallpaper drift while it is on.
+    #[serde(rename = "config.game_mode")]
+    ConfigGameMode {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        enabled: Option<bool>,
+    },
+
     /// Set when the pointer image leaves the screen, as the `cursor` block in
     /// the config file.
     ///
@@ -2931,6 +2941,20 @@ mod tests {
             parse(r#"{"type":"config.dark_mode","enabled":false}"#),
             Request::ConfigDarkMode {
                 enabled: Some(false)
+            }
+        );
+    }
+
+    #[test]
+    fn game_mode_toggles_when_nobody_said_which_way() {
+        assert_eq!(
+            parse(r#"{"type":"config.game_mode"}"#),
+            Request::ConfigGameMode { enabled: None }
+        );
+        assert_eq!(
+            parse(r#"{"type":"config.game_mode","enabled":true}"#),
+            Request::ConfigGameMode {
+                enabled: Some(true)
             }
         );
     }

@@ -947,6 +947,12 @@ pub struct Config {
     #[serde(default = "yes")]
     pub dark_mode: bool,
 
+    /// Game mode: the shell strips animations, hides the bar and pauses the
+    /// wallpaper drift. Defaulted to false — a session that has never been told
+    /// is not gaming.
+    #[serde(default)]
+    pub game_mode: bool,
+
     /// `"client"` means applications draw their own window frames; anything
     /// else, including absence, means the compositor draws them. Carried so
     /// the panel can show and `config.save` can write the policy the
@@ -2291,6 +2297,7 @@ mod tests {
             wallpaper_mode: None,
             osk: "auto".to_owned(),
             dark_mode: true,
+            game_mode: false,
             decorations: None,
             layer_rules: None,
             tray: None,
@@ -2720,6 +2727,7 @@ mod tests {
             wallpaper_mode: None,
             osk: "auto".to_owned(),
             dark_mode: true,
+            game_mode: false,
             decorations: None,
             layer_rules: None,
             tray: None,
@@ -2797,6 +2805,7 @@ mod tests {
             wallpaper_mode: None,
             osk: "auto".to_owned(),
             dark_mode: true,
+            game_mode: false,
             decorations: None,
             layer_rules: None,
             tray: None,
@@ -2868,6 +2877,7 @@ mod tests {
             wallpaper_mode: None,
             osk: "auto".to_owned(),
             dark_mode: true,
+            game_mode: false,
             decorations: None,
             layer_rules: None,
             tray: None,
@@ -2920,6 +2930,7 @@ mod tests {
             wallpaper_mode: None,
             osk: "auto".to_owned(),
             dark_mode: true,
+            game_mode: false,
             decorations: None,
             layer_rules: None,
             tray: None,
@@ -3098,6 +3109,7 @@ mod tests {
                 wallpaper_mode: None,
                 osk: "auto".to_owned(),
                 dark_mode: true,
+                game_mode: false,
                 decorations: None,
                 layer_rules: None,
                 tray: None,

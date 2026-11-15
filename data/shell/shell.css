@@ -144,6 +144,15 @@
 :root.motion-off { --anim: 0ms; --anim-slow: 0ms; --anim-move: 0ms;
   --anim-layers: 0ms; --anim-border: 0ms; }
 
+/* Game mode pauses the wallpaper drift — the gradient on the desktop and any
+   layer an extension built inside it — so a game costs the panel a still frame
+   rather than a moving one. The shell's own transitions are already zeroed by
+   motion-off, which applyGameMode forces through applyMotion. */
+html.game-mode .desktop,
+html.game-mode .desktop * {
+  animation-play-state: paused !important;
+}
+
 * { box-sizing: border-box; }
 
 html, body {

@@ -3495,6 +3495,12 @@ impl ViewportState {
                 tracing::info!("blank binding");
                 self.blank_screens();
             }
+            Bound::GameMode => {
+                let want = !self.config.game_mode;
+                tracing::info!("game mode {}", if want { "on" } else { "off" });
+                self.config.game_mode = want;
+                self.notify_config();
+            }
             Bound::Magnify(step) => {
                 if self.magnifier.apply(step) {
                     tracing::info!("magnifier at {:.2}x", self.magnifier.zoom());

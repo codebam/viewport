@@ -47,6 +47,9 @@ pub enum Action {
     Lock,
     /// Turn the screens off now, rather than waiting for `idle.blank_after`.
     Blank,
+    /// Toggle game mode: strip shell animations, hide the bar and pause the
+    /// wallpaper drift while gaming, and restore them on the way out.
+    GameMode,
     /// Give the keyboard to the wallpaper terminal on the active monitor, or
     /// take it back.
     ///
@@ -282,6 +285,7 @@ impl Binding {
             Action::Appearance => "appearance toggle".to_owned(),
             Action::Lock => "lock".to_owned(),
             Action::Blank => "blank".to_owned(),
+            Action::GameMode => "game-mode".to_owned(),
             Action::Background => "background".to_owned(),
             Action::Magnify(crate::magnify::Step::In) => "magnify in".to_owned(),
             Action::Magnify(crate::magnify::Step::Out) => "magnify out".to_owned(),
@@ -486,6 +490,7 @@ pub(crate) fn parse_action(action: &str) -> Action {
             // recognise. Two built-in chords that did nothing, silently.
             "lock" => Action::Lock,
             "blank" => Action::Blank,
+            "game-mode" => Action::GameMode,
             "background" => Action::Background,
             // Spelled out rather than parsed as a verb with an argument, so
             // that a typo — `magnify up` — falls through to the shell and is
@@ -1102,6 +1107,7 @@ mod tests {
         // way — the message goes out, nothing recognises it, nothing happens.
         assert_eq!(parse_action("lock"), Action::Lock);
         assert_eq!(parse_action("blank"), Action::Blank);
+        assert_eq!(parse_action("game-mode"), Action::GameMode);
     }
 
     #[test]

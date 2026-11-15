@@ -1151,9 +1151,12 @@ function relayoutAll() {
     /* Under 'auto' the bar is hidden except while Mod4 is held; the per-output
        toggle (Mod4+n) still wins, so a bar someone asked for does not vanish
        the moment they let go of the key that revealed it. */
-    const hidden = barMode === 'auto'
-      ? (output.barHidden && !logoHeld)
-      : output.barHidden;
+    /* Game mode hides the bar outright, whatever the bar mode or the per-output
+       toggle — a chord someone pressed to game should not leave the bar up. */
+    const hidden = (typeof gameMode !== 'undefined' && gameMode)
+      || (barMode === 'auto'
+        ? (output.barHidden && !logoHeld)
+        : output.barHidden);
     /* The reveal is an edge, not a state, and this runs on every relayout, so
        what the bar was doing last time is remembered rather than read back off
        the element — the first pass over a new output finds no `bar-hidden`

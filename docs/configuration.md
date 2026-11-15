@@ -158,8 +158,9 @@ settings (shell URL, backend, socket path) are re-read but do nothing until
 restart.
 
 Actions are `exec COMMAND`, `close`, `exit`, `reload`, `focus DIRECTION`,
-`mode NAME`, `appearance toggle`, `lock`, `blank`, `background`, `volume STEP`,
-`volume mute`, `volume mic-mute`, `brightness STEP` and `shell COMMAND ARGS…`.
+`mode NAME`, `appearance toggle`, `lock`, `blank`, `game-mode`, `background`,
+`volume STEP`, `volume mute`, `volume mic-mute`, `brightness STEP` and
+`shell COMMAND ARGS…`.
 Typed volume and brightness actions read the resulting level back and show the
 OSD; an equivalent `exec` changes the device but cannot provide that feedback.
 `background` is the wallpaper terminal's only way in — see below.
@@ -178,7 +179,8 @@ command-line flags win for the variables they own, because those validate and a
 typo there should be a message rather than a session on the wrong card.
 
 **Runtime** — the control socket. `config.gaps`, `config.border`,
-`config.wallpaper`, `config.dark_mode`, `config.cursor`, `config.motion`,
+`config.wallpaper`, `config.dark_mode`, `config.game_mode`, `config.cursor`,
+`config.motion`,
 `config.group`, `config.clock`, `config.bar`, `config.bar_blur`,
 `config.bar_widgets`, `config.bar_items`, `config.logo`, `config.tutorial`,
 `config.tiling_mode`, `config.layout`, `config.layout_extensions`,
@@ -1074,6 +1076,25 @@ All three end in the same call, and the portal signals the change every time,
 so applications already running follow it. It changes nothing the shell draws:
 the desktop's own palette is dark, and this is the answer given to Firefox,
 GTK and Qt.
+
+`game_mode` is one toggle for gaming: it strips the shell's animations, hides
+the bar and pauses the wallpaper drift, cutting compositing overhead and
+distraction, and restores all three on the way out. The motion pace is zeroed
+while it is on and the configured pace comes back when it is off; the bar hides
+through the same relayout that hides it in `auto` mode; and the active wallpaper
+extensions are asked to pause (a `pause`/`resume` hook on the descriptor, with a
+CSS fallback that pauses animations for extensions that declare none). Bind it
+with the `game-mode` action, or flip it over the socket as `config.game_mode`
+(absent toggles, like `config.dark_mode`):
+
+```sh
+viewport msg -t config.game_mode --enabled true
+viewport msg -t config.game_mode              # absent toggles
+```
+
+It is adjacent to a streaming mode but compositor-side and about overhead rather
+than capture: nothing is recorded, the desk simply stops animating itself while
+a game has the screen.
 
 That answer normally comes from a desktop environment. There isn't one here, so
 the compositor implements `org.freedesktop.impl.portal.Settings` itself. The

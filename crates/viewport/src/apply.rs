@@ -1089,6 +1089,16 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             state.notify_config();
         }
 
+        Request::ConfigGameMode { enabled } => {
+            // Absent toggles, like config.dark_mode: the keybinding wants a
+            // flip, a panel switch sends the state it wants. The shell does the
+            // work (animations, bar, wallpaper); the compositor only carries the
+            // flag, so there is nothing to render here.
+            let want = enabled.unwrap_or(!state.config.game_mode);
+            state.config.game_mode = want;
+            state.notify_config();
+        }
+
         Request::ConfigCursor {
             hide_after_ms,
             hide_on_key_press,

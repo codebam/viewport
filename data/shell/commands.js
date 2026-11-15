@@ -907,6 +907,40 @@ function activeNotificationDescriptor() {
     ? null : notificationRegistry.get(activeNotificationExtension) ?? null;
 }
 
+/* Game mode: strip shell animations, hide the bar and pause the wallpaper
+ * drift while gaming, cutting compositing overhead and distraction. One toggle,
+ * restored on the way out. The shell does the work; the compositor carries the
+ * flag (config.game_mode) and the keybinding. The motion pace is applied by the
+ * config handler (which owns applyMotion); this owns the class, the wallpaper
+ * pause/resume and the bar relayout. */
+let gameMode = false;
+let lastMotionConfig = null;
+
+function applyGameMode(on) {
+  on = on === true;
+  if (gameMode === on) return;
+  gameMode = on;
+  document.documentElement.classList.toggle('game-mode', on);
+  /* Tell the active wallpaper extensions to pause or resume their drift. The
+     game-mode class also pauses CSS animations as a fallback for extensions
+     that declare no hook (and for ones re-applied while game mode is on). */
+  for (const output of outputs.values()) {
+    const name = activeWallpaperExtensions.get(output.name);
+    if (name === undefined) continue;
+    const desc = wallpaperRegistry.get(name);
+    const hook = on ? desc?.pause : desc?.resume;
+    if (typeof hook === 'function') {
+      try {
+        hook.call(desc, { root: output.el });
+      } catch (error) {
+        console.error(`wallpaper extension ${name}: ${error?.message ?? error}`);
+      }
+    }
+  }
+  /* The bar hides/shows through the relayout, which reads gameMode. */
+  if (typeof relayoutAll === 'function') relayoutAll();
+}
+
 /* Which wallpaper extension is drawing each output's background, keyed by
  * output name. The extension renders in the page on that output's own
  * `.desktop`, so it is renderer-agnostic (Vulkan included) and each monitor can
@@ -1128,10 +1162,16 @@ function dispatchViewport(message) {
       windowRules = Array.isArray(message.rules) ? message.rules : [];
       applyTheme(message.theme);
       applyGaps(message.gaps);
+      /* Game mode first, so the motion pace below already knows whether the
+         desk is gaming. The configured pace is kept so toggling game mode off
+         restores it rather than the stylesheet default. */
+      lastMotionConfig = message.motion;
+      applyGameMode(message.game_mode);
       /* How the desktop moves: the pace and the curve, landed on `--anim`,
          `--anim-slow` and `--ease`, plus the switch the system's
-         reduced-motion setting also throws. Absent leaves the stylesheet. */
-      applyMotion(message.motion);
+         reduced-motion setting also throws. Absent leaves the stylesheet.
+         Game mode zeroes the pace whatever the config says. */
+      applyMotion(gameMode ? { enabled: false } : message.motion);
       /* Whether a new window joins the tabbed container it was opened from.
          Absent leaves the shell's own axis rule. */
       applyGroup(message.group);

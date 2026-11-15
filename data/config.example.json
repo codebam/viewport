@@ -196,6 +196,13 @@
     "and Firefox follow rather than staying on whatever they started with."
   ],
   "dark_mode": true,
+  "_game_mode": [
+    "Strip shell animations, hide the bar and pause the wallpaper drift while",
+    "gaming, cutting compositing overhead and distraction; restored on toggle-",
+    "off. The game-mode bind action and config.game_mode (absent toggles) flip",
+    "it at runtime. Absent is off."
+  ],
+  "game_mode": false,
 
   "_decorations": [
     "\"client\" hands the window frame back to the application, which then",

@@ -320,13 +320,22 @@ or bus simulate-activity brightens it again at once. Config-file and runtime
 `config.idle` paths both carry it; the idle tests cover the ramp, the floor
 clamping and the no-blank window.
 
-### 7. A game mode — planned
+### 7. A game mode — done
 
 One toggle (config `game_mode`, a runtime setter, and a bind) that strips shell
 animations, hides the bar, and pauses the wallpaper drift while gaming — cutting
 compositing overhead and distraction. Adjacent to `streamingMode` in the nixos
 config but compositor-side: it sets the motion durations to zero, hides the bar,
 and tells wallpaper extensions to pause. Restores on toggle-off.
+
+Landed: `game_mode` in the config file, the `config.game_mode` runtime setter
+(absent toggles) and a `game-mode` bind action. The shell's `applyGameMode`
+zeroes the motion pace (restoring the configured pace on the way out), hides the
+bar through the relayout, and calls the active wallpaper extensions' optional
+`pause`/`resume` hooks — with an `html.game-mode` CSS rule pausing animations as
+a fallback for extensions that declare none. The gradient demo declares the
+hooks. Shell tests cover the toggle, the bar, the hooks and the config path;
+config, IPC and binding tests cover the key, the setter and the action.
 
 ## What is deliberately not on this list
 

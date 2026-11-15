@@ -546,6 +546,11 @@ impl ViewportState {
             // other way the value moves without anybody pressing the chord.
             self.config.dark_mode = dark;
         }
+        if let Some(game) = file.game_mode {
+            // The shell strips animations, hides the bar and pauses the
+            // wallpaper; the compositor only carries the flag.
+            self.config.game_mode = game;
+        }
         if let Some(vrr) = file.adaptive_sync {
             self.adaptive_sync = vrr;
             self.output_vrr_wanted.clear();

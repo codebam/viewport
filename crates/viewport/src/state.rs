@@ -1842,6 +1842,7 @@ impl ViewportState {
                 // on a few lines further down. The two are one setting and
                 // this is the copy the shell is told about.
                 dark_mode: true,
+                game_mode: false,
                 // Filled in on the way out, from the keymap as it stands by
                 // then: this struct is built before a config file has been
                 // read and there is nothing yet to describe.
