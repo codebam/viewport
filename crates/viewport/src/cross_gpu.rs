@@ -52,10 +52,12 @@
 // wrapper keeps the scanout renderer exactly the renderer it was.
 //
 // Scope: client buffers, which arrive through `import_dma_buffer`. The
-// shell's own buffer is imported directly (`render::shell_element`) and is
-// allocated in a modifier the shell's copy renderer and the primary share
-// (`shell_copy_modifiers`); a secondary card that refuses even that is a
-// separate gap, and the direct import path stays honest about it.
+// shell's own buffer is imported directly (`render::shell_element`); it is
+// allocated in a modifier the copy renderer and every online card share
+// (`shell_copy_modifiers`, `multigpu::shared_modifiers`), so it does not
+// need the copy. Only the pathological case — no ARGB8888 modifier common
+// to all of them — still allocates for the copy renderer alone, and the
+// direct import path stays honest about a card that refuses it.
 
 use std::collections::HashMap;
 use std::os::unix::io::AsRawFd;

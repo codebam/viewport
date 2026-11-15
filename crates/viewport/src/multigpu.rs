@@ -66,7 +66,7 @@
 
 use std::collections::HashSet;
 
-use smithay::backend::allocator::Format;
+use smithay::backend::allocator::{Format, Modifier};
 
 /// A screen's name, made unique across the cards.
 ///
@@ -307,6 +307,30 @@ pub fn shadow_format(
         }
     }
     None
+}
+
+/// The modifiers a buffer the copy renderer draws and every card samples
+/// may be allocated with.
+///
+/// The same rule as [`shared_formats`], one level down: order is the first
+/// list's, because order is preference, and every other list is a filter.
+/// The shell's copy buffer is handed from the copy renderer to whichever
+/// card's output shows the shell, so a modifier only one card understands
+/// is not a choice — it is a shell missing from the other cards' screens.
+///
+/// An empty `rest` returns `first` unchanged: no card answered — all
+/// offline mid-recovery, or the nested backend with no DRM renderer at all
+/// — and narrowing against nothing would be inventing a constraint. An
+/// empty intersection is returned as empty and decided by the caller, the
+/// same division of labour [`shared_formats`] keeps.
+// Only the web engine's shell copy uses this; dead, honestly, without it.
+#[cfg_attr(not(feature = "wpe"), allow(dead_code))]
+pub fn shared_modifiers(first: &[Modifier], rest: &[Vec<Modifier>]) -> Vec<Modifier> {
+    first
+        .iter()
+        .copied()
+        .filter(|modifier| rest.iter().all(|other| other.contains(modifier)))
+        .collect()
 }
 
 /// What has already been said, so it is not said again every frame.
@@ -552,5 +576,76 @@ mod tests {
         let formats = format_set(&[format(Fourcc::Xrgb8888, 0)]);
         assert_eq!(shadow_format(&formats), None);
         assert_eq!(shadow_format(&format_set(&[])), None);
+    }
+
+    fn modifiers(list: &[u64]) -> Vec<Modifier> {
+        list.iter().copied().map(Modifier::from).collect()
+    }
+
+    #[test]
+    fn the_shell_copy_keeps_the_copy_renderers_order() {
+        // Order is preference: the copy renderer draws into this buffer, so
+        // its first choice wins among the modifiers every card can sample.
+        let mine = modifiers(&[7, 0, 9]);
+        let card = modifiers(&[0, 9, 7]);
+        assert_eq!(shared_modifiers(&mine, &[card]), modifiers(&[7, 0, 9]));
+    }
+
+    #[test]
+    fn every_card_is_a_filter_on_the_shell_copy() {
+        // The gap this exists for: the primary takes modifier 7 and the
+        // second card does not, so a shell allocated with 7 is missing from
+        // the second card's screens. Only what every card takes survives.
+        let mine = modifiers(&[7, 0, 9]);
+        let primary = modifiers(&[7, 0]);
+        let secondary = modifiers(&[0, 9]);
+        assert_eq!(
+            shared_modifiers(&mine, &[primary, secondary]),
+            modifiers(&[0])
+        );
+    }
+
+    #[test]
+    fn no_card_answered_leaves_the_copy_renderers_list_alone() {
+        // Every card offline mid-recovery, or the nested backend: narrowing
+        // against nothing would invent a constraint.
+        let mine = modifiers(&[7, 0]);
+        assert_eq!(shared_modifiers(&mine, &[]), mine);
+    }
+
+    #[test]
+    fn nothing_in_common_is_empty_and_left_to_the_caller() {
+        let mine = modifiers(&[7]);
+        let primary = modifiers(&[0]);
+        let secondary = modifiers(&[9]);
+        assert!(shared_modifiers(&mine, &[primary, secondary]).is_empty());
+        assert!(shared_modifiers(&[], &[modifiers(&[0])]).is_empty());
+    }
+
+    #[test]
+    fn the_shell_copy_answers_to_every_online_card() {
+        // Source invariant: the selection intersects every online card, not
+        // the primary alone — the primary-only intersection was the gap.
+        let source = include_str!("state/shell_lifecycle.rs");
+        let start = source
+            .find("fn shell_copy_modifiers(")
+            .expect("the shell copy modifier selection");
+        let end = start
+            + source[start..]
+                .find("/// Import whatever the shell last painted")
+                .expect("the end of the selection");
+        let body = &source[start..end];
+        assert!(
+            body.contains(".filter(|device| device.online)"),
+            "offline cards are skipped, not counted as refusals"
+        );
+        assert!(
+            body.contains("crate::multigpu::shared_modifiers(&mine, &cards)"),
+            "the copy list is filtered by every online card"
+        );
+        assert!(
+            !body.contains("udev.primary()"),
+            "the primary-only intersection was the gap"
+        );
     }
 }

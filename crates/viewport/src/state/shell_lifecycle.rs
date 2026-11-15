@@ -283,12 +283,15 @@ impl ViewportState {
 impl ViewportState {
     /// The modifiers the shell's copy buffer may be allocated with.
     ///
-    /// The intersection of what the copy renderer can draw into and what the
-    /// renderer that draws the desktop can sample from, because the buffer is
-    /// handed from one to the other. They are usually the same device and
-    /// usually the same renderer, but not always: the copy runs on the render
-    /// node's own renderer, and under a nested backend the desktop is drawn by
-    /// a renderer that never saw that node.
+    /// The intersection of what the copy renderer can draw into and what
+    /// every online card's renderer can sample from, because the buffer is
+    /// handed from the one to whichever of the others shows the shell. They
+    /// are usually the same device and usually the same renderer, but not
+    /// always: the copy runs on the render node's own renderer, under a
+    /// nested backend the desktop is drawn by a renderer that never saw that
+    /// node, and on a two-card desk the shell is sampled by both cards in
+    /// turn. Asking only the primary was the gap: a modifier the second card
+    /// refused left the shell missing from that card's screens.
     ///
     /// Empty when there is nothing in common — or when neither advertises a
     /// modifier at all, which is an OpenGL driver without the modifier
@@ -306,35 +309,36 @@ impl ViewportState {
                 .collect::<Vec<_>>()
         };
         let mine = importable(copy.dmabuf_formats());
-        let Some(theirs) = self
-            .udev
-            .as_ref()
-            .map(|udev| importable(udev.primary().renderer.dmabuf_formats()))
-        else {
+        let Some(udev) = self.udev.as_ref() else {
             // No DRM renderer to hand it to: nested, where the backend's own
             // renderer imports it and the copy renderer's set is the only one
             // this side of the compositor knows.
             return mine;
         };
-        let both: Vec<_> = mine
+        // Every online card, not just the primary. Offline cards are skipped
+        // rather than counted as refusals, the same rule `dmabuf_imported`
+        // keeps: a card mid-reset must not narrow the choice to nothing.
+        let cards: Vec<Vec<smithay::backend::allocator::Modifier>> = udev
+            .devices
             .iter()
-            .copied()
-            .filter(|modifier| theirs.contains(modifier))
+            .filter(|device| device.online)
+            .map(|device| importable(device.renderer.dmabuf_formats()))
             .collect();
-        if both.is_empty() && !mine.is_empty() {
-            // Two renderers on one GPU with no ARGB8888 modifier in common
-            // should not happen, and if it does the buffer cannot both be
-            // drawn into and be sampled from whatever it is allocated as. The
-            // copy renderer wins, because a copy that fails is a shell that is
+        let all = crate::multigpu::shared_modifiers(&mine, &cards);
+        if all.is_empty() && !mine.is_empty() {
+            // Renderers with no ARGB8888 modifier in common should not
+            // happen, and if they do the buffer cannot both be drawn into
+            // and be sampled from whatever it is allocated as. The copy
+            // renderer wins, because a copy that fails is a shell that is
             // never drawn at all, while an import that fails says so per
             // output and names the modifier.
             tracing::warn!(
-                "the shell's copy renderer and the display's share no ARGB8888 modifier; \
+                "the shell's copy renderer and the display cards share no ARGB8888 modifier; \
                  allocating for the copy"
             );
             return mine;
         }
-        both
+        all
     }
 
     /// Import whatever the shell last painted, as a texture.
