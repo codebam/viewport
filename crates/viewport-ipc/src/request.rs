@@ -968,6 +968,21 @@ pub enum Request {
         mode: Option<String>,
     },
 
+    /// Set the selected wallpaper extension's options at runtime, as
+    /// `wallpaper_options` in the config file.
+    ///
+    /// The compositor never reads the object — the extension does — so this is
+    /// a passthrough: the settings panel draws the extension's own option
+    /// schema and writes the values back here, the same path `config.wallpaper`
+    /// uses. Nothing is written to disk.
+    #[serde(rename = "config.wallpaper_options")]
+    ConfigWallpaperOptions {
+        /// The full options object handed to the extension. Absent clears it,
+        /// which the extension sees as an empty object.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        options: Option<serde_json::Value>,
+    },
+
     /// Set the colour scheme applications are told to draw themselves in, as
     /// `dark_mode` in the config file.
     ///
@@ -2755,6 +2770,24 @@ mod tests {
             panic!("not a config.wallpaper message");
         };
         assert_eq!(path.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn config_wallpaper_options_carries_the_object_through() {
+        let Request::ConfigWallpaperOptions { options } =
+            parse(r#"{"type":"config.wallpaper_options","options":{"duration":30}}"#)
+        else {
+            panic!("not a config.wallpaper_options message");
+        };
+        assert_eq!(options.expect("options")["duration"], 30);
+
+        // Absent options clears them, distinct from an empty object.
+        let Request::ConfigWallpaperOptions { options } =
+            parse(r#"{"type":"config.wallpaper_options"}"#)
+        else {
+            panic!("not a config.wallpaper_options message");
+        };
+        assert_eq!(options, None);
     }
 
     #[test]

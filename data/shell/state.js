@@ -423,9 +423,21 @@ function registerWidget(name, descriptor) {
   widgetRegistry.set(name, Object.freeze({ ...descriptor, name }));
 }
 
+/* An extension may declare its options so the settings panel can draw them as
+ * real controls. The schema is an array of { key, type, ... } entries; absent
+ * is fine (the extension just has no panel controls). A malformed schema is
+ * refused at registration so a bad script cannot break the panel later. */
+function validWallpaperOptionsSchema(options) {
+  if (options === undefined) return true;
+  if (!Array.isArray(options)) return false;
+  return options.every((o) => o && typeof o.key === 'string'
+    && typeof o.type === 'string');
+}
+
 function validWallpaperDescriptor(name, descriptor) {
   return typeof name === 'string' && /^[A-Za-z0-9_-]+$/.test(name)
-    && descriptor && typeof descriptor.apply === 'function';
+    && descriptor && typeof descriptor.apply === 'function'
+    && validWallpaperOptionsSchema(descriptor.options);
 }
 
 /* Public extension API, the wallpaper half of registerLayout / registerWidget.

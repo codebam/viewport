@@ -32,6 +32,14 @@
  * run different colours at different speeds without fighting over one rule.
  */
 registerWallpaper('gradient', {
+  /* Declared so the settings panel can draw these as real controls (see
+   * docs/wallpaper-extension.md). `colors` is left to the config file — a list
+   * of colours is not a single control. */
+  options: [
+    { key: 'angle', label: 'Angle', type: 'number', default: 120, min: 0, max: 360, step: 1 },
+    { key: 'duration', label: 'Loop seconds', type: 'number', default: 24, min: 1, max: 240, step: 1 },
+  ],
+
   apply({ root, options }) {
     const opts = options || {};
     const colors = Array.isArray(opts.colors) && opts.colors.length >= 2

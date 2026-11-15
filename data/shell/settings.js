@@ -240,11 +240,14 @@ function renderSettings() {
   const body = document.createElement('div');
   body.className = 'settings-body';
   body.append(
-    settingsAppearance(),
-    settingsWallpaper(),
-    settingsGaps(),
-    settingsBorder(),
-    settingsDisplays(),
+    ...[
+      settingsAppearance(),
+      settingsWallpaper(),
+      settingsWallpaperExtension(),
+      settingsGaps(),
+      settingsBorder(),
+      settingsDisplays(),
+    ].filter(Boolean),
   );
   dialog.append(body);
 
@@ -517,6 +520,85 @@ function settingsWallpaper() {
       send({ type: 'config.wallpaper', mode });
     }),
   ));
+  return section;
+}
+
+/* The selected wallpaper extension's own options, drawn as real controls from
+ * the schema it registered (`descriptor.options`). Tuning an extension this way
+ * writes back through `config.wallpaper_options` — the same runtime path the
+ * picture uses — so it does not mean editing JSON. Nothing is drawn when no
+ * extension is selected or it declared no schema. */
+function settingsWallpaperExtension() {
+  const name = typeof shellConfig.wallpaper_extension === 'string'
+    ? shellConfig.wallpaper_extension.trim() : '';
+  if (name === '') return null;
+  const descriptor = wallpaperRegistry.get(name);
+  const schema = descriptor && Array.isArray(descriptor.options)
+    ? descriptor.options : null;
+  if (!schema || schema.length === 0) return null;
+
+  const section = settingsSection('Wallpaper extension');
+  const current = shellConfig.wallpaper_options
+    && typeof shellConfig.wallpaper_options === 'object'
+    ? shellConfig.wallpaper_options : {};
+  /* Each control writes the whole options object back with its one key changed,
+     so the extension always receives a complete set rather than a fragment. */
+  const setOption = (key, value) => {
+    send({ type: 'config.wallpaper_options', options: { ...current, [key]: value } });
+  };
+
+  for (const opt of schema) {
+    const value = current[opt.key] !== undefined ? current[opt.key] : opt.default;
+    let control = null;
+    if (opt.type === 'number') {
+      const input = document.createElement('input');
+      input.type = 'number';
+      input.className = 'settings-number';
+      if (opt.min !== undefined) input.min = String(opt.min);
+      if (opt.max !== undefined) input.max = String(opt.max);
+      if (opt.step !== undefined) input.step = String(opt.step);
+      const fallback = String(value ?? opt.default ?? 0);
+      input.value = fallback;
+      const commit = () => {
+        let n = Number.parseFloat(String(input.value ?? ''));
+        if (!Number.isFinite(n)) { input.value = fallback; return; }
+        if (opt.min !== undefined && n < opt.min) n = opt.min;
+        if (opt.max !== undefined && n > opt.max) n = opt.max;
+        if (n !== value) setOption(opt.key, n);
+      };
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault?.(); commit(); }
+        else if (e.key === 'Escape') {
+          e.preventDefault?.(); e.stopPropagation?.(); input.value = fallback;
+        }
+      });
+      input.addEventListener('change', commit);
+      input.addEventListener('blur', commit);
+      control = input;
+    } else if (opt.type === 'toggle') {
+      control = settingsToggle(value === true, (on) => setOption(opt.key, on));
+    } else if (opt.type === 'choice' && Array.isArray(opt.choices)) {
+      control = settingsChoice(opt.choices.map((c) => [c, String(c)]), value,
+        (v) => setOption(opt.key, v));
+    } else if (opt.type === 'text') {
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'settings-text';
+      const fallback = value !== undefined ? String(value) : '';
+      input.value = fallback;
+      const commit = () => setOption(opt.key, input.value);
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault?.(); commit(); }
+        else if (e.key === 'Escape') {
+          e.preventDefault?.(); e.stopPropagation?.(); input.value = fallback;
+        }
+      });
+      input.addEventListener('change', commit);
+      input.addEventListener('blur', commit);
+      control = input;
+    }
+    if (control) section.append(settingsRow(opt.label || opt.key, control));
+  }
   return section;
 }
 

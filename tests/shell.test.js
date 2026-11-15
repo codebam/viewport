@@ -7310,6 +7310,78 @@ if (mode === 'scrolling') {
   globalThis.sampleWallpaper = realSample;
 }
 
+/* --- wallpaper extension options in the settings panel -----------------
+ *
+ * An extension may declare an options schema; the panel draws it as real
+ * controls and writes the values back through config.wallpaper_options. The
+ * schema is validated at registration, the controls are read from the config
+ * value, and changing one sends the merged options object.
+ * --------------------------------------------------------------------- */
+{
+  const sh = globalThis.__shell;
+  const reg = sh.registerWallpaper;
+  const registry = sh.wallpaperRegistry;
+  const hasApi = typeof reg === 'function' && registry instanceof Map;
+  const throws = (fn) => { try { fn(); return false; } catch (_) { return true; } };
+  const all = (root, cls) => {
+    const found = [];
+    const stack = [...root.children];
+    while (stack.length) {
+      const el = stack.shift();
+      if (el._classes.has(cls)) found.push(el);
+      stack.push(...el.children);
+    }
+    return found;
+  };
+  const dialog = () => sh.settingsEl.children[0];
+  const controls = (label) => all(dialog(), 'settings-row')
+    .find((row) => row.children[0]?.textContent === label)
+    ?.children[1]?.children ?? [];
+
+  let registered = false;
+  if (hasApi) {
+    try {
+      reg('optprobe', {
+        options: [{ key: 'duration', type: 'number', default: 24, min: 1, max: 240 }],
+        apply() {}, clear() {},
+      });
+      registered = registry.has('optprobe');
+    } catch (_) { /* reported below */ }
+  }
+  check('an extension with an options schema registers', registered);
+  check('a malformed options schema is rejected',
+    hasApi && throws(() => reg('badopts', { options: 'nope', apply() {} })));
+  check('an option entry without a key is rejected',
+    hasApi && throws(() => reg('badopts2', { options: [{ type: 'number' }], apply() {} })));
+
+  /* The panel draws the option from the config value, not the default. */
+  emit({ type: 'config', layout: mode, rules: HARNESS_RULES,
+    wallpaper_extension: 'optprobe', wallpaper_options: { duration: 30 } });
+  emit({ type: 'shell.command', command: 'settings', args: [] });
+  check('the extension option is drawn from the config value',
+    hasApi && controls('duration')[0]?.value === '30');
+
+  /* Changing the control writes the merged options object back. */
+  const input = controls('duration')[0];
+  const before = sent.length;
+  if (hasApi && input) {
+    input.value = '45';
+    (input.listeners.change ?? []).forEach((fn) => fn({}));
+  }
+  check('changing the option writes config.wallpaper_options',
+    hasApi && sent.slice(before).some((m) => m.type === 'config.wallpaper_options'
+      && m.options?.duration === 45));
+
+  /* No extension selected means no extension section. */
+  emit({ type: 'shell.command', command: 'settings', args: [] });
+  emit({ type: 'config', layout: mode, rules: HARNESS_RULES, wallpaper_extension: '' });
+  emit({ type: 'shell.command', command: 'settings', args: [] });
+  check('no extension selected draws no option rows',
+    hasApi && controls('duration').length === 0);
+  emit({ type: 'shell.command', command: 'settings', args: [] });
+  emit({ type: 'config', layout: mode, rules: HARNESS_RULES });
+}
+
 /* --- the settings panel ------------------------------------------------
  *
  * The panel is drawn entirely out of the last `config` event and the last

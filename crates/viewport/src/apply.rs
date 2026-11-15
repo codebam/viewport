@@ -1058,6 +1058,15 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             }
         }
 
+        Request::ConfigWallpaperOptions { options } => {
+            // A passthrough: the compositor never reads the object, the
+            // extension does. The settings panel draws the extension's own
+            // option schema and writes the values back here, the same path the
+            // picture uses; the shell re-applies the extension with them.
+            state.config.wallpaper_options = options;
+            state.notify_config();
+        }
+
         Request::ConfigDarkMode { enabled } => {
             // Absent toggles, on the same terms as `output.hdr`: that is what
             // the `appearance toggle` keybinding wants, and a panel drawing a

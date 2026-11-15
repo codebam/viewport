@@ -270,13 +270,22 @@ draws the mean drive as a percentage, with the peak / over-half / wash in the
 tooltip. The sparkline is left as optional polish — the live number and the
 full-metrics tooltip are the substance. Shares `panel.js` with the guard.
 
-### 4. Extension options in the settings panel — planned
+### 4. Extension options in the settings panel — done
 
 Let a wallpaper or widget extension declare its options (the gradient's
 `colors` / `angle` / `duration`) and render them as real controls in the settings
 panel, writing back through the runtime `config.*` setter, so tuning an
 extension does not mean editing JSON. The descriptor gains an optional `options`
 schema; the panel draws it; the value rides the existing config path.
+
+Landed for wallpaper extensions: a descriptor may carry an `options` schema
+(`{key, type, label, default, min, max, step, choices}`, types number / text /
+toggle / choice), validated at registration. The settings panel draws a
+"Wallpaper extension" section from the selected extension's schema and writes
+each change back through the new `config.wallpaper_options` runtime setter. The
+gradient demo declares `angle` and `duration`. Widget extensions already carry
+per-instance options in `bar_items`; drawing those as panel controls is the same
+schema pattern left as a follow-up. Documented in `docs/wallpaper-extension.md`.
 
 ### 5. A notification extension hook — planned
 

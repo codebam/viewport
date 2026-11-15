@@ -582,6 +582,12 @@ const TYPES: &[Type] = &[
         hint: "[--path FILE] [--mode fill|fit|stretch|center|tile]   (--path '' removes it)",
     },
     Type {
+        name: "config.wallpaper_options",
+        fields: &["options"],
+        strings: &[],
+        hint: "--options '{}'   (the wallpaper extension's options, as JSON)",
+    },
+    Type {
         name: "config.dark_mode",
         fields: &["enabled"],
         strings: &[],

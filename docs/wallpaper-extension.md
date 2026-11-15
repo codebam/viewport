@@ -182,6 +182,42 @@ an animated CSS gradient that slowly shifts across the desktop, with
 `colors`, `angle` and `duration` options and a `prefers-reduced-motion`
 fallback.
 
+## Declaring options for the settings panel
+
+An extension can declare its options so the settings panel draws them as real
+controls — tuning it then does not mean editing JSON. Add an `options` array to
+the descriptor:
+
+```js
+registerWallpaper('gradient', {
+  options: [
+    { key: 'angle', label: 'Angle', type: 'number', default: 120, min: 0, max: 360 },
+    { key: 'duration', label: 'Loop seconds', type: 'number', default: 24, min: 1, max: 240 },
+    { key: 'palette', label: 'Palette', type: 'choice', choices: ['dragon', 'ice', 'ember'] },
+    { key: 'dither', label: 'Dither', type: 'toggle', default: true },
+  ],
+  apply({ root, options }) { /* ... */ },
+});
+```
+
+Each entry is `{ key, type, ... }`:
+
+- `key` — the option's name in `wallpaper_options` (required).
+- `type` — `number`, `text`, `toggle` or `choice` (required).
+- `label` — the row label in the panel; defaults to `key`.
+- `default` — the value shown when the config has not set it.
+- `number` also takes `min`, `max` and `step`; `choice` takes `choices` (an
+  array of values).
+
+The schema is validated at registration: a malformed one is refused, so a bad
+script cannot break the panel. When the extension is selected, the panel draws a
+"Wallpaper extension" section with one row per option, read from the current
+`wallpaper_options`. Changing a control sends `config.wallpaper_options` with the
+whole options object (the one key changed), the compositor re-announces the
+config, and the extension is re-applied with the new values. Nothing is written
+to disk — it is the same runtime tier as `config.wallpaper`. An option that is
+not a single value (the gradient's `colors` list) is left to the config file.
+
 ## Lifecycle
 
 Extension scripts load in name order when the `config` event arrives, before

@@ -209,6 +209,7 @@ fn is_known_type(name: &str) -> bool {
             | "config.gaps"
             | "config.border"
             | "config.wallpaper"
+            | "config.wallpaper_options"
             | "config.dark_mode"
             | "config.cursor"
             | "config.motion"
