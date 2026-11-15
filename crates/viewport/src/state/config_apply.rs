@@ -551,6 +551,11 @@ impl ViewportState {
             // wallpaper; the compositor only carries the flag.
             self.config.game_mode = game;
         }
+        if let Some(transparent) = file.lock_transparent {
+            // The shell draws the lock screen as a scrim over the wallpaper;
+            // the compositor only carries the flag.
+            self.config.lock_transparent = transparent;
+        }
         if let Some(vrr) = file.adaptive_sync {
             self.adaptive_sync = vrr;
             self.output_vrr_wanted.clear();

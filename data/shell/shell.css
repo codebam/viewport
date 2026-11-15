@@ -2819,6 +2819,35 @@ html.no-tutorial .empty .tutorial { display: none; }
 }
 #lock[hidden] { display: none; }
 
+/* A translucent lock screen (config.lock_transparent): the wallpaper shows
+ * through a scrim instead of an opaque cover. This is only safe because the
+ * desktop furniture is hidden while locked — the compositor still draws this
+ * page's buffer and nothing else, so these rules are what keep window titles,
+ * the taskbar, notifications and open pickers from showing through. Only the
+ * wallpaper, which is not sensitive, remains under the scrim. The opaque #lock
+ * above is the fail-closed default; this class is the opt-in, and the scrim
+ * strength is tunable through the theme (--lock-scrim). */
+:root.locked.lock-transparent #lock {
+  background: var(--lock-scrim, rgba(0, 0, 0, 0.55));
+}
+:root.locked.lock-transparent .desktop .bar,
+:root.locked.lock-transparent .desktop .windows,
+:root.locked.lock-transparent .desktop .notifications,
+:root.locked.lock-transparent .desktop .status-osd,
+:root.locked.lock-transparent .desktop .empty,
+:root.locked.lock-transparent #screencast,
+:root.locked.lock-transparent #tray-menu,
+:root.locked.lock-transparent #clipboard,
+:root.locked.lock-transparent #launcher,
+:root.locked.lock-transparent #notification-centre,
+:root.locked.lock-transparent #power-picker,
+:root.locked.lock-transparent #network-picker,
+:root.locked.lock-transparent #bluetooth-picker,
+:root.locked.lock-transparent #calendar,
+:root.locked.lock-transparent #settings {
+  display: none !important;
+}
+
 /* The keyboard, over the lock screen and only there.
  *
  * It cannot simply live above 300 for the whole session: its own comment says

@@ -1410,6 +1410,15 @@ pub struct ViewportState {
     pub lock_delay_timer: Option<std::os::fd::OwnedFd>,
     /// Which arming the pending tick belongs to, like the revert's.
     pub lock_delay_generation: u64,
+    /// Set by the idle deadline just before it asks for a lock: that lock should
+    /// leave the outputs blanked when the delay runs out, rather than turning
+    /// them back on to show the locker. Consumed by `lock_session`; a manual
+    /// lock (binding, lid, `session.lock`) leaves it false and keeps the old
+    /// blank-then-show behaviour.
+    pub lock_next_stays_blanked: bool,
+    /// Whether the pending lock delay should leave the outputs blanked when it
+    /// fires. Captured from `lock_next_stays_blanked` when the delay is armed.
+    pub lock_delay_keep_blanked: bool,
     /// The timer the config's live reload settles on, when watched.
     pub config_reload_timer: Option<std::os::fd::OwnedFd>,
     /// Whether a config reload is already waiting on the timer.
@@ -1843,6 +1852,7 @@ impl ViewportState {
                 // this is the copy the shell is told about.
                 dark_mode: true,
                 game_mode: false,
+                lock_transparent: false,
                 // Filled in on the way out, from the keymap as it stands by
                 // then: this struct is built before a config file has been
                 // read and there is nothing yet to describe.
@@ -2173,6 +2183,8 @@ impl ViewportState {
             output_revert_generation: 0,
             lock_delay_timer: None,
             lock_delay_generation: 0,
+            lock_next_stays_blanked: false,
+            lock_delay_keep_blanked: false,
             config_reload_timer: None,
             config_reload_pending: false,
             shell_reload_timer: None,
@@ -3031,6 +3043,10 @@ impl ViewportState {
         let actions = self.idle.tick(&self.idle_settings, elapsed);
         if actions.lock {
             tracing::info!("idle for {}s; locking", elapsed.as_secs());
+            // An idle lock leaves the screen blanked when the delay runs out —
+            // the desk went dark on its own and should not flash bright with the
+            // locker; the lock screen appears when input wakes it.
+            self.lock_next_stays_blanked = true;
             self.lock_session();
         }
         if actions.blank {

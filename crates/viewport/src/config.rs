@@ -997,6 +997,14 @@ pub struct File {
     /// Absent is off.
     pub game_mode: Option<bool>,
 
+    /// Draw the built-in lock screen as a translucent scrim over the wallpaper
+    /// instead of an opaque cover. The shell hides the desktop furniture
+    /// (windows, bar, taskbar, notifications, open pickers) while locked so
+    /// nothing sensitive shows through — only the wallpaper, which is not
+    /// sensitive. Absent is off (the lock screen covers everything opaquely,
+    /// the fail-closed default). Only meaningful with the built-in lock screen.
+    pub lock_transparent: Option<bool>,
+
     /// How many bits per colour channel a scanout buffer carries: `"8"`,
     /// `"10"`, or `"auto"`. Absent is `"auto"`.
     ///
@@ -3848,6 +3856,16 @@ mod tests {
         assert_eq!(file.game_mode, Some(true));
         let absent: File = serde_json::from_str("{}").expect("should parse");
         assert_eq!(absent.game_mode, None);
+    }
+
+    #[test]
+    fn the_lock_transparent_key_parses() {
+        let file: File =
+            serde_json::from_str(r#"{"lock_transparent":true}"#).expect("should parse");
+        assert_eq!(file.lock_transparent, Some(true));
+        // Absent is the opaque, fail-closed cover.
+        let absent: File = serde_json::from_str("{}").expect("should parse");
+        assert_eq!(absent.lock_transparent, None);
     }
 
     #[test]

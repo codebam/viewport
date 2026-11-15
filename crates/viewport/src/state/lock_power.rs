@@ -54,6 +54,12 @@ impl ViewportState {
         // A locked session with no locker drawing is *not* this, and is left
         // alone deliberately — running another locker against it is the way
         // out of a locker that crashed, and `check_lock_screen` says so.
+        // Whether this lock should leave the outputs blanked when its delay
+        // runs out. The idle deadline sets it; a manual lock leaves it false.
+        // Consumed here so a request that finds a lock already in progress
+        // cannot leave it stale for the next one.
+        let stay_blanked = std::mem::take(&mut self.lock_next_stays_blanked);
+
         if self.locked && self.lock_screen_is_drawing() {
             tracing::info!("lock: a locker is already drawing; leaving it alone");
             return;
@@ -70,7 +76,7 @@ impl ViewportState {
             return;
         }
         if let Some(delay) = self.idle_settings.delay() {
-            self.arm_lock_delay(delay);
+            self.arm_lock_delay(delay, stay_blanked);
             return;
         }
 
@@ -116,8 +122,9 @@ impl ViewportState {
     /// during the black phase clears the idle pending flag (and brings the
     /// outputs back through the wake path), and the tick that later fires
     /// finds nothing pending and does nothing.
-    fn arm_lock_delay(&mut self, delay: std::time::Duration) {
+    fn arm_lock_delay(&mut self, delay: std::time::Duration, keep_blanked: bool) {
         tracing::info!("lock: standing black for {delay:?} before locking");
+        self.lock_delay_keep_blanked = keep_blanked;
         self.idle.arm_lock();
         self.blank_screens();
 
@@ -154,9 +161,20 @@ impl ViewportState {
             return;
         }
         self.idle.clear_lock();
+        let keep_blanked = std::mem::take(&mut self.lock_delay_keep_blanked);
         tracing::info!("lock: delay over; locking");
-        // The lock screen draws on the outputs — they must be back on.
-        self.set_outputs_enabled(true);
+        if keep_blanked {
+            // An idle lock leaves the outputs off: the desk went dark on its
+            // own and should not flash bright with the locker. The shell draws
+            // the lock screen into its buffer regardless, and the renderer
+            // fails closed to black until it has, so the input that wakes the
+            // outputs never reveals the desktop — only the lock screen.
+            tracing::info!("lock: keeping the outputs blanked until input");
+        } else {
+            // A manual lock shows the lock screen at once — the outputs must be
+            // back on for it to draw on.
+            self.set_outputs_enabled(true);
+        }
         self.perform_lock();
     }
 

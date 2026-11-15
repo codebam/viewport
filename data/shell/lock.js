@@ -83,6 +83,11 @@ function applySessionLock(generation, canAuthenticate) {
      below the pickers for reasons that stop applying the moment there are no
      pickers. See the `:root.locked` rule in shell.css. */
   document.documentElement?.classList?.add('locked');
+  /* A translucent lock screen shows the wallpaper through a scrim; the CSS
+     hides the desktop furniture while locked so nothing sensitive shows
+     through. Off (the default) keeps the opaque cover. See shell.css. */
+  document.documentElement?.classList?.toggle(
+    'lock-transparent', typeof lockTransparent !== 'undefined' && lockTransparent);
   renderLockScreen();
   /* The lock clock is minute-precision, and a session with no bar clock and
      no calendar would otherwise have no reason to keep the one tick armed. */
@@ -101,6 +106,7 @@ function applySessionUnlock() {
   lockEl.replaceChildren();
   lockEl.hidden = true;
   document.documentElement?.classList?.remove('locked');
+  document.documentElement?.classList?.remove('lock-transparent');
   /* The lock's claim on the tick is over; a visible bar clock (or an open
      calendar) takes it back if it needs one. */
   armClockTick();

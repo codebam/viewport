@@ -953,6 +953,12 @@ pub struct Config {
     #[serde(default)]
     pub game_mode: bool,
 
+    /// The built-in lock screen draws as a translucent scrim over the wallpaper
+    /// (the shell hides the desktop furniture while locked so nothing sensitive
+    /// shows through). Defaulted to false — the opaque, fail-closed cover.
+    #[serde(default)]
+    pub lock_transparent: bool,
+
     /// `"client"` means applications draw their own window frames; anything
     /// else, including absence, means the compositor draws them. Carried so
     /// the panel can show and `config.save` can write the policy the
@@ -2298,6 +2304,7 @@ mod tests {
             osk: "auto".to_owned(),
             dark_mode: true,
             game_mode: false,
+            lock_transparent: false,
             decorations: None,
             layer_rules: None,
             tray: None,
@@ -2728,6 +2735,7 @@ mod tests {
             osk: "auto".to_owned(),
             dark_mode: true,
             game_mode: false,
+            lock_transparent: false,
             decorations: None,
             layer_rules: None,
             tray: None,
@@ -2806,6 +2814,7 @@ mod tests {
             osk: "auto".to_owned(),
             dark_mode: true,
             game_mode: false,
+            lock_transparent: false,
             decorations: None,
             layer_rules: None,
             tray: None,
@@ -2878,6 +2887,7 @@ mod tests {
             osk: "auto".to_owned(),
             dark_mode: true,
             game_mode: false,
+            lock_transparent: false,
             decorations: None,
             layer_rules: None,
             tray: None,
@@ -2931,6 +2941,7 @@ mod tests {
             osk: "auto".to_owned(),
             dark_mode: true,
             game_mode: false,
+            lock_transparent: false,
             decorations: None,
             layer_rules: None,
             tray: None,
@@ -3110,6 +3121,7 @@ mod tests {
                 osk: "auto".to_owned(),
                 dark_mode: true,
                 game_mode: false,
+                lock_transparent: false,
                 decorations: None,
                 layer_rules: None,
                 tray: None,

@@ -325,6 +325,15 @@ impl ViewportState {
             return;
         };
 
+        // An idle lock keeps the outputs blanked until input. While they are
+        // off the compositor renders nothing, so the "has the shell painted a
+        // frame" gate cannot pass — but nothing is on screen to leak either.
+        // The check resumes when input wakes the outputs; until then a warning
+        // here would be a false alarm about a screen that is deliberately dark.
+        if self.udev.as_ref().is_some_and(|udev| udev.blanked) {
+            return;
+        }
+
         // A locker that drew and then exited leaves surfaces behind that no
         // longer exist. Keeping them means rendering a dead client and never
         // noticing that nothing is on screen any more.

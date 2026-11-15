@@ -203,6 +203,14 @@
     "it at runtime. Absent is off."
   ],
   "game_mode": false,
+  "_lock_transparent": [
+    "Draw the built-in lock screen as a translucent scrim over the wallpaper",
+    "instead of an opaque cover. The desktop furniture (windows, bar, taskbar,",
+    "notifications, pickers) is hidden while locked so nothing sensitive shows",
+    "through — only the wallpaper. Tune the scrim with the theme's --lock-scrim.",
+    "Absent is off (the opaque cover). Only meaningful without idle.lock_command."
+  ],
+  "lock_transparent": false,
 
   "_decorations": [
     "\"client\" hands the window frame back to the application, which then",

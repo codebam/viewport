@@ -916,6 +916,12 @@ function activeNotificationDescriptor() {
 let gameMode = false;
 let lastMotionConfig = null;
 
+/* Whether the built-in lock screen draws as a translucent scrim over the
+ * wallpaper (config.lock_transparent). lock.js reads it when the lock goes up;
+ * the desktop furniture is hidden while locked so only the wallpaper shows
+ * through. Off is the opaque, fail-closed cover. */
+let lockTransparent = false;
+
 function applyGameMode(on) {
   on = on === true;
   if (gameMode === on) return;
@@ -1167,6 +1173,7 @@ function dispatchViewport(message) {
          restores it rather than the stylesheet default. */
       lastMotionConfig = message.motion;
       applyGameMode(message.game_mode);
+      lockTransparent = message.lock_transparent === true;
       /* How the desktop moves: the pace and the curve, landed on `--anim`,
          `--anim-slow` and `--ease`, plus the switch the system's
          reduced-motion setting also throws. Absent leaves the stylesheet.

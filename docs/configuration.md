@@ -282,6 +282,13 @@ chord that asked for the lock does not cancel it. Every way of asking —
 idle deadline, `lock` binding, lid, `session.lock` — goes through the same
 delay, so there is one answer to whether the desk is about to lock.
 
+When the delay ends, a *manual* lock (binding, lid, `session.lock`) turns the
+outputs back on to show the lock screen. An *idle* lock leaves them blanked: the
+desk went dark on its own and should not flash bright with the locker, so the
+session locks while the screen stays off and the lock screen appears only when
+input wakes it. The renderer fails closed to black until the lock screen has
+drawn, so waking never reveals the desktop.
+
 `idle.dim_after` and `idle.dim_floor` ramp the panel brightness down across the
 idle window instead of holding full brightness until the blank. From
 `dim_after` seconds of inactivity the brightness falls linearly from full to
@@ -311,6 +318,18 @@ touch-only desk could lock and then had no way to type a password at all.
 Setting the key back to a command is the way out of the built-in screen, and
 the empty string is not a command: `"lock_command": ""` reads as "no locker",
 so it means the built-in screen rather than a shell started to run nothing.
+
+`lock_transparent` draws the built-in lock screen as a translucent scrim over
+the wallpaper instead of an opaque cover, so the desk shows through it while
+locked. It is only safe because the shell hides the desktop furniture while
+locked — the windows, the bar and taskbar with every window's title, the
+notifications and any open picker — leaving only the wallpaper, which is not
+sensitive, under the scrim. The compositor still draws the shell's buffer and
+nothing else; hiding the furniture is what makes that buffer safe to show
+through. The scrim strength is tunable through the theme (`--lock-scrim`, a
+colour; the default is `rgba(0, 0, 0, 0.55)`). Absent is off — the opaque cover
+that fails closed. It only applies to the built-in screen, so it does nothing
+while `idle.lock_command` names an external locker.
 
 The password is checked with PAM, on a thread of its own so a slow or
 unreachable authentication stack cannot stall the desk. The service is

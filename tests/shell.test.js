@@ -579,6 +579,9 @@ const EXPORTS = ';globalThis.__shell = { views, workspaces, outputs, scrollOffse
   + ' applyClockForTest: applyClock,'
   + ' calendarFirstDayForTest: calendarFirstDay,'
   + ' get lockEl() { return lockEl; },'
+  + ' applySessionLock: typeof applySessionLock !== "undefined" ? applySessionLock : undefined,'
+  + ' applySessionUnlock: typeof applySessionUnlock !== "undefined" ? applySessionUnlock : undefined,'
+  + ' get lockTransparentForTest() { return typeof lockTransparent !== "undefined" ? lockTransparent : undefined; },'
   /* What the shell makes of a wallpaper URL: whether it is a film to play
      rather than a picture to draw, which is the one decision the page makes
      about the setting and is a pure function. */
@@ -7517,6 +7520,41 @@ if (mode === 'scrolling') {
   check('a config with game_mode off restores it', hasApi && sh.gameModeForTest === false);
 
   if (hasApi) sh.applyOutputWallpaperExtension(out, null);
+}
+
+/* --- the transparent lock screen ---------------------------------------
+ *
+ * config.lock_transparent opts the built-in lock screen into a translucent
+ * scrim over the wallpaper. The class is what the CSS keys the furniture
+ * hiding and the scrim off; the opaque cover is the default. The class is
+ * checked here — the hiding itself is CSS, a browser's job to verify.
+ * --------------------------------------------------------------------- */
+{
+  const sh = globalThis.__shell;
+  const lock = sh.applySessionLock;
+  const unlock = sh.applySessionUnlock;
+  const hasApi = typeof lock === 'function' && typeof unlock === 'function';
+  const root = document.documentElement;
+
+  emit({ type: 'config', layout: mode, rules: HARNESS_RULES });
+  if (hasApi) lock(1, true);
+  check('the lock screen goes up', hasApi && root.classList.contains('locked'));
+  check('an opaque lock screen has no transparent class',
+    hasApi && !root.classList.contains('lock-transparent'));
+  if (hasApi) unlock();
+  check('unlocking clears the locked class', hasApi && !root.classList.contains('locked'));
+
+  emit({ type: 'config', layout: mode, rules: HARNESS_RULES, lock_transparent: true });
+  check('the config sets the transparent flag', hasApi && sh.lockTransparentForTest === true);
+  if (hasApi) lock(2, true);
+  check('a transparent lock screen marks the document element',
+    hasApi && root.classList.contains('locked')
+      && root.classList.contains('lock-transparent'));
+  if (hasApi) unlock();
+  check('unlocking clears the transparent class too',
+    hasApi && !root.classList.contains('lock-transparent'));
+
+  emit({ type: 'config', layout: mode, rules: HARNESS_RULES });
 }
 
 /* --- the settings panel ------------------------------------------------
