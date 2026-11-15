@@ -549,7 +549,11 @@
           # The renderer, gbm and EGL are opened by name at run time rather
           # than linked, so the closure has to carry them and the loader has to
           # be told where they are. Getting this wrong produces "Failed to load
-          # the Vulkan library", which says nothing about the cause.
+          # the Vulkan library", which says nothing about the cause. The
+          # built-in lock screen opens libpam the same way (see
+          # crates/viewport/src/lock.rs), and a NixOS loader has no global
+          # library directory to find it in: without pam here every password
+          # is refused with "libpam.so.0 could not be loaded".
           # The shell itself, and the page it falls back to. Without them an
           # installed compositor has nothing to load: the default URL resolves
           # beside the binary, and a session started from a login shell has no
@@ -610,6 +614,7 @@
                 seatd
                 libinput
                 udev
+                pam
               ])}
 
             # The data above is copied out of the store, write bits and all,
@@ -806,6 +811,8 @@
               pkgs.libgbm
               pkgs.libglvnd
               pkgs.mesa
+              # The built-in lock screen dlopens libpam.so.0.
+              pkgs.pam
             ]}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
             # The EGL driver, and only when the host has none of its own.
@@ -945,6 +952,8 @@
               pkgs.libxcursor
               pkgs.libxi
               pkgs.libxrandr
+              # The built-in lock screen dlopens libpam.so.0.
+              pkgs.pam
             ]}:/run/opengl-driver/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
             echo "viewport devshell"
@@ -1541,6 +1550,14 @@
             services.seatd.enable = true;
             security.polkit.enable = true;
             hardware.graphics.enable = true;
+
+            # The built-in lock screen's PAM policy. The authenticator
+            # (crates/viewport/src/lock.rs) prefers a service named after the
+            # compositor and falls back to `login` where there is none; this
+            # is the policy it prefers — the same default pam_unix stack
+            # swaylock and gtklock get. The library itself reaches the
+            # compositor through the package's wrapper, not through here.
+            security.pam.services.viewport = { };
 
             # The accessibility bus.
             #
