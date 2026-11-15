@@ -1410,10 +1410,11 @@ pub struct ViewportState {
     pub lock_delay_timer: Option<std::os::fd::OwnedFd>,
     /// Which arming the pending tick belongs to, like the revert's.
     pub lock_delay_generation: u64,
-    /// Set by the idle deadline just before it asks for a lock: that lock should
-    /// leave the outputs blanked when the delay runs out, rather than turning
-    /// them back on to show the locker. Consumed by `lock_session`; a manual
-    /// lock (binding, lid, `session.lock`) leaves it false and keeps the old
+    /// Set by the idle deadline just before it asks for a lock, and by the
+    /// `lock+blank` binding: that lock should leave the outputs blanked when
+    /// the delay runs out, rather than turning them back on to show the
+    /// locker. Consumed by `lock_session`; the other manual locks (the `lock`
+    /// binding, lid, `session.lock`) leave it false and keep the old
     /// blank-then-show behaviour.
     pub lock_next_stays_blanked: bool,
     /// Whether the pending lock delay should leave the outputs blanked when it

@@ -47,6 +47,15 @@ pub enum Action {
     Lock,
     /// Turn the screens off now, rather than waiting for `idle.blank_after`.
     Blank,
+    /// Lock and turn the screens off — the idle deadline's arrangement, asked
+    /// for by hand.
+    ///
+    /// The outputs go off at once and the lock keeps them off when it lands,
+    /// so the desk goes dark and stays dark until input wakes it to the lock
+    /// screen, never to the desktop. `lock` alone is the other answer: the
+    /// lock screen shown at once, for somebody who is staying. This is the
+    /// leaving-the-desk chord, which wants the dark too.
+    LockBlank,
     /// Toggle game mode: strip shell animations, hide the bar and pause the
     /// wallpaper drift while gaming, and restore them on the way out.
     GameMode,
@@ -285,6 +294,7 @@ impl Binding {
             Action::Appearance => "appearance toggle".to_owned(),
             Action::Lock => "lock".to_owned(),
             Action::Blank => "blank".to_owned(),
+            Action::LockBlank => "lock+blank".to_owned(),
             Action::GameMode => "game-mode".to_owned(),
             Action::Background => "background".to_owned(),
             Action::Magnify(crate::magnify::Step::In) => "magnify in".to_owned(),
@@ -490,6 +500,12 @@ pub(crate) fn parse_action(action: &str) -> Action {
             // recognise. Two built-in chords that did nothing, silently.
             "lock" => Action::Lock,
             "blank" => Action::Blank,
+            // The two together, spelled as the two verbs they are: lock the
+            // session and leave the outputs off, the way the idle deadline
+            // does. A literal rather than a `lock` with an argument, for the
+            // reason the magnifier steps are literals: a typo falls through
+            // to the shell instead of silently becoming one of the three.
+            "lock+blank" => Action::LockBlank,
             "game-mode" => Action::GameMode,
             "background" => Action::Background,
             // Spelled out rather than parsed as a verb with an argument, so
@@ -620,7 +636,7 @@ pub fn defaults(terminal: &str, menu: Option<&str>, layout: &str) -> Vec<Binding
         // `n` and `t` rather than anything mnemonic for Bluetooth: `Mod4+n`
         // already toggles the bar, so the network sits beside it under Shift,
         // and `b` is taken by the horizontal split with `Mod4+Shift+b`
-        // blanking the screens. `t` is what is left that nothing else wants.
+        // locking and blanking the screens. `t` is what is left that nothing else wants.
         "Mod4+Shift+n=shell network".to_owned(),
         "Mod4+Shift+t=shell bluetooth".to_owned(),
         // The on-screen keyboard. It also comes up on its own — see
@@ -659,7 +675,11 @@ pub fn defaults(terminal: &str, menu: Option<&str>, layout: &str) -> Vec<Binding
         // rather than a keymap that changes shape with a config key.
         "Mod4+Shift+Return=background".to_owned(),
         "Mod4+Shift+x=lock".to_owned(),
-        "Mod4+Shift+b=blank".to_owned(),
+        // Lock and blank together: the chord for leaving the desk, which
+        // wants the session locked and the panels off, and the lock screen
+        // only when input wakes it. `blank` alone is still a verb for a
+        // config that wants the dark without the lock.
+        "Mod4+Shift+b=lock+blank".to_owned(),
         // The screen magnifier. On Alt rather than on Shift because the two
         // obvious keys are already spoken for twice over: `Mod4+equal` and
         // `Mod4+minus` grow a solar system's middle window under one layout
@@ -1107,21 +1127,24 @@ mod tests {
         // way — the message goes out, nothing recognises it, nothing happens.
         assert_eq!(parse_action("lock"), Action::Lock);
         assert_eq!(parse_action("blank"), Action::Blank);
+        assert_eq!(parse_action("lock+blank"), Action::LockBlank);
         assert_eq!(parse_action("game-mode"), Action::GameMode);
     }
 
     #[test]
-    fn the_default_lock_and_blank_chords_are_bound_to_something_real() {
+    fn the_default_lock_chords_are_bound_to_something_real() {
         // `defaults` has always listed both. What it produced was two entries
-        // whose action was a shell verb that does not exist.
+        // whose action was a shell verb that does not exist. The blank chord
+        // locks too now — the leaving-the-desk answer — so what has to be
+        // bound is `lock` and `lock+blank`, not `blank` on its own.
         let bindings = defaults("foot", Some("wmenu-run"), "tiling");
         assert!(
             bindings.iter().any(|b| b.action == Action::Lock),
             "no binding produces Action::Lock"
         );
         assert!(
-            bindings.iter().any(|b| b.action == Action::Blank),
-            "no binding produces Action::Blank"
+            bindings.iter().any(|b| b.action == Action::LockBlank),
+            "no binding produces Action::LockBlank"
         );
     }
 
@@ -1941,6 +1964,7 @@ mod tests {
             ("resize/Escape=mode default", "mode default"),
             ("Mod4+o=shell layout.overview", "shell layout.overview"),
             ("Mod4+Shift+x=lock", "lock"),
+            ("Mod4+Shift+b=lock+blank", "lock+blank"),
         ];
         for (spec, wanted) in cases {
             let binding = parse(spec).expect("the test's own spec parses");

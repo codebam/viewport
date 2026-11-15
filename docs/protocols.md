@@ -444,10 +444,11 @@ it would otherwise say someone is there and turn the screens straight back on.
 A grace period would have to outlast however long the keys were held; not
 counting the release avoids the question.
 
-`Mod4+Shift+x` locks now and `Mod4+Shift+b` turns the screens off now — the
-same two things the timer does, for when you are leaving rather than waiting to
-be noticed leaving. The screens come back on the next keypress or mouse
-movement, through the same path the timer's blanking uses.
+`Mod4+Shift+x` locks now and `Mod4+Shift+b` locks and turns the screens off
+now — the same things the timer does, for when you are leaving rather than
+waiting to be noticed leaving. The screens come back on the next keypress or
+mouse movement, through the same path the timer's blanking uses; the session
+locked with them, so what wakes is the lock screen.
 
 `wlr-output-power-management-v1` is advertised too, so `wlopm` and settings
 panels can turn a monitor off on request rather than only on a timer.

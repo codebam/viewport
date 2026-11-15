@@ -3495,6 +3495,21 @@ impl ViewportState {
                 tracing::info!("blank binding");
                 self.blank_screens();
             }
+            Bound::LockBlank => {
+                tracing::info!("lock+blank binding");
+                // The idle deadline's arrangement, asked for by hand: the
+                // outputs go off now — `force_blank` flags the chord's own
+                // release as the one input that does not wake them — and the
+                // lock keeps them off when it lands, so the desk stays dark
+                // until input wakes it to the lock screen, never to the
+                // desktop. Through `lock_session` like every other lock, so
+                // `idle.lock_delay` stands black first here too, and a
+                // deliberate act during the delay cancels it as it would any
+                // other lock.
+                self.lock_next_stays_blanked = true;
+                self.blank_screens();
+                self.lock_session();
+            }
             Bound::GameMode => {
                 let want = !self.config.game_mode;
                 tracing::info!("game mode {}", if want { "on" } else { "off" });

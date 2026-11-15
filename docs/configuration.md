@@ -158,9 +158,9 @@ settings (shell URL, backend, socket path) are re-read but do nothing until
 restart.
 
 Actions are `exec COMMAND`, `close`, `exit`, `reload`, `focus DIRECTION`,
-`mode NAME`, `appearance toggle`, `lock`, `blank`, `game-mode`, `background`,
-`volume STEP`, `volume mute`, `volume mic-mute`, `brightness STEP` and
-`shell COMMAND ARGS…`.
+`mode NAME`, `appearance toggle`, `lock`, `blank`, `lock+blank`, `game-mode`,
+`background`, `volume STEP`, `volume mute`, `volume mic-mute`,
+`brightness STEP` and `shell COMMAND ARGS…`.
 Typed volume and brightness actions read the resulting level back and show the
 OSD; an equivalent `exec` changes the device but cannot provide that feedback.
 `background` is the wallpaper terminal's only way in — see below.
@@ -255,7 +255,10 @@ configure — see [Idle](protocols.md#idle) for what a hold is and when it ends.
 
 `lock` locks the session the same way the idle timer would, so there is one
 place to configure what locking means; `blank` turns the outputs off until the
-next input, exactly as the idle timer does. `lid` is what the laptop hinge
+next input, exactly as the idle timer does. `lock+blank` is both at once: the
+session locks and the outputs go off, and stay off until input wakes them to
+the lock screen — the idle lock's behaviour, asked for by hand, and the default
+`Mod4+Shift+b`. `lid` is what the laptop hinge
 does: `"lock"`, `"blank"`, `"suspend"` (via logind) or `"ignore"`. Absent is
 lock when `idle.lock_command` is set, otherwise blank. A desktop has no lid,
 so the setting never fires.
@@ -279,15 +282,17 @@ locks immediately, as before. During the black phase the session is still
 unlocked, and any deliberate input (a press, a motion) cancels the lock and
 brings the outputs back rather than letting it fire; the release of the
 chord that asked for the lock does not cancel it. Every way of asking —
-idle deadline, `lock` binding, lid, `session.lock` — goes through the same
-delay, so there is one answer to whether the desk is about to lock.
+idle deadline, `lock` binding, `lock+blank` binding, lid, `session.lock` —
+goes through the same delay, so there is one answer to whether the desk is
+about to lock.
 
-When the delay ends, a *manual* lock (binding, lid, `session.lock`) turns the
-outputs back on to show the lock screen. An *idle* lock leaves them blanked: the
-desk went dark on its own and should not flash bright with the locker, so the
-session locks while the screen stays off and the lock screen appears only when
-input wakes it. The renderer fails closed to black until the lock screen has
-drawn, so waking never reveals the desktop.
+When the delay ends, a lock that asked for the screen (the `lock` binding, the
+lid, `session.lock`) turns the outputs back on to show the lock screen. A lock
+that asked for the dark — the idle deadline, or the `lock+blank` binding —
+leaves them blanked: the desk went dark and should not flash bright with the
+locker, so the session locks while the screen stays off and the lock screen
+appears only when input wakes it. The renderer fails closed to black until the
+lock screen has drawn, so waking never reveals the desktop.
 
 `idle.dim_after` and `idle.dim_floor` ramp the panel brightness down across the
 idle window instead of holding full brightness until the blank. From
@@ -593,7 +598,7 @@ empty, which on an OLED panel is two fewer things sitting in fixed pixels.
 | `Mod4+grave` | back to the previous workspace |
 | `Mod4+Shift+Return` | give the keyboard to the wallpaper terminal, and take it back |
 | `Mod4+Shift+x` | lock: `idle.lock_command` if one is set, the shell's own lock screen if not |
-| `Mod4+Shift+b` | blank the screens until the next input |
+| `Mod4+Shift+b` | lock and blank the screens: the session locks and the outputs stay off until input wakes them to the lock screen |
 | `Mod4+Shift+p` | HDR on the monitor you are looking at |
 | `Mod4+Alt+equal` / `Mod4+Alt+minus` | magnify the screen in / out |
 | `Mod4+Alt+0` | the magnifier off, straight back to 1:1 |

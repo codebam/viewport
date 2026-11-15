@@ -36,8 +36,9 @@ impl ViewportState {
     /// Lock the session, however this machine is configured to.
     ///
     /// The one answer to what locking means, and every way of asking for it
-    /// comes through here: the idle deadline, the `lock` binding, the lid
-    /// action, and the power menu's Lock row over `session.lock`. That was
+    /// comes through here: the idle deadline, the `lock` and `lock+blank`
+    /// bindings, the lid action, and the power menu's Lock row over
+    /// `session.lock`. That was
     /// already the property this function was written for
     /// (`src/binding.c:614`); it matters more now that there are two things it
     /// can mean. Which one is `self.lock_mode`, worked out once per config
@@ -55,9 +56,10 @@ impl ViewportState {
         // alone deliberately — running another locker against it is the way
         // out of a locker that crashed, and `check_lock_screen` says so.
         // Whether this lock should leave the outputs blanked when its delay
-        // runs out. The idle deadline sets it; a manual lock leaves it false.
-        // Consumed here so a request that finds a lock already in progress
-        // cannot leave it stale for the next one.
+        // runs out. The idle deadline and the `lock+blank` binding set it; the
+        // other manual locks leave it false. Consumed here so a request that
+        // finds a lock already in progress cannot leave it stale for the next
+        // one.
         let stay_blanked = std::mem::take(&mut self.lock_next_stays_blanked);
 
         if self.locked && self.lock_screen_is_drawing() {
@@ -164,15 +166,17 @@ impl ViewportState {
         let keep_blanked = std::mem::take(&mut self.lock_delay_keep_blanked);
         tracing::info!("lock: delay over; locking");
         if keep_blanked {
-            // An idle lock leaves the outputs off: the desk went dark on its
-            // own and should not flash bright with the locker. The shell draws
-            // the lock screen into its buffer regardless, and the renderer
-            // fails closed to black until it has, so the input that wakes the
-            // outputs never reveals the desktop — only the lock screen.
+            // A lock that asked for the dark — the idle deadline, the
+            // `lock+blank` binding — leaves the outputs off: the desk went
+            // dark and should not flash bright with the locker. The shell
+            // draws the lock screen into its buffer regardless, and the
+            // renderer fails closed to black until it has, so the input that
+            // wakes the outputs never reveals the desktop — only the lock
+            // screen.
             tracing::info!("lock: keeping the outputs blanked until input");
         } else {
-            // A manual lock shows the lock screen at once — the outputs must be
-            // back on for it to draw on.
+            // A lock that asked for the screen shows the lock screen at once —
+            // the outputs must be back on for it to draw on.
             self.set_outputs_enabled(true);
         }
         self.perform_lock();
