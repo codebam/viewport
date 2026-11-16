@@ -523,3 +523,30 @@ and the JavaScript shell suites under `tests/`.
   its sender (`org.freedesktop.login1`), the FEEDS rule against forged
   signals. Unit tests pin the policy and the rule; the lock itself is the
   same `perform_lock` every other way of asking goes through.
+
+- [x] **64. Closing a menu over a captured pointer fired the game's camera —
+  the re-aim guard asked the wrong surface. Fixed.**
+  `refresh_pointer_focus` skips its synthetic motion when the pointer is
+  locked, but it asked `pointer_locked` about `surface_under(location)` —
+  whatever the stack now puts under the cursor. A non-passthrough overlay
+  opened over the cursor *is* that surface, and it has no constraint: the
+  guard read false, the motion went through, the focus left the locked
+  surface (`wl_pointer.leave`), and the enter back on close carried the
+  cursor's position as an absolute motion. Xwayland hands that to the game
+  as aim — a shot fired by closing a menu, the same family as #53 one layer
+  up. Caught by `xwayland-capture-overlay` on CI while every local run
+  passed: Xwayland delivers the enter's motion ~400ms after the enter, so
+  locally it landed just after the test's fixed counting window (timing
+  luck, not silence) and on a busy runner inside it. `WAYLAND_DEBUG=1` on
+  the compositor shows the whole churn — leave at menu-open, enter+motion
+  at close, the motion at the warp target, and at (408, 308) with
+  `_GTK_FRAME_EXTENTS` before the mirror corrects. Fix: ask about the
+  surface holding the pointer's focus first (`pointer.current_focus()`),
+  where the lock lives, and about `under` second for the moment between a
+  lock activating and the focus catching up; `pointer_locked` now takes a
+  surface rather than a hit-test pair. Verified with a post-close poll that
+  counts what the fixed window missed: two stray motions per phase before,
+  zero after, both extents modes. The test now counts until the stream
+  settles (`motions_settled`) instead of sleeping a fixed window, so a late
+  motion is attributed to the phase that caused it rather than slipping
+  past the last count — the zero-tolerance assertion is unchanged.

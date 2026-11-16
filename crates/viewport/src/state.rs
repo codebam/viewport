@@ -2853,7 +2853,19 @@ impl ViewportState {
         // by the shell would end the capture (`ConstraintRemove::PointerLeave`)
         // — the very churn that hands a game a recenter error. Skipped, and
         // the hit test is still answered for the callers that need it.
-        if self.pointer_locked(&pointer, under.as_ref()) {
+        //
+        // The lock is asked about on the surface holding the pointer's focus
+        // first, because that is where it lives — not on `under`, which is
+        // whatever the stack now puts under the cursor. A menu opened over a
+        // captured pointer is `under`, and it has no constraint: checking it
+        // alone let the motion through, the focus left the locked surface,
+        // and the enter back on close carried the cursor's position as an
+        // absolute motion — which Xwayland hands the game as aim, a shot
+        // fired by closing a menu. `under` is still asked, for the moment
+        // between a lock activating and the focus catching up to it.
+        if self.pointer_locked(&pointer, pointer.current_focus().as_ref())
+            || self.pointer_locked(&pointer, under.as_ref().map(|(surface, _)| surface))
+        {
             return under;
         }
 
@@ -2872,7 +2884,7 @@ impl ViewportState {
         under
     }
 
-    /// Whether the surface under the pointer holds it locked.
+    /// Whether this surface holds the pointer locked.
     ///
     /// The same question [`Self::pointer_constraint`] answers for the motion
     /// paths, reduced to the one bit a caller that only has to decide "may I
@@ -2882,11 +2894,11 @@ impl ViewportState {
     fn pointer_locked(
         &self,
         pointer: &smithay::input::pointer::PointerHandle<Self>,
-        under: Option<&(WlSurface, Point<f64, Logical>)>,
+        surface: Option<&WlSurface>,
     ) -> bool {
         use smithay::wayland::pointer_constraints::{with_pointer_constraint, PointerConstraint};
 
-        let Some((surface, _)) = under else {
+        let Some(surface) = surface else {
             return false;
         };
         with_pointer_constraint(surface, pointer, |constraint| {

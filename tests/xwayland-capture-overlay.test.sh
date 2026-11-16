@@ -119,6 +119,30 @@ motions_at_target() {
 	sed -n 's/^motioncount: \([0-9]*\)$/\1/p' "$client_out" | tail -1
 }
 
+# The motions a phase's action caused, counted until the stream settles.
+# A fixed window is timing luck: Xwayland can hand the game a motion later
+# than the action's own sleep, and a window that ends before it arrives
+# passes while the camera moved (the leak this test caught on CI, where the
+# enter-back from a closed menu landed inside the window instead of after
+# it). Accumulate until two consecutive queries see nothing new; the total
+# is still held to zero, so nothing is masked — only attributed to the phase
+# that caused it.
+motions_settled() {
+	local total=0 n quiet=0
+	for _ in $(seq 1 20); do
+		n=$(motions_at_target)
+		n=${n:-0}
+		total=$((total + n))
+		if [ "$n" = "0" ]; then
+			quiet=$((quiet + 1))
+			[ "$quiet" -ge 2 ] && break
+		else
+			quiet=0
+		fi
+	done
+	echo "$total"
+}
+
 run_phase() {
 	local phase=$1 passthrough=$2
 	local extra=()
@@ -214,9 +238,9 @@ run_phase() {
 	# lock over it stays the lock it was.
 	msg -t shell.overlay --rects \
 		'[{"x":0,"y":0,"width":1920,"height":40,"passthrough":true,"blur":false,"keep_focus":false}]'
-	sleep 0.4
+	sleep 0.2
 	local revealed
-	revealed=$(motions_at_target)
+	revealed=$(motions_settled)
 	if [ "${revealed:-0}" != "0" ]; then
 		echo "FAIL($phase): revealing the bar moved the camera ${revealed} time(s)" >&2
 		echo "      The bar is a shell overlay and revealing it is a" >&2
@@ -231,9 +255,9 @@ run_phase() {
 	msg -t shell.overlay --rects \
 		'[{"x":0,"y":0,"width":1920,"height":40,"passthrough":true,"blur":false,"keep_focus":false},
 		  {"x":300,"y":200,"width":900,"height":700,"passthrough":false,"blur":false,"keep_focus":false}]'
-	sleep 0.4
+	sleep 0.2
 	local menu
-	menu=$(motions_at_target)
+	menu=$(motions_settled)
 	if [ "${menu:-0}" != "0" ]; then
 		echo "FAIL($phase): a menu over the pointer moved the camera ${menu} time(s)" >&2
 		echo "      Nothing moved the mouse. See the note above." >&2
@@ -245,9 +269,9 @@ run_phase() {
 	msg -t input.button --button 272 --pressed true
 	sleep 0.2
 	msg -t input.button --button 272 --pressed false
-	sleep 0.4
+	sleep 0.2
 	local pressed
-	pressed=$(motions_at_target)
+	pressed=$(motions_settled)
 	if [ "${pressed:-0}" != "0" ]; then
 		echo "FAIL($phase): a click moved the camera ${pressed} time(s)" >&2
 		echo "      A press re-runs the hit test and forwards a button," >&2
@@ -259,11 +283,11 @@ run_phase() {
 	# enter for a free pointer, and still silence for a locked one.
 	msg -t shell.overlay --rects \
 		"[{\"x\":0,\"y\":0,\"width\":1920,\"height\":40,\"passthrough\":${passthrough},\"blur\":false,\"keep_focus\":false}]"
-	sleep 0.4
+	sleep 0.2
 	msg -t shell.overlay --rects '[]'
-	sleep 0.4
+	sleep 0.2
 	local closed
-	closed=$(motions_at_target)
+	closed=$(motions_settled)
 	if [ "${closed:-0}" != "0" ]; then
 		echo "FAIL($phase): closing the shell's overlays moved the camera ${closed} time(s)" >&2
 		fail=1

@@ -11,6 +11,17 @@ to summarise rather than to duplicate.
 
 ## [Unreleased]
 
+### Fixed
+- A shell overlay opened over a captured pointer no longer moves the game's
+  camera when it closes: the re-aim guard in `refresh_pointer_focus` now
+  checks the pointer constraint on the surface holding the pointer's focus,
+  where the lock lives, instead of only the surface under the cursor — an
+  overlay has no constraint, so the old check let a leave/enter churn through
+  whose enter-back Xwayland delivered to the locked client as an absolute
+  motion (aim). The capture-overlay test counts until the event stream
+  settles rather than sleeping a fixed window, so a late motion can no
+  longer slip past the last count.
+
 ### Added
 - Lock before suspend: the compositor holds logind's `sleep` delay inhibitor
   and listens for `PrepareForSleep`, so any suspend — the power menu, the lid,
