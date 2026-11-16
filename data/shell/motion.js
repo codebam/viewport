@@ -377,10 +377,12 @@ function runMotion(leaf, sample, done) {
     return false;
   }
   if (leaf.spring) {
+    vpdbg('motion', { ms, spring: true });
     runSpring(leaf.spring, sample, done);
     return true;
   }
   const duration = ms / 1000;
+  vpdbg('motion', { ms, spring: false });
   const curve = leafCurve(leaf);
   let started = null;
   let frames = 0;
@@ -389,7 +391,10 @@ function runMotion(leaf, sample, done) {
     const t = Math.min(1, Math.max(0, (now - started) / 1000 / duration));
     sample(easeValue(curve, t));
     if (t < 1 && ++frames < MOTION_FRAME_CAP) requestAnimationFrame(step);
-    else if (done) done();
+    else {
+      vpdbg('motion-end', { frames, t: Number(t.toFixed(3)), capped: t < 1 });
+      if (done) done();
+    }
   };
   requestAnimationFrame(step);
   return true;

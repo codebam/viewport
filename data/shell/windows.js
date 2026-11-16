@@ -260,6 +260,8 @@ function addView({ id, title, app_id, tag, output: outputName, min_width, min_he
   /* view.added is replayed on load and on view.query, so the same view
    * legitimately arrives more than once. */
   if (views.has(id)) return;
+  vpdbg('add-arrive', { id, app: app_id, floating, xwayland, parent,
+    w: width, h: height, replay: Boolean(replay) });
 
   /* The shell's active output decides, not the compositor's hint: focus may
    * have moved by keyboard since. The hint is only a fallback for the first
@@ -447,6 +449,7 @@ function addView({ id, title, app_id, tag, output: outputName, min_width, min_he
     fadeIn(id);
     focusIt();
     saveSession();
+    vpdbg('add', { id, path: 'rule-float-or-special', ws: target });
     return;
   }
 
@@ -466,6 +469,7 @@ function addView({ id, title, app_id, tag, output: outputName, min_width, min_he
     fadeIn(id);
     focusIt();
     saveSession();
+    vpdbg('add', { id, path: 'float-slot', ws: floatSlot.workspace });
     return;
   }
 
@@ -476,6 +480,7 @@ function addView({ id, title, app_id, tag, output: outputName, min_width, min_he
     relayoutAll();
     fadeIn(id);
     saveSession();
+    vpdbg('add', { id, path: 'claim-slot', ws: target });
     return;
   }
 
@@ -486,6 +491,7 @@ function addView({ id, title, app_id, tag, output: outputName, min_width, min_he
     relayoutAll();
     fadeIn(id);
     saveSession();
+    vpdbg('add', { id, path: 'swallow', ws: target });
     return;
   }
 
@@ -509,6 +515,7 @@ function addView({ id, title, app_id, tag, output: outputName, min_width, min_he
     fadeIn(id);
     focusIt();
     saveSession();
+    vpdbg('add', { id, path: 'client-float', ws: target });
     return;
   }
 
@@ -517,6 +524,7 @@ function addView({ id, title, app_id, tag, output: outputName, min_width, min_he
   relayoutAll();
   fadeIn(id);
   saveSession();
+  vpdbg('add', { id, path: 'tiled', ws: target });
 }
 
 /* Existing windows keep manual state when a rule stops matching. A newly
@@ -756,6 +764,7 @@ function removeView(id) {
 
   const wasFocused = focusedId === id;
   const workspace = workspaceOf(id);
+  vpdbg('remove', { id, wasFocused, ws: workspace });
   /* Worked out while the tree still knows where this window was. */
   let successor = wasFocused ? focusAfterClosing(id) : null;
   let restoredSwallow = false;

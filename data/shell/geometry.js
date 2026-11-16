@@ -144,6 +144,7 @@ function reportGeometry(id) {
     if (view.box !== null) {
       view.box = null;
       send({ type: 'view.visible', id, visible: false });
+      vpdbg('visible', { id, visible: false, why: 'zero-rect' });
     }
     return false;
   }
@@ -309,6 +310,8 @@ function reportGeometry(id) {
      unconditionally — including the case where the scale alone changed, which
      is worth a message even though the rect did not move. */
   send(message);
+  vpdbg('layout', { id, x: box.x, y: box.y, w: box.width, h: box.height,
+    scale, clip, floating, square });
   return true;
 }
 
@@ -393,6 +396,8 @@ function flipFrom(before) {
 
     offsets.push([view.el, dx, dy]);
   }
+
+  vpdbg('flip', { windows: offsets.length, strips: strips.length });
 
   /* A spring cannot be a CSS transition, so the slide is sampled here — the
      pump is measuring these rects every frame either way, and the compositor
@@ -479,12 +484,15 @@ function pendingStrips() {
 }
 
 function releaseStrips() {
+  const targets = [];
   for (const strip of pendingStrips()) {
     const target = Number(strip.dataset.scroll);
     if (Number.isFinite(target)) {
       strip.style.transform = `translateX(${-target}px)`;
+      targets.push(target);
     }
   }
+  vpdbg('strip-release', { targets });
 }
 
 /* Measure every window on screen and tell the compositor where it is.
@@ -509,6 +517,7 @@ function reportAllGeometry() {
 }
 
 function pumpGeometry() {
+  vpdbg('pump-arm', {});
   pumpRemaining = PUMP_IDLE_FRAMES;
   /* Both counters are reset, not just the idle one: a relayout landing while a
      pump winds down joins the running loop, and a window opening mid-pump used
@@ -520,7 +529,9 @@ function pumpGeometry() {
   if (pumping) return;
   pumping = true;
 
+  let frames = 0;
   const step = () => {
+    frames++;
     const changed = reportAllGeometry();
 
     pumpRemaining = changed ? PUMP_IDLE_FRAMES : pumpRemaining - 1;
@@ -528,6 +539,7 @@ function pumpGeometry() {
       requestAnimationFrame(step);
     } else {
       pumping = false;
+      vpdbg('pump-stop', { frames, idle: pumpRemaining <= 0, budgetLeft: pumpBudget });
     }
   };
 
@@ -704,7 +716,10 @@ function fadeIn(id, category = 'windows_in') {
   /* One entrance per window at a time: a switch asks twice — once from the
      visibility pass and once from the arrival pass that knows what a switch
      is — and two tweens fighting over one opacity is a fade that stutters. */
-  if (view?.entranceTween) return false;
+  if (view?.entranceTween) {
+    vpdbg('fade-busy', { id, category });
+    return false;
+  }
 
   /* A rule can take the animation off one window — Hyprland's `animation`
      effect — and it gets the reduced-motion answer: no journey, but it still
@@ -750,6 +765,8 @@ function fadeIn(id, category = 'windows_in') {
     view.el.style.transform = '';
     reportGeometry(id);
   });
+
+  vpdbg('fade', { id, category, style, move, started, resting });
 
   /* The window was just told to be invisible. If no tween is going to bring it
      back up — a shell whose tween engine did not load is the way that happens
@@ -1270,6 +1287,7 @@ function relayoutAll() {
     if (!visible && view.box !== null) {
       view.box = null;
       send({ type: 'view.visible', id, visible: false });
+      vpdbg('visible', { id, visible: false, why: 'off-screen' });
     }
     /* Before the class is set, so this reads the previous frame's answer: the
        flare belongs to focus moving, not to the window being re-rendered while

@@ -224,6 +224,13 @@ function renderStrip(root, output, area = null) {
   strip.dataset.scroll = String(scroll);
   if (dragging) strip.classList.add('dragging');
 
+  vpdbg('strip', {
+    ws: workspace,
+    cols: columns.map((c) => ({ w: c.width ?? null, ids: [...walk(c)].map(([l]) => l.id) })),
+    area: [Math.round(area.width), Math.round(area.height)],
+    fStart: focusedStart, fWidth: focusedWidth,
+    last: lastScroll, scroll, prev: previous, drag: dragging,
+  });
   return columns.length > 0 ? strip : null;
 }
 
