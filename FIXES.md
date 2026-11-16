@@ -485,3 +485,16 @@ and the JavaScript shell suites under `tests/`.
   family — the shell now heals the geometry even when the pause happens.
   Tracing: `?vpdebug=1` shell URL (`~/start-viewport.sh`), gated console
   traces in geometry/scrolling/windows/motion plus a 2s heartbeat.
+
+- [x] **62. A column parked off the strip leaks a sliver into the edge gap.
+  Fixed.** `reportGeometry` clipped tiled
+  windows against the `.windows` border box, which includes the edge-gap
+  padding the strip lives inside. A column scrolled just past the content
+  edge still intersected that box, so the compositor drew a few pixels of
+  the client in the gap — the sliver at the monitor edge in the field
+  screenshot, and the "window not in the right place" report. Fix: tiled
+  windows clip against the content box (`windowsContentAreaOf`, border box
+  less `edgeGapPx`); floating windows keep the border box, their rect is in
+  that space. Verified live: a half-width column parked at x=2555 on a
+  2560-wide output now reports clip width 0 (was 8). Shell clip tests
+  updated to the content edge; all four layout suites pass (4174 checks).

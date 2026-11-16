@@ -59,6 +59,23 @@ function windowsAreaOf(workspace) {
   };
 }
 
+/* The area a tiled window can actually be drawn in: the reserved rectangle
+   less the edge padding the strip and the tiling tree live inside. Clipping
+   against the border box let a column scrolled just past the content edge
+   leak a sliver of client into the gap — the padding is shell-drawn desktop,
+   not window, and a window parked off the strip should show nothing of
+   itself, not a few pixels of its left edge. Floating windows keep the border
+   box: their rect is in that space and may sit over a gap by design. */
+function windowsContentAreaOf(workspace) {
+  const area = windowsAreaOf(workspace);
+  if (!area) return null;
+  const pad = edgeGapPx(workspace);
+  return {
+    left: area.left + pad, top: area.top + pad,
+    right: area.right - pad, bottom: area.bottom - pad,
+  };
+}
+
 /* The gaps between a floating window and the reserved area's edges, from the
    workspace's `float_gaps` rule. Hyprland's `css_gaps`: the message carries the
    four sides already resolved, so this only has to be defensive about values a
@@ -160,6 +177,15 @@ function reportGeometry(id) {
      In solar's Lagrange field it is bounded by the monitor it was parked on,
      which is not the one showing its workspace — clipped against that, a
      parked window would be cropped away entirely. */
+  /* Lifted: above the windows it overlaps, rather than merely somewhere on the
+     workspace. Floating is the usual reason and solar's sun is the other one —
+     it sits over its own orbits by design, and its border falls inside their
+     holes exactly as a dialog's falls inside the window beneath it. The
+     canvas's focused window is the third: windows on a plane overlap freely,
+     so the one being typed into has to be the one in front. */
+  const lifted = isFloating(id) || view.solar?.lift === true
+    || view.canvas?.lift === true;
+
   const specialOutput = view.special
     ? outputs.get(view.specialOutput)?.windowsEl ?? null : null;
   const cell = view.overview?.cell ?? view.solar?.cell ?? specialOutput;
@@ -169,7 +195,8 @@ function reportGeometry(id) {
       return { left: r.left, top: r.top,
         right: r.left + r.width, bottom: r.top + r.height };
     })()
-    : windowsAreaOf(workspaceOf(id));
+    : (isFloating(id) ? windowsAreaOf(workspaceOf(id))
+      : windowsContentAreaOf(workspaceOf(id)));
   let clip = null;
   if (area) {
     /* Intersect on screen, where the window is drawn — with a scale in effect
@@ -204,15 +231,6 @@ function reportGeometry(id) {
      hole is covered by that client. A tiled border never does: it sits in the
      gap between two windows, where there is no surface to hide it. A floating
      window is the case where it does, every time. */
-  /* Lifted: above the windows it overlaps, rather than merely somewhere on the
-     workspace. Floating is the usual reason and solar's sun is the other one —
-     it sits over its own orbits by design, and its border falls inside their
-     holes exactly as a dialog's falls inside the window beneath it. The
-     canvas's focused window is the third: windows on a plane overlap freely,
-     so the one being typed into has to be the one in front. */
-  const lifted = isFloating(id) || view.solar?.lift === true
-    || view.canvas?.lift === true;
-
   /* Bounded by the output, exactly as the clip above is, and for a sharper
      reason than tidiness.
 

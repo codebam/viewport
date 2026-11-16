@@ -488,6 +488,7 @@ global.gsap = {
  * test does not depend on where that state is kept. */
 const EXPORTS = ';globalThis.__shell = { views, workspaces, outputs, scrollOffsets, overviewThumbs, workspaceCatalog,'
   + ' workspaceOfForTest: workspaceOf,'
+  + ' edgeGapPxForTest: edgeGapPx,'
   + ' overviewStateForTest: (id) => views.get(id)?.overview ?? {},'
   /* What the last relayout put on screen — the tree a drag's relayouts
      actually rebuild, which some layouts cap well below the windows open. */
@@ -5601,9 +5602,20 @@ if (mode === 'scrolling') {
   const layout = sent.slice(before).reverse()
     .find((m) => m.type === 'view.layout' && m.id === target);
   check('off-screen window reports a clip', !!layout?.clip);
-  check('clip starts at the output edge', layout?.clip?.x === 0);
-  check('clip covers only what is on screen', layout?.clip?.width === 400);
-  check('clip keeps the full height', layout?.clip?.height === 600);
+  /* The content edge, not the border box: the edge padding is shell-drawn
+     desktop, and a column parked off the strip must show nothing of itself
+     in it — not even a sliver of its left edge. */
+  const pad = globalThis.__shell.edgeGapPxForTest(
+    globalThis.__shell.workspaceOfForTest(target));
+  check('clip starts at the content edge', layout?.clip?.x === pad);
+  check('clip covers only what is on screen', layout?.clip?.width === 400 - pad);
+  const areaEl = [...globalThis.__shell.outputs.values()]
+    .find((o) => o.workspace === globalThis.__shell.workspaceOfForTest(target))
+    .windowsEl.getBoundingClientRect();
+  const top = Math.max(0, areaEl.top + pad);
+  const bottom = Math.min(600, areaEl.top + areaEl.height - pad);
+  check('clip stops at the content edges',
+    layout?.clip?.y === top && layout?.clip?.height === bottom - top);
 
   /* And a window fully inside its output is not clipped down. */
   views.get(target).viewport.__rect =
