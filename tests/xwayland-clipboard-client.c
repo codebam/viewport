@@ -88,27 +88,62 @@ int main(void) {
 	Atom clipboard = XInternAtom(display, "CLIPBOARD", False);
 	Atom utf8 = XInternAtom(display, "UTF8_STRING", False);
 	Atom property = XInternAtom(display, "VIEWPORT_CLIPBOARD_TEST", False);
-	XDeleteProperty(display, window, property);
-	XConvertSelection(display, clipboard, utf8, property, window, CurrentTime);
-	XFlush(display);
 
-	if (!wait_for(display, SelectionNotify, &event, SELECTION_TIMEOUT)) {
-		fprintf(stderr, "the selection request was never answered\n");
-		return 1;
-	}
-	if (event.xselection.property == None) {
-		fprintf(stderr, "the selection request was refused\n");
-		return 1;
-	}
-
-	Atom type;
-	int format;
-	unsigned long items, remaining;
+	// A paste under load can come back empty once: the selection owner is
+	// another process, and the bridge answers from whatever it holds at that
+	// instant. A toolkit pastes again; a single-shot request measures the
+	// transient instead of the bridge, which is how this test read an empty
+	// clipboard on a busy CI runner while the Wayland side held the text.
+	// Retry the whole request, and treat an empty answer as a failure to
+	// retry — never as a successful empty paste, which is what exit 0 with
+	// zero bytes used to be.
 	unsigned char *data = NULL;
-	if (XGetWindowProperty(display, window, property, 0, 65536, False, AnyPropertyType, &type,
-	                       &format, &items, &remaining, &data) != Success ||
-	    data == NULL) {
-		fprintf(stderr, "the selection property was empty\n");
+	unsigned long items = 0;
+	const char *why = "the selection request was never answered";
+	for (int attempt = 0; attempt < 5; attempt++) {
+		if (attempt > 0) {
+			usleep(200000);
+		}
+		// A late notify from the previous attempt would answer this one
+		// before its data lands; anything pending now is stale by definition.
+		while (XPending(display)) {
+			XNextEvent(display, &event);
+		}
+		XDeleteProperty(display, window, property);
+		XConvertSelection(display, clipboard, utf8, property, window, CurrentTime);
+		XFlush(display);
+
+		if (!wait_for(display, SelectionNotify, &event, SELECTION_TIMEOUT)) {
+			why = "the selection request was never answered";
+			continue;
+		}
+		if (event.xselection.property == None) {
+			why = "the selection request was refused";
+			continue;
+		}
+
+		Atom type;
+		int format;
+		unsigned long remaining;
+		if (data != NULL) {
+			XFree(data);
+			data = NULL;
+		}
+		items = 0;
+		if (XGetWindowProperty(display, window, property, 0, 65536, False, AnyPropertyType, &type,
+		                       &format, &items, &remaining, &data) != Success ||
+		    data == NULL) {
+			why = "the selection property was empty";
+			continue;
+		}
+		if (items == 0) {
+			why = "the selection property was empty";
+			continue;
+		}
+		break;
+	}
+	if (data == NULL || items == 0) {
+		fprintf(stderr, "%s (after retries)\n", why);
 		return 1;
 	}
 

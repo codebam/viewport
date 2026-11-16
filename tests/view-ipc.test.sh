@@ -139,10 +139,12 @@ view_id_for() {
 }
 
 # One field of the replayed `view.added` for a view. String fields are
-# unquoted; booleans and numbers pass through the same way.
+# unquoted; booleans and numbers pass through the same way. The query gets a
+# generous timeout: the msg default is two seconds, a guess for an idle
+# machine, and a busy CI runner answering late reads as a missing field.
 added_field() {
 	local id=$1 field=$2
-	msg -t view.query 2>/dev/null |
+	msg --timeout 10 -t view.query 2>/dev/null |
 		grep "\"id\":$id," |
 		sed -n "s/.*\"$field\":\"*\([^,\"]*\)\"*.*/\1/p" | head -1
 }
@@ -344,13 +346,21 @@ else
 	echo "FAIL: a taskbar never saw the socket-driven minimized" >&2
 	failures=$((failures + 1))
 fi
-# The shell-observable half: the replayed view.added carries it.
-for _ in $(seq 1 50); do
+# The shell-observable half: the replayed view.added carries it. The raw
+# answer goes to stderr on a mismatch: this check failed on two CI runs
+# while the foreign-toplevel half passed and every local run (loaded ones
+# included) agreed with it, so the next failure must carry its evidence
+# rather than a bare wanted/got.
+for _ in $(seq 1 100); do
 	[ "$(added_field "$VID" minimized)" = "true" ] && break
 	sleep 0.1
 done
-check "and the next view.query says minimized true" "true" \
-	"$(added_field "$VID" minimized)"
+got_minimized=$(added_field "$VID" minimized)
+if [ "$got_minimized" != "true" ]; then
+	echo "  --- view.query's answer for view $VID at the mismatch ---" >&2
+	msg --timeout 10 -t view.query 2>/dev/null | grep "\"id\":$VID," >&2
+fi
+check "and the next view.query says minimized true" "true" "$got_minimized"
 # Minimizing the focused window takes the focus away to the shell (id 0).
 if wait_for_both "$SUB_OUT" '"type":"view.focused"' '"id":0' 50; then
 	echo "ok: and minimizing the focused window dropped focus to the shell"
