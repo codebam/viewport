@@ -294,6 +294,16 @@ locker, so the session locks while the screen stays off and the lock screen
 appears only when input wakes it. The renderer fails closed to black until the
 lock screen has drawn, so waking never reveals the desktop.
 
+A suspend locks the session too, whatever asked for it — the power menu, the
+lid, a `systemctl suspend` in a terminal. The compositor holds logind's `sleep`
+delay inhibitor and listens for `PrepareForSleep`: on the way down it locks
+first and only then lets the machine sleep, so a resume lands on the lock
+screen rather than on the desktop. This lock skips `lock_delay` — the delay is
+a black window that input cancels, and a machine that slept inside it would
+resume with the cancel still armed. It follows the same policy as the idle
+deadline: with `lock_after` zero or absent (the deck's setting) a suspend does
+not lock, and nothing here is configurable on its own.
+
 `idle.dim_after` and `idle.dim_floor` ramp the panel brightness down across the
 idle window instead of holding full brightness until the blank. From
 `dim_after` seconds of inactivity the brightness falls linearly from full to

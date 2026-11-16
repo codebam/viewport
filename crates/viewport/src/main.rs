@@ -935,19 +935,31 @@ fn run() -> Result<()> {
     }
 
     // Battery, lid and power profiles. Same shape as MPRIS: idle until
-    // `apply_config` decides a widget or a lid policy wants it.
+    // `apply_config` decides a widget or a lid policy wants it. The sleep
+    // watch shares the channel but not that lifecycle — it is always on,
+    // because a desktop with no battery widget and a lid policy of ignore
+    // still suspends, and only the session's own compositor holds logind's
+    // inhibitor (a nested or headless instance would delay the desktop's
+    // own suspend for a lock nobody is looking at).
     {
         let (sender, source) = smithay::reexports::calloop::channel::channel();
         event_loop
             .handle()
             .insert_source(source, |event, _, state| {
                 use smithay::reexports::calloop::channel::Event;
-                let Event::Msg(crate::power::Message::Snapshot(snapshot)) = event else {
-                    return;
-                };
-                state.handle_power(snapshot);
+                let Event::Msg(message) = event else { return };
+                match message {
+                    crate::power::Message::Snapshot(snapshot) => state.handle_power(snapshot),
+                    crate::power::Message::PrepareForSleep { ack } => {
+                        state.lock_before_sleep();
+                        let _ = ack.send(());
+                    }
+                }
             })
             .map_err(|e| anyhow::anyhow!("inserting the power source: {e}"))?;
+        if drm {
+            crate::power::watch_sleep(sender.clone());
+        }
         state.power.attach(sender);
     }
 

@@ -12,6 +12,13 @@ use crate::dbus::sync::connection::BuildBlocking as _;
 // A thread of its own with a channel back, like MPRIS. UPower answers
 // promptly on a healthy machine and not at all on one whose daemon has
 // wedged; a compositor that waited on it would drop frames for a percentage.
+//
+// The sleep watch lives here too, on the same bus and the same shape but a
+// thread of its own that is always on: the UPower worker above is idle until
+// a battery widget or a lid policy wants it, and a desktop with neither still
+// suspends — from the power menu, from a lid, from a `systemctl suspend` in a
+// terminal. logind announces every one of those with PrepareForSleep, and the
+// session must be locked before the machine goes down, whatever asked it to.
 
 use crate::dbus::sync::proxy::BuildBlocking as _;
 use crate::dbus::sync::ProxyExt as _;
@@ -71,6 +78,13 @@ impl LidAction {
 #[derive(Debug)]
 pub enum Message {
     Snapshot(PowerSnapshot),
+    /// logind is about to suspend (`PrepareForSleep` with `true`). Lock the
+    /// session now and answer on `ack`: the sleep watch holds a logind delay
+    /// inhibitor and lets go of it only once the answer lands, so the lock is
+    /// up before the machine goes down rather than racing it.
+    PrepareForSleep {
+        ack: mpsc::Sender<()>,
+    },
 }
 
 /// The half the compositor keeps.
@@ -218,6 +232,20 @@ const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(4);
 /// proxy keeps trying until zbus gives up. Without this bound the thread is
 /// abandoned forever, and a session with a wedged daemon accumulates them.
 const CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// How long the sleep watch waits for the compositor to say the lock is up
+/// before it lets the machine sleep anyway. Under logind's own
+/// `InhibitDelayMaxSec` (five seconds by default), because a wedged compositor
+/// must not hold a lid closed forever: a sleep that never happens is worse
+/// than one that lands unlocked, and the inhibitor is a courtesy to the lock,
+/// not a veto over the machine.
+const SLEEP_LOCK_ACK: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// The sleep watch's feed. Names its sender for the same reason every rule in
+/// [`FEEDS`] does: a forged `PrepareForSleep` from any peer on the system bus
+/// would otherwise lock the session whenever somebody said so.
+const SLEEP_FEED: &str = "type='signal',sender='org.freedesktop.login1',\
+     interface='org.freedesktop.login1.Manager',member='PrepareForSleep'";
 
 /// One signal feed, and what it is called in the log.
 ///
@@ -534,6 +562,116 @@ fn proxy(
         .ok()
 }
 
+/// Watch logind for suspend, and lock the session before it lands.
+///
+/// Always on, unlike the UPower worker: the desktop that has no battery
+/// widget and a lid policy of ignore is exactly the machine whose worker
+/// never starts, and it still suspends from the power menu. The watch is a
+/// thread of its own so the worker's lifecycle stays the widget's question.
+///
+/// The ordering is the whole point. `PrepareForSleep(true)` is emitted and
+/// logind proceeds to sleep once its delay inhibitors let go — a listener
+/// that only locks on the signal is racing the kernel's freeze, and the
+/// resume can land before the lock does. So the watch holds a `delay`
+/// inhibitor for `sleep` from the start: logind waits for it (up to
+/// `InhibitDelayMaxSec`), the compositor locks and answers the ack, and only
+/// then does the watch drop the fd and let the machine go down. On the way
+/// back up (`PrepareForSleep(false)`) the inhibitor is taken again, ready for
+/// the next suspend.
+///
+/// Only the session's own compositor runs this — the caller gates on the DRM
+/// backend, the same rule the tray and the notification daemon follow. A
+/// nested or headless instance is a client of the session around it, and an
+/// inhibitor held by a leftover test would delay the desktop's own suspend.
+pub fn watch_sleep(events: smithay::reexports::calloop::channel::Sender<Message>) {
+    let spawned = std::thread::Builder::new()
+        .name("sleep-lock".to_owned())
+        .spawn(move || {
+            let connection = match crate::dbus::sync::connection::Builder::system()
+                .method_timeout(CALL_TIMEOUT)
+                .build_blocking()
+            {
+                Ok(connection) => connection,
+                Err(e) => {
+                    tracing::warn!("sleep: the system bus is unavailable: {e:#}");
+                    return;
+                }
+            };
+
+            let mut inhibitor = take_sleep_inhibitor(&connection);
+
+            let parsed = match zbus::MatchRule::try_from(SLEEP_FEED) {
+                Ok(parsed) => parsed.to_owned(),
+                Err(e) => {
+                    tracing::warn!("sleep: unreadable match rule {SLEEP_FEED:?}: {e}");
+                    return;
+                }
+            };
+            let messages =
+                match crate::dbus::sync::MessageIterator::for_match_rule(parsed, &connection, None)
+                {
+                    Ok(messages) => messages,
+                    Err(e) => {
+                        tracing::warn!("sleep: could not subscribe to PrepareForSleep: {e}");
+                        return;
+                    }
+                };
+
+            for message in messages.flatten() {
+                let Ok(active) = message.body().deserialize::<bool>() else {
+                    continue;
+                };
+                if active {
+                    let (ack, answer) = mpsc::channel();
+                    if events.send(Message::PrepareForSleep { ack }).is_ok() {
+                        // A timeout means the compositor never answered — wedged,
+                        // or gone. Let go anyway; holding longer only delays the
+                        // sleep past the point of the lock.
+                        let _ = answer.recv_timeout(SLEEP_LOCK_ACK);
+                    }
+                    // Closing the fd is what lets logind proceed; the hold
+                    // itself is the value, so the drop is said out loud.
+                    drop(inhibitor.take());
+                } else {
+                    inhibitor = take_sleep_inhibitor(&connection);
+                }
+            }
+        });
+    if let Err(e) = spawned {
+        tracing::warn!("sleep: the watch thread did not start: {e}");
+    }
+}
+
+/// Hold logind's `sleep` delay inhibitor: an fd whose closing is what lets a
+/// suspend proceed. `None` when logind will not give one — the watch still
+/// locks on the signal then, but the lock races the freeze instead of
+/// preceding it, which is the best a machine without logind can do.
+fn take_sleep_inhibitor(connection: &crate::dbus::sync::Connection) -> Option<zbus::OwnedFd> {
+    let proxy = proxy(
+        connection,
+        "org.freedesktop.login1",
+        "/org/freedesktop/login1",
+        "org.freedesktop.login1.Manager",
+    )?;
+    match proxy.method::<(String, String, String, String), zbus::OwnedFd>(
+        "Inhibit",
+        &(
+            "sleep".to_owned(),
+            "Viewport".to_owned(),
+            "Lock the session before suspend".to_owned(),
+            "delay".to_owned(),
+        ),
+    ) {
+        Ok(fd) => Some(fd),
+        Err(e) => {
+            tracing::warn!(
+                "sleep: no logind inhibitor ({e}); locking on PrepareForSleep is best-effort"
+            );
+            None
+        }
+    }
+}
+
 fn battery_state(state: u32) -> &'static str {
     match state {
         1 | 5 => "charging",
@@ -696,5 +834,19 @@ mod tests {
         assert_eq!(battery_state(2), "discharging");
         assert_eq!(battery_state(4), "full");
         assert_eq!(battery_state(0), "unknown");
+    }
+
+    /// A forged PrepareForSleep from any peer would lock the session at will;
+    /// the rule must trust logind's name alone, the same as the power feeds.
+    #[test]
+    fn the_sleep_feed_names_the_sender_it_trusts() {
+        assert!(
+            SLEEP_FEED.contains("sender='org.freedesktop.login1'"),
+            "{SLEEP_FEED}"
+        );
+        assert!(
+            SLEEP_FEED.contains("member='PrepareForSleep'"),
+            "{SLEEP_FEED}"
+        );
     }
 }

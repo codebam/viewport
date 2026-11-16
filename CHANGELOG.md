@@ -11,6 +11,16 @@ to summarise rather than to duplicate.
 
 ## [Unreleased]
 
+### Added
+- Lock before suspend: the compositor holds logind's `sleep` delay inhibitor
+  and listens for `PrepareForSleep`, so any suspend — the power menu, the lid,
+  a `systemctl suspend` — locks the session before the machine goes down and
+  resumes on the lock screen. The lock is immediate (the cancellable
+  `idle.lock_delay` black window would resume unlocked) and follows the idle
+  lock policy: `idle.lock_after` zero or absent, the deck's setting, does not
+  lock. Only the session's own compositor (the DRM backend) holds the
+  inhibitor; nested and headless instances leave the desktop's suspend alone.
+
 ## [0.7.0] - 2026-11-14
 
 ### Added

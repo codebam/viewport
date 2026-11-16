@@ -498,3 +498,28 @@ and the JavaScript shell suites under `tests/`.
   that space. Verified live: a half-width column parked at x=2555 on a
   2560-wide output now reports clip width 0 (was 8). Shell clip tests
   updated to the content edge; all four layout suites pass (4174 checks).
+
+- [x] **63. A suspend under Viewport resumed on the unlocked desktop — the
+  only sleep lock was swayidle's, and it ran the wrong locker. Fixed.**
+  swayidle binds to `graphical-session.target`, which every Wayland session
+  raises, so on a desktop that logs into Viewport it still fired `swaylock -f`
+  at its 110s timeout and before sleep — a second locker over a compositor
+  that draws its own (`idle.lock_after`, the built-in screen). The NixOS side
+  gates swayidle to `sway-session.target` now, which only sway raises. That
+  left Viewport with no sleep lock at all: the power menu's Suspend row goes
+  straight to logind, and nothing listened for `PrepareForSleep`. A listener
+  alone would race the freeze — logind proceeds once its delay inhibitors let
+  go — and a `session.lock` poke from outside would arm the cancellable
+  `lock_delay` black window, which the first keypress back from resume waves
+  away. Fix: `power::watch_sleep`, an always-on thread (the UPower worker is
+  off on a desktop with no battery widget and lid ignore, which still
+  suspends) holding logind's `sleep` delay inhibitor; on `PrepareForSleep(true)`
+  it asks the compositor to lock and drops the inhibitor only after the ack,
+  so the lock precedes the sleep. `lock_before_sleep` locks at once — never
+  the delay — clears any pending delay tick, and follows the idle lock policy
+  (`Settings::locks`), so the deck's `lock_after = 0` still never locks. The
+  watch runs only on the DRM backend, the tray's rule: a leftover headless
+  instance must not hold the desktop's suspend hostage. The signal rule names
+  its sender (`org.freedesktop.login1`), the FEEDS rule against forged
+  signals. Unit tests pin the policy and the rule; the lock itself is the
+  same `perform_lock` every other way of asking goes through.

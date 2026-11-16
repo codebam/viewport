@@ -57,6 +57,14 @@ impl Settings {
             || self.dim_after.unwrap_or(0) > 0
     }
 
+    /// Whether this session locks at all — the idle deadline's policy, and
+    /// the sleep watch's with it: a suspend is no more reason to lock a deck
+    /// that asked for no lock than an idle minute is. Blanking alone is not
+    /// locking; a screen that goes dark is not a session that is shut.
+    pub fn locks(&self) -> bool {
+        self.lock_after.unwrap_or(0) > 0
+    }
+
     /// The brightness multiplier the panel should wear at this idle elapsed
     /// time: 1.0 until `dim_after`, then a linear ramp down to `dim_floor` by
     /// `blank_after` (or, with no blank set, over the minute following
@@ -549,6 +557,22 @@ mod tests {
             !Settings::default().wanted(),
             "the delay alone must not start the idle timers"
         );
+    }
+
+    #[test]
+    fn the_sleep_lock_follows_the_idle_lock_policy() {
+        // The deck writes lock_after = 0 — a handheld has nothing to hide —
+        // and a suspend must not lock it any more than an idle minute does.
+        // A desktop with the deadline on locks before sleep; blanking alone
+        // is not a lock policy, and a negative typo reads as off.
+        assert!(!Settings::default().locks());
+        assert!(!settings(Some(0), Some(900)).locks());
+        assert!(!settings(Some(-5), None).locks());
+        assert!(
+            !settings(None, Some(120)).locks(),
+            "blanking is not locking"
+        );
+        assert!(settings(Some(120), Some(120)).locks());
     }
 
     #[test]

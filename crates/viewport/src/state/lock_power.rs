@@ -93,6 +93,35 @@ impl ViewportState {
         self.perform_lock();
     }
 
+    /// Lock for a suspend that is on its way down — logind's PrepareForSleep,
+    /// answered on the sleep watch's ack (`crate::power::watch_sleep`).
+    ///
+    /// Immediate, never the idle delay: the delay is a black window that
+    /// input cancels (`arm_lock_delay`), and a machine that sleeps inside it
+    /// resumes with the cancel still armed — the first keypress back would
+    /// wave the lock away. The session is going down now; the lock must be
+    /// up before it does, not ten seconds after it wakes. A pending delay is
+    /// cleared for the same reason: its tick must not re-lock over this one.
+    ///
+    /// The idle policy decides whether this locks at all (`Settings::locks`):
+    /// the deck's `lock_after = 0` is a handheld with nothing to hide, and a
+    /// suspend is no more reason to lock it than an idle minute is.
+    pub fn lock_before_sleep(&mut self) {
+        if !self.idle_settings.locks() {
+            return;
+        }
+        // A lock already up is left alone; one whose locker stopped drawing
+        // is re-locked, the same recovery `lock_session` allows — a sleep is
+        // a bad time to discover the lock screen crashed an hour ago.
+        if self.locked && self.lock_screen_is_drawing() {
+            return;
+        }
+        self.idle.clear_lock();
+        self.lock_next_stays_blanked = false;
+        tracing::info!("lock: suspending; locking before sleep");
+        self.perform_lock();
+    }
+
     /// Lock the session now, delayed or not — the delay hop lives in
     /// [`ViewportState::lock_session`], and its countdown in
     /// [`ViewportState::lock_delay_tick`].
