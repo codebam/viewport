@@ -328,15 +328,57 @@ function reportGeometry(id) {
  * `transitionend` would leave a window stranded mid-flight. A few extra frames
  * of sampling after everything settles is the cheaper mistake. */
 const PUMP_IDLE_FRAMES = 3;
-/* Hard ceiling, about a second. Rounding can leave two windows disagreeing by
- * a pixel forever, and a permanently spinning frame callback that sends IPC on
- * every tick is a worse bug than a window settling a frame late. */
-const PUMP_MAX_FRAMES = 60;
+/* Hard ceiling, in wall-clock milliseconds rather than frames: a frame count
+ * shrinks with the refresh rate — sixty frames is a quarter of a second at
+ * 240Hz, not the "about a second" it was written as — and a pump that expires
+ * mid-slide leaves the compositor holding a rectangle from mid-flight.
+ * Rounding can leave two windows disagreeing by a pixel forever, and a
+ * permanently spinning frame callback that sends IPC on every tick is a worse
+ * bug than a window settling a frame late, so the ceiling stays; it is just
+ * measured in the unit the animations are. */
+const PUMP_MAX_MS = 3000;
+/* A stalled frame pipeline stops requestAnimationFrame without stopping the
+ * animations: under VRR the frame clock can sleep between shell commits, and
+ * a transition paused mid-flight then looks exactly like a layout that
+ * settled — three frames of nothing changing. The pump used to stop there,
+ * and when the transition later resumed and landed, nothing measured it
+ * again: the compositor kept drawing the mid-flight rectangle until some
+ * unrelated relayout (revealing the bar, say) re-sent the geometry. A timer
+ * fires even when frames do not, so the pump keeps measuring through the
+ * stall and catches the rectangle the transition lands on. */
+/* Not 120: the gesture idle timer owns that number, and tests pick it out of
+   the timer list by its milliseconds. */
+const PUMP_WATCHDOG_MS = 100;
+/* The outer bound on one bout, stalls included. Every animation the shell
+   runs is finite by construction, so ten seconds is already far past anything
+   legitimate; it exists so a transition that never ends cannot spin the pump
+   for the life of the session. */
+const PUMP_HARD_MAX_MS = 10000;
+const pumpNow = () => (typeof performance !== 'undefined' && performance.now
+  ? performance.now() : Date.now());
+let pumpArmedAt = 0;
 let pumpRemaining = 0;
 /* Module scope rather than a local of pumpGeometry, so re-arming a pump that
    is already running starts the ceiling over — see pumpGeometry. */
-let pumpBudget = PUMP_MAX_FRAMES;
+let pumpDeadline = 0;
+let pumpLastStep = 0;
 let pumping = false;
+
+/* Whether a transition is still running on something whose rectangle the
+   compositor is told about: the strip's scroll and the windows' FLIP. Idle
+   frames mean "settled" only with nothing in flight — and a paused animation
+   is in flight too, which is the case idle frames alone misread. The
+   wallpaper and the bar animate outside the windows area and are none of the
+   geometry pump's business, so only their strips and windows count. */
+function layoutInFlight() {
+  if (typeof document.getAnimations !== 'function') return false;
+  return document.getAnimations().some((animation) => {
+    const target = animation.effect && animation.effect.target;
+    return Boolean(target && target.classList)
+      && (target.classList.contains('strip')
+        || target.classList.contains('window'));
+  });
+}
 
 /* Animate the move from an old layout to a new one, by inverting it.
  *
@@ -470,6 +512,10 @@ function cancelFlip(id) {
   view.el.style.transform = '';
   void document.documentElement?.offsetWidth;
   view.el.classList.remove('flipping');
+  /* Landing is a geometry change like any other: without this the compositor
+     keeps the mid-slide rectangle until the next relayout happens to re-send
+     it, which on an otherwise idle desktop is never. */
+  reportGeometry(id);
 }
 
 /* Strips that were rendered at their previous scroll position and still need
@@ -525,25 +571,53 @@ function pumpGeometry() {
      needed, leaving the compositor holding a rectangle from mid-flight until
      the next relayout. So the ceiling bounds one bout of sampling, and a bout
      still ends, because re-arming takes a relayout. */
-  pumpBudget = PUMP_MAX_FRAMES;
+  pumpArmedAt = pumpNow();
+  pumpDeadline = pumpArmedAt + PUMP_MAX_MS;
   if (pumping) return;
   pumping = true;
 
   let frames = 0;
   const step = () => {
+    if (!pumping) return;
     frames++;
+    pumpLastStep = pumpNow();
     const changed = reportAllGeometry();
+    const inFlight = layoutInFlight();
 
-    pumpRemaining = changed ? PUMP_IDLE_FRAMES : pumpRemaining - 1;
-    if (pumpRemaining > 0 && --pumpBudget > 0) {
+    pumpRemaining = (changed || inFlight) ? PUMP_IDLE_FRAMES : pumpRemaining - 1;
+    /* A stalled transition is in flight for as long as the stall lasts, which
+       can outlive the ordinary ceiling; give it room, but not forever — a
+       animation that never ends would otherwise spin the pump for the life of
+       the session. */
+    if (inFlight) {
+      pumpDeadline = Math.min(Math.max(pumpDeadline, pumpLastStep + 500),
+        pumpArmedAt + PUMP_HARD_MAX_MS);
+    }
+    if (pumpRemaining > 0 && pumpLastStep < pumpDeadline) {
       requestAnimationFrame(step);
     } else {
       pumping = false;
-      vpdbg('pump-stop', { frames, idle: pumpRemaining <= 0, budgetLeft: pumpBudget });
+      vpdbg('pump-stop', {
+        frames, idle: pumpRemaining <= 0, inFlight,
+        ms: Math.round(pumpLastStep - pumpArmedAt),
+      });
+      /* One last look after the ceiling, for the transition that lands just
+         past it: cheap, deduplicated, and the difference between a settled
+         desktop and a window drawn where it was a second ago. */
+      if (inFlight) setTimeout(() => reportAllGeometry(), 250);
     }
+  };
+  /* The watchdog steps the pump when frames stop arriving. It reschedules
+     only while a pump is running, so an idle desktop pays one timer tick per
+     bout, not a permanent loop. */
+  const watchdog = () => {
+    if (!pumping) return;
+    if (pumpNow() - pumpLastStep >= PUMP_WATCHDOG_MS) step();
+    setTimeout(watchdog, PUMP_WATCHDOG_MS);
   };
 
   requestAnimationFrame(step);
+  setTimeout(watchdog, PUMP_WATCHDOG_MS);
 }
 
 /* A gesture in progress: a window being dragged or resized by hand, or the

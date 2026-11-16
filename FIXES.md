@@ -455,3 +455,33 @@ and the JavaScript shell suites under `tests/`.
   compositor state when the width cycle fires. Confirmed live against
   the Steam client (2026-11-12): Mod4+r drops maximize and cycles the
   column.
+
+
+- [x] **61. A stalled animation strands the compositor at a mid-flight
+  rectangle. Fixed.** The geometry pump
+  (`data/shell/geometry.js`) stopped sampling after three frames in which no
+  window rect changed, and bounded a bout by sixty *frames*. Under VRR at
+  240Hz the frame pipeline can pause mid-transition (the frame clock sleeps
+  between shell commits); a paused transition changes nothing for three
+  frames, so the pump concluded "settled" at 13% into a strip scroll and
+  stopped. When the transition later resumed and landed, nothing measured it
+  again: the compositor kept drawing the mid-flight scroll — one window in
+  the middle of the screen over its neighbour, the next a 170px sliver, the
+  full-width column clipped to 1100px — until an unrelated relayout (Mod4
+  revealing the bar) re-sent the geometry. Caught live in the traced session:
+  heartbeats at t=29578 and t=31578 carry identical sent boxes (scroll ≈1430)
+  against DOM rects at the final scroll 2530, with `pump-stop {frames:6,
+  idle:true}` 10ms after the FLIP retarget. Fix: the pump now asks
+  `document.getAnimations()` whether a strip/window transition is still in
+  flight (a paused one is), keeps sampling while it is, bounds bouts in
+  wall-clock milliseconds (3s, extended to 10s while in flight) instead of
+  frames, and steps through a 100ms timer watchdog when rAF starves; a final
+  deduplicated re-report lands 250ms past the ceiling. `cancelFlip` also
+  reports the landed rect now. Verified live: 90 pump stops, none with an
+  animation in flight, no persistent sent-vs-rect divergence across
+  fast-open/fast-close stress; the pre-fix page shows the same stale boxes
+  across consecutive heartbeats. The compositor-side wakeup stall (the
+  visual pause itself) remains: see `docs/debugging.md`, the frame-clock
+  family — the shell now heals the geometry even when the pause happens.
+  Tracing: `?vpdebug=1` shell URL (`~/start-viewport.sh`), gated console
+  traces in geometry/scrolling/windows/motion plus a 2s heartbeat.
