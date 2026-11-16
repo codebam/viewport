@@ -11,6 +11,116 @@ to summarise rather than to duplicate.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-16
+
+### Added
+- Wallpaper extensions: a user script can draw the desktop background, the
+  same shape as a layout extension or a custom bar widget. The
+  `wallpaper_extensions` manifest names local scripts — the compositor
+  validates each name and resolves its path to a file:// URL, remote URLs
+  refused — `wallpaper_extension` selects one, and `wallpaper_options` is
+  handed to it untouched. The shell calls the selected wallpaper's
+  `apply({root, options})` and `clear` on replacement, so two wallpapers are
+  never both in force; while one is selected it replaces the picture, film
+  and colour wallpaper. Because the extension draws in ordinary DOM and CSS
+  it works under every renderer, Vulkan included — no GLSL shader path that
+  would silently do nothing on the default renderer.
+  `examples/wallpapers/gradient.js` is an animated demo, and
+  `docs/wallpaper-extension.md` documents the contract.
+- Per-output wallpaper extensions: the `outputs` block gains
+  `wallpaper_extension` / `wallpaper_options`, carried to the shell in the
+  `config` event as `output_wallpapers`, so each monitor can run its own
+  scene. The page-level selection stays the default; an output that names
+  none follows it, and an empty extension is no extension on that output —
+  the ordinary picture shows there while its neighbours run a scene.
+- An OLED drive-budget guard for wallpaper extensions:
+  `wallpaper_oled_guard` is `off`, `warn` (the default) or `refuse`.
+  `data/shell/panel.js` measures four metrics in linear drive — mean drive,
+  the fraction over half drive, the peak, and the fraction over 25% grey —
+  reading back what CSS actually painted by rasterising the live desktop
+  with the windows and bar stripped, so the measurement is the background
+  alone. Warn logs the offending frame and its metrics; refuse also takes
+  the extension down and returns to the ordinary wallpaper.
+- A live panel-drive bar widget: name `panel` in `bar_items` and the bar
+  shows the wallpaper's current mean linear drive as a percentage, with the
+  peak, the fraction over half drive and the wash in the tooltip. It samples
+  each output's wallpaper every five seconds through the shared panel.js
+  rasteriser, and the timer only runs while a bar actually carries the
+  module — a desk that never asks for it pays nothing.
+- Wallpaper extension options in the settings panel: a descriptor may
+  declare an `options` schema — number, text, toggle and choice entries,
+  validated at registration — and the panel draws a control per option when
+  the extension is selected. Changing a control writes back through
+  `config.wallpaper_options`, the same runtime tier as `config.wallpaper`;
+  nothing is written to disk. The gradient demo declares angle and duration.
+- Notification extensions: the `notification_extensions` manifest and
+  `notification_extension` selection complete the extension family — layout,
+  widget, wallpaper, notification. A descriptor may define
+  `filter(notification)`, returning false to keep a popup off screen while
+  the notification still reaches the centre and history, and/or
+  `render({notification, el})` to decorate the popup the shell built. Both
+  are contained, so a throw is logged and the popup shows as built rather
+  than letting a bad script silence the desktop. A badges demo ships in
+  `examples/notifications`.
+- An idle dim ramp before the blank: `idle.dim_after` / `idle.dim_floor`
+  ramp a brightness multiplier from 1 down to the floor across the window
+  from `dim_after` to `blank_after` (or, with no blank set, over the minute
+  following `dim_after`), holding at the floor until the blank. The dim is
+  applied through the compositor gamma, scaling whatever curve the output
+  already wears, so a dimmed desk keeps its ICC calibration and any
+  night-light client's tint. Any deliberate input brightens it again at
+  once. Both keys also ride the runtime `config.idle` setter and the
+  `Config` event.
+- `border.animated`, a dim drifting focus border for OLED panels: the
+  focused border becomes dim and low-saturation — saturation capped at 25%,
+  lightness fixed at 42% — and its hue wanders by three sines whose periods
+  are pairwise incommensurate, so the load is shared across the red, green
+  and blue subpixels and the composite never loops back to the same colour
+  at the same time. One custom property written five times a second; nothing
+  is redrawn per frame, and it works under every renderer, Vulkan included.
+  Absent is off; an explicit false takes the colour back to the ordinary
+  focus colour.
+- A game mode toggle: `game_mode` in the config file, the
+  `config.game_mode` runtime setter (absent toggles, like
+  `config.dark_mode`) and a game-mode bind action all reach the same flag.
+  The shell zeroes the motion pace — keeping the configured pace to restore
+  on the way out — hides the bar, and pauses the wallpaper extensions'
+  drift through their optional pause/resume hooks, with a CSS fallback for
+  extensions that declare none.
+- An idle lock stays blanked, and `lock_transparent` draws the built-in lock
+  screen as a translucent scrim over the wallpaper instead of an opaque
+  cover. An idle lock no longer turns the outputs back on when its delay
+  runs out: the session locks while the screen stays off, and the lock
+  screen appears only when input wakes it; a manual lock keeps the
+  blank-then-show behaviour. The scrim is only safe because the shell hides
+  the desktop furniture while locked, is tunable through `--lock-scrim`,
+  and absent is off — the opaque fail-closed cover.
+- Lock before suspend: the compositor holds logind's `sleep` delay inhibitor
+  and listens for `PrepareForSleep`, so any suspend — the power menu, the lid,
+  a `systemctl suspend` — locks the session before the machine goes down and
+  resumes on the lock screen. The lock is immediate (the cancellable
+  `idle.lock_delay` black window would resume unlocked) and follows the idle
+  lock policy: `idle.lock_after` zero or absent, the deck's setting, does not
+  lock. Only the session's own compositor (the DRM backend) holds the
+  inhibitor; nested and headless instances leave the desktop's suspend alone.
+- Gated geometry tracing for placement bugs: load the shell with
+  `?vpdebug=1` and the page narrates the tree, the DOM and what the
+  compositor was last told — every `view.layout` and `view.visible` it
+  sends, every strip render with its column widths and scroll math, every
+  pump arm and stop with the reason, FLIP and strip releases, fade and tween
+  lifecycles — with a two-second heartbeat snapshotting, per window, the
+  last sent box and clip against the measured hole. Off by default and free
+  when off: every trace point is a no-op without the flag.
+
+### Changed
+- Mod4+Shift+b now locks and blanks — the leaving-the-desk chord. The blank
+  chord used to turn the panels off and leave the session unlocked, the desk
+  dark but open; it now takes the idle deadline's arrangement through
+  `lock_session`, so the outputs go off at once, the lock keeps them off when
+  it lands, and input wakes them to the lock screen, never the desktop.
+  `lock` and `blank` remain verbs of their own, and Mod4+Shift+x is
+  unchanged.
+
 ### Fixed
 - A shell overlay opened over a captured pointer no longer moves the game's
   camera when it closes: the re-aim guard in `refresh_pointer_focus` now
@@ -21,16 +131,43 @@ to summarise rather than to duplicate.
   motion (aim). The capture-overlay test counts until the event stream
   settles rather than sleeping a fixed window, so a late motion can no
   longer slip past the last count.
-
-### Added
-- Lock before suspend: the compositor holds logind's `sleep` delay inhibitor
-  and listens for `PrepareForSleep`, so any suspend — the power menu, the lid,
-  a `systemctl suspend` — locks the session before the machine goes down and
-  resumes on the lock screen. The lock is immediate (the cancellable
-  `idle.lock_delay` black window would resume unlocked) and follows the idle
-  lock policy: `idle.lock_after` zero or absent, the deck's setting, does not
-  lock. Only the session's own compositor (the DRM backend) holds the
-  inhibitor; nested and headless instances leave the desktop's suspend alone.
+- Multi-GPU: a client buffer the scanout card cannot import is copied, not
+  dropped. A client that ignores its per-surface feedback and allocates for
+  the wrong card used to leave a hole in every screen on the card that
+  refused its buffer. The scanout renderer now imports a refused buffer on a
+  helper card, draws it into a shadow allocated on the scanout card and
+  samples that — the shadow cached per source buffer with a 32-entry
+  least-recently-used cap, so the price is a blit per buffer, not a blit per
+  frame, with a CPU readback and upload behind the GPU blit for cards that
+  share no renderable format. One card: no wrapper, the path is unchanged.
+- The shell's copy-buffer modifiers answer to every online card, not the
+  primary: on a two-card desk the shell is sampled by both cards in turn,
+  and a modifier the second card refused left the shell missing from that
+  card's monitors — the shell-shaped hole of the same cross-GPU gap the
+  client-buffer copy closed. Offline cards are skipped, so a card mid-reset
+  cannot narrow the choice to nothing.
+- The geometry pump keeps sampling through a stalled animation: under VRR
+  at 240Hz the frame pipeline can pause mid-transition, and the pump read
+  three unchanged frames as "settled" partway into a strip scroll — the
+  compositor kept drawing the mid-flight scroll, one window over its
+  neighbour, until an unrelated relayout re-sent the geometry. The pump now
+  asks `document.getAnimations()` whether a transition is still in flight,
+  bounds bouts in wall-clock milliseconds rather than frames, and steps
+  through a timer watchdog when `requestAnimationFrame` starves.
+- Tiled windows clip to the content box, not the border box: a column
+  scrolled just past the content edge still met the border box — which
+  includes the edge-gap padding the strip and the tiling tree live inside —
+  so the compositor drew a few pixels of the client in the gap, a sliver at
+  the monitor edge read as a window that never landed in its place. Floating
+  windows keep the border box, their rect being in that space and allowed to
+  sit over a gap by design.
+- The built-in lock screen can find libpam on NixOS: the lock screen opens
+  `libpam.so.0` with dlopen, and a NixOS loader has no global library
+  directory to find it in — every password was refused and a locked session
+  had no way back in from the front. pam joins the wrapper's library path
+  for every backend, the NixOS module declares
+  `security.pam.services.viewport`, and both dev shells name pam so a
+  `cargo run` that locks finds it too.
 
 ## [0.7.0] - 2026-11-14
 
