@@ -848,6 +848,17 @@ impl RenderConfig {
     }
 }
 
+/// Miscellaneous policy, Hyprland's `misc` block.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct MiscConfig {
+    /// Whether to prompt when a window stops responding, Hyprland's
+    /// `misc:enable_anr_dialog`. Absent is on. The compositor pings each
+    /// mapped window and, when one goes quiet past a deadline, asks the shell
+    /// to show a wait-or-force-quit dialog. Off, a quiet window is left alone.
+    pub enable_anr_dialog: Option<bool>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct File {
@@ -1099,6 +1110,8 @@ pub struct File {
     pub motion: MotionConfig,
     pub group: GroupConfig,
     pub notifications: NotificationsConfig,
+    /// Miscellaneous policy, Hyprland's `misc` block. See [`MiscConfig`].
+    pub misc: MiscConfig,
 
     /// The bar clock's locale and format; see [`ClockConfig`]. Absent leaves
     /// the shell to the locale the engine runs under.

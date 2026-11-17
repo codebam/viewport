@@ -6,6 +6,7 @@
 // there is no web engine yet, so the shell is a flat backdrop and windows are
 // placed by whatever speaks to the control socket.
 
+mod anr;
 mod appearance;
 mod apply;
 mod background;
@@ -1304,6 +1305,9 @@ fn run() -> Result<()> {
     // of a render. A client that connects to an idle compositor is otherwise
     // answered and never hears the answer, which looks exactly like a program
     // that takes seconds to start and then appears the moment a key is pressed.
+    // The window-liveness ping, for the not-responding dialog. A no-op each
+    // tick when misc.enable_anr_dialog is off.
+    state.arm_anr_timer();
     event_loop.run(None, &mut state, |state| {
         // Timed only when the counters are on. See `FrameLog::loop_turns`.
         let timing = state

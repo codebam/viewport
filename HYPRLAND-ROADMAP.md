@@ -62,10 +62,8 @@ The rest, named so that the next sweep does not have to rediscover them, and
 not worth a row each: `numlock_by_default` is done — `keyboard.numlock_by_default`
 latches the modifier once at startup and never forces it again on a reload;
 `kb_file` (the layout, variant, options, `kb_model` and `kb_rules` this has are
-all present now); tablet region mapping and pressure ranges, where this maps
-the pen to the whole desk and passes the pressure through as it is; and
-`misc:enable_anr_dialog`, the "window is not responding" check that has no
-equivalent here — the liveness watchdog in `ipc.rs` is watching the shell.
+all present now); and tablet region mapping and pressure ranges, where this
+maps the pen to the whole desk and passes the pressure through as it is.
 
 Done from that list across the passes since the audit: per-device
 `scroll_factor`, `emulate_discrete_scroll`, `cursor:hide_on_touch`, `kb_model`
@@ -85,7 +83,14 @@ plugged into a running session on any backend, not only under `--headless`:
 `headless::ensure_subsystem` brings the virtual-output machinery up lazily on
 the first `output.test_add`, and its frame timer drives only the virtual
 outputs beside the real backend's own render loop. The `--headless` path runs
-the same `ensure_subsystem` at startup, so the hotplug suites exercise it.
+the same `ensure_subsystem` at startup, so the hotplug suites exercise it. And
+`misc:enable_anr_dialog` is done — the compositor pings each mapped xdg window
+on a timer (`crate::anr`), and one whose pong is overdue is flagged `view.anr`
+for the shell to ask wait-or-force-quit; the force quit is Smithay's
+`ShellClient::unresponsive`, the protocol's own answer to a silent client, and
+a window that pongs again takes its dialog down (`view.anr_resolved`). This is
+client liveness, distinct from the shell watchdog in `ipc.rs`;
+`tests/anr_dialog.rs` watches a client that never pongs get flagged and quit.
 
 Two things this audit asked and answered as present, recorded so they are not
 re-listed: `pointer_constraints` covers what Hyprland's `confine_pointer` rule

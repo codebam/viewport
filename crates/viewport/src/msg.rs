@@ -246,6 +246,12 @@ const TYPES: &[Type] = &[
         hint: "--id N --confine BOOL",
     },
     Type {
+        name: "view.anr_resolve",
+        fields: &["id", "action"],
+        strings: &["action"],
+        hint: "--id N --action wait|quit",
+    },
+    Type {
         name: "view.decorations",
         fields: &["id", "decorate"],
         strings: &[],

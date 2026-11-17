@@ -1520,6 +1520,9 @@ function dispatchViewport(message) {
     case 'view.removed':
       selectedIds.delete(message.id);
       removeView(message.id);
+      /* A window that goes — force-quit or on its own — takes its
+         not-responding dialog with it. */
+      hideAnrDialog(message.id);
       break;
 
     case 'view.focused': {
@@ -1588,6 +1591,14 @@ function dispatchViewport(message) {
 
     case 'screencast.pick.done':
       hideScreencastPicker(message.id);
+      break;
+
+    case 'view.anr':
+      showAnrDialog(message);
+      break;
+
+    case 'view.anr_resolved':
+      hideAnrDialog(message.id);
       break;
 
     case 'screencast.active':

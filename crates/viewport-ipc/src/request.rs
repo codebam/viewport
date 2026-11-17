@@ -227,6 +227,15 @@ pub enum Request {
         confine: bool,
     },
 
+    /// The shell's answer to a not-responding dialog: `"quit"` forces the
+    /// window's client closed, `"wait"` leaves it be. Either clears the flag.
+    #[serde(rename = "view.anr_resolve")]
+    ViewAnrResolve {
+        #[serde(deserialize_with = "view_id")]
+        id: u32,
+        action: String,
+    },
+
     /// Whether the window is drawn with server decorations, Hyprland's
     /// `decorate` effect. Optional, unlike its neighbours: absent is the
     /// global policy, and `null` takes a rule back off — a rule that stopped

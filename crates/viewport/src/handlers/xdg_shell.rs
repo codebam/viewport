@@ -50,6 +50,13 @@ impl XdgShellHandler for ViewportState {
         &mut self.xdg_shell_state
     }
 
+    /// A client answered its liveness ping. Smithay has already checked the
+    /// serial; this takes down the not-responding dialog of any of its windows
+    /// that had been flagged. See `crate::anr`.
+    fn client_pong(&mut self, client: smithay::wayland::shell::xdg::ShellClient) {
+        self.anr_pong(&client);
+    }
+
     /// A window exists, but nothing is told about it yet.
     ///
     /// It is deliberately not mapped into the `Space`: the compositor has no

@@ -33,6 +33,22 @@ pub enum Event {
     #[serde(rename = "view.removed")]
     ViewRemoved { id: u32 },
 
+    /// A window has stopped responding to the compositor's ping, so the shell
+    /// can ask whether to wait or force quit (`misc.enable_anr_dialog`).
+    #[serde(rename = "view.anr")]
+    ViewAnr {
+        id: u32,
+        #[serde(default)]
+        app_id: String,
+        #[serde(default)]
+        title: String,
+    },
+
+    /// A window flagged as not responding has answered its ping again, so the
+    /// shell can take its dialog down.
+    #[serde(rename = "view.anr_resolved")]
+    ViewAnrResolved { id: u32 },
+
     #[serde(rename = "view.props")]
     ViewProps {
         id: u32,

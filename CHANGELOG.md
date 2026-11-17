@@ -12,6 +12,13 @@ to summarise rather than to duplicate.
 ## [Unreleased]
 
 ### Added
+- `misc.enable_anr_dialog`, Hyprland's "window is not responding" prompt. The
+  compositor pings each mapped xdg window on a timer; one that does not answer
+  within five seconds is flagged and the shell shows a wait-or-force-quit
+  dialog over the windows. Force quit uses the protocol's own unresponsive
+  error to disconnect the client; a window that answers again takes its dialog
+  down. Absent is on; `false` leaves a quiet window alone. Only xdg windows are
+  pinged — the liveness contract is `xdg_wm_base`'s.
 - Two bind flags, Hyprland's `auto_consuming` and per-device `device`.
   `auto_consuming+` consumes the key only when the dispatcher has something to
   act on — a `close` or `focus` with no focused window gives the key back to the

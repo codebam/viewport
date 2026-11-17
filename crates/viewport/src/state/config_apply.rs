@@ -778,6 +778,10 @@ impl ViewportState {
         // pointer to move first, which for a desk nobody is at is never.
         self.arm_cursor_hide();
 
+        // Whether a quiet window is asked about. The ping timer runs either
+        // way and reads this each tick, so a reload takes effect at once.
+        self.anr_enabled = file.misc.enable_anr_dialog.unwrap_or(true);
+
         // The keymap, if the file names one. Replacing the keyboard is how
         // this is set — there is no way to change the layout of one that
         // already exists — so it happens before any client has seen a seat.

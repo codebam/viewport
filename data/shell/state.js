@@ -694,6 +694,7 @@ function dropOverlaysForOutput(name) {
   if (changed) send({ type: 'shell.overlay', rects: [...overlays.values()] });
 }
 const screencastEl = document.getElementById('screencast');
+const anrEl = document.getElementById('anr');
 const trayMenuEl = document.getElementById('tray-menu');
 const clipboardEl = document.getElementById('clipboard');
 const launcherEl = document.getElementById('launcher');

@@ -150,6 +150,7 @@ fn is_known_type(name: &str) -> bool {
             | "view.blur"
             | "view.idle_inhibit"
             | "view.confine_pointer"
+            | "view.anr_resolve"
             | "view.decorations"
             | "view.query"
             | "shell.focus"

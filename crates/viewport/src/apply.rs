@@ -303,6 +303,10 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             }
         }
 
+        Request::ViewAnrResolve { id, action } => {
+            state.anr_resolve(id, &action);
+        }
+
         Request::ViewDecorations { id, decorate } => {
             let changed = match state.views.get_mut(id) {
                 Some(view) if view.rule_decorate != decorate => {

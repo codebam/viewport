@@ -496,6 +496,16 @@ pub struct ViewportState {
     /// binding that names devices does not match it.
     pub current_input_device: Option<String>,
 
+    /// Whether to prompt when a window stops responding (from
+    /// `misc.enable_anr_dialog`). See `crate::anr`.
+    pub anr_enabled: bool,
+    /// Mapped xdg windows waiting on a pong, by view id, with the time the
+    /// ping went out. A pong overdue past the deadline is flagged.
+    pub anr_pending: std::collections::HashMap<u32, std::time::Instant>,
+    /// Windows the shell has been told are not responding, by view id, until
+    /// they pong again or the dialog is answered.
+    pub anr_flagged: std::collections::HashSet<u32>,
+
     /// `long_press+` bindings waiting out their hold, by keysym.
     ///
     /// The action runs from the timer only while the key is still down; the
@@ -2023,6 +2033,9 @@ impl ViewportState {
             suppressed_keys: Vec::new(),
             deferred_bindings: Vec::new(),
             current_input_device: None,
+            anr_enabled: true,
+            anr_pending: std::collections::HashMap::new(),
+            anr_flagged: std::collections::HashSet::new(),
             long_press_pending: std::collections::HashMap::new(),
             repeating_held: std::collections::HashMap::new(),
             pending_click: std::collections::HashMap::new(),

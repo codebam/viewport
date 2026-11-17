@@ -350,3 +350,69 @@ function reportScreencastRect(dialog) {
      list rather than owning the compositor's single slot. */
   setOverlay('screencast', dialog);
 }
+
+/* The not-responding dialog (misc.enable_anr_dialog). The compositor pings
+ * each window and sends view.anr when one goes quiet; this asks whether to
+ * wait or force quit, and view.anr_resolve carries the answer back. The card
+ * reuses the chooser's styling — it is the same kind of question, asked over
+ * the windows rather than in the bar. */
+let anrId = 0;
+
+function showAnrDialog(message) {
+  anrId = message.id;
+  const output = outputs.get(activeOutputName());
+  if (output?.rect) {
+    Object.assign(anrEl.style, {
+      left: `${output.rect.x}px`,
+      top: `${output.rect.y}px`,
+      width: `${output.rect.width}px`,
+      height: `${output.rect.height}px`,
+    });
+  }
+  anrEl.hidden = false;
+  anrEl.replaceChildren();
+
+  const dialog = document.createElement('div');
+  dialog.className = 'screencast-dialog';
+
+  const title = document.createElement('div');
+  title.className = 'screencast-title';
+  title.textContent = 'Window not responding';
+  dialog.append(title);
+
+  const help = document.createElement('div');
+  help.className = 'screencast-help';
+  const name = message.title || message.app_id || 'A window';
+  help.textContent = `${name} has stopped responding. Wait for it to catch up, or force it closed.`;
+  dialog.append(help);
+
+  const list = document.createElement('div');
+  list.className = 'screencast-list';
+  for (const [action, label] of [['wait', 'Wait'], ['quit', 'Force Quit']]) {
+    const row = document.createElement('div');
+    row.className = 'screencast-source';
+    const labelEl = document.createElement('div');
+    labelEl.className = 'screencast-label';
+    labelEl.textContent = label;
+    row.append(labelEl);
+    row.addEventListener('click', () => {
+      send({ type: 'view.anr_resolve', id: anrId, action });
+      hideAnrDialog(anrId);
+    });
+    list.append(row);
+  }
+  dialog.append(list);
+
+  anrEl.append(dialog);
+  setOverlay('anr', dialog);
+}
+
+function hideAnrDialog(id) {
+  /* Only the one that is up: a late resolve for an earlier window must not
+     take down the dialog of the one that replaced it. */
+  if (id !== undefined && id !== anrId) return;
+  anrId = 0;
+  anrEl.hidden = true;
+  anrEl.replaceChildren();
+  setOverlay('anr', null);
+}

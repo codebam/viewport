@@ -1668,6 +1668,25 @@ negative or non-finite duration or slow is refused whole. The shell reapplies
 the block from the re-announced config, so a changed pace takes effect on the
 next transition rather than at the next restart.
 
+## A window that stops responding
+
+`misc.enable_anr_dialog` decides whether the compositor asks about a window
+that has gone quiet — Hyprland's `misc:enable_anr_dialog`. Absent is on.
+
+```jsonc
+"misc": { "enable_anr_dialog": true }
+```
+
+The compositor pings each mapped window once a second over `xdg_wm_base`'s
+ping/pong, the protocol's own liveness contract. A window that has not answered
+within five seconds is flagged, and the shell draws a dialog over the windows
+asking whether to **Wait** or **Force Quit**. Wait leaves the window be and
+asks again on a later round if it stays quiet; Force Quit disconnects the
+client with the protocol's unresponsive error. A window that answers its ping
+again takes the dialog down on its own. Only xdg windows are pinged — an X11
+window has no such ping, so it is left alone. Set `false` to leave a quiet
+window untouched.
+
 ## Window opacity
 
 ```jsonc

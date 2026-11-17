@@ -72,6 +72,8 @@ of what was asked.
 | `view.configured` | `id`, `width`, `height` — the size the client was actually configured with, sent only when that is not the size the shell asked for and only when the answer changes. A client configured below its minimum may ignore it, so the compositor raises the configure to that minimum; a shell that is not told goes on holding a rectangle for a window of a different size |
 | `view.parent` | `id`, and `parent` when it has one — whose dialog this is, said after the window was announced. `view.added` carries it when it is known by then; a portal window (a file chooser, in another process) is parented over xdg-foreign long after it maps, and this is the only way the shell hears about it |
 | `view.removed` | `id` |
+| `view.anr` | `id`, `app_id`, `title` — the window has stopped answering the compositor's ping (`misc.enable_anr_dialog`); the shell shows a wait-or-force-quit dialog and answers with `view.anr_resolve` |
+| `view.anr_resolved` | `id` — a window flagged `view.anr` has answered its ping again, so the shell takes its dialog down |
 | `view.focused` | `id` (`0` means the shell itself holds focus) |
 | `output.layout` | `outputs[]` with `name`, `make`, `model`, `serial`, optional EDID `physical_width_mm` and `physical_height_mm`, `enabled`, `active` (the one the shell last named through `output.active`), `x`, `y`, `width`, `height`, `usable_x`, `usable_y`, `usable_width`, `usable_height`, `hdr`, `hdr_capable`, `scale`, `transform`, `modes[]` |
 | `workspace.request` | `action` (`activate`, `deactivate`, `assign`, `remove`, `create`), optional `id`, `name`, `output` — a client outside the shell asked for something through `ext-workspace-v1`. See [Workspaces](#workspaces) |
@@ -151,6 +153,7 @@ Also accepted on the UNIX socket, which speaks the same message set.
 | `view.blur` | `id`, `blur` (required boolean) — the current first-matching rule asks for blur behind this window (Hyprland's `blur` effect): the same framebuffer effect a client gets from `ext-background-effect-v1`, forced onto a window that never asked for it. Required for the same reason, and drawn only where the renderer can run the effect — `docs/configuration.md` covers the rule and where blur draws |
 | `view.idle_inhibit` | `id`, `inhibit` (required boolean) — the current first-matching rule keeps the session awake (Hyprland's `idle_inhibit` effect). Required for the same reason |
 | `view.confine_pointer` | `id`, `confine` (required boolean) — the current first-matching rule confines the pointer to this window while it is focused (Hyprland's `confine_pointer` effect): motion is clamped to the window's box without the client asking for a constraint, and a client's own pointer lock still wins. Required for the same reason |
+| `view.anr_resolve` | `id`, `action` (`"wait"` or `"quit"`) — the shell's answer to a not-responding dialog (`view.anr`): `quit` forces the window's client closed with the protocol's unresponsive error, `wait` leaves it be. Either clears the flag |
 | `view.decorations` | `id`, optional `decorate` (boolean or null) — the current first-matching rule asks for server decorations on this window, or, with null or absent, hands the decision back to the global policy (Hyprland's `decorate` effect) |
 | `view.query` | — replays `config` and a `view.added` for every mapped window |
 | `shell.focus` | — |

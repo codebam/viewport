@@ -26,6 +26,13 @@
 <div id="screencast" role="dialog" aria-label="Screen sharing" hidden></div>
 
 <!--
+  The not-responding dialog. Page level like the chooser: it belongs to the
+  session rather than to one desktop, and is drawn over whichever one is being
+  looked at when a window stops answering the compositor's ping.
+-->
+<div id="anr" role="dialog" aria-label="Window not responding" hidden></div>
+
+<!--
   An open tray menu. Page level for the same reason again: it belongs to the
   item that was clicked rather than to a desktop, and it is positioned in
   layout coordinates, which is what the page is measured in.

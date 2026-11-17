@@ -228,6 +228,8 @@ let holdFocusEcho = false;
 const outputsEl = new El('div');
 /* Held rather than made inline, so a test can look at what the chooser drew. */
 const screencastEl = new El('div');
+/* And the not-responding dialog, on the same terms. */
+const anrEl = new El('div');
 /* And the same for the notification strip, which additionally has to be one
    element rather than a fresh one per lookup: what a dismissal leaves behind
    is only visible if the container is the one the shell appended to. */
@@ -308,6 +310,7 @@ global.document = {
     outputs: outputsEl,
     notifications: notificationsEl,
     screencast: screencastEl,
+    anr: anrEl,
     'tray-menu': trayMenuEl,
     clipboard: clipboardEl,
     launcher: launcherEl,
@@ -9589,6 +9592,35 @@ if (mode !== 'scrolling') {
 
     emit({ type: 'view.removed', id: 96 });
     emit({ type: 'view.focused', id: 4 });
+  }
+
+  /* The not-responding dialog: view.anr shows it, a click answers, and
+   * view.anr_resolved (or the window going) takes it down. */
+  {
+    const before = sent.length;
+    emit({ type: 'view.anr', id: 97, app_id: 'stuck', title: 'Stuck Window' });
+    check('view.anr shows the not-responding dialog', anrEl.hidden === false);
+    check('and names the window',
+      anrEl.querySelector('.screencast-help').textContent.includes('Stuck Window'));
+    check('and reports an overlay rectangle',
+      sent.slice(before).some((m) => m.type === 'shell.overlay'));
+
+    const rows = anrEl.querySelector('.screencast-list').children;
+    const mark = sent.length;
+    rows[1].click();
+    check('Force Quit sends view.anr_resolve quit',
+      sent.slice(mark).some((m) => m.type === 'view.anr_resolve'
+        && m.id === 97 && m.action === 'quit'));
+    check('and the dialog goes', anrEl.hidden === true);
+
+    emit({ type: 'view.anr', id: 98, app_id: 'slow', title: 'Slow' });
+    check('a second window shows the dialog again', anrEl.hidden === false);
+    emit({ type: 'view.anr_resolved', id: 98 });
+    check('view.anr_resolved hides it', anrEl.hidden === true);
+
+    emit({ type: 'view.anr', id: 99, app_id: 'gone', title: 'Gone' });
+    emit({ type: 'view.removed', id: 99 });
+    check('a window going takes its dialog with it', anrEl.hidden === true);
   }
 
   /* One relayout per frame while a hand is down, and the two ways that ends.

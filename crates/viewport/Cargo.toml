@@ -34,6 +34,12 @@ harness = false
 name = "confine_pointer_rule"
 harness = false
 
+# Dual-mode: a real client ignores the compositor's ping, is flagged
+# view.anr, and is disconnected when the dialog answers force quit.
+[[test]]
+name = "anr_dialog"
+harness = false
+
 [features]
 # `input-1-28` is on by default: `drag_3fg` calls libinput 1.27's
 # three-finger-drag setter unconditionally, and a feature meant to be a
