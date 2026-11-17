@@ -1191,7 +1191,7 @@
         {
           options.programs.viewport.package = lib.mkOption {
             type = lib.types.package;
-            default = self.packages.${pkgs.system}.default;
+            default = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
             defaultText = lib.literalExpression "viewport-smithay.packages.\${system}.default";
             description = ''
               The Viewport package this system runs.
@@ -1239,7 +1239,7 @@
               # is written that way above.
               extraPortals = [
                 pkgs.xdg-desktop-portal-gtk
-                (cfg.package or self.packages.${pkgs.system}.default)
+                (cfg.package or self.packages.${pkgs.stdenv.hostPlatform.system}.default)
               ];
 
               # Named for XDG_CURRENT_DESKTOP's first entry, which the
@@ -1596,7 +1596,7 @@
           # portal can set it — see there.
           config = mkIf cfg.enable {
             programs.viewport.package =
-              mkDefault (self.packages.${pkgs.system}.${cfg.shellBackend}.override {
+              mkDefault (self.packages.${pkgs.stdenv.hostPlatform.system}.${cfg.shellBackend}.override {
                 chromiumBin = cfg.chromiumBinary;
               });
 
