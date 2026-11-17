@@ -762,6 +762,25 @@ pub struct ViewportState {
     /// `cursor.follow_mouse_shrink`). Zero is the whole box, as the hover
     /// test has always seen it; the click path never reads this.
     pub follow_mouse_shrink: f64,
+    /// Whether the compositor refrains from warping the pointer (from
+    /// `cursor.no_warps`). Gates the workspace-switch warp below; mode 2 of
+    /// that warp overrides it.
+    pub no_warps: bool,
+    /// Whether a workspace switch warps the pointer to the window focused
+    /// there (from `cursor.warp_on_change_workspace`). 0 off, 1 on, 2 force.
+    pub warp_on_change_workspace: u8,
+    /// A workspace switch just happened and the warp it asks for is owed to
+    /// the next window the shell focuses.
+    ///
+    /// The shell publishes the new active workspace in `workspace.list` from
+    /// inside `relayoutAll`, then focuses the first window on it — so the
+    /// switch is observed before the focus that names the warp's target. This
+    /// one-shot bridges the two: armed when the active set changes and the
+    /// policy wants a warp, consumed by the next `focus_view`, and cleared by
+    /// `shell.focus` when the workspace is empty and there is nothing to warp
+    /// to. Taking it on the first focus rather than holding it means a later,
+    /// unrelated focus cannot inherit a warp nobody asked for.
+    pub pending_workspace_warp: bool,
 
     /// When the shell last moved a window, so a diagnostic capture can wait
     /// for the open animation to finish. Five shell frames is the middle of
@@ -2052,6 +2071,9 @@ impl ViewportState {
             follow_mouse: false,
             follow_mouse_threshold: 0.0,
             follow_mouse_shrink: 0.0,
+            no_warps: false,
+            warp_on_change_workspace: 0,
+            pending_workspace_warp: false,
             last_layout: None,
             needs_render: false,
             dirty_outputs: std::collections::HashSet::new(),

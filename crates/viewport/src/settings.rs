@@ -535,6 +535,12 @@ pub fn apply(into: &mut crate::config::File, overlay: &Overlay) {
         if let Some(value) = cursor.follow_mouse_shrink {
             into.cursor.follow_mouse_shrink = Some(value);
         }
+        if let Some(value) = cursor.no_warps {
+            into.cursor.no_warps = Some(value);
+        }
+        if let Some(value) = cursor.warp_on_change_workspace {
+            into.cursor.warp_on_change_workspace = Some(value);
+        }
     }
     if let Some(motion) = overlay.motion.as_ref() {
         // The overlay's block lands in the config file's own shape — every
@@ -867,6 +873,8 @@ mod tests {
                 follow_mouse: Some(true),
                 follow_mouse_threshold: Some(1.5),
                 follow_mouse_shrink: Some(4.0),
+                no_warps: Some(true),
+                warp_on_change_workspace: Some(2),
             }),
             motion: Some(viewport_ipc::event::Motion {
                 enabled: Some(false),
@@ -1031,6 +1039,8 @@ mod tests {
         assert_eq!(file.cursor.follow_mouse, Some(true));
         assert_eq!(file.cursor.follow_mouse_threshold, Some(1.5));
         assert_eq!(file.cursor.follow_mouse_shrink, Some(4.0));
+        assert_eq!(file.cursor.no_warps, Some(true));
+        assert_eq!(file.cursor.warp_on_change_workspace, Some(2));
         assert_eq!(file.motion.enabled, Some(false));
         assert_eq!(file.motion.duration, Some(120.0));
         assert_eq!(file.motion.slow, None);

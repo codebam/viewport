@@ -610,9 +610,11 @@ const TYPES: &[Type] = &[
             "follow_mouse",
             "follow_mouse_threshold",
             "follow_mouse_shrink",
+            "no_warps",
+            "warp_on_change_workspace",
         ],
         strings: &["theme"],
-        hint: "[--hide_after_ms N --theme NAME --size N --follow_mouse BOOL --follow_mouse_shrink N]   (bare toggles hide_after_ms 0 <-> 2000)",
+        hint: "[--hide_after_ms N --theme NAME --size N --follow_mouse BOOL --follow_mouse_shrink N --no_warps BOOL --warp_on_change_workspace 0|1|2]   (bare toggles hide_after_ms 0 <-> 2000)",
     },
     Type {
         name: "config.motion",

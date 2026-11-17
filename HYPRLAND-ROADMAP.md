@@ -22,7 +22,7 @@ the magnifier, session restore, and a `theme` block the shell paints.
 | 5 | Plugin system | `hyprctl plugins` + a whole ecosystem | there is no plugin loader; a new layout model is one file and three name lists (CHANGELOG [Unreleased]) | unlikely, by design |
 | 6 | `env` / `exec-env` config keys | `hl.env(NAME, VALUE)` before the display server starts | session variables (`XDG_CURRENT_DESKTOP`, portal env) are set internally; `VIEWPORT_*` is read, never written; no user-facing key | done — a top-level `env` map, applied before any backend opens and handed explicitly to every child so a reload reaches the next program |
 | 7 | Blur on the card that is driving the screen | blur is drawn by whatever renderer the monitor is using | `docs/protocols.md` §Background effects: the global is created only where GLES proved it can blit and compile the shader — nested and headless. The DRM backend gets no global at all, *including* on a card that fell back to GLES, because `VulkanFrame` offers neither `FrameContext` nor `BlitFrame` and has no blur pipeline. So on the hardware this is shipped for, no client gets blur, and 3 cannot land before it does | done — `VulkanFrame` grew `FrameContext`, a render-pass-safe capture and a nine-tap blur pipeline; the DRM backend advertises the global when its renderer can draw it |
-| 8 | Focus follows the pointer | `input:follow_mouse`, with `follow_mouse_threshold` and `follow_mouse_shrink` | `cursor.follow_mouse` and `cursor.follow_mouse_threshold` in `config.rs`; focus moves on pointer motion at the end of `move_pointer`, subject to threshold, not while locked or dragging (`input.rs`). `follow_mouse_shrink` remains absent — it shrinks the focus area around the pointer to prevent accidental crossings at container edges, and is not here | done — threshold in `input.rs`, config in `config.rs` |
+| 8 | Focus follows the pointer | `input:follow_mouse`, with `follow_mouse_threshold` and `follow_mouse_shrink` | `cursor.follow_mouse` and `cursor.follow_mouse_threshold` in `config.rs`; focus moves on pointer motion at the end of `move_pointer`, subject to threshold, not while locked or dragging (`input.rs`). `follow_mouse_shrink` is done too — the hover test insets each side of the window's bounding box by it (`inside_shrunk` in `input.rs`), so focus only changes once the pointer is genuinely inside the window; clicks, the wheel and drags still hit wherever the pointer really is | done — follow_mouse, threshold and shrink in `input.rs`, config in `config.rs` |
 | 9 | What a bind can be | flags: `locked`, `release`, `click`/`drag` with `binds:drag_threshold`, `long_press`, `repeating`, `non_consuming`, `auto_consuming`, `ignore_mods`, `transparent`, `description`, per-device `device`, `submap_universal`, `allow_input_capture`, `dont_inhibit` | `locked` is done — `locked` pseudo-modifier in `parse_chord`, per-binding flag checked by `match_binding`/`match_button`/`match_wheel` with the blanket locked gate removed from `input.rs`. `release`, `non_consuming`/`transparent`, `ignore_mods`, `repeating`, `long_press` and `universal`/`submap_universal` are done the same way — pseudo-modifiers in `parse_chord`, handled in `input.rs`; `repeating` and `long_press` run on calloop timers keyed by keysym and cancelled by the release. `description` is the object form of a `binds` entry, Hyprland's `bindd`, and `click`/`drag` fire on the release against a top-level `drag_threshold`. `dont_inhibit` is done — the inhibited branch in `input.rs` falls through to the binding match for a binding that asks for it, and the portal shortcuts stay gated. `allow_input_capture` is done — `intercept_input_capture` offers a press to a binding that asks for it and hands it back to the local path. Still absent: `auto_consuming` (Viewport's dispatchers return `()`, so there is no dispatcher-success model to fall back on) and per-device `device` (no per-device bind spelling exists yet) | open — two flags remain, both needing a design decision |
 | 10 | Window-rule vocabulary | matches `class`/`initial_class`/`initial_title`/`modal`/`float`/`fullscreen(_state_*)`/`group`/`pin`/`xwayland`/`content`/`focus`, and ~50 effects, last match wins, with named rules that can be enabled and disabled at runtime | named rules done — `name` field on rule objects, `rule.toggle`/`rule.enable`/`rule.disable` shell commands reapply rules to all windows. `class`/`initial_class`/`initial_title`/`xwayland`/`modal`/`content`/`group` matchers are done — `content` and `group` are re-sent on change, so they are not map-time-only — the shell-side effects `focus`, `animation` and min/max size are done, and the compositor-side `tearing`, `blur`, `idle_inhibit` and `decorate` effects are honoured over new `view.tearing` / `view.blur` / `view.idle_inhibit` / `view.decorations` messages — `blur` forces the same `ext-background-effect-v1` effect a client can ask for onto the window's whole surface tree, popups included. Still absent: the effects for aspect ratio, dimming and pointer confinement | open — matchers, the shell effects and four compositor effects done, the rest remains |
 | 11 | Named special workspaces, and what a workspace can be given | up to 97 `special:NAME` spaces toggled by name, and workspace rules carrying `on-created-empty`, `persistent`, `default_name`, `no_border`, `no_rounding`, `decorate`, `float_gaps`, `animation`, per-workspace `layout_opts` | one scratchpad and one pinned state. `workspaces` per number takes `output`, `layout`, `tiling_mode` and `gaps` — that half is done. `special:NAME` spaces are done too: a rule can send a window to one, `special.toggle NAME` shows or hides it as an overlay, and it is saved with the window. `persistent`, `default_name` and `on-created-empty` are done too, and a ruled workspace is now made when something switches to it so the last of those runs once, at the right moment. `no_border` and `no_rounding` are done as well — per-window frame classes plus the `square` crop flag — and `decorate` (the umbrella over border/shadow/groupbar) and `float_gaps` (the floating work area, in the `css_gaps` spelling) are done too, both carried to the shell with the rest of the policy. `animation` names the style a switch to a workspace runs, so one workspace can slide while the rest fade, and `layout_opts` is the layout's own string map for that workspace, handed over as `context.opts` — the hook a `layout_extensions` script is configured through. Nothing on this row is missing | done — named spaces, the rule extras, the appearance and placement extras, and per-workspace animation and layout options |
@@ -59,21 +59,30 @@ here only because the reasoning it recorded is why the fix took the shape it
 did.
 
 The rest, named so that the next sweep does not have to rediscover them, and
-not worth a row each: `scroll_button` with its lock, and `drag_3fg`;
-`numlock_by_default` is done — `keyboard.numlock_by_default` latches the
-modifier once at startup and never forces it again on a reload; `kb_file`
-(the layout, variant, options, `kb_model` and `kb_rules` this has are all
-present now); tablet region mapping and
-pressure ranges, where this maps the pen to the whole desk and passes the
-pressure through as it is; `no_warps` and `warp_on_change_workspace` (the
-cursor block now has the theme, size, `hide_after_ms`, `hide_on_key_press` and
-`hide_on_touch`); a headless output created from a running session rather than
-one only `output.test_add` may add; and `misc:enable_anr_dialog`, the "window
-is not responding" check that has no equivalent here — the liveness watchdog
-in `ipc.rs` is watching the shell.
+not worth a row each: `numlock_by_default` is done — `keyboard.numlock_by_default`
+latches the modifier once at startup and never forces it again on a reload;
+`kb_file` (the layout, variant, options, `kb_model` and `kb_rules` this has are
+all present now); tablet region mapping and pressure ranges, where this maps
+the pen to the whole desk and passes the pressure through as it is; a headless
+output created from a running session rather than one only `output.test_add`
+may add; and `misc:enable_anr_dialog`, the "window is not responding" check
+that has no equivalent here — the liveness watchdog in `ipc.rs` is watching the
+shell.
 
-Done from that list in this pass: per-device `scroll_factor`,
-`emulate_discrete_scroll`, `cursor:hide_on_touch`, `kb_model` and `kb_rules`.
+Done from that list across the passes since the audit: per-device
+`scroll_factor`, `emulate_discrete_scroll`, `cursor:hide_on_touch`, `kb_model`
+and `kb_rules`; `scroll_button` with its `scroll_button_lock` and `drag_3fg`
+(the `input` block, libinput 1.27's three-finger drag behind the `input-1-28`
+feature); `cursor:follow_mouse_shrink` (row 8); and `cursor:no_warps` with
+`warp_on_change_workspace`. The compositor never warped the pointer on its own
+before — focus moved, the pointer stayed — so `no_warps` gates the one warp
+this adds: a workspace switch (the active set moving in `workspace.list`) warps
+the pointer to the centre of the window the shell focuses next, `0` off, `1`
+on, `2` forcing past `no_warps`. The switch is observed before the focus that
+names its target, so a one-shot armed on the active-set change is paid by the
+next `focus_view` and dropped by `shell.focus` on an empty workspace;
+`tests/cursor_workspace_warp.rs` watches the warp land on a real client's
+pointer across all four policy combinations.
 
 Two things this audit asked and answered as present, recorded so they are not
 re-listed: `pointer_constraints` covers what Hyprland's `confine_pointer` rule

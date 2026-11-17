@@ -135,6 +135,22 @@ pub struct CursorConfig {
     /// really is, because the user aimed at it. Negative is refused — an
     /// inset of negative pixels grows the box and defeats the point.
     pub follow_mouse_shrink: Option<f64>,
+    /// Whether the compositor refrains from moving the pointer on its own,
+    /// Hyprland's `cursor:no_warps`. Absent is off.
+    ///
+    /// The warp it gates today is the workspace-switch one below. A client
+    /// moving its own pointer through `wp-pointer-warp-v1`, or a script through
+    /// `input.pointer`, is asking for the move rather than having it done to
+    /// them, so neither is a warp this touches.
+    pub no_warps: Option<bool>,
+    /// Whether switching workspaces moves the pointer to the window the shell
+    /// focuses there, Hyprland's `cursor:warp_on_change_workspace`. Absent is
+    /// 0 (off, the pointer stays where it was).
+    ///
+    /// `1` warps to the centre of the focused window unless `no_warps` is set;
+    /// `2` forces the warp even then. Anything above 2 is refused — there is
+    /// no third behaviour to name.
+    pub warp_on_change_workspace: Option<u8>,
     /// Hide the cursor when a key is pressed, and bring it back on the next
     /// pointer motion. Absent is off.
     ///
@@ -3107,6 +3123,30 @@ mod tests {
         let file: File =
             serde_json::from_str(r#"{"cursor":{"follow_mouse_shrink":-1}}"#).expect("should parse");
         assert_eq!(file.cursor.follow_mouse_shrink, Some(-1.0));
+    }
+
+    #[test]
+    fn the_warp_policy_parses_when_named_and_stays_absent_when_not() {
+        let file: File =
+            serde_json::from_str(r#"{"cursor":{"no_warps":true,"warp_on_change_workspace":2}}"#)
+                .expect("should parse");
+        assert_eq!(file.cursor.no_warps, Some(true));
+        assert_eq!(file.cursor.warp_on_change_workspace, Some(2));
+
+        // Absent is None, which the apply paths read as off — the pointer
+        // stays where it was, as it always has on a switch.
+        let absent: File =
+            serde_json::from_str(r#"{"cursor":{"follow_mouse":true}}"#).expect("should parse");
+        assert_eq!(absent.cursor.no_warps, None);
+        assert_eq!(absent.cursor.warp_on_change_workspace, None);
+
+        // A value above 2 is data here, as the negative shrink is: the file
+        // block does no refusing of its own, and the readers keep what they
+        // had rather than inventing a third behaviour.
+        let out_of_range: File =
+            serde_json::from_str(r#"{"cursor":{"warp_on_change_workspace":7}}"#)
+                .expect("should parse");
+        assert_eq!(out_of_range.cursor.warp_on_change_workspace, Some(7));
     }
 
     #[test]

@@ -1295,6 +1295,17 @@ pub struct Cursor {
     pub follow_mouse_threshold: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub follow_mouse_shrink: Option<f64>,
+    /// Whether the compositor keeps its hands off the pointer, Hyprland's
+    /// `cursor:no_warps`. Absent is off. The one warp it gates today is the
+    /// workspace-switch one below; a client moving its own pointer through
+    /// `wp-pointer-warp-v1` is a protocol right, not a warp, and is untouched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub no_warps: Option<bool>,
+    /// Whether switching workspaces moves the pointer to the window the shell
+    /// focuses there, Hyprland's `cursor:warp_on_change_workspace`. Absent is
+    /// 0. `1` warps unless `no_warps` is set; `2` forces the warp even then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warp_on_change_workspace: Option<u8>,
 }
 
 /// When the session locks and when the outputs go dark, as `idle` in the

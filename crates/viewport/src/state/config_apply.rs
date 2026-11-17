@@ -308,6 +308,8 @@ impl ViewportState {
                 follow_mouse: file.cursor.follow_mouse,
                 follow_mouse_threshold: file.cursor.follow_mouse_threshold,
                 follow_mouse_shrink: file.cursor.follow_mouse_shrink,
+                no_warps: file.cursor.no_warps,
+                warp_on_change_workspace: file.cursor.warp_on_change_workspace,
             };
             if cursor.hide_after_ms.is_some_and(|v| v < 0) {
                 tracing::warn!(
@@ -315,6 +317,15 @@ impl ViewportState {
                     cursor.hide_after_ms.unwrap()
                 );
                 cursor.hide_after_ms = prior.hide_after_ms;
+            }
+            // There is no warp behaviour above 2, so a file that names one
+            // keeps what the compositor had rather than inventing a third.
+            if cursor.warp_on_change_workspace.is_some_and(|v| v > 2) {
+                tracing::warn!(
+                    "config.cursor.warp_on_change_workspace {} is not 0, 1 or 2; keeping the current value",
+                    cursor.warp_on_change_workspace.unwrap()
+                );
+                cursor.warp_on_change_workspace = prior.warp_on_change_workspace;
             }
             self.config.cursor = Some(cursor);
         }
@@ -753,6 +764,16 @@ impl ViewportState {
         // next hover lands — `follow_mouse_pos` already records wherever the
         // pointer was the last time the test accepted it.
         self.follow_mouse_shrink = file.cursor.follow_mouse_shrink.unwrap_or(0.0);
+        // The warp policy reads straight like the shrink, with the one guard
+        // the carry above also keeps: a value outside 0..=2 names no
+        // behaviour, so it leaves the live policy where it was rather than
+        // wrapping into one. Absent is off, as the file default is.
+        self.no_warps = file.cursor.no_warps.unwrap_or(false);
+        self.warp_on_change_workspace = match file.cursor.warp_on_change_workspace {
+            Some(v) if v <= 2 => v,
+            Some(_) => self.warp_on_change_workspace,
+            None => 0,
+        };
         // A file that turned it on gets a countdown without waiting for the
         // pointer to move first, which for a desk nobody is at is never.
         self.arm_cursor_hide();

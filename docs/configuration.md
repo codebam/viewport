@@ -722,6 +722,37 @@ wherever the pointer really is, because the user aimed at them.
 "cursor": { "follow_mouse": true, "follow_mouse_shrink": 4 }
 ```
 
+`cursor.warp_on_change_workspace` decides whether switching workspaces moves
+the pointer to the window that takes focus there, Hyprland's
+`warp_on_change_workspace`. Absent — `0` — leaves the pointer where it was,
+which is what this compositor has always done: focus moves, the pointer does
+not. `1` warps it to the centre of the focused window on the new workspace;
+`2` does the same and forces it even when `no_warps` is set. Anything above 2
+is refused — there is no third behaviour to name.
+
+```jsonc
+"cursor": { "warp_on_change_workspace": 1 }
+```
+
+The warp lands on the window the shell focuses after the switch, so an empty
+workspace — one whose focus goes to the shell rather than a window — moves
+nothing. The move goes through the same absolute path a scripted
+`input.pointer` takes, so it is clamped to the desk and subject to pointer
+constraints like any other motion.
+
+`cursor.no_warps` is the master switch over the compositor moving the pointer
+on its own, Hyprland's `no_warps`. Absent is off. Set true, it suppresses the
+workspace-switch warp above (unless that is `2`, which forces past it). It is
+the whole of what it gates today: this compositor does not warp the pointer on
+focus or on a keybind the way Hyprland does, so there is nothing else to turn
+off. A client moving its own pointer through `wp-pointer-warp-v1`, or a script
+through `input.pointer`, is asking for the move rather than having it done to
+them, and neither is touched.
+
+```jsonc
+"cursor": { "no_warps": true, "warp_on_change_workspace": 2 }
+```
+
 ## The magnifier
 
 `Mod4+Alt+equal` blows up the part of the screen under the pointer, one step at

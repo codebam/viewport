@@ -1066,6 +1066,15 @@ pub enum Request {
         /// values are rejected.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         follow_mouse_shrink: Option<f64>,
+        /// Whether the compositor refrains from moving the pointer on its
+        /// own, as `cursor.no_warps`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        no_warps: Option<bool>,
+        /// Whether a workspace switch warps the pointer to the window focused
+        /// there, as `cursor.warp_on_change_workspace`. `0` off, `1` on, `2`
+        /// force (ignores `no_warps`). Values above 2 are rejected.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        warp_on_change_workspace: Option<u8>,
     },
 
     /// Set how the shell animates at runtime, as the `motion` block in the
@@ -2819,8 +2828,10 @@ mod tests {
             follow_mouse,
             follow_mouse_threshold,
             follow_mouse_shrink,
+            no_warps,
+            warp_on_change_workspace,
         } = parse(
-            r#"{"type":"config.cursor","hide_after_ms":0,"hide_on_key_press":true,"theme":"Adwaita","size":24,"follow_mouse":true,"follow_mouse_threshold":1.5,"follow_mouse_shrink":4}"#,
+            r#"{"type":"config.cursor","hide_after_ms":0,"hide_on_key_press":true,"theme":"Adwaita","size":24,"follow_mouse":true,"follow_mouse_threshold":1.5,"follow_mouse_shrink":4,"no_warps":true,"warp_on_change_workspace":2}"#,
         )
         else {
             panic!("not a config.cursor message");
@@ -2833,6 +2844,8 @@ mod tests {
         assert_eq!(follow_mouse, Some(true));
         assert_eq!(follow_mouse_threshold, Some(1.5));
         assert_eq!(follow_mouse_shrink, Some(4.0));
+        assert_eq!(no_warps, Some(true));
+        assert_eq!(warp_on_change_workspace, Some(2));
 
         // The shrink is optional like the rest: absent leaves it out of the
         // message rather than answering a default the sender never named.

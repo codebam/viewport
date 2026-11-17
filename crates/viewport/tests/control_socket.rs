@@ -272,6 +272,47 @@ fn the_cursor_hide_deadline_is_announced_as_well_as_set() {
 }
 
 #[test]
+fn the_cursor_warp_policy_is_set_and_announced() {
+    let compositor = Compositor::start("cursor-warp");
+    let mut client = compositor.connect();
+
+    // Absent is off: nothing names a warp, so the pointer stays where it was
+    // on a switch, as it always has.
+    client.send(r#"{"type":"view.query"}"#);
+    let cursor = client.wait_for("config")["cursor"].clone();
+    assert!(cursor["no_warps"].is_null());
+    assert!(cursor["warp_on_change_workspace"].is_null());
+
+    // Both fields land and ride back in the config event. Naming them is not
+    // a bare message, so the hide deadline is left alone rather than toggled.
+    client.send(r#"{"type":"config.cursor","no_warps":true,"warp_on_change_workspace":1}"#);
+    let config = client.wait_for("config");
+    assert_eq!(config["cursor"]["no_warps"], true);
+    assert_eq!(config["cursor"]["warp_on_change_workspace"], 1);
+    assert!(
+        config["cursor"]["hide_after_ms"].is_null(),
+        "naming the warp fields toggled the hide deadline"
+    );
+
+    // Mode 2 forces past no_warps; naming it alone leaves no_warps standing.
+    client.send(r#"{"type":"config.cursor","warp_on_change_workspace":2}"#);
+    let config = client.wait_for("config");
+    assert_eq!(config["cursor"]["warp_on_change_workspace"], 2);
+    assert_eq!(config["cursor"]["no_warps"], true);
+
+    // Above 2 names no behaviour and is refused whole: the prior value stands.
+    client.send(r#"{"type":"config.cursor","warp_on_change_workspace":3}"#);
+    let error = client.wait_for("error");
+    assert!(error.to_string().contains("warp_on_change_workspace"));
+    client.send(r#"{"type":"view.query"}"#);
+    assert_eq!(
+        client.wait_for("config")["cursor"]["warp_on_change_workspace"],
+        2,
+        "the refused value got applied anyway"
+    );
+}
+
+#[test]
 fn the_shell_animation_pace_is_set_and_announced() {
     let compositor = Compositor::start("motion");
     let mut client = compositor.connect();

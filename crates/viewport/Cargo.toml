@@ -16,6 +16,12 @@ path = "src/main.rs"
 name = "minimize_idle_focus"
 harness = false
 
+# The same dual-mode shape: the shell half occupies the shell slot, the test
+# half drives workspace switches and watches the pointer warp on a real client.
+[[test]]
+name = "cursor_workspace_warp"
+harness = false
+
 [features]
 # `input-1-28` is on by default: `drag_3fg` calls libinput 1.27's
 # three-finger-drag setter unconditionally, and a feature meant to be a

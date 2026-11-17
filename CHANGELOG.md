@@ -11,6 +11,21 @@ to summarise rather than to duplicate.
 
 ## [Unreleased]
 
+### Added
+- `cursor.no_warps` and `cursor.warp_on_change_workspace`, Hyprland's warp
+  policy. The compositor never moved the pointer on its own before — focus
+  moved, the pointer stayed — so `warp_on_change_workspace` adds the one warp:
+  a workspace switch moves the pointer to the centre of the window the shell
+  focuses on the new workspace. `0` (the default) leaves it where it was, `1`
+  warps, `2` forces the warp even when `no_warps` is set; `no_warps` is the
+  master switch over compositor-initiated warps and suppresses mode 1. The
+  switch is read from the active set moving in `workspace.list` and paid on
+  the `view.focus` that follows it, so an empty workspace — focus to the shell
+  — moves nothing. Both keys ride `config.cursor` at runtime and the `config`
+  event, and `viewport msg -t config.cursor` names them. A client's own
+  `wp-pointer-warp-v1` and a scripted `input.pointer` are asks, not warps, and
+  are untouched.
+
 ### Changed
 - **`chromium` is the default backend** — `nix build`, `nix run`,
   `.#viewport-smithay` and `programs.viewport.shellBackend` all land on the

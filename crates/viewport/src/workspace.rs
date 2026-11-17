@@ -162,6 +162,19 @@ impl WorkspaceState {
         }
     }
 
+    /// The ids of the workspaces the shell last marked active.
+    ///
+    /// What the warp policy compares across a `workspace.list` to tell a
+    /// switch — the active set moving from one id to another — from a list
+    /// that changed only in name, urgency or membership.
+    pub fn active_ids(&self) -> BTreeSet<String> {
+        self.workspaces
+            .iter()
+            .filter(|w| w.active)
+            .map(|w| w.id.clone())
+            .collect()
+    }
+
     /// Give a newly bound client the world as it stands.
     fn greet<D>(&mut self, dh: &DisplayHandle, outputs: &[Output], manager: ExtWorkspaceManagerV1)
     where

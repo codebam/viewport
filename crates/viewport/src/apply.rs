@@ -338,6 +338,11 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             // Keys stopping at the shell is only half of it, and the other
             // half — no window still drawn as the focused one — is what
             // `notify_focus` does with `NO_VIEW`.
+            //
+            // An empty workspace focuses the shell rather than a window, so a
+            // switch that landed here has no centre to warp to: drop the owed
+            // warp instead of leaving it for the next window focus to inherit.
+            state.pending_workspace_warp = false;
             state.notify_focus(NO_VIEW);
         }
 
@@ -550,6 +555,22 @@ pub fn apply(state: &mut ViewportState, request: Request) {
                     ))
                     .collect::<String>()
             );
+            // A switch is the active set moving, not merely the list changing:
+            // a name, an urgency or a new empty workspace leaves the active ids
+            // alone. When it moves and the policy wants a warp, owe it to the
+            // next focus — the shell publishes this list from inside its
+            // relayout, then focuses the first window on the new workspace, so
+            // the target is named by the `view.focus` that follows. Mode 2
+            // forces the warp past `no_warps`; mode 1 yields to it.
+            let active_before = state.workspace_state.active_ids();
+            let active_after: std::collections::BTreeSet<String> = workspaces
+                .iter()
+                .filter(|w| w.active)
+                .map(|w| w.id.clone())
+                .collect();
+            let warp_wanted = state.warp_on_change_workspace == 2
+                || (state.warp_on_change_workspace == 1 && !state.no_warps);
+            state.pending_workspace_warp = warp_wanted && active_before != active_after;
             let outputs: Vec<_> = state.space.outputs().cloned().collect();
             let dh = state.display_handle.clone();
             state
@@ -1108,10 +1129,22 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             follow_mouse,
             follow_mouse_threshold,
             follow_mouse_shrink,
+            no_warps,
+            warp_on_change_workspace,
         } => {
             // Validated as a whole before anything changes, like ConfigGaps:
             // a negative deadline, a zero size or a negative threshold takes
             // the whole message with it.
+            if let Some(v) = warp_on_change_workspace {
+                if v > 2 {
+                    reject(
+                        state,
+                        "config.cursor",
+                        &format!("warp_on_change_workspace {v}"),
+                    );
+                    return;
+                }
+            }
             if let Some(v) = hide_after_ms {
                 if v < 0 {
                     reject(state, "config.cursor", &format!("hide_after_ms {v}"));
@@ -1154,7 +1187,9 @@ pub fn apply(state: &mut ViewportState, request: Request) {
                     && size.is_none()
                     && follow_mouse.is_none()
                     && follow_mouse_threshold.is_none()
-                    && follow_mouse_shrink.is_none() =>
+                    && follow_mouse_shrink.is_none()
+                    && no_warps.is_none()
+                    && warp_on_change_workspace.is_none() =>
                 {
                     Some(if state.cursor_hide.after().is_some() {
                         0
@@ -1202,6 +1237,21 @@ pub fn apply(state: &mut ViewportState, request: Request) {
                     changed = true;
                 }
             }
+            // The warp policy takes effect on the next switch, so a mid-session
+            // change needs no reset of its own — there is no armed warp to
+            // clear, only the policy the next `workspace.list` reads.
+            if let Some(on) = no_warps {
+                if state.no_warps != on {
+                    state.no_warps = on;
+                    changed = true;
+                }
+            }
+            if let Some(v) = warp_on_change_workspace {
+                if state.warp_on_change_workspace != v {
+                    state.warp_on_change_workspace = v;
+                    changed = true;
+                }
+            }
             let current = state
                 .config
                 .cursor
@@ -1238,6 +1288,12 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             }
             if let Some(v) = follow_mouse_shrink {
                 current.follow_mouse_shrink = Some(v);
+            }
+            if let Some(on) = no_warps {
+                current.no_warps = Some(on);
+            }
+            if let Some(v) = warp_on_change_workspace {
+                current.warp_on_change_workspace = Some(v);
             }
             if changed {
                 // The shell draws nothing from this — the cursor is the
@@ -2893,6 +2949,11 @@ fn view_layout(state: &mut ViewportState, mut layout: viewport_ipc::request::Vie
 }
 
 pub fn focus_view(state: &mut ViewportState, id: u32) {
+    // The workspace-switch warp is owed to the first focus after the switch,
+    // whichever window that is. Take it now so an early return below — locked,
+    // or a window that cannot be focused — cannot leave it armed for a later,
+    // unrelated focus to inherit.
+    let workspace_warp = std::mem::take(&mut state.pending_workspace_warp);
     // A locked session has one destination for the keyboard, and this is not
     // it. The IPC path and the foreign-toplevel request already refuse while
     // locked; this is the floor under every caller, including the portal
@@ -2933,6 +2994,24 @@ pub fn focus_view(state: &mut ViewportState, id: u32) {
     }
     state.restack();
     state.notify_focus(id);
+    // The switch asked for the pointer here: the centre of the window just
+    // focused, through the same absolute path a scripted move takes, so the
+    // warp is subject to the same clamping and constraints as any other move.
+    // A window with no placed geometry has no centre to name and is left
+    // alone; the pointer stays where the switch found it.
+    if workspace_warp {
+        let centre = state.views.get(id).and_then(|view| {
+            state.space.element_bbox(&view.window).map(|bbox| {
+                (
+                    bbox.loc.x as f64 + bbox.size.w as f64 / 2.0,
+                    bbox.loc.y as f64 + bbox.size.h as f64 / 2.0,
+                )
+            })
+        });
+        if let Some((x, y)) = centre {
+            state.inject_pointer(x, y);
+        }
+    }
 }
 
 /// The modeline a `mode` request resolves to, if it names one.
