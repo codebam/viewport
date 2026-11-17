@@ -30,6 +30,17 @@ to summarise rather than to duplicate.
   -1 — SIGTRAP, a blank desktop and the built-in layout fallback. The crate
   is pinned to `151.8` again, and dependabot now ignores its major bumps: a
   major is an engine upgrade, and lands with `cef-binary` by hand.
+- A shell commit restoring the window that had just been minimized.
+  Minimizing the focused window leaves the keyboard idle, and the idle
+  floor every shell commit runs picked the newest mapped window with no
+  minimized filter — activation restores, so the first commit after the
+  minimize brought the window back. A crash-restarting shell did it
+  between restarts (the view-ipc CI failure); a live page's next redraw
+  after a chord-minimize is the same shape. The rescue layout's focus
+  fallback had the same hole. Both implicit paths now skip minimized and
+  hidden windows, and with none left the shell takes the keyboard;
+  explicit activation — taskbar, foreign-toplevel, `view.focus` — still
+  restores.
 
 ## [0.8.0] - 2026-11-16
 

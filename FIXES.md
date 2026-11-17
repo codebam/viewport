@@ -550,3 +550,33 @@ and the JavaScript shell suites under `tests/`.
   settles (`motions_settled`) instead of sleeping a fixed window, so a late
   motion is attributed to the phase that caused it rather than slipping
   past the last count — the zero-tolerance assertion is unchanged.
+
+- [x] **65. A shell commit restored the window that had just been minimized.
+  Fixed.** Found on CI (2026-11-17): the view-ipc minimized check failed on
+  both open dependabot PRs while the same commits passed their push runs —
+  and the evidence dump `1a9b631d` added caught the shape: the poll saw
+  `minimized:true` once, broke early, and the confirmation query a second
+  later said `false`. The state had flipped back. The chain: minimizing the
+  focused window drops the keyboard to nothing (`set_view_minimized`), every
+  commit on the shell's surface runs the idle floor (`focus_shell_if_idle`,
+  `shell_client.rs`), the floor picked the newest mapped window with no
+  minimized filter, and `focus_view` is activation, which restores
+  (`apply.rs`). On the hosted runner the GTK shell cannot start (bwrap's
+  missing loopback — see `.github/workflows/ci.yml`) and crash-restarts
+  through the suite, immediate then 1s, 2s, 4s, so a restart's first commit
+  landed inside the check's window; the log's `shell 0: its toplevel went
+  away` mid-suite is the restart itself. In a live session the same floor
+  fires on the page's next redraw after a chord-minimize — the shell never
+  reclaims the keyboard when focus drops to zero, so the bounce is latent
+  there too, waiting for a clock tick or a notification. The rescue layout's
+  focus fallback (`watchdog_fire`) had the same hole for a window minimized
+  before anything ever placed it. Fix: both implicit paths only pick windows
+  that want the keyboard — `mapped && visible && !minimized` — and with none
+  left the existing fallback gives the shell the keys, which is what keeps
+  the chords working. Explicit activation (taskbar, foreign-toplevel,
+  `view.focus`) still restores, unchanged. Covered by
+  `crates/viewport/tests/minimize_idle_focus.rs`: the test binary re-exec'd
+  as the shell through `VIEWPORT_SHELL_BIN` commits every 50ms while the test
+  minimizes a placed window and asserts it stays minimized, then pins that
+  `view.focus` still restores, then minimizes a second window before anything
+  places it and asserts the rescue leaves it alone.

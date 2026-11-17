@@ -1358,7 +1358,22 @@ impl ViewportState {
             // shell — a session of autostarted applications — and the last
             // one to arrive is the one a desk that had been running would
             // have focused.
-            if let Some(id) = self.views.iter().filter(|v| v.mapped).map(|v| v.id).last() {
+            //
+            // Only windows that want the keyboard: a minimized or hidden one
+            // was put away on purpose, and `focus_view` is activation, which
+            // restores — so picking one here would undo the minimize on the
+            // first shell commit after it, every time the keyboard happened
+            // to be idle. That is exactly what a crash-restarting shell does
+            // between its restarts, and what a live page's next redraw does
+            // after a chord-minimize. With none left, the shell takes the
+            // keys below, which is what keeps the chords working.
+            if let Some(id) = self
+                .views
+                .iter()
+                .filter(|v| v.mapped && v.visible && !v.minimized)
+                .map(|v| v.id)
+                .last()
+            {
                 crate::apply::focus_view(self, id);
                 return;
             }

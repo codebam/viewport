@@ -2711,9 +2711,17 @@ impl ViewportState {
         // Focus is the shell's to give — `view.focus` over IPC — so a shell
         // that never placed the window never focuses it either, and what the
         // fallback produced without this was a window on screen that no key
-        // reached: visible, laid out, and unusable.
+        // reached: visible, laid out, and unusable. Unless it was put away:
+        // activation restores, and a minimized or hidden window must not be
+        // brought back by the rescue any more than by the idle floor.
         if self.focused == crate::views::NO_VIEW || self.views.get(self.focused).is_none() {
-            crate::apply::focus_view(self, id);
+            let wants_focus = self
+                .views
+                .get(id)
+                .is_some_and(|view| view.visible && !view.minimized);
+            if wants_focus {
+                crate::apply::focus_view(self, id);
+            }
         }
     }
 
