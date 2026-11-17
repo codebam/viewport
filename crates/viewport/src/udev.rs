@@ -41,7 +41,7 @@ use smithay::backend::drm::compositor::FrameFlags;
 use smithay::backend::drm::exporter::gbm::GbmFramebufferExporter;
 use smithay::backend::drm::output::{DrmOutput, DrmOutputManager};
 use smithay::backend::drm::{DrmDevice, DrmDeviceFd, DrmEvent, DrmNode, NodeType};
-use smithay::backend::input::InputEvent;
+use smithay::backend::input::{Event as _, InputEvent};
 use smithay::backend::libinput::{LibinputInputBackend, LibinputSessionInterface};
 use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
 use smithay::backend::session::libseat::LibSeatSession;
@@ -1574,6 +1574,16 @@ pub fn init(
             match &event {
                 InputEvent::DeviceAdded { device } => state.libinput_device_added(device.clone()),
                 InputEvent::DeviceRemoved { device } => state.libinput_device_removed(device),
+                // The device a `device:` binding matches against. Recorded
+                // here, where the event still carries its libinput device,
+                // before the seat's keyboard filter — which has no device of
+                // its own — runs the binding matchers.
+                InputEvent::Keyboard { event, .. } => {
+                    state.current_input_device = Some(event.device().name().into_owned());
+                }
+                InputEvent::PointerButton { event, .. } => {
+                    state.current_input_device = Some(event.device().name().into_owned());
+                }
                 _ => {}
             }
             state.process_local_input_event(event);

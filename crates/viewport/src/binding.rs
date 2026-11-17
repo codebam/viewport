@@ -189,6 +189,50 @@ pub struct Binding {
     /// aside, a captured desk hands everything to the capturing session;
     /// this is the chord that still belongs to it.
     pub allow_input_capture: bool,
+    /// Consume the key only when the dispatcher can act, Hyprland's
+    /// `auto_consuming`.
+    ///
+    /// Written `auto_consuming+`. A plain binding takes the key whether or
+    /// not the dispatcher does anything; `non_consuming+` always lets it
+    /// through. This is the conditional between them: the key is consumed
+    /// when the action has something to act on, and given back to the client
+    /// when it does not — a `close` with no focused window, a `focus` with no
+    /// neighbour. Whether the action can act is read from the state at match
+    /// time (`ViewportState::binding_will_act`), because the action itself
+    /// runs after the keyboard filter returns and cannot report back.
+    pub auto_consuming: bool,
+    /// Restrict the binding to named input devices, Hyprland's `device`.
+    ///
+    /// Written `device:NAME+` (only these devices) or `device:!NAME+` (every
+    /// device but these); several prefixes accumulate a list. Absent matches
+    /// every device. The name is the libinput device name, the same one
+    /// `bind.list` and the input diagnostics show.
+    pub device: Option<DeviceFilter>,
+}
+
+/// The devices a binding matches, Hyprland's per-device `device` flag.
+///
+/// `inclusive` is the default — only the named devices fire the binding —
+/// and `!` before a name turns it into the exclusion: every device except
+/// the named ones. The names are libinput device names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceFilter {
+    pub inclusive: bool,
+    pub names: Vec<String>,
+}
+
+impl DeviceFilter {
+    /// Whether a device name passes the filter. An empty list matches
+    /// nothing inclusive and everything exclusive, which is what a filter
+    /// with no names yet means while a chord is being parsed.
+    pub fn matches(&self, device: Option<&str>) -> bool {
+        let listed = device.is_some_and(|name| self.names.iter().any(|n| n == name));
+        if self.inclusive {
+            listed
+        } else {
+            !listed
+        }
+    }
 }
 
 /// The direction a scroll-wheel binding matches.
@@ -233,6 +277,9 @@ impl Binding {
         if self.non_consuming {
             chord.push_str("non_consuming+");
         }
+        if self.auto_consuming {
+            chord.push_str("auto_consuming+");
+        }
         if self.ignore_mods {
             chord.push_str("ignore_mods+");
         }
@@ -256,6 +303,16 @@ impl Binding {
         }
         if self.allow_input_capture {
             chord.push_str("allow_input_capture+");
+        }
+        if let Some(filter) = &self.device {
+            for name in &filter.names {
+                chord.push_str("device:");
+                if !filter.inclusive {
+                    chord.push('!');
+                }
+                chord.push_str(name);
+                chord.push('+');
+            }
         }
         if self.modifiers.logo {
             chord.push_str("Mod4+");
@@ -372,10 +429,37 @@ pub fn parse_chord(chord: &str) -> Option<Binding> {
     let mut drag = false;
     let mut dont_inhibit = false;
     let mut allow_input_capture = false;
+    let mut auto_consuming = false;
+    let mut device: Option<DeviceFilter> = None;
     let mut rest = chord;
 
     // Left to right, stopping at the last '+': the key may itself be '+'.
     while let Some((name, remainder)) = rest.split_once('+') {
+        // A device filter is handled before the lowercasing match below: a
+        // device name is case-sensitive, and `device:` carries one verbatim.
+        // `device:NAME+` lists a device the binding is for; `device:!NAME+`
+        // one it is not for. Several prefixes accumulate a list, and the last
+        // one's `!` sets whether the list includes or excludes.
+        if let Some(dev) = name.strip_prefix("device:") {
+            let (inclusive, dev_name) = match dev.strip_prefix('!') {
+                Some(excluded) => (false, excluded),
+                None => (true, dev),
+            };
+            if dev_name.is_empty() {
+                return None;
+            }
+            let filter = device.get_or_insert(DeviceFilter {
+                inclusive: true,
+                names: Vec::new(),
+            });
+            filter.inclusive = inclusive;
+            filter.names.push(dev_name.to_owned());
+            rest = remainder;
+            if rest.is_empty() {
+                return None;
+            }
+            continue;
+        }
         match name.to_ascii_lowercase().as_str() {
             "shift" => modifiers.shift = true,
             "ctrl" | "control" => modifiers.ctrl = true,
@@ -387,6 +471,7 @@ pub fn parse_chord(chord: &str) -> Option<Binding> {
             // where a config file already writes the ones it has.
             "release" => release = true,
             "non_consuming" | "transparent" => non_consuming = true,
+            "auto_consuming" => auto_consuming = true,
             "ignore_mods" => ignore_mods = true,
             "repeating" | "repeat" => repeating = true,
             "long_press" | "longpress" => long_press = true,
@@ -447,6 +532,8 @@ pub fn parse_chord(chord: &str) -> Option<Binding> {
         drag,
         dont_inhibit,
         allow_input_capture,
+        auto_consuming,
+        device,
     })
 }
 
@@ -925,7 +1012,8 @@ pub fn match_binding<'a>(
     locked: bool,
     release: bool,
 ) -> Option<&'a Action> {
-    find_binding(bindings, modifiers, keysym, mode, locked, release).map(|binding| &binding.action)
+    find_binding(bindings, modifiers, keysym, mode, locked, release, None)
+        .map(|binding| &binding.action)
 }
 
 /// The binding a chord fires, with its flags.
@@ -940,6 +1028,7 @@ pub fn find_binding<'a>(
     mode: &str,
     locked: bool,
     release: bool,
+    device: Option<&str>,
 ) -> Option<&'a Binding> {
     let wanted = Modifiers::from_state(modifiers);
     bindings.iter().find(|binding| {
@@ -958,6 +1047,7 @@ pub fn find_binding<'a>(
             && binding.button.is_none()
             && binding.wheel.is_none()
             && (!locked || binding.locked)
+            && binding.device.as_ref().is_none_or(|f| f.matches(device))
     })
 }
 
@@ -974,7 +1064,8 @@ pub fn match_button<'a>(
     mode: &str,
     locked: bool,
 ) -> Option<&'a Action> {
-    find_button(bindings, modifiers, button, mode, locked, false).map(|binding| &binding.action)
+    find_button(bindings, modifiers, button, mode, locked, false, None)
+        .map(|binding| &binding.action)
 }
 
 /// The binding a mouse button fires on `release` or on press, with its flags.
@@ -989,6 +1080,7 @@ pub fn find_button<'a>(
     mode: &str,
     locked: bool,
     release: bool,
+    device: Option<&str>,
 ) -> Option<&'a Binding> {
     let wanted = Modifiers::from_state(modifiers);
     bindings.iter().find(|binding| {
@@ -997,6 +1089,7 @@ pub fn find_button<'a>(
             && (binding.ignore_mods || binding.modifiers == wanted)
             && binding.button == Some(button)
             && (!locked || binding.locked)
+            && binding.device.as_ref().is_none_or(|f| f.matches(device))
     })
 }
 
@@ -1012,7 +1105,7 @@ pub fn match_wheel<'a>(
     mode: &str,
     locked: bool,
 ) -> Option<&'a Action> {
-    find_wheel(bindings, modifiers, wheel, mode, locked, false).map(|binding| &binding.action)
+    find_wheel(bindings, modifiers, wheel, mode, locked, false, None).map(|binding| &binding.action)
 }
 
 /// The binding a scroll fires, with its flags.
@@ -1028,6 +1121,7 @@ pub fn find_wheel<'a>(
     mode: &str,
     locked: bool,
     release: bool,
+    device: Option<&str>,
 ) -> Option<&'a Binding> {
     let wanted = Modifiers::from_state(modifiers);
     bindings.iter().find(|binding| {
@@ -1036,6 +1130,7 @@ pub fn find_wheel<'a>(
             && (binding.ignore_mods || binding.modifiers == wanted)
             && binding.wheel == Some(wheel)
             && (!locked || binding.locked)
+            && binding.device.as_ref().is_none_or(|f| f.matches(device))
     })
 }
 
@@ -1207,6 +1302,8 @@ mod tests {
                 drag: false,
                 dont_inhibit: false,
                 allow_input_capture: false,
+                auto_consuming: false,
+                device: None,
             };
             assert_eq!(parse_action(&binding.action_text()), action);
         }
@@ -1429,13 +1526,19 @@ mod tests {
             "drag+Mod4+Mouse1=close",
             "dont_inhibit+Mod4+q=close",
             "allow_input_capture+Mod4+q=close",
-            "locked+release+non_consuming+ignore_mods+repeating+long_press+universal+click+dont_inhibit+allow_input_capture+Mod4+q=close",
+            "auto_consuming+Mod4+q=close",
+            "device:My Keyboard+Mod4+q=close",
+            "device:!My Keyboard+Mod4+q=close",
+            "device:Keyboard A+device:Keyboard B+Mod4+q=close",
+            "locked+release+non_consuming+auto_consuming+ignore_mods+repeating+long_press+universal+click+dont_inhibit+allow_input_capture+Mod4+q=close",
         ] {
             let binding = parse(spec).expect(spec);
             let again = parse_chord(&binding.chord()).expect("round trip");
             assert_eq!(again.locked, binding.locked, "{spec}");
             assert_eq!(again.release, binding.release, "{spec}");
             assert_eq!(again.non_consuming, binding.non_consuming, "{spec}");
+            assert_eq!(again.auto_consuming, binding.auto_consuming, "{spec}");
+            assert_eq!(again.device, binding.device, "{spec}");
             assert_eq!(again.ignore_mods, binding.ignore_mods, "{spec}");
             assert_eq!(again.repeating, binding.repeating, "{spec}");
             assert_eq!(again.long_press, binding.long_press, "{spec}");
@@ -1450,6 +1553,82 @@ mod tests {
             assert_eq!(again.modifiers, binding.modifiers, "{spec}");
             assert_eq!(again.keysym, binding.keysym, "{spec}");
         }
+    }
+
+    #[test]
+    fn a_device_filter_matches_only_its_devices() {
+        let mods = ModifiersState {
+            logo: true,
+            ..Default::default()
+        };
+        let inclusive = vec![parse("device:Game Keyboard+Mod4+q=close").unwrap()];
+        assert!(find_binding(
+            &inclusive,
+            &mods,
+            keysyms::KEY_q,
+            "",
+            false,
+            false,
+            Some("Game Keyboard")
+        )
+        .is_some());
+        assert!(find_binding(
+            &inclusive,
+            &mods,
+            keysyms::KEY_q,
+            "",
+            false,
+            false,
+            Some("Other")
+        )
+        .is_none());
+        // Injected input has no device, so a filter that names devices does
+        // not match it.
+        assert!(find_binding(&inclusive, &mods, keysyms::KEY_q, "", false, false, None).is_none());
+
+        let exclusive = vec![parse("device:!Game Keyboard+Mod4+q=close").unwrap()];
+        assert!(find_binding(
+            &exclusive,
+            &mods,
+            keysyms::KEY_q,
+            "",
+            false,
+            false,
+            Some("Other")
+        )
+        .is_some());
+        assert!(find_binding(
+            &exclusive,
+            &mods,
+            keysyms::KEY_q,
+            "",
+            false,
+            false,
+            Some("Game Keyboard")
+        )
+        .is_none());
+
+        let plain = vec![parse("Mod4+q=close").unwrap()];
+        assert!(
+            find_binding(&plain, &mods, keysyms::KEY_q, "", false, false, Some("Any")).is_some()
+        );
+        assert!(find_binding(&plain, &mods, keysyms::KEY_q, "", false, false, None).is_some());
+    }
+
+    #[test]
+    fn auto_consuming_and_a_device_name_parse_verbatim() {
+        let binding = parse("auto_consuming+device:My Keyboard+Mod4+q=close").unwrap();
+        assert!(binding.auto_consuming);
+        let filter = binding.device.expect("a device filter");
+        assert!(filter.inclusive);
+        // The device name keeps its case and its space: it is matched against
+        // the libinput name verbatim, not lowercased like a modifier.
+        assert_eq!(filter.names, vec!["My Keyboard".to_string()]);
+
+        let several = parse("device:!A+device:!B+Mod4+q=close").unwrap();
+        let filter = several.device.expect("a device filter");
+        assert!(!filter.inclusive);
+        assert_eq!(filter.names, vec!["A".to_string(), "B".to_string()]);
     }
 
     #[test]
@@ -1539,12 +1718,12 @@ mod tests {
         let bindings = vec![press, release];
 
         assert_eq!(
-            find_button(&bindings, &held, 0x113, "", false, false).map(|b| &b.action),
+            find_button(&bindings, &held, 0x113, "", false, false, None).map(|b| &b.action),
             Some(&Action::Close),
             "the press half sees the press binding, and only it"
         );
         assert_eq!(
-            find_button(&bindings, &held, 0x113, "", false, true).map(|b| &b.action),
+            find_button(&bindings, &held, 0x113, "", false, true, None).map(|b| &b.action),
             Some(&Action::Exit),
             "the release half sees the release binding, and only it"
         );
@@ -1552,9 +1731,9 @@ mod tests {
         // A lone `release+` binding matches nothing on the way down. That is
         // what `match_button`, the press-only convenience, asks for.
         let only_release = vec![parse("release+Mod4+Mouse4=exit").unwrap()];
-        assert!(find_button(&only_release, &held, 0x113, "", false, false).is_none());
+        assert!(find_button(&only_release, &held, 0x113, "", false, false, None).is_none());
         assert!(match_button(&only_release, &held, 0x113, "", false).is_none());
-        assert!(find_button(&only_release, &held, 0x113, "", false, true).is_some());
+        assert!(find_button(&only_release, &held, 0x113, "", false, true, None).is_some());
     }
 
     #[test]
@@ -1662,14 +1841,14 @@ mod tests {
             ..Default::default()
         };
         let only_release = vec![parse("release+Mod4+WheelUp=exit").unwrap()];
-        assert!(find_wheel(&only_release, &held, Wheel::Up, "", false, false).is_none());
+        assert!(find_wheel(&only_release, &held, Wheel::Up, "", false, false, None).is_none());
         assert!(match_wheel(&only_release, &held, Wheel::Up, "", false).is_none());
-        assert!(find_wheel(&only_release, &held, Wheel::Up, "", false, true).is_some());
+        assert!(find_wheel(&only_release, &held, Wheel::Up, "", false, true, None).is_some());
 
         // A plain wheel binding is unchanged on the only path a wheel has.
         let plain = vec![parse("Mod4+WheelUp=close").unwrap()];
         assert_eq!(
-            find_wheel(&plain, &held, Wheel::Up, "", false, false).map(|b| &b.action),
+            find_wheel(&plain, &held, Wheel::Up, "", false, false, None).map(|b| &b.action),
             Some(&Action::Close)
         );
     }

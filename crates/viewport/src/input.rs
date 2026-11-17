@@ -1795,6 +1795,7 @@ impl ViewportState {
                                             &state.binding_mode,
                                             state.locked,
                                             false,
+                                            state.current_input_device.as_deref(),
                                         )
                                         .is_some_and(|bound| bound.dont_inhibit);
                                         if !bypasses {
@@ -1882,10 +1883,12 @@ impl ViewportState {
                                 &state.binding_mode,
                                 state.locked,
                                 false,
+                                state.current_input_device.as_deref(),
                             ) {
                                 Some(bound) => {
                                     let action = bound.action.clone();
                                     let non_consuming = bound.non_consuming;
+                                    let auto_consuming = bound.auto_consuming;
                                     let long_press = bound.long_press;
                                     let repeating = bound.repeating;
 
@@ -1913,6 +1916,15 @@ impl ViewportState {
                                         // lets the key through. The action is
                                         // left for after the filter, which
                                         // cannot both intercept and forward.
+                                        state.deferred_bindings.push(action);
+                                        FilterResult::Forward
+                                    } else if auto_consuming && !state.binding_will_act(&action) {
+                                        // `auto_consuming+`: the dispatcher has
+                                        // nothing to act on, so the key is given
+                                        // back rather than swallowed by a no-op.
+                                        // Whether it can act is read from the
+                                        // state now, because the action runs
+                                        // after the filter and cannot report back.
                                         state.deferred_bindings.push(action);
                                         FilterResult::Forward
                                     } else {
@@ -2011,6 +2023,7 @@ impl ViewportState {
                                 &state.binding_mode,
                                 state.locked,
                                 true,
+                                state.current_input_device.as_deref(),
                             ) {
                                 let action = bound.action.clone();
                                 if bound.non_consuming {
@@ -2264,8 +2277,10 @@ impl ViewportState {
                         &self.binding_mode,
                         self.locked,
                         false,
+                        self.current_input_device.as_deref(),
                     ) {
-                        let consuming = !bound.non_consuming;
+                        let consuming = !bound.non_consuming
+                            && (!bound.auto_consuming || self.binding_will_act(&bound.action));
                         let action = bound.action.clone();
                         let click = bound.click;
                         let drag = bound.drag;
@@ -2329,8 +2344,10 @@ impl ViewportState {
                         &self.binding_mode,
                         self.locked,
                         true,
+                        self.current_input_device.as_deref(),
                     ) {
-                        let consuming = !bound.non_consuming;
+                        let consuming = !bound.non_consuming
+                            && (!bound.auto_consuming || self.binding_will_act(&bound.action));
                         self.handle_action(Action::Bound(bound.action.clone()));
                         if consuming {
                             // The release goes no further, so the shell grab
@@ -2609,8 +2626,10 @@ impl ViewportState {
                             &self.binding_mode,
                             self.locked,
                             false,
+                            self.current_input_device.as_deref(),
                         ) {
-                            let consuming = !bound.non_consuming;
+                            let consuming = !bound.non_consuming
+                                && (!bound.auto_consuming || self.binding_will_act(&bound.action));
                             let action = bound.action.clone();
                             self.handle_action(Action::Bound(action));
                             if consuming {
@@ -3379,6 +3398,23 @@ impl ViewportState {
             return;
         }
         self.move_pointer(from, delta, confine_to.as_ref(), time);
+    }
+
+    /// Whether a dispatcher has something to act on, for `auto_consuming+`.
+    ///
+    /// Read at match time rather than reported by the action, which runs after
+    /// the keyboard filter returns and cannot give the key back. The
+    /// window-targeting dispatchers are the ones that fail for want of a
+    /// target — `close` and `focus` need a focused window to act on — so a
+    /// chord bound to them with `auto_consuming+` reaches the client when the
+    /// desk is empty. Everything else either always acts or is handed to the
+    /// shell, which counts as succeeding once dispatched.
+    pub(crate) fn binding_will_act(&self, action: &crate::binding::Action) -> bool {
+        use crate::binding::Action;
+        match action {
+            Action::Close | Action::Focus(_) => self.views.get(self.focused).is_some(),
+            _ => true,
+        }
     }
 
     /// Carry out one of the compositor's own chords.

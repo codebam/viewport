@@ -1349,6 +1349,7 @@ impl crate::state::ViewportState {
             &self.binding_mode,
             false,
             false,
+            self.current_input_device.as_deref(),
         )
         .is_some_and(|bound| bound.allow_input_capture)
     }
@@ -1369,6 +1370,7 @@ impl crate::state::ViewportState {
             &self.binding_mode,
             false,
             false,
+            self.current_input_device.as_deref(),
         )
         .is_some_and(|bound| bound.allow_input_capture)
     }

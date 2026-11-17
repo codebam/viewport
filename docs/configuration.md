@@ -420,6 +420,13 @@ Ten more flags are written the same way, anywhere before the key:
 - `non_consuming+` (also spelled `transparent+`) runs the action and still
   lets the key through to the focused client or the shell — Hyprland's
   `bindn`/`bindt`. The same for a mouse button or a wheel notch.
+- `auto_consuming+` is the conditional between consuming and `non_consuming+`
+  — Hyprland's `auto_consuming`. The key is consumed when the dispatcher has
+  something to act on, and given back to the client when it does not: a
+  `close` or `focus` with no focused window reaches the application instead of
+  being swallowed by a no-op. Whether the action can act is read from the state
+  when the chord matches, because the action itself runs after the keyboard
+  filter returns.
 - `ignore_mods+` matches whatever modifiers are held, named or not — Hyprland's
   `bindi`. `ignore_mods+q=close` fires on plain `q`, on `Shift+q` and on
   `Mod4+q` alike, which is what makes it different from leaving the modifiers
@@ -445,16 +452,24 @@ Ten more flags are written the same way, anywhere before the key:
 - `allow_input_capture+` fires even while input is captured by a client. The
   compositor's own release chord aside, a captured desk hands everything to
   the capturing session; this is the chord that still belongs to it.
+- `device:NAME+` restricts the binding to named input devices — Hyprland's
+  per-device `device`. `device:!NAME+` is the exclusion: every device but the
+  named ones. Several prefixes accumulate a list, and the name is the libinput
+  device name, matched verbatim (case and spaces kept). Absent matches every
+  device. The device is the one the key or button arrives from; injected input
+  has no physical device, so a `device:` binding does not match it.
 
 ```json
 "binds": {
   "release+Mod4+Shift+t": "shell push-to-talk.stop",
   "non_consuming+Mod4+Mouse1": "shell bar.tap",
+  "auto_consuming+Mod4+q": "close",
   "ignore_mods+q": "close",
   "repeating+XF86AudioRaiseVolume": "volume 5",
   "long_press+Mod4+Return": "shell launcher",
   "universal+XF86AudioMute": "volume mute",
-  "click+Mod4+Mouse4": "shell workspace.next"
+  "click+Mod4+Mouse4": "shell workspace.next",
+  "device:!Gaming Keyboard+Mod4+Return": "shell launcher"
 }
 ```
 

@@ -486,6 +486,16 @@ pub struct ViewportState {
     /// action but without the interception.
     pub deferred_bindings: Vec<crate::binding::Action>,
 
+    /// The libinput device the last key or button event came from, by name.
+    ///
+    /// What a `device:` binding matches against. The seat's keyboard filter
+    /// carries no device of its own — several physical keyboards feed one
+    /// seat — so the input path records the name here as each event arrives
+    /// and the binding matchers read it back. `None` until the first event,
+    /// and for injected input, which has no physical device: a `device:`
+    /// binding that names devices does not match it.
+    pub current_input_device: Option<String>,
+
     /// `long_press+` bindings waiting out their hold, by keysym.
     ///
     /// The action runs from the timer only while the key is still down; the
@@ -2012,6 +2022,7 @@ impl ViewportState {
             headless: None,
             suppressed_keys: Vec::new(),
             deferred_bindings: Vec::new(),
+            current_input_device: None,
             long_press_pending: std::collections::HashMap::new(),
             repeating_held: std::collections::HashMap::new(),
             pending_click: std::collections::HashMap::new(),

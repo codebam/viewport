@@ -12,6 +12,15 @@ to summarise rather than to duplicate.
 ## [Unreleased]
 
 ### Added
+- Two bind flags, Hyprland's `auto_consuming` and per-device `device`.
+  `auto_consuming+` consumes the key only when the dispatcher has something to
+  act on — a `close` or `focus` with no focused window gives the key back to the
+  client instead of swallowing it. Because Viewport's actions run after the
+  keyboard filter returns, whether the action can act is read from the state at
+  match time rather than reported by the dispatcher. `device:NAME+` restricts a
+  binding to named libinput devices (`device:!NAME+` excludes them; several
+  prefixes accumulate a list), matched against the device each key or button
+  arrives from. Both apply to physical input.
 - The `keep_aspect_ratio` window rule, Hyprland's effect of the same name. A
   matching floating window keeps its width-to-height ratio when resized by
   hand — the Mod4+right-drag or the keyboard resize mode: the axis the hand
