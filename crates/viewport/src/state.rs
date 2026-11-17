@@ -466,11 +466,12 @@ pub struct ViewportState {
     /// global cannot be withdrawn and requests for a dead node keep arriving.
     pub lease_fallback: Option<Box<smithay::wayland::drm_lease::DrmLeaseState>>,
 
-    /// The headless backend's virtual outputs, when there is one.
+    /// The virtual-output subsystem, when there is one.
     ///
-    /// `Some` under `--headless` and nowhere else, which is what makes it the
-    /// answer to "may this instance hotplug an output" — `output.test_add`
-    /// exists so a test can plug a second monitor in without owning one.
+    /// `Some` under `--headless` from startup, and on any other backend once
+    /// `output.test_add` has plugged a virtual monitor into the running
+    /// session — `headless::ensure_subsystem` brings it up lazily. Its frame
+    /// timer drives only the virtual outputs, beside the real backend's own.
     pub headless: Option<crate::headless::Headless>,
 
     /// Keys whose press was intercepted, so the matching release can be too.

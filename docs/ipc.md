@@ -197,8 +197,8 @@ Also accepted on the UNIX socket, which speaks the same message set.
 | `output.active` | `name` — which output the shell considers active |
 | `gesture.capture` | `gestures[]` of `kind` (`swipe` or `pinch`) and `fingers` — replace the live gesture kinds the shell owns. Empty releases all of them. Ownership is frozen at begin; changing this list cannot split a sequence already in progress |
 | `output.query` | — |
-| `output.test_add` | — headless only; plugs in a virtual monitor for tests |
-| `output.test_remove` | optional `name` (default: the first output); headless only |
+| `output.test_add` | — plugs in a virtual (headless) monitor. Works on any backend: under `--headless` it adds to the virtual desktop, and on a DRM or nested session it brings the virtual-output subsystem up lazily and adds a monitor beside the real ones, whose frame timer drives only the virtual outputs |
+| `output.test_remove` | optional `name` (default: the last virtual output, the one furthest right); unplugs a virtual monitor. A real output's name is refused |
 | `bind.add` | `chord`, `action` |
 | `shell.exec` | `command` — run a shell command on the host, out from under the compositor (the exact line; the compositor runs it through the same `/bin/sh` path a keybinding's `exec` uses). The bridge the bar's widgets use to open a directory or drive the sink through `wpctl` |
 | `status.refresh` | — ask the compositor to sample the status bar's numbers again now, rather than waiting for the next tick |

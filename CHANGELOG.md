@@ -12,6 +12,14 @@ to summarise rather than to duplicate.
 ## [Unreleased]
 
 ### Added
+- Virtual (headless) monitors can be plugged into a running session on any
+  backend, not only under `--headless`. `output.test_add` brings the
+  virtual-output subsystem up lazily the first time one is asked for — a
+  surfaceless GLES renderer and a frame timer that drives only the virtual
+  outputs, beside the real backend's own render loop — so a DRM or nested
+  desktop gains a monitor it can place windows on and screencopy, the way
+  Hyprland's `output create headless` does. `output.test_remove` unplugs one
+  (default: the last virtual output) and refuses a real output's name.
 - The `confine_pointer` window rule, Hyprland's effect of the same name. A
   matching rule holds the pointer inside the window while it is focused — the
   cursor stays on a game's monitor without the client asking for a constraint

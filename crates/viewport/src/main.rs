@@ -551,7 +551,7 @@ fn run() -> Result<()> {
         let height = flag(&args, "--height")
             .and_then(|v| v.parse().ok())
             .unwrap_or(1080);
-        headless::init(&mut event_loop, &mut state, width, height)?;
+        headless::init(&mut state, width, height)?;
     } else {
         tracing::info!("nested backend, inside an existing session");
         winit::init(&mut event_loop, &mut state)?;

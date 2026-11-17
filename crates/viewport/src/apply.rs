@@ -696,14 +696,24 @@ pub fn apply(state: &mut ViewportState, request: Request) {
         // Both go through the same path a real hotplug takes — map or unmap in
         // the `Space`, then tell the shell — so what the tests exercise is the
         // code a monitor being plugged in runs, not a simulation of it.
-        Request::OutputTestAdd => match crate::headless::add(state) {
-            Some(_) => state.notify_output_layout(),
-            None => reject(
-                state,
-                "output.test_add",
-                "headless hotplug is only available under --headless",
-            ),
-        },
+        Request::OutputTestAdd => {
+            // A virtual monitor can be plugged into a running session on any
+            // backend, not only under --headless: the subsystem comes up
+            // lazily the first time one is asked for, and its frame timer
+            // drives only the virtual outputs beside the real backend's own.
+            if let Err(e) = crate::headless::ensure_subsystem(state) {
+                reject(state, "output.test_add", &format!("{e:#}"));
+                return;
+            }
+            match crate::headless::add(state) {
+                Some(_) => state.notify_output_layout(),
+                None => reject(
+                    state,
+                    "output.test_add",
+                    "could not create the headless output",
+                ),
+            }
+        }
         Request::OutputTestRemove { name } => {
             if crate::headless::remove(state, name.as_deref()) {
                 state.notify_output_layout();

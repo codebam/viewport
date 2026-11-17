@@ -63,11 +63,9 @@ not worth a row each: `numlock_by_default` is done — `keyboard.numlock_by_defa
 latches the modifier once at startup and never forces it again on a reload;
 `kb_file` (the layout, variant, options, `kb_model` and `kb_rules` this has are
 all present now); tablet region mapping and pressure ranges, where this maps
-the pen to the whole desk and passes the pressure through as it is; a headless
-output created from a running session rather than one only `output.test_add`
-may add; and `misc:enable_anr_dialog`, the "window is not responding" check
-that has no equivalent here — the liveness watchdog in `ipc.rs` is watching the
-shell.
+the pen to the whole desk and passes the pressure through as it is; and
+`misc:enable_anr_dialog`, the "window is not responding" check that has no
+equivalent here — the liveness watchdog in `ipc.rs` is watching the shell.
 
 Done from that list across the passes since the audit: per-device
 `scroll_factor`, `emulate_discrete_scroll`, `cursor:hide_on_touch`, `kb_model`
@@ -82,11 +80,16 @@ on, `2` forcing past `no_warps`. The switch is observed before the focus that
 names its target, so a one-shot armed on the active-set change is paid by the
 next `focus_view` and dropped by `shell.focus` on an empty workspace;
 `tests/cursor_workspace_warp.rs` watches the warp land on a real client's
-pointer across all four policy combinations.
+pointer across all four policy combinations. And a headless output can now be
+plugged into a running session on any backend, not only under `--headless`:
+`headless::ensure_subsystem` brings the virtual-output machinery up lazily on
+the first `output.test_add`, and its frame timer drives only the virtual
+outputs beside the real backend's own render loop. The `--headless` path runs
+the same `ensure_subsystem` at startup, so the hotplug suites exercise it.
 
 Two things this audit asked and answered as present, recorded so they are not
 re-listed: `pointer_constraints` covers what Hyprland's `confine_pointer` rule
-is for on the client's side, though no rule can ask for it; and `opacity`
-multipliers for active, inactive and fullscreen do the job `dim_inactive` is
-used for, even though they multiply alpha rather than pushing the colour
-toward black.
+is for on the client's side, and a rule can now ask for it too (row 10); and
+`opacity` multipliers for active, inactive and fullscreen do the job
+`dim_inactive` is used for, even though they multiply alpha rather than pushing
+the colour toward black.

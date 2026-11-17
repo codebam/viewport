@@ -24,7 +24,6 @@ use smithay::backend::egl::{EGLContext, EGLDisplay};
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
 use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
-use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::wayland_server::backend::GlobalId;
 use smithay::utils::Transform;
 
@@ -114,12 +113,18 @@ fn renderer() -> anyhow::Result<GlesRenderer> {
     Ok(renderer)
 }
 
-pub fn init(
-    event_loop: &mut EventLoop<'static, ViewportState>,
-    state: &mut ViewportState,
-    width: i32,
-    height: i32,
-) -> anyhow::Result<()> {
+/// Bring up the virtual-output subsystem if it is not already up: a
+/// surfaceless GLES renderer and the frame timer that drives the virtual
+/// outputs. Idempotent, and backend-agnostic. Under `--headless` this is the
+/// whole backend; on a DRM or nested session it is the machinery behind a
+/// virtual monitor plugged into a running desktop, which `output.test_add`
+/// reaches for lazily. The timer services only the virtual outputs, so on a
+/// mixed session the real backend's own outputs are left to their own render
+/// loop rather than double-driven from here.
+pub fn ensure_subsystem(state: &mut ViewportState) -> anyhow::Result<()> {
+    if state.headless.is_some() {
+        return Ok(());
+    }
     // Warned about rather than fatal. Everything except pixels still works
     // without it, and most of what runs headless — the IPC, the layout, the
     // window lifecycle — never asks for any.
@@ -139,7 +144,7 @@ pub fn init(
 
     state.headless = Some(Headless {
         mode: Mode {
-            size: (width, height).into(),
+            size: (1920, 1080).into(),
             refresh: REFRESH,
         },
         globals: HashMap::new(),
@@ -149,22 +154,32 @@ pub fn init(
         renderer,
     });
 
-    let name = add(state).ok_or_else(|| anyhow::anyhow!("creating the first headless output"))?;
-    state.active_output = Some(name);
-
     let frame_interval = Duration::from_micros(1_000_000_000 / REFRESH as u64);
 
-    event_loop
-        .handle()
+    state
+        .loop_handle
         .insert_source(Timer::from_duration(frame_interval), move |_, _, state| {
             // A client will not paint frame N+1 until frame N is
             // acknowledged, so without this nothing ever draws twice.
             //
-            // Collected first because sending a frame callback borrows the
-            // state that owns the output list. Every output, not the one this
-            // timer was created with: a window on a monitor plugged in later
-            // has to be told to paint too.
-            let outputs: Vec<_> = state.space.outputs().cloned().collect();
+            // Only the virtual outputs this subsystem owns. Under `--headless`
+            // that is every output, exactly as before; on a DRM or nested
+            // session the real outputs are driven by their own render loop and
+            // must not be sent frames from here as well. Collected first
+            // because sending a frame callback borrows the state that owns the
+            // output list, and a window on a monitor plugged in later has to be
+            // told to paint too.
+            let virtual_names: HashSet<String> = state
+                .headless
+                .as_ref()
+                .map(|h| h.outputs.keys().cloned().collect())
+                .unwrap_or_default();
+            let outputs: Vec<_> = state
+                .space
+                .outputs()
+                .filter(|o| virtual_names.contains(&o.name()))
+                .cloned()
+                .collect();
             let now = state.start_time.elapsed();
             // The out-of-process shell is not in the space — it is drawn under
             // it — so it has to be invited by name or it paints once and stops.
@@ -204,6 +219,20 @@ pub fn init(
             TimeoutAction::ToDuration(frame_interval)
         })
         .map_err(|e| anyhow::anyhow!("insert headless frame timer: {e}"))?;
+    Ok(())
+}
+
+pub fn init(state: &mut ViewportState, width: i32, height: i32) -> anyhow::Result<()> {
+    ensure_subsystem(state)?;
+    if let Some(headless) = state.headless.as_mut() {
+        headless.mode = Mode {
+            size: (width, height).into(),
+            refresh: REFRESH,
+        };
+    }
+
+    let name = add(state).ok_or_else(|| anyhow::anyhow!("creating the first headless output"))?;
+    state.active_output = Some(name);
 
     tracing::info!("headless output HEADLESS-1 {width}x{height}");
 
@@ -344,16 +373,23 @@ pub fn remove(state: &mut ViewportState, name: Option<&str>) -> bool {
 
     let target = match name {
         Some(name) => headless.outputs.get(name).cloned(),
-        // The last one mapped, which is the one `add` put furthest right.
-        None => state.space.outputs().last().cloned(),
+        // The last virtual one mapped, which is the one `add` put furthest
+        // right. Filtered to ours: a session may also have real outputs, and
+        // the last output in the space could be a DRM monitor, which is not
+        // ours to unplug.
+        None => state
+            .space
+            .outputs()
+            .filter(|o| headless.globals.contains_key(&o.name()))
+            .last()
+            .cloned(),
     };
     let Some(output) = target else {
         return false;
     };
 
-    // Only ours. A DRM output cannot be here — the two backends never both
-    // exist — but a caller passing the name of something else should be told
-    // no rather than have it unmapped.
+    // Only ours. A caller passing the name of a real output, or of something
+    // else entirely, should be told no rather than have it unmapped.
     if !headless.globals.contains_key(&output.name()) {
         return false;
     }
