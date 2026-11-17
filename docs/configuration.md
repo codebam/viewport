@@ -2563,14 +2563,23 @@ re-evaluated as the window moves in and out of a group, not only at map time.
 
 The effects this shell can apply are the workspace, floating and its rect,
 `pinned`, `pseudotile`, `swallow`, `capture`, `opacity`, `focus`, `animation`,
-`tearing`, `blur`, `idle_inhibit`, `confine_pointer`, `decorate`, `no_auto_hdr`,
-`tonemap` and a size floor and ceiling. `focus:
+`keep_aspect_ratio`, `tearing`, `blur`, `idle_inhibit`, `confine_pointer`,
+`decorate`, `no_auto_hdr`, `tonemap` and a size floor and ceiling. `focus:
 false` opens a window without taking the keyboard — a launcher, or a
 picture-in-picture window that should appear without interrupting. `animation:
 false` gives it the reduced-motion treatment: no fade, but it still appears.
 `min_width` / `min_height` raise the client's own floor and `max_width` /
 `max_height` cap it, all in logical pixels; zero or absent leaves the client's
 answer.
+
+`keep_aspect_ratio: true` makes a floating window keep its width-to-height
+ratio when resized by hand — Hyprland's rule of the same name. The axis the
+hand moved more drives the resize and the other follows the ratio the window
+had before the step, so the ratio locks in at the first pull and stays put.
+It applies to the resize that changes a window's own rectangle (the floating
+resize, by Mod4+right-drag or the keyboard resize mode); a tiled window's
+resize is a share of its container, not a rectangle, so there is no ratio to
+keep there.
 
 `tonemap` says what happens to a window whose content is brighter than the
 output can show — HDR content on an SDR screen, or on a dimmer HDR one.

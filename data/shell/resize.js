@@ -338,8 +338,23 @@ function resizeByDelta(id, dx, dy, edge) {
     const view = views.get(id);
     const minWidth = parseInt(view?.el?.style?.minWidth, 10) || 80;
     const minHeight = parseInt(view?.el?.style?.minHeight, 10) || 60;
-    const width = Math.max(minWidth, floating.width + (west ? -dx : dx));
-    const height = Math.max(minHeight, floating.height + (north ? -dy : dy));
+    let width = Math.max(minWidth, floating.width + (west ? -dx : dx));
+    let height = Math.max(minHeight, floating.height + (north ? -dy : dy));
+    /* Hyprland's keep_aspect_ratio: the window keeps the ratio it already
+       has. The dimension the hand moved more drives, and the other follows
+       from the ratio the window had before this step — which, step after
+       step, is the same ratio locked in at the first pull. Deriving it from
+       the current rectangle rather than a stored one means a window resized
+       by other means keeps whatever ratio it now has, and there is no drift
+       to accumulate. */
+    if (view?.keepAspectRatio && floating.width > 0 && floating.height > 0) {
+      const ratio = floating.width / floating.height;
+      if (Math.abs(width - floating.width) >= Math.abs(height - floating.height)) {
+        height = width / ratio;
+      } else {
+        width = height * ratio;
+      }
+    }
     if (west) floating.x += floating.width - width;
     if (north) floating.y += floating.height - height;
     floating.width = width;

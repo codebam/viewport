@@ -362,6 +362,11 @@ function addView({ id, title, app_id, tag, output: outputName, min_width, min_he
      the fade every other one gets. Kept on the view because fadeIn is also
      called on the way back from the overview and from a workspace switch. */
   view.noAnimation = rule?.animation === false;
+  /* Hyprland's `keep_aspect_ratio`: the window keeps its width-to-height
+     ratio when resized by hand. Read by the floating resize path, which is
+     where a resize changes a window's own rectangle rather than a share of
+     a container. */
+  view.keepAspectRatio = rule?.keep_aspect_ratio === true;
   /* Hyprland's `minsize` / `maxsize`, as numbers. They are the window's own
      floor and ceiling, laid over whatever the client asked for; zero or
      absent leaves the client's answer. */
@@ -600,6 +605,7 @@ function reapplyWindowRule(id) {
     }
   }
   if (typeof rule.swallow === 'boolean') view.swallow = rule.swallow;
+  view.keepAspectRatio = rule?.keep_aspect_ratio === true;
 
   const workspace = workspaceOf(id);
   if (!isFloating(id) && rule.pseudotile !== true

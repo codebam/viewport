@@ -12,6 +12,13 @@ to summarise rather than to duplicate.
 ## [Unreleased]
 
 ### Added
+- The `keep_aspect_ratio` window rule, Hyprland's effect of the same name. A
+  matching floating window keeps its width-to-height ratio when resized by
+  hand — the Mod4+right-drag or the keyboard resize mode: the axis the hand
+  moved more drives, and the other follows the ratio the window had before the
+  step, so it locks in at the first pull and does not drift. A tiled window's
+  resize is a share of its container rather than a rectangle, so the rule
+  applies to the floating resize that changes a window's own size.
 - Virtual (headless) monitors can be plugged into a running session on any
   backend, not only under `--headless`. `output.test_add` brings the
   virtual-output subsystem up lazily the first time one is asked for — a

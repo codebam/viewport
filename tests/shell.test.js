@@ -9558,6 +9558,39 @@ if (mode !== 'scrolling') {
     emit({ type: 'view.focused', id: 4 });
   }
 
+  /* Hyprland's keep_aspect_ratio: a floating window keeps its width-to-height
+   * ratio when resized by hand, whichever axis the hand moves. */
+  if (mode !== 'canvas') {
+    emit({ type: 'config', layout: mode, rules: [
+      { app_id: 'aspect-me', floating: true, keep_aspect_ratio: true,
+        width: 400, height: 300 },
+    ] });
+    emit({ type: 'view.added', id: 96, title: 'aspect', app_id: 'aspect-me',
+      output: 'DP-1', min_width: 0, min_height: 0, floating: true,
+      width: 400, height: 300 });
+    const rect = () => globalThis.__shell.floatingForTest(96);
+    check('a keep_aspect_ratio rule marks the view',
+      globalThis.__shell.views.get(96).keepAspectRatio === true);
+    const start = { ...rect() };
+    const ratio = start.width / start.height;
+
+    emit({ type: 'shell.command', command: 'layout.resize.delta',
+      args: ['96', '80', '0', 'right'] });
+    check('a horizontal resize keeps the aspect ratio',
+      Math.abs(rect().width / rect().height - ratio) < 1e-6);
+    check('and width grew by the drag', rect().width === start.width + 80);
+
+    const beforeH = rect().height;
+    emit({ type: 'shell.command', command: 'layout.resize.delta',
+      args: ['96', '0', '60', 'bottom'] });
+    check('a vertical resize keeps the aspect ratio too',
+      Math.abs(rect().width / rect().height - ratio) < 1e-6);
+    check('and height grew by the drag', rect().height === beforeH + 60);
+
+    emit({ type: 'view.removed', id: 96 });
+    emit({ type: 'view.focused', id: 4 });
+  }
+
   /* One relayout per frame while a hand is down, and the two ways that ends.
    *
    * Driven through gestureRelayout directly rather than through a drag: which
