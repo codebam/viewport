@@ -11,6 +11,8 @@ to summarise rather than to duplicate.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-17
+
 ### Added
 - `motion.fade_dim` and `motion.fade_popups`, Hyprland's `fadeDim` and
   `fadePopups` leaves. `fade_dim` eases a window's opacity toward its target
