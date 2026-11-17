@@ -28,6 +28,12 @@ harness = false
 name = "windows_out_fade"
 harness = false
 
+# Dual-mode: a real client watches its pointer leave the window freely, then
+# clamped to the window's edge while a confine_pointer rule holds it.
+[[test]]
+name = "confine_pointer_rule"
+harness = false
+
 [features]
 # `input-1-28` is on by default: `drag_3fg` calls libinput 1.27's
 # three-finger-drag setter unconditionally, and a feature meant to be a

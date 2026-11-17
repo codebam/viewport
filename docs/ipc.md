@@ -150,6 +150,7 @@ Also accepted on the UNIX socket, which speaks the same message set.
 | `view.tearing` | `id`, `tearing` (required boolean) — the current first-matching rule asks for tearing on this window (Hyprland's `tearing` effect). Required so a malformed rule cannot silently grant it |
 | `view.blur` | `id`, `blur` (required boolean) — the current first-matching rule asks for blur behind this window (Hyprland's `blur` effect): the same framebuffer effect a client gets from `ext-background-effect-v1`, forced onto a window that never asked for it. Required for the same reason, and drawn only where the renderer can run the effect — `docs/configuration.md` covers the rule and where blur draws |
 | `view.idle_inhibit` | `id`, `inhibit` (required boolean) — the current first-matching rule keeps the session awake (Hyprland's `idle_inhibit` effect). Required for the same reason |
+| `view.confine_pointer` | `id`, `confine` (required boolean) — the current first-matching rule confines the pointer to this window while it is focused (Hyprland's `confine_pointer` effect): motion is clamped to the window's box without the client asking for a constraint, and a client's own pointer lock still wins. Required for the same reason |
 | `view.decorations` | `id`, optional `decorate` (boolean or null) — the current first-matching rule asks for server decorations on this window, or, with null or absent, hands the decision back to the global policy (Hyprland's `decorate` effect) |
 | `view.query` | — replays `config` and a `view.added` for every mapped window |
 | `shell.focus` | — |

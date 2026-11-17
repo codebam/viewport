@@ -216,6 +216,17 @@ pub enum Request {
         inhibit: bool,
     },
 
+    /// The current first-matching rule confines the pointer to this window
+    /// while it is focused, Hyprland's `confine_pointer` effect — the cursor
+    /// stays on a game's monitor without the client asking for a constraint.
+    /// Required, so a malformed rule cannot silently grant it.
+    #[serde(rename = "view.confine_pointer")]
+    ViewConfinePointer {
+        #[serde(deserialize_with = "view_id")]
+        id: u32,
+        confine: bool,
+    },
+
     /// Whether the window is drawn with server decorations, Hyprland's
     /// `decorate` effect. Optional, unlike its neighbours: absent is the
     /// global policy, and `null` takes a rule back off — a rule that stopped

@@ -262,6 +262,11 @@ pub struct View {
     /// `idle_inhibit` effect. Consulted by `refresh_idle_inhibit` alongside the
     /// protocol and bus inhibitors.
     pub rule_idle_inhibit: bool,
+    /// The current first-matching rule confines the pointer to this window
+    /// while it is focused, Hyprland's `confine_pointer` effect. Read by
+    /// `pointer_constraint`, which holds the cursor inside the window's box
+    /// without the client having asked for a constraint of its own.
+    pub rule_confine_pointer: bool,
 
     /// Whether a matching rule asks for server decorations on this window,
     /// Hyprland's `decorate` effect. `None` is the global policy; `Some`
@@ -739,6 +744,7 @@ impl Views {
             rule_tearing: false,
             rule_blur: false,
             rule_idle_inhibit: false,
+            rule_confine_pointer: false,
             rule_decorate: None,
             configured: None,
             foreign: None,

@@ -297,6 +297,12 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             }
         }
 
+        Request::ViewConfinePointer { id, confine } => {
+            if let Some(view) = state.views.get_mut(id) {
+                view.rule_confine_pointer = confine;
+            }
+        }
+
         Request::ViewDecorations { id, decorate } => {
             let changed = match state.views.get_mut(id) {
                 Some(view) if view.rule_decorate != decorate => {

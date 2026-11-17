@@ -12,6 +12,13 @@ to summarise rather than to duplicate.
 ## [Unreleased]
 
 ### Added
+- The `confine_pointer` window rule, Hyprland's effect of the same name. A
+  matching rule holds the pointer inside the window while it is focused — the
+  cursor stays on a game's monitor without the client asking for a constraint
+  of its own. The shell resolves the rule and sends `view.confine_pointer`;
+  the compositor's pointer confinement clamps motion to the window's box, and
+  a client's own pointer lock still takes precedence. Turning the rule off (or
+  unfocusing the window) releases the pointer.
 - `motion.windows_out`, Hyprland's `windowsOut` close animation. A closing
   window no longer vanishes: the compositor photographs the last frame it drew
   of the window into a buffer it owns and fades that out, because the client

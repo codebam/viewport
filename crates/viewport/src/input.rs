@@ -4332,6 +4332,32 @@ impl ViewportState {
         };
         let origin = origin.to_i32_round();
 
+        // A rule that confines the pointer to this window holds it inside the
+        // window's box while the window is focused — Hyprland's confine_pointer,
+        // for keeping a game's cursor on its monitor without the client asking
+        // for a constraint of its own. The region is the whole box at the
+        // window's origin, the same shape a regionless client confine resolves
+        // to below. A client's own lock still wins: confining the cursor by
+        // rule is not leave to override a lock the client negotiated.
+        if let Some(view) = self.views.find_by_surface(surface) {
+            if view.rule_confine_pointer && self.focused == view.id {
+                let client_locked = with_pointer_constraint(surface, pointer, |constraint| {
+                    constraint.is_some_and(|c| {
+                        c.is_active() && matches!(&*c, PointerConstraint::Locked(_))
+                    })
+                });
+                if !client_locked {
+                    if let Some(bbox) = self.space.element_bbox(&view.window) {
+                        if bbox.size.w > 0 && bbox.size.h > 0 {
+                            let mut rects = ConfineRects::new();
+                            rects.push(Rectangle::from_size(bbox.size));
+                            return (false, Some((rects, bbox.loc)));
+                        }
+                    }
+                }
+            }
+        }
+
         let mut locked = false;
         // `None`: no active confinement. `Some(None)`: confined to the whole
         // surface. `Some(Some(rects))`: confined to those rectangles.

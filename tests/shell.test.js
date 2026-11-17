@@ -8475,6 +8475,7 @@ if (mode === 'scrolling') {
   emit({ type: 'config', layout: mode, rules: [
     { app_id: 'tear-me', tearing: true, idle_inhibit: true },
     { app_id: 'blur-me', blur: true },
+    { app_id: 'confine-me', confine_pointer: true },
   ] });
   const policyMark = sent.length;
   open(79, 'tear-me');
@@ -8496,7 +8497,15 @@ if (mode === 'scrolling') {
   check('a window with no rule sends view.blur false',
     sent.slice(unblurredMark).some((m) => m.type === 'view.blur'
       && m.id === 81 && m.blur === false));
-  for (const id of [79, 80, 81]) emit({ type: 'view.removed', id });
+  const confineMark = sent.length;
+  open(82, 'confine-me');
+  check('a confine_pointer rule sends view.confine_pointer',
+    sent.slice(confineMark).some((m) => m.type === 'view.confine_pointer'
+      && m.id === 82 && m.confine === true));
+  check('and a window no rule claims sends confine_pointer false',
+    sent.slice(unblurredMark).some((m) => m.type === 'view.confine_pointer'
+      && m.id === 81 && m.confine === false));
+  for (const id of [79, 80, 81, 82]) emit({ type: 'view.removed', id });
 
   /* Hyprland's `content` matcher, from `wp_content_type_v1`. It can change
      while the window is open, through `view.props`. */

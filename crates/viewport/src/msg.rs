@@ -240,6 +240,12 @@ const TYPES: &[Type] = &[
         hint: "--id N --inhibit BOOL",
     },
     Type {
+        name: "view.confine_pointer",
+        fields: &["id", "confine"],
+        strings: &[],
+        hint: "--id N --confine BOOL",
+    },
+    Type {
         name: "view.decorations",
         fields: &["id", "decorate"],
         strings: &[],

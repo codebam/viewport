@@ -2563,8 +2563,8 @@ re-evaluated as the window moves in and out of a group, not only at map time.
 
 The effects this shell can apply are the workspace, floating and its rect,
 `pinned`, `pseudotile`, `swallow`, `capture`, `opacity`, `focus`, `animation`,
-`tearing`, `blur`, `idle_inhibit`, `decorate`, `no_auto_hdr`, `tonemap` and a
-size floor and ceiling. `focus:
+`tearing`, `blur`, `idle_inhibit`, `confine_pointer`, `decorate`, `no_auto_hdr`,
+`tonemap` and a size floor and ceiling. `focus:
 false` opens a window without taking the keyboard — a launcher, or a
 picture-in-picture window that should appear without interrupting. `animation:
 false` gives it the reduced-motion treatment: no fade, but it still appears.
@@ -2606,6 +2606,18 @@ honours. `decorate: false` hands this window's frame to the client — the same
 answer the global `"decorations": "client"` gives, but for one window — and
 `decorate: true` keeps the compositor's frame even when the global policy is
 client-side. Removing the rule hands the decision back to the global policy.
+
+`confine_pointer: true` holds the pointer inside the window while it is
+focused — Hyprland's rule of the same name, for keeping a game's cursor on its
+monitor without the client asking for a constraint of its own. Motion that
+would leave the window is clamped to its edge instead. A client that negotiates
+its own pointer lock still wins: the rule confining the cursor is not leave to
+override a lock the client asked for. Unfocusing the window, or removing the
+rule, releases the pointer.
+
+```jsonc
+{ "content": "game", "fullscreen": true, "confine_pointer": true }
+```
 
 Rules may be named for runtime control. A rule with a `name` field can be
 toggled from a keybinding or from the socket:

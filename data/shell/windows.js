@@ -386,6 +386,7 @@ function addView({ id, title, app_id, tag, output: outputName, min_width, min_he
   send({ type: 'view.tearing', id, tearing: rule?.tearing === true });
   send({ type: 'view.blur', id, blur: rule?.blur === true });
   send({ type: 'view.idle_inhibit', id, inhibit: rule?.idle_inhibit === true });
+  send({ type: 'view.confine_pointer', id, confine: rule?.confine_pointer === true });
   /* And `decorate`: null hands the decision back to the global policy, so a
      rule that stopped matching takes its override with it. */
   send({ type: 'view.decorations', id,
@@ -554,6 +555,7 @@ function reapplyWindowRule(id) {
   send({ type: 'view.tearing', id, tearing: rule?.tearing === true });
   send({ type: 'view.blur', id, blur: rule?.blur === true });
   send({ type: 'view.idle_inhibit', id, inhibit: rule?.idle_inhibit === true });
+  send({ type: 'view.confine_pointer', id, confine: rule?.confine_pointer === true });
   send({ type: 'view.decorations', id,
     decorate: typeof rule?.decorate === 'boolean' ? rule.decorate : null });
 
