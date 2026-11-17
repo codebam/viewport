@@ -29,8 +29,8 @@ WebKit, which is hours, so it is behind a shell of its own:
 nix build .#wpewebkit   # do this once, deliberately, before anything else
 ```
 
-The flake's packaged compositor is `nix build .#webkitgtk` (the default), and
-the other engines are `.#wpe`, `.#chromium` and `.#cef`.
+The flake's packaged compositor is `nix build .#chromium` (the default), and
+the other engines are `.#wpe`, `.#webkitgtk`, `.#cef` and `.#servoshell`.
 
 The shell itself — the JavaScript tree under `data/shell/` — is tested without
 a compositor at all, against a stubbed DOM:

@@ -11,6 +11,26 @@ to summarise rather than to duplicate.
 
 ## [Unreleased]
 
+### Changed
+- **`chromium` is the default backend** — `nix build`, `nix run`,
+  `.#viewport-smithay` and `programs.viewport.shellBackend` all land on the
+  browser this flake does not link, where they landed on `cef`. The engine is
+  nixpkgs' `chromium` itself, so it tracks every security update nixpkgs
+  ships; `cef` embeds the same Blink as a prebuilt blob that moves only with
+  `cef-binary`, and the crate has to track that line by hand. It paints at
+  0.261% of a core per frame against cef's 0.230 and webkitgtk's 0.240, at the
+  same rate, for about 45 MB more PSS than `cef`. `cef` remains the cheapest
+  per painted frame and a name to ask for; see `docs/benchmarks.md`.
+
+### Fixed
+- The `cef` shell crash-looping against the packaged engine. A dependabot
+  bump moved the crate to the 156 line while nixpkgs' `cef-binary` is 151:
+  the bindings declared API version 15600, libcef refused it ("Request for
+  unsupported CEF API version 15600"), and every call after died on version
+  -1 — SIGTRAP, a blank desktop and the built-in layout fallback. The crate
+  is pinned to `151.8` again, and dependabot now ignores its major bumps: a
+  major is an engine upgrade, and lands with `cef-binary` by hand.
+
 ## [0.8.0] - 2026-11-16
 
 ### Added

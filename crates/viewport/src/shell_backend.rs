@@ -21,9 +21,9 @@
 //
 // * `chromium` — Blink, out of process, and not linked at all: the browser is
 //   started as a child and driven over the DevTools protocol. The engine is
-//   whatever `chromium` is on PATH, which makes this the cheapest of the three
-//   to build and the only one that can change engine version without a
-//   recompile.
+//   whatever `chromium` is on PATH — nixpkgs' own, in the packaged build —
+//   which makes this the cheapest of the three to build, the only one that
+//   can change engine version without a recompile, and the default.
 //
 // Two more are Servo, which is a cargo dependency rather than a package, and
 // so is split the same way Blink is split between `cef` and `chromium` — the
@@ -40,8 +40,8 @@
 //   script `servoshell --userscripts` injects into the page.
 //
 // * `cef` — the same Blink as `chromium`, embedded as a library rather than
-//   driven as a browser. The default. `crates/viewport-shell-cef` is outside
-//   this workspace for the same reason `viewport-shell-servo` is: it does not
+//   driven as a browser. `crates/viewport-shell-cef` is outside this
+//   workspace for the same reason `viewport-shell-servo` is: it does not
 //   build without `CEF_PATH`, and `cargo test --workspace` has to run on a
 //   machine that has never heard of it.
 //
@@ -60,7 +60,8 @@ pub enum ShellBackend {
     Wpe,
     /// WebKitGTK, in a process of its own, as a Wayland client.
     WebKitGtk,
-    /// Chromium, as a child process driven over the DevTools protocol.
+    /// Chromium, as a child process driven over the DevTools protocol. The
+    /// default.
     Chromium,
     /// Servo, embedded in a process of its own by `viewport-shell-servo`.
     Servo,
@@ -69,7 +70,7 @@ pub enum ShellBackend {
     /// desktop measured, and the slowest to paint; see docs/benchmarks.md.
     ServoShell,
     /// Chromium through CEF, embedded in a process of its own rather than
-    /// driven over a socket as `Chromium` is. The default.
+    /// driven over a socket as `Chromium` is.
     Cef,
 }
 

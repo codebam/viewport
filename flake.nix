@@ -222,7 +222,7 @@
 
         # The engines that cost a download rather than a compile.
         #
-        # `.#cef` is the default package, `.#webkitgtk` is the one for a
+        # `.#chromium` is the default package, `.#webkitgtk` is the one for a
         # machine short of memory and `.#servoshell` the one that spends the
         # least on the engine, so a shell that cannot build them is not a
         # workstation shell. All of them substitute in seconds.
@@ -1003,20 +1003,28 @@
           # does. That is the intent and it is worth knowing: name `.#wpe`,
           # `.#webkitgtk`, `.#chromium`, `.#cef` or `.#servoshell` to be held
           # to one.
-          viewport-smithay = cef;
+          viewport-smithay = chromium;
           # `viewport` used to be here too, the wlroots build, and was the
           # default. Both compositors produced a binary called `viewport`, so a
           # system installed one or the other; there is only one now.
           #
-          # The default is `cef`: of the three that build no engine it is the
-          # cheapest per frame the shell paints — 0.230% of a core against
-          # webkitgtk's 0.240 and chromium's 0.261 — at the same rate. See
-          # docs/benchmarks.md, "servoshell, measured against the other three",
-          # where those three were measured together; this comment does not
-          # repeat the table.
+          # The default is `chromium`: the engine is nixpkgs' `chromium`
+          # itself, started as a child process and not linked, so it tracks
+          # every security update nixpkgs ships. `cef` embeds the same Blink
+          # as a prebuilt blob that only moves when `cef-binary` does, and the
+          # crate has to track that line by hand — a crate a line ahead of the
+          # engine has its API version refused at run time and the shell dies
+          # on every call. Freshness is worth the margin: chromium paints at
+          # 0.261% of a core per frame against cef's 0.230 and webkitgtk's
+          # 0.240, at the same rate, and carries about 45 MB more PSS than
+          # cef. See docs/benchmarks.md, "servoshell, measured against the
+          # other three", where those three were measured together; this
+          # comment does not repeat the table.
           #
-          # It costs about 145 MB more resident than `webkitgtk`, which is the
-          # argument for that one on a machine short of memory rather than CPU.
+          # `cef` stays the cheapest per painted frame and a name to ask for,
+          # its crate pinned to `cef-binary`'s line. It costs about 145 MB
+          # more resident than `webkitgtk`, which is the argument for that one
+          # on a machine short of memory rather than CPU.
           #
           # `servoshell` is the lightest desktop of the five and paints a
           # third as often under load — 14 frames a second against 43 — so it
@@ -1024,7 +1032,7 @@
           # everything on every column and is the one that compiles WebKit:
           # several hours before a machine that has just switched to this
           # configuration has a desktop at all.
-          default = cef;
+          default = chromium;
         } // pkgs.lib.optionalAttrs (system == "x86_64-linux") {
           # A disposable machine to try it in: `nix run .#vm` opens a QEMU
           # window with the whole desktop inside, on a virtual GPU it really
@@ -1323,14 +1331,17 @@
               # `programs.viewport.package` to a build of its own, which is
               # also what says where `viewport-shell-servo` came from.
               type = types.enum [ "cef" "webkitgtk" "chromium" "wpe" "servoshell" ];
-              # The cheapest per painted frame of the three that build no
-              # engine — 0.230% of a core against webkitgtk's 0.240 and
-              # chromium's 0.261, at the same rate — and one that installs from
-              # a cache. See docs/benchmarks.md.
+              # The engine is nixpkgs' `chromium` itself, driven as a child
+              # process rather than linked, so it tracks every security update
+              # nixpkgs ships — where `cef` embeds a prebuilt blob that only
+              # moves when `cef-binary` does, and the crate has to track that
+              # line by hand. It installs from a cache and paints at 0.261% of
+              # a core per frame against cef's 0.230 and webkitgtk's 0.240, at
+              # the same rate. See docs/benchmarks.md.
               #
-              # It costs about 145 MB more resident than `webkitgtk`, which is
-              # the argument for that one on a machine short of memory rather
-              # than CPU.
+              # `cef` stays the cheapest per painted frame and costs about
+              # 145 MB more resident than `webkitgtk`, which is the argument
+              # for that one on a machine short of memory rather than CPU.
               #
               # `servoshell` is the lightest desktop measured and the slowest
               # to paint: 8.5% of a core under load against 9.9 to 11.5, 357 MB
@@ -1344,15 +1355,16 @@
               # that enables Viewport meant several hours of WebKit before the
               # machine had a desktop, and a default that cannot be reached on
               # an ordinary connection is not a default.
-              default = "cef";
+              default = "chromium";
               description = ''
                 Which engine draws the desktop.
 
                 `cef` embeds Chromium through the Chromium Embedded Framework:
                 the engine is a prebuilt library and nothing here compiles one.
                 Cheapest per painted frame of the three that build no engine,
-                and about 145 MB heavier than `webkitgtk` for it. It is the
-                default.
+                and about 145 MB heavier than `webkitgtk` for it. The blob
+                moves only with nixpkgs' `cef-binary`, whose line the crate is
+                pinned to.
 
                 `servoshell` is Servo, in the browser nixpkgs' `servo` package
                 installs, started as a child process the way `chromium` is. It
@@ -1361,7 +1373,7 @@
                 desktop of the five in CPU, in memory and in process count, and
                 also the slowest to paint by some way — 14 frames a second
                 under load against 43 to 48 — so a desktop that should feel
-                quick wants the default, `cef`, instead.
+                quick wants the default, `chromium`, instead.
 
                 `webkitgtk` runs the shell page in a separate process, as an
                 ordinary Wayland client, on nixpkgs' prebuilt WebKitGTK. The
@@ -1377,7 +1389,9 @@
                 `chromium` is Blink, in a browser started as a child process
                 and driven over the DevTools protocol. It links no engine at
                 all, so it is the fastest of the three to build and the only
-                one whose engine can change without a recompile.
+                one whose engine can change without a recompile. The engine is
+                nixpkgs' `chromium` itself, so it tracks every security update
+                nixpkgs ships. It is the default.
 
                 One further name — `servo`, the same engine embedded rather
                 than driven — is recognised by the compositor and has no
@@ -1576,7 +1590,8 @@
             # D-Bus activated, so nothing starts until a screen reader asks for
             # it. See docs/shell-backends.md for what each backend does once it
             # is there — the short version is that `webkitgtk` is the backend
-            # to name, and that the default one cannot use this at all.
+            # to name for a tree without a flag, and that the Blink default
+            # publishes one once it notices a screen reader.
             services.gnome.at-spi2-core.enable = lib.mkDefault true;
             # Screen sharing needs interfaces routed to a backend, not merely
             # a portal frontend running.

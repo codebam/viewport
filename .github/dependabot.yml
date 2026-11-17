@@ -19,6 +19,16 @@ updates:
     directory: /crates/viewport-shell-cef
     schedule:
       interval: weekly
+    ignore:
+      # The cef crate's major version IS the CEF line, and the line is pinned
+      # to nixpkgs' `cef-binary`: the pre-generated bindings declare
+      # CEF_API_VERSION_LAST to libcef at run time, and a crate a line ahead
+      # of the engine is refused ("Request for unsupported CEF API version"),
+      # after which the shell dies on every call. A major bump is an engine
+      # upgrade, not a dependency update — it lands with `cef-binary`, by
+      # hand. See the pin comment in the crate's Cargo.toml.
+      - dependency-name: cef
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: cargo
     directory: /crates/viewport-shell-servo

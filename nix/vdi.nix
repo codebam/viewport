@@ -24,9 +24,9 @@
   programs.viewport.enable = true;
   # This image runs under VirtualBox's software GL, and the backend to hand a
   # machine with no GPU is the one measured fastest per painted frame rather
-  # than the one measured lightest. That is `cef`, which is also the module's
-  # default now; named here rather than left to follow it, so the image keeps
-  # the fast painter if the default moves again.
+  # than the one measured lightest. That is `cef`; named here rather than
+  # left to follow the default, which has moved to `chromium`, so the image
+  # keeps the fast painter.
   programs.viewport.shellBackend = "cef";
   programs.viewport.terminal = "${pkgs.foot}/bin/foot";
 

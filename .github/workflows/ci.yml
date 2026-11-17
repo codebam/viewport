@@ -202,19 +202,17 @@ jobs:
       # data files, the portal declaration, and the second binary the
       # out-of-process shell needs beside it.
       #
-      # `.#cef` because it is the default package — what `nix run` on this
-      # flake gives — and `.#webkitgtk` because it is the other engine a hosted
-      # runner can afford: both substitute their engine from cache.nixos.org,
-      # and they package differently enough (a shell process beside the
-      # compositor for one, a linked WebKitGTK for the other) that building one
-      # says nothing about the other. The `wpe` build is a WebKit compile and
-      # belongs on a machine that has one.
+      # `.#chromium` because it is the default package — what `nix run` on
+      # this flake gives, and the one a system that names no backend
+      # installs. The other engines are names to ask for and are not built
+      # here; the `wpe` build is a WebKit compile and belongs on a machine
+      # that has one.
       #
       # Its own tests stay off — buildRustPackage would run them inside the nix
       # sandbox, which has neither a GPU nor a socket, and the steps above have
       # already run the suite outside it.
       - name: Build the packaged compositor
-        run: nix build --print-build-logs .#cef .#webkitgtk
+        run: nix build --print-build-logs .#chromium
 
   # The two crates the root manifest excludes, `viewport-shell-cef` and
   # `viewport-shell-servo`, are outside the `cargo deny check` in `rust`

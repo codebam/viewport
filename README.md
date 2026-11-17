@@ -25,7 +25,7 @@ UI to a DMA-BUF. Neither ever hands a pixel to the CPU.
 
 Which engine is a choice: WPE inside the compositor, WebKitGTK in a process of
 its own as an ordinary Wayland client, Chromium as a browser this does not link
-at all, the same Blink embedded through CEF — the default — or Servo, driven as
+at all — the default — the same Blink embedded through CEF, or Servo, driven as
 a browser or embedded for anyone willing to compile it. Only two are built from
 source, and the page cannot tell which one it is running under. See
 [`docs/shell-backends.md`](docs/shell-backends.md).
@@ -128,19 +128,21 @@ viewport msg --help                       # every message and its fields
 Every message in [`docs/ipc.md`](docs/ipc.md) can be sent this way, under its
 wire name.
 
-The default package embeds Chromium through CEF: nothing in that closure builds
-an engine, and it is the cheapest per painted frame of the three that do not —
-0.230% of a core against webkitgtk's 0.240 and chromium's 0.261. It costs about
-145 MB more resident than `.#webkitgtk`, the whole of the argument for that one
-on a machine short of memory rather than CPU. `.#servoshell` is the lightest
-desktop measured and the slowest to paint — 14 frames a second against 43 to 48
-— so it is one to ask for by name. See
+The default package drives nixpkgs' Chromium as a child process: nothing in
+that closure builds or links an engine, so the engine tracks every security
+update nixpkgs ships. It paints at 0.261% of a core per frame against cef's
+0.230 and webkitgtk's 0.240, at the same rate. `.#cef` embeds the same Blink
+and is the cheapest per painted frame, its crate pinned to nixpkgs'
+`cef-binary` line; it costs about 145 MB more resident than `.#webkitgtk`, the
+whole of the argument for that one on a machine short of memory rather than
+CPU. `.#servoshell` is the lightest desktop measured and the slowest to paint —
+14 frames a second against 43 to 48 — so it is one to ask for by name. See
 [`docs/benchmarks.md`](docs/benchmarks.md).
 
 ## Build
 
 ```sh
-nix build github:codebam/viewport        # the default, above — cef
+nix build github:codebam/viewport        # the default, above — chromium
 nix build github:codebam/viewport#wpe    # in-process; builds WebKit
 nix build github:codebam/viewport#chromium
 nix build github:codebam/viewport#cef
@@ -182,8 +184,8 @@ nix build .#wpewebkit   # do this once, deliberately, before anything else
 That build is the whole reason there are other backends at all, and the reason
 none of them is `wpe`. `.#webkitgtk` runs the same shell against nixpkgs'
 prebuilt WebKitGTK — the same WebKit version, a different port, out of process
-— and substitutes from cache.nixos.org like anything else, as do `.#chromium`,
-`.#servoshell` and the default `.#cef`.
+— and substitutes from cache.nixos.org like anything else, as do `.#cef`,
+`.#servoshell` and the default `.#chromium`.
 
 Run nested inside an existing compositor:
 
@@ -292,8 +294,8 @@ with:
 ```nix
 programs.viewport = {
   enable = true;
-  shellBackend = "cef";   # the default; also "webkitgtk", "chromium",
-                          # "wpe" or "servoshell"
+  shellBackend = "chromium";   # the default; also "webkitgtk", "cef",
+                               # "wpe" or "servoshell"
 };
 ```
 

@@ -1058,8 +1058,8 @@ Two other consequences worth knowing:
   Wayland, and its transparent-painting one is windowless rendering, which is a
   different backend to this. On `cef` or `chromium` the terminal is therefore
   not started at all, and the log says so: an invisible terminal under an
-  opaque desktop is a process nobody can see spending a core. Since `cef` is
-  the default package, using this means `--shell-backend=webkitgtk`.
+  opaque desktop is a process nobody can see spending a core. Since the
+  default package is `chromium`, using this means `--shell-backend=webkitgtk`.
 
 **One per screen, not one across the layout.** A terminal is a grid of cells
 and the cells have to land on a monitor: stretched across two, half the columns

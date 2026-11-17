@@ -5,17 +5,20 @@ the choices are.
 
 ```
 --shell-backend=servoshell  Servo, driven as a child process       implemented
---shell-backend=cef         Chromium embedded through CEF          implemented, default
+--shell-backend=cef         Chromium embedded through CEF          implemented
 --shell-backend=webkitgtk   WebKitGTK, in a process of its own     implemented
---shell-backend=chromium    Chromium, driven as a child process    implemented
+--shell-backend=chromium    Chromium, driven as a child process    implemented, default
 --shell-backend=wpe         WPE WebKit, inside the compositor      implemented
 --shell-backend=servo       Servo, embedded in the shell process   implemented, built by hand
 ```
 
-`cef` is what the NixOS module installs and what `nix run` on this flake gives:
-it builds no engine, and of the three that do not it is the cheapest per frame
-the shell paints — 0.230% of a core against `webkitgtk`'s 0.240 and
-`chromium`'s 0.261 — at the same rate.
+`chromium` is what the NixOS module installs and what `nix run` on this flake
+gives: it builds no engine and links none — the engine is nixpkgs' `chromium`
+itself, so it tracks every security update nixpkgs ships, where `cef` embeds a
+prebuilt blob that moves only with `cef-binary`. It paints at 0.261% of a core
+per frame against `cef`'s 0.230 and `webkitgtk`'s 0.240, at the same rate;
+`cef` stays the cheapest per painted frame and a name to ask for, its crate
+pinned to `cef-binary`'s line.
 
 `servoshell` builds no engine either, and is the lightest desktop of the five
 that have been measured: 8.5% of a core under load against 9.9 to 11.5, 357 MB
@@ -436,13 +439,13 @@ keyed on the winit window — behind a build that already costs hours. The drive
 its own loopback bridge and `--devtools`, and there is no upstream flag to pass
 through `VIEWPORT_SERVOSHELL_ARGS`.
 
-**Which means the default is one that can be read, with one flag.** `cef` is
-Blink, which publishes its accessibility tree once it notices a screen reader;
-where it does not, `--force-renderer-accessibility` through `VIEWPORT_CEF_ARGS`
-is the lever, and it is not passed by default. The backend that has no lever at
-all is `servoshell`, and it is no longer the default. A desk that would rather
-have the toolkit's own tree — and every desk that needs one without a flag —
-wants:
+**Which means the default is one that can be read, with one flag.** `chromium`
+is Blink, which publishes its accessibility tree once it notices a screen
+reader; where it does not, `--force-renderer-accessibility` through
+`VIEWPORT_CHROMIUM_ARGS` is the lever, and it is not passed by default. The
+backend that has no lever at all is `servoshell`, and it is not the default.
+A desk that would rather have the toolkit's own tree — and every desk that
+needs one without a flag — wants:
 
 ```nix
 programs.viewport.shellBackend = "webkitgtk";
@@ -468,10 +471,10 @@ nix build .#wpe
 nix build .#webkitgtk
 
 # no engine built or linked; runs nixpkgs' chromium
-nix build .#chromium
+nix build .#chromium        # and this is `.#default`
 
 # the same engine, embedded; builds a C++ wrapper and no engine
-nix build .#cef             # and this is `.#default`
+nix build .#cef
 ```
 
 There is no `.#servo`. The embedded Servo shell is a cargo dependency on the
@@ -489,8 +492,8 @@ On NixOS:
 ```nix
 programs.viewport = {
   enable = true;
-  shellBackend = "cef";   # the default; also "webkitgtk", "chromium",
-                          # "wpe" or "servoshell"
+  shellBackend = "chromium";   # the default; also "webkitgtk", "cef",
+                               # "wpe" or "servoshell"
 };
 ```
 
