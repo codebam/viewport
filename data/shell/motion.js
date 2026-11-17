@@ -189,6 +189,7 @@ function applyMotion(motion) {
   motionLeaves = new Map([['windows', umbrella]]);
   for (const [name, raw] of [
     ['windows_in', motion.windows_in],
+    ['windows_out', motion.windows_out],
     ['windows_move', motion.windows_move],
     ['workspaces', motion.workspaces],
   ]) {

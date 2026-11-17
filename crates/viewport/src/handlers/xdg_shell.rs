@@ -187,8 +187,13 @@ impl XdgShellHandler for ViewportState {
         // gone and clicking it does nothing.
         self.foreign_management_state.remove(id);
 
-        self.space.unmap_elem(&window);
-        self.views.remove(id);
+        // A close worth fading keeps its place in the stack for one frame so
+        // the render pass can photograph it into a ghost; the unmap and
+        // removal happen there. Every other close removes now, as before.
+        if !self.defer_close_for_fade(id) {
+            self.space.unmap_elem(&window);
+            self.views.remove(id);
+        }
         // A closed window cannot be the fullscreen HDR one any more.
         self.auto_hdr_pending = true;
 

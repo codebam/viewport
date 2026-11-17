@@ -22,6 +22,12 @@ harness = false
 name = "cursor_workspace_warp"
 harness = false
 
+# Dual-mode again: a real client closes its own window and the test watches the
+# compositor keep a ghost to fade (motion on) or remove at once (motion off).
+[[test]]
+name = "windows_out_fade"
+harness = false
+
 [features]
 # `input-1-28` is on by default: `drag_3fg` calls libinput 1.27's
 # three-finger-drag setter unconditionally, and a feature meant to be a

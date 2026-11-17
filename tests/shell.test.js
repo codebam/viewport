@@ -5805,6 +5805,7 @@ if (mode === 'scrolling') {
       ease: 'cubic-bezier(0, 0, 1, 1)',
       windows: { duration: 120 },
       windows_in: { style: 'popin' },
+      windows_out: { style: 'fade' },
       windows_move: { duration: 75, bezier: [0.25, 0.1, 0.25, 1] },
       workspaces: { style: 'slidefade' },
       layers: { duration: 140, ease: 'ease-out' },
@@ -5814,6 +5815,10 @@ if (mode === 'scrolling') {
   check('a windowsIn leaf inherits the windows pace',
     leafIn?.duration === 120);
   check('and keeps the style it names', leafIn?.style === 'popin');
+  const leafOut = globalThis.__shell.motionLeafForTest('windows_out');
+  check('a windowsOut leaf inherits the windows pace too',
+    leafOut?.duration === 120);
+  check('and keeps the fade style it names', leafOut?.style === 'fade');
   check('a windowsMove leaf takes its own pace',
     globalThis.__shell.motionLeafForTest('windows_move')?.duration === 75
     && motionStyle.getPropertyValue('--anim-move') === '75ms');

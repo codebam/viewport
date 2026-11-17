@@ -3762,6 +3762,12 @@ impl ViewportState {
         // computed and dropped, which is worse than not having one: two
         // identical blocks where only one does anything is how the next colour
         // bug gets written.
+
+        // windowsOut: photograph any view that closed since the last frame and
+        // is owed a fade, now that a renderer is in hand. The window was drawn
+        // this frame still in the stack; its ghost takes over next frame at
+        // full opacity, so the close has no blink. See `crate::ghost`.
+        self.snapshot_closing_views::<R, <R as Captures>::Buffer>(renderer);
         let elements = crate::render::build(&frame, renderer);
 
         // Which views this pass carries. A submitted frame is the only proof a

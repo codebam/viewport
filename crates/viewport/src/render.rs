@@ -15,7 +15,9 @@
 // side, and everything that needs the compositor's state happens on the first.
 
 use smithay::backend::allocator::dmabuf::Dmabuf;
-use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;
+use smithay::backend::renderer::element::memory::{
+    MemoryRenderBuffer, MemoryRenderBufferRenderElement,
+};
 use smithay::backend::renderer::element::solid::SolidColorRenderElement;
 use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
 use smithay::backend::renderer::element::texture::TextureRenderElement;
@@ -28,7 +30,7 @@ use smithay::backend::renderer::{ImportAll, ImportDma, ImportMem, Renderer, Rend
 use smithay::desktop::{LayerSurface, Window};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{
-    Buffer as BufferCoord, Logical, Physical, Point, Rectangle, Scale, Transform,
+    Buffer as BufferCoord, Logical, Physical, Point, Rectangle, Scale, Size, Transform,
 };
 use smithay::wayland::compositor::TraversalAction;
 
@@ -73,7 +75,11 @@ smithay::backend::renderer::element::render_elements! {
     /// the desktop's own background over whatever the window is floating
     /// above.
     RoundedShell=RoundedRenderElement<CropRenderElement<TextureRenderElement<<R as RendererSuper>::TextureId>>>,
-    Cursor=MemoryRenderBufferRenderElement<R>,
+    /// A compositor-owned memory buffer: the pointer image, and the kept last
+    /// frame of a closing window (windowsOut). One variant for both, since the
+    /// element type is the same and `render_elements!` derives one `From` per
+    /// type.
+    Memory=MemoryRenderBufferRenderElement<R>,
     /// Opaque replacement for a window whose rule forbids capture.
     Redaction=SolidColorRenderElement,
     /// The blur behind a piece of shell that asked to be glass. A shell region
@@ -216,6 +222,24 @@ pub struct WindowFrame {
     pub overlay_rounded: Option<(Rectangle<i32, Physical>, i32)>,
 }
 
+/// One closing window's kept frame, ready to draw on this output: the buffer
+/// of its last pixels, where its box sat (physical, output-relative), the
+/// logical size it is drawn at, and the fade's current alpha, zoom and slide.
+/// Worked out by the frame builder from `crate::ghost::Ghost`, which holds the
+/// same picture in global coordinates until its fade is spent.
+pub struct GhostDraw {
+    pub buffer: MemoryRenderBuffer,
+    pub location: Point<f64, Physical>,
+    pub size: Size<i32, Logical>,
+    pub src: Rectangle<f64, Logical>,
+    pub id: Id,
+    pub alpha: f32,
+    /// Multiplier on the drawn size, about the ghost's own centre (a zoom).
+    pub scale: f64,
+    /// Physical pixels to shift along x (a slide).
+    pub dx: f64,
+}
+
 /// One piece of the shell drawn above the windows, and the blur under it.
 ///
 /// The first id names the shell texture; the optional pair is the blur effect
@@ -238,6 +262,9 @@ pub struct Frame {
     pub layers_above: Vec<LayerFrame>,
     /// The windows on this output, front to back.
     pub windows: Vec<WindowFrame>,
+    /// Closing windows fading out over their last frame, drawn above the
+    /// windows they were part of. See `crate::ghost`.
+    pub ghosts: Vec<GhostDraw>,
     pub layers_below: Vec<LayerFrame>,
     /// The page that runs the desktop. Windows are holes in it, and
     /// `overlay` is cropped out of it.
@@ -512,6 +539,11 @@ where
             }
         }
     }
+
+    // Closing windows over their last frame, above the windows they were part
+    // of and below the shell's dialogs. A capture draws them too: a recording
+    // of a desktop should show the close it showed the user.
+    push_ghosts(&mut elements, frame, renderer, scale);
 
     for WindowFrame {
         window,
@@ -1005,6 +1037,43 @@ where
 /// compositor that aborts on it.
 fn cursor_offset(hotspot: Point<i32, Physical>) -> Point<i32, Physical> {
     Point::from((hotspot.x.saturating_neg(), hotspot.y.saturating_neg()))
+}
+
+/// The kept frames of closing windows, each fading under its windowsOut
+/// motion. The zoom and slide are baked into the location and drawn size
+/// rather than wrapped in a transform element: a memory buffer drawn into a
+/// smaller box about its own centre *is* a zoom, and a shifted location *is* a
+/// slide, so the one element type covers every style without a variant per
+/// combination.
+fn push_ghosts<R>(elements: &mut Vec<OutputElement<R>>, frame: &Frame, renderer: &mut R, scale: f64)
+where
+    R: Renderer + ImportAll + ImportMem + ImportDma + BackgroundEffectRenderer,
+    <R as RendererSuper>::TextureId: Clone + Send + Sync + 'static,
+{
+    for ghost in &frame.ghosts {
+        let mut location = ghost.location;
+        let mut size = ghost.size;
+        if (ghost.scale - 1.0).abs() > f64::EPSILON {
+            let cx = location.x + size.w as f64 * scale / 2.0;
+            let cy = location.y + size.h as f64 * scale / 2.0;
+            let w = ((size.w as f64 * ghost.scale).round() as i32).max(1);
+            let h = ((size.h as f64 * ghost.scale).round() as i32).max(1);
+            size = (w, h).into();
+            location = Point::from((cx - w as f64 * scale / 2.0, cy - h as f64 * scale / 2.0));
+        }
+        location.x += ghost.dx;
+        if let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
+            renderer,
+            location,
+            &ghost.buffer,
+            Some(ghost.alpha),
+            Some(ghost.src),
+            Some(size),
+            Kind::Unspecified,
+        ) {
+            elements.push(OutputElement::from(element));
+        }
+    }
 }
 
 /// The pointer, front of everything.

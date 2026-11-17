@@ -1484,6 +1484,11 @@ pub struct Motion {
     pub windows: Option<MotionCategory>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub windows_in: Option<MotionCategory>,
+    /// Windows leaving (Hyprland's `windowsOut` leaf): the compositor fades
+    /// out the last frame it drew of a closing window, the surface being gone
+    /// before the shell hears of the close.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub windows_out: Option<MotionCategory>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub windows_move: Option<MotionCategory>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2592,6 +2597,14 @@ mod tests {
                 }),
                 enabled: None,
             }),
+            windows_out: Some(MotionCategory {
+                style: Some("fade".into()),
+                duration: Some(180.0),
+                ease: None,
+                bezier: None,
+                spring: None,
+                enabled: None,
+            }),
             windows_move: None,
             workspaces: Some(MotionCategory {
                 style: Some("slidefade".into()),
@@ -2623,6 +2636,8 @@ mod tests {
         assert_eq!(value["windows"]["duration"], 120.0);
         assert_eq!(value["windows_in"]["style"], "popin");
         assert_eq!(value["windows_in"]["spring"]["stiffness"], 400.0);
+        assert_eq!(value["windows_out"]["style"], "fade");
+        assert_eq!(value["windows_out"]["duration"], 180.0);
         assert_eq!(value["workspaces"]["enabled"], false);
         assert_eq!(value["layers"]["style"], "fade");
         assert_eq!(value["layers"]["duration"], 200.0);

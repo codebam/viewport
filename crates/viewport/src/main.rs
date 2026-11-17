@@ -29,6 +29,7 @@ mod focus;
 mod foreign_toplevel;
 mod framing;
 mod gamma;
+mod ghost;
 mod handlers;
 mod hdr;
 mod headless;

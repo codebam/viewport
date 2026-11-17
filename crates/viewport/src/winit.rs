@@ -269,6 +269,13 @@ pub fn init(
                             tracing::info!("the nested backend is drawing again");
                             unbound = false;
                         }
+                        // windowsOut, the same as the real backend: photograph
+                        // a closing view while the renderer is in hand, its
+                        // ghost taking over next frame. See `crate::ghost`.
+                        state.snapshot_closing_views::<
+                            _,
+                            smithay::backend::renderer::gles::GlesRenderbuffer,
+                        >(renderer);
                         let elements = crate::render::build(&frame, renderer);
 
                         // The same capture the real backend has. Nested is where

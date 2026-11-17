@@ -236,6 +236,15 @@ fn service_captures(state: &mut ViewportState, outputs: &[Output]) {
         return;
     };
 
+    // windowsOut: this backend has no screen to draw a frame to, so the render
+    // pass the other two backends photograph closing views in does not exist
+    // here. The frame timer is where a renderer lives, so the snapshot happens
+    // here instead — every tick, whether or not a capture is waiting. See
+    // `crate::ghost`.
+    state.snapshot_closing_views::<_, smithay::backend::renderer::gles::GlesRenderbuffer>(
+        &mut renderer,
+    );
+
     // A capture readback waits on the renderer's shared queue from this
     // thread, so hold it back while a carried client fence may be ahead of it:
     // that wait would freeze this thread and every output until the client

@@ -173,8 +173,12 @@ impl XwmHandler for ViewportState {
             }
         }
 
-        self.space.unmap_elem(&element);
-        self.views.remove(id);
+        // A close worth fading keeps its place for the render pass to
+        // photograph; the unmap and removal happen there. See `crate::ghost`.
+        if !self.defer_close_for_fade(id) {
+            self.space.unmap_elem(&element);
+            self.views.remove(id);
+        }
         // A closed window cannot be the fullscreen HDR one any more.
         self.auto_hdr_pending = true;
 

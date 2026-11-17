@@ -12,6 +12,19 @@ to summarise rather than to duplicate.
 ## [Unreleased]
 
 ### Added
+- `motion.windows_out`, Hyprland's `windowsOut` close animation. A closing
+  window no longer vanishes: the compositor photographs the last frame it drew
+  of the window into a buffer it owns and fades that out, because the client
+  destroys its surface before the shell hears of the close — there is nothing
+  left for the page to animate. The leaf takes `fade`, `slide`, `slidefade` or
+  `zoom`, a duration, and a curve or physical spring, inheriting from
+  `motion.windows` then the block's own pace; absent is a fifth of a second
+  fading, and `motion.enabled: false` removes at once as before. The snapshot
+  is taken in the render pass (where a renderer lives) on every backend, the
+  ghost is drawn above the windows until its fade is spent, and a window nobody
+  can see — minimized, hidden, capture-forbidden, or a locked session — is
+  removed without a ghost. A surface that dies before the photograph falls back
+  to the instant removal this replaces.
 - `cursor.no_warps` and `cursor.warp_on_change_workspace`, Hyprland's warp
   policy. The compositor never moved the pointer on its own before — focus
   moved, the pointer stayed — so `warp_on_change_workspace` adds the one warp:

@@ -1373,6 +1373,10 @@ pub(crate) fn input_event_map(
 /// rather than carried: the shell would otherwise silently fall back and the
 /// config would look like it had been ignored, which it would have been.
 const MOTION_WINDOW_STYLES: [&str; 6] = ["fade", "popin", "zoom", "slide", "slidefade", "gnomed"];
+/// The styles a close may name. The entrance-only ones (`popin`, `gnomed`)
+/// are not here: a window leaving fades, slides, zooms or does both, and the
+/// compositor draws each as a transform of the last frame it kept.
+const MOTION_WINDOW_OUT_STYLES: [&str; 4] = ["fade", "slide", "slidefade", "zoom"];
 const MOTION_WORKSPACE_STYLES: [&str; 3] = ["fade", "slide", "slidefade"];
 const MOTION_LAYER_STYLES: [&str; 1] = ["fade"];
 
@@ -1404,6 +1408,11 @@ pub(crate) fn motion_event(what: &str, block: &crate::config::MotionConfig) -> v
             &format!("{what}.windows_in"),
             block.windows_in.as_ref(),
             &MOTION_WINDOW_STYLES,
+        ),
+        windows_out: motion_category(
+            &format!("{what}.windows_out"),
+            block.windows_out.as_ref(),
+            &MOTION_WINDOW_OUT_STYLES,
         ),
         windows_move: motion_category(
             &format!("{what}.windows_move"),

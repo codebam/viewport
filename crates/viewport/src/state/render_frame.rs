@@ -705,9 +705,13 @@ impl ViewportState {
             })
             .collect();
 
+        // Closing windows fading over their last frame, on this output only.
+        let ghosts = self.ghosts_for(output_geometry, scale);
+
         crate::render::Frame {
             layers_above,
             windows,
+            ghosts,
             layers_below,
             shell,
             pages,

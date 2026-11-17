@@ -781,6 +781,13 @@ pub struct ViewportState {
     /// to. Taking it on the first focus rather than holding it means a later,
     /// unrelated focus cannot inherit a warp nobody asked for.
     pub pending_workspace_warp: bool,
+    /// Views owed a windowsOut snapshot: closed by their client, but kept
+    /// mapped for the one frame it takes the render pass to photograph them
+    /// before they are removed. See `crate::ghost` and `state/ghost.rs`.
+    pub closing_views: Vec<u32>,
+    /// The kept frames of closed windows, fading out under the windowsOut
+    /// motion. Drawn by `render::build`, expired by the frame builder.
+    pub ghosts: Vec<crate::ghost::Ghost>,
 
     /// When the shell last moved a window, so a diagnostic capture can wait
     /// for the open animation to finish. Five shell frames is the middle of
@@ -2074,6 +2081,8 @@ impl ViewportState {
             no_warps: false,
             warp_on_change_workspace: 0,
             pending_workspace_warp: false,
+            closing_views: Vec::new(),
+            ghosts: Vec::new(),
             last_layout: None,
             needs_render: false,
             dirty_outputs: std::collections::HashSet::new(),
@@ -3608,6 +3617,7 @@ impl ViewportState {
 }
 
 include!("state/render_frame.rs");
+include!("state/ghost.rs");
 
 /// Whether the Xwayland on PATH knows `-enable-ei-portal`.
 ///

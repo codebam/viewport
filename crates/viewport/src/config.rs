@@ -466,6 +466,11 @@ pub struct MotionConfig {
     pub windows: Option<MotionCategory>,
     /// Windows arriving — a new window, or one coming back on screen.
     pub windows_in: Option<MotionCategory>,
+    /// Windows leaving — a close, Hyprland's `windowsOut`. The surface is gone
+    /// before the shell hears of the close, so this leaf is the compositor's
+    /// to draw: it keeps the last frame it drew of the window and fades that
+    /// out, rather than asking the page to animate a window it no longer has.
+    pub windows_out: Option<MotionCategory>,
     /// Windows moving — the slide a relayout animates, Hyprland's
     /// `windowsMove`.
     pub windows_move: Option<MotionCategory>,
@@ -2986,6 +2991,7 @@ mod tests {
                     "bezier": [0.2, 0.9, 0.3, 1.0],
                     "windows": {"duration": 120},
                     "windows_in": {"style": "popin", "spring": {"mass": 1, "stiffness": 400}},
+                    "windows_out": {"style": "fade", "duration": 180},
                     "windows_move": {"duration": 75, "bezier": [0.4, 0, 0.2, 1]},
                     "workspaces": {"style": "slidefade", "enabled": false},
                     "layers": {"duration": 200, "ease": "ease-out"},
@@ -3005,6 +3011,9 @@ mod tests {
         assert_eq!(spring.mass, Some(1.0));
         assert_eq!(spring.stiffness, Some(400.0));
         assert_eq!(spring.damping, None, "an absent field takes the default");
+        let leaving = motion.windows_out.expect("windows_out");
+        assert_eq!(leaving.style.as_deref(), Some("fade"));
+        assert_eq!(leaving.duration, Some(180.0));
         assert_eq!(
             motion.windows_move.and_then(|leaf| leaf.bezier),
             Some([0.4, 0.0, 0.2, 1.0])

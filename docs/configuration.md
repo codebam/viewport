@@ -1534,13 +1534,14 @@ default moves with it, and the frames repaint.
 }
 ```
 
-Every transition on this desktop is the shell's — the compositor draws none of
-its own — and the shell's motion has always been three custom properties in
-`data/shell/shell.css`. That is the right answer for a desktop that is a web
-page and it had no key that reached it: tuning a duration meant shipping a
-stylesheet. `motion` is the key. It lands `duration` on `--anim`, `slow` on
-`--anim-slow` and `ease` on `--ease`, so the stylesheet transitions and the
-JavaScript tweens run on the same curve.
+Nearly every transition on this desktop is the shell's — the close fade
+(`windows_out`, below) is the one the compositor draws, because the window is
+gone before the shell hears of it — and the shell's motion has always been three
+custom properties in `data/shell/shell.css`. That is the right answer for a
+desktop that is a web page and it had no key that reached it: tuning a duration
+meant shipping a stylesheet. `motion` is the key. It lands `duration` on
+`--anim`, `slow` on `--anim-slow` and `ease` on `--ease`, so the stylesheet
+transitions and the JavaScript tweens run on the same curve.
 
 `enabled: false` is the system's `prefers-reduced-motion` setting said in
 another place, for a session whose environment cannot set it — a kiosk with a
@@ -1569,6 +1570,7 @@ each:
       "duration": 180,
       "spring": { "mass": 1, "stiffness": 400, "damping": 40 }
     },
+    "windows_out": { "style": "fade", "duration": 200 },  // fade | slide | slidefade | zoom
     "windows_move": { "duration": 110, "bezier": [0.2, 1, 0.3, 1] },
     "workspaces": { "style": "slidefade", "duration": 220 },
     "layers": { "duration": 200, "ease": "ease-out" },
@@ -1613,10 +1615,26 @@ a container's own flex transition is CSS and runs on its curve.
 Per-workspace `animation` is on the workspace rule itself — see the workspace
 section above.
 
-Not implemented yet: `windowsOut`. A window closing is unmapped by the
-compositor before the shell hears about it, so there is no element to animate;
-making a close fade needs the compositor to keep drawing a surface it no longer
-owns, which is a change on that side of the IPC rather than a leaf here.
+`windows_out` is the close, Hyprland's `windowsOut`, and the one transition the
+compositor draws rather than the shell. A window closing is unmapped before the
+shell hears about it — the client destroys its surface — so there is no element
+left for the page to animate. The compositor keeps the last frame it drew of the
+window instead and fades that out. It accepts `fade`, `slide`, `slidefade` and
+`zoom` (the entrance-only `popin` and `gnomed` are not exits): `fade` drops the
+opacity, `slide` carries the window off the nearer side of its monitor at full
+brightness, `slidefade` does both, and `zoom` shrinks it toward its centre while
+it fades. Absent is a fifth of a second fading.
+
+```jsonc
+"motion": { "windows_out": { "style": "fade", "duration": 200 } }
+```
+
+The ghost is drawn above the windows until its fade is spent, then dropped. A
+window nobody can see — minimized, hidden, one whose rule forbids capture, or a
+locked session — is removed without a ghost, and `motion.enabled: false` (or the
+system reduced-motion setting) removes every window at once, as before. A
+surface that dies before the compositor can photograph it falls back to that
+instant removal rather than fading a blank.
 `fadeDim` and `fadePopups` are absent for a similar reason: inactive-window
 dimming is a compositor-side multiplier applied without a transition, and
 popups are drawn by the compositor, not the page.
