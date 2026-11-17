@@ -163,6 +163,60 @@ fn bezier_or_linear(
         .unwrap_or(Curve::Linear)
 }
 
+/// Resolve a fade leaf (`fadeDim`, `fadePopups`) to its duration and curve.
+/// These inherit from the block's root rather than from `windows`, and absent
+/// is a fifth of a second linear. Motion off is a zero duration, which
+/// `fade_progress` reads as "already there" — the snap it asks for.
+pub fn resolve_fade(
+    motion: Option<&viewport_ipc::event::Motion>,
+    leaf: Option<&viewport_ipc::event::MotionCategory>,
+) -> (Duration, Curve) {
+    let Some(motion) = motion else {
+        return (Duration::from_millis(200), Curve::Linear);
+    };
+    if motion.enabled == Some(false) {
+        return (Duration::ZERO, Curve::Linear);
+    }
+    let duration_ms = leaf
+        .and_then(|l| l.duration)
+        .or(motion.duration)
+        .filter(|v| v.is_finite() && *v >= 0.0)
+        .unwrap_or(200.0);
+    let bezier = leaf
+        .and_then(|l| l.bezier)
+        .or(motion.bezier)
+        .map(Curve::Bezier)
+        .unwrap_or(Curve::Linear);
+    let curve = match leaf.and_then(|l| l.spring) {
+        Some(s) if s.mass > 0.0 && s.stiffness > 0.0 && s.damping >= 0.0 => Curve::Spring {
+            mass: s.mass,
+            stiffness: s.stiffness,
+            damping: s.damping,
+        },
+        _ => bezier,
+    };
+    (Duration::from_secs_f64(duration_ms / 1000.0), curve)
+}
+
+/// How far a fade has run, 0 at the start to 1 at the duration. A zero
+/// duration is 1 at once — no animation, the value it would reach.
+pub fn fade_progress(duration: Duration, curve: Curve, elapsed: Duration) -> f32 {
+    if duration.is_zero() || elapsed >= duration {
+        return 1.0;
+    }
+    let t = elapsed.as_secs_f64() / duration.as_secs_f64();
+    let p = match curve {
+        Curve::Linear => t,
+        Curve::Bezier(b) => cubic_bezier(b, t),
+        Curve::Spring {
+            mass,
+            stiffness,
+            damping,
+        } => spring_progress(mass, stiffness, damping, elapsed.as_secs_f64()),
+    };
+    p.clamp(0.0, 1.0) as f32
+}
+
 /// One closing window's kept frame, and where and how it fades.
 pub struct Ghost {
     /// The window's own surface tree as the compositor last drew it, in
@@ -446,5 +500,64 @@ mod tests {
         assert_eq!(resolved.style, OutStyle::Fade);
         assert_eq!(resolved.duration, Duration::from_millis(200));
         assert_eq!(resolved.curve, Curve::Linear);
+    }
+
+    #[test]
+    fn a_fade_leaf_inherits_the_root_not_windows() {
+        let motion = viewport_ipc::event::Motion {
+            duration: Some(300.0),
+            windows: Some(viewport_ipc::event::MotionCategory {
+                duration: Some(120.0),
+                ..Default::default()
+            }),
+            fade_dim: Some(viewport_ipc::event::MotionCategory {
+                duration: Some(150.0),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        // The leaf's own duration wins.
+        let (dur, _) = resolve_fade(Some(&motion), motion.fade_dim.as_ref());
+        assert_eq!(dur, Duration::from_millis(150));
+        // An absent leaf takes the root's, not the windows umbrella's.
+        let (dur, _) = resolve_fade(Some(&motion), motion.fade_popups.as_ref());
+        assert_eq!(dur, Duration::from_millis(300));
+        // Nothing named is the default fifth of a second.
+        let (dur, _) = resolve_fade(None, None);
+        assert_eq!(dur, Duration::from_millis(200));
+    }
+
+    #[test]
+    fn motion_off_is_a_zero_duration_fade() {
+        let motion = viewport_ipc::event::Motion {
+            enabled: Some(false),
+            duration: Some(300.0),
+            ..Default::default()
+        };
+        let (dur, _) = resolve_fade(Some(&motion), None);
+        assert_eq!(dur, Duration::ZERO);
+        // A zero duration is already there — the snap motion off asks for.
+        assert_eq!(
+            fade_progress(Duration::ZERO, Curve::Linear, Duration::ZERO),
+            1.0
+        );
+    }
+
+    #[test]
+    fn fade_progress_runs_zero_to_one() {
+        let d = Duration::from_millis(200);
+        assert_eq!(fade_progress(d, Curve::Linear, Duration::ZERO), 0.0);
+        assert!((fade_progress(d, Curve::Linear, Duration::from_millis(100)) - 0.5).abs() < 1e-6);
+        assert_eq!(
+            fade_progress(d, Curve::Linear, Duration::from_millis(200)),
+            1.0
+        );
+        assert_eq!(
+            fade_progress(d, Curve::Linear, Duration::from_millis(500)),
+            1.0
+        );
+        // An ease-out curve is past half at the midpoint.
+        let ease_out = Curve::Bezier([0.0, 0.0, 0.58, 1.0]);
+        assert!(fade_progress(d, ease_out, Duration::from_millis(100)) > 0.5);
     }
 }

@@ -484,6 +484,13 @@ pub struct MotionConfig {
     /// Hyprland's `border` leaf. A flat border has no angle to rotate, so
     /// `borderangle` and `shadowangle` do not exist here.
     pub border: Option<MotionCategory>,
+    /// The dimming of an inactive window easing in and out rather than
+    /// snapping, Hyprland's `fadeDim`. The opacity multiplier the compositor
+    /// applies is animated over this leaf when a window's active state changes.
+    pub fade_dim: Option<MotionCategory>,
+    /// A popup fading in, Hyprland's `fadePopups`. Popups are compositor-drawn
+    /// here, so this leaf is the compositor's to apply, like `windowsOut`.
+    pub fade_popups: Option<MotionCategory>,
 }
 
 /// One leaf of the motion tree.

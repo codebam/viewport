@@ -26,6 +26,7 @@ mod cursor;
 mod dbus;
 mod dbus_util;
 mod dump;
+mod fade;
 mod focus;
 mod foreign_toplevel;
 mod framing;

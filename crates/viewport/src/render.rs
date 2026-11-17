@@ -265,6 +265,9 @@ pub struct Frame {
     /// Closing windows fading out over their last frame, drawn above the
     /// windows they were part of. See `crate::ghost`.
     pub ghosts: Vec<GhostDraw>,
+    /// Per-popup fade-in alpha (fadePopups), by popup surface id. A popup not
+    /// listed is fully drawn. See `crate::fade`.
+    pub popup_alphas: std::collections::HashMap<u32, f32>,
     pub layers_below: Vec<LayerFrame>,
     /// The page that runs the desktop. Windows are holes in it, and
     /// `overlay` is cropped out of it.
@@ -609,6 +612,7 @@ where
         // Cropping the popup to it cuts a Firefox menu off at the window edge,
         // or removes it entirely when it opens past one.
         use smithay::desktop::PopupManager;
+        use smithay::reexports::wayland_server::Resource as _;
         use smithay::wayland::seat::WaylandFocus as _;
         if let Some(surface) = window.wl_surface() {
             for (popup, offset) in PopupManager::popups_for_surface(&surface) {
@@ -622,12 +626,20 @@ where
                         .to_f64()
                         .to_physical(scale)
                         .to_i32_round();
+                // fadePopups: a popup eases in over its leaf's duration. The
+                // alpha was worked out by the frame builder, which is where
+                // the state the fade reads lives.
+                let popup_alpha = frame
+                    .popup_alphas
+                    .get(&popup.wl_surface().id().protocol_id())
+                    .copied()
+                    .unwrap_or(1.0);
                 let drawn = render_surface_tree_with_effect(
                     renderer,
                     popup.wl_surface(),
                     at,
                     scale,
-                    1.0,
+                    popup_alpha,
                     Kind::Unspecified,
                     // A menu over a blurred window blurs too: the popup
                     // inherits the rule the window was drawn under, so the

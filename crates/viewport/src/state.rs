@@ -505,6 +505,12 @@ pub struct ViewportState {
     /// Windows the shell has been told are not responding, by view id, until
     /// they pong again or the dialog is answered.
     pub anr_flagged: std::collections::HashSet<u32>,
+    /// Per-window opacity fades in flight (fadeDim), by view id. See
+    /// `crate::fade`.
+    pub dim_anims: std::collections::HashMap<u32, crate::fade::Fade>,
+    /// When each popup was first seen drawn (fadePopups), by surface id, so
+    /// its fade-in can be timed. See `crate::fade`.
+    pub popup_fades: std::collections::HashMap<u32, std::time::Instant>,
 
     /// `long_press+` bindings waiting out their hold, by keysym.
     ///
@@ -2036,6 +2042,8 @@ impl ViewportState {
             anr_enabled: true,
             anr_pending: std::collections::HashMap::new(),
             anr_flagged: std::collections::HashSet::new(),
+            dim_anims: std::collections::HashMap::new(),
+            popup_fades: std::collections::HashMap::new(),
             long_press_pending: std::collections::HashMap::new(),
             repeating_held: std::collections::HashMap::new(),
             pending_click: std::collections::HashMap::new(),

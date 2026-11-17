@@ -1589,7 +1589,9 @@ each:
     "windows_move": { "duration": 110, "bezier": [0.2, 1, 0.3, 1] },
     "workspaces": { "style": "slidefade", "duration": 220 },
     "layers": { "duration": 200, "ease": "ease-out" },
-    "border": { "duration": 150 }
+    "border": { "duration": 150 },
+    "fade_dim": { "duration": 250 },
+    "fade_popups": { "duration": 150 }
   }
 }
 ```
@@ -1650,9 +1652,21 @@ locked session — is removed without a ghost, and `motion.enabled: false` (or t
 system reduced-motion setting) removes every window at once, as before. A
 surface that dies before the compositor can photograph it falls back to that
 instant removal rather than fading a blank.
-`fadeDim` and `fadePopups` are absent for a similar reason: inactive-window
-dimming is a compositor-side multiplier applied without a transition, and
-popups are drawn by the compositor, not the page.
+
+`fade_dim` and `fade_popups` are the compositor's too, for the same reason:
+inactive-window dimming is an opacity multiplier the compositor applies, and
+popups are surfaces it draws, so neither is a transition the page can run on a
+live element. `fade_dim` (Hyprland's `fadeDim`) eases a window's opacity toward
+its target over the leaf's duration, so focus moving dims an inactive window
+smoothly rather than in one frame; a window caught mid-fade reverses from where
+it is. `fade_popups` (Hyprland's `fadePopups`) fades a popup in as it arrives.
+Both take a duration and a curve or spring, and inherit from the motion block's
+root rather than from `windows`; absent is a fifth of a second, and
+`motion.enabled: false` snaps them as before.
+
+```jsonc
+"motion": { "fade_dim": { "duration": 250 }, "fade_popups": { "duration": 150 } }
+```
 
 **At runtime.** `config.motion` on the control socket sets the block
 without touching the file — a wallpaper cycler's cousin for animation, and

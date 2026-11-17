@@ -229,6 +229,30 @@ impl ViewportState {
         // raised went to the back. Two windows that never overlap look
         // identical either way, which is why a tiling desktop hid this and a
         // floating or maximised window over a tiled one did not.
+        // fadeDim: ease each window's opacity toward its target, worked out
+        // here before the window walk below — that walk borrows the state
+        // immutably and so cannot advance a fade (which mutates it) inside
+        // itself. The walk reads the result back by view id.
+        let dim_targets: Vec<(u32, f32)> = self
+            .views
+            .iter()
+            .map(|v| {
+                (
+                    v.id,
+                    effective_opacity(
+                        v.opacity,
+                        v.rule_opacity,
+                        v.id == self.focused,
+                        v.wants_fullscreen(),
+                        self.config.opacity.as_ref(),
+                    ),
+                )
+            })
+            .collect();
+        let dim_opacities: std::collections::HashMap<u32, f32> = dim_targets
+            .into_iter()
+            .map(|(id, target)| (id, self.animated_dim_opacity(id, target)))
+            .collect();
         let windows: Vec<_> = self
             .space
             .elements()
@@ -525,16 +549,10 @@ impl ViewportState {
                     // full-size windows into them, and a window faded out by
                     // the shell stayed solid.
                     scale: view.map(|view| view.scale).unwrap_or(1.0),
+                    // fadeDim eased it toward the target above; a window the
+                    // fade map does not know is drawn at full opacity.
                     opacity: view
-                        .map(|view| {
-                            effective_opacity(
-                                view.opacity,
-                                view.rule_opacity,
-                                view.id == self.focused,
-                                view.wants_fullscreen(),
-                                self.config.opacity.as_ref(),
-                            )
-                        })
+                        .and_then(|view| dim_opacities.get(&view.id).copied())
                         .unwrap_or(1.0),
                     blur: view.map(|view| view.rule_blur).unwrap_or(false),
                     redaction,
@@ -708,10 +726,36 @@ impl ViewportState {
         // Closing windows fading over their last frame, on this output only.
         let ghosts = self.ghosts_for(output_geometry, scale);
 
+        // fadePopups: time each popup's fade-in, keyed by the surface id the
+        // renderer looks it up by, and forget the fades of windows and popups
+        // that are gone so the maps do not grow with every window ever opened.
+        let mut popup_alphas = std::collections::HashMap::new();
+        let mut live_popups = Vec::new();
+        {
+            use smithay::desktop::PopupManager;
+            use smithay::reexports::wayland_server::Resource as _;
+            use smithay::wayland::seat::WaylandFocus as _;
+            for frame in &windows {
+                if let Some(surface) = frame.window.wl_surface() {
+                    for (popup, _) in PopupManager::popups_for_surface(&surface) {
+                        let id = popup.wl_surface().id().protocol_id();
+                        live_popups.push(id);
+                        let alpha = self.popup_fade_alpha(id);
+                        if alpha < 1.0 {
+                            popup_alphas.insert(id, alpha);
+                        }
+                    }
+                }
+            }
+        }
+        let live_views: Vec<u32> = self.views.iter().map(|v| v.id).collect();
+        self.prune_fades(&live_views, &live_popups);
+
         crate::render::Frame {
             layers_above,
             windows,
             ghosts,
+            popup_alphas,
             layers_below,
             shell,
             pages,

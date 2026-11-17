@@ -203,7 +203,7 @@ function applyMotion(motion) {
   /* The leaves that are not about windows: the shell's own furniture and the
      frame around a window. They inherit the block's pace and curve and nothing
      from `windows`. */
-  for (const name of ['layers', 'border']) {
+  for (const name of ['layers', 'border', 'fade_dim', 'fade_popups']) {
     motionLeaves.set(name, resolveMotionLeaf(name, motion[name], null, treeRoot));
   }
 

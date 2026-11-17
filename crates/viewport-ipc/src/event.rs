@@ -1516,6 +1516,13 @@ pub struct Motion {
     /// A window's frame changing colour (Hyprland's `border` leaf).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub border: Option<MotionCategory>,
+    /// Inactive-window dimming easing rather than snapping (Hyprland's
+    /// `fadeDim` leaf).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fade_dim: Option<MotionCategory>,
+    /// A popup fading in (Hyprland's `fadePopups` leaf).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fade_popups: Option<MotionCategory>,
 }
 
 /// One leaf of the motion tree, as the shell receives it.
@@ -2646,6 +2653,15 @@ mod tests {
                 spring: None,
                 enabled: None,
             }),
+            fade_dim: Some(MotionCategory {
+                style: Some("fade".into()),
+                duration: Some(250.0),
+                ease: None,
+                bezier: None,
+                spring: None,
+                enabled: None,
+            }),
+            fade_popups: None,
         };
         let value = serde_json::to_value(&motion).expect("serialises");
         assert_eq!(value["bezier"], serde_json::json!([0.2, 0.9, 0.3, 1.0]));
@@ -2658,6 +2674,8 @@ mod tests {
         assert_eq!(value["layers"]["style"], "fade");
         assert_eq!(value["layers"]["duration"], 200.0);
         assert_eq!(value["border"]["duration"], 150.0);
+        assert_eq!(value["fade_dim"]["duration"], 250.0);
+        assert!(value["fade_popups"].is_null());
         assert!(
             value.get("windows_move").is_none(),
             "a leaf that says nothing is not sent"

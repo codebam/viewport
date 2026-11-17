@@ -12,6 +12,14 @@ to summarise rather than to duplicate.
 ## [Unreleased]
 
 ### Added
+- `motion.fade_dim` and `motion.fade_popups`, Hyprland's `fadeDim` and
+  `fadePopups` leaves. `fade_dim` eases a window's opacity toward its target
+  over the leaf's duration, so focus moving dims an inactive window smoothly
+  rather than in one frame; `fade_popups` fades a popup in as it arrives. Both
+  are compositor-drawn (the dimming is an opacity multiplier, popups are
+  compositor surfaces) and reuse the close fade's curve and spring arithmetic.
+  They inherit from the motion block's root, not `windows`; absent is a fifth
+  of a second, and motion off snaps as before.
 - `misc.enable_anr_dialog`, Hyprland's "window is not responding" prompt. The
   compositor pings each mapped xdg window on a timer; one that does not answer
   within five seconds is flagged and the shell shows a wait-or-force-quit

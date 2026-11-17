@@ -5813,6 +5813,8 @@ if (mode === 'scrolling') {
       workspaces: { style: 'slidefade' },
       layers: { duration: 140, ease: 'ease-out' },
       border: { bezier: [0.3, 0, 0.7, 1] },
+      fade_dim: { duration: 160 },
+      fade_popups: { style: 'fade' },
     } });
   const leafIn = globalThis.__shell.motionLeafForTest('windows_in');
   check('a windowsIn leaf inherits the windows pace',
@@ -5822,6 +5824,10 @@ if (mode === 'scrolling') {
   check('a windowsOut leaf inherits the windows pace too',
     leafOut?.duration === 120);
   check('and keeps the fade style it names', leafOut?.style === 'fade');
+  check('a fadeDim leaf takes its own pace',
+    globalThis.__shell.motionLeafForTest('fade_dim')?.duration === 160);
+  check('and a fadePopups leaf inherits the root, not the windows umbrella',
+    globalThis.__shell.motionLeafForTest('fade_popups')?.duration === 90);
   check('a windowsMove leaf takes its own pace',
     globalThis.__shell.motionLeafForTest('windows_move')?.duration === 75
     && motionStyle.getPropertyValue('--anim-move') === '75ms');

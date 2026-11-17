@@ -564,6 +564,8 @@ pub fn apply(into: &mut crate::config::File, overlay: &Overlay) {
             workspaces: motion.workspaces.clone().map(wire_category_to_config),
             layers: motion.layers.clone().map(wire_category_to_config),
             border: motion.border.clone().map(wire_category_to_config),
+            fade_dim: motion.fade_dim.clone().map(wire_category_to_config),
+            fade_popups: motion.fade_popups.clone().map(wire_category_to_config),
         };
         if file_block != crate::config::MotionConfig::default() {
             into.motion = file_block;
@@ -901,6 +903,8 @@ mod tests {
                 workspaces: None,
                 layers: None,
                 border: None,
+                fade_dim: None,
+                fade_popups: None,
             }),
             group: Some(viewport_ipc::event::Group {
                 auto_group: Some(true),

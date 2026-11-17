@@ -1438,6 +1438,16 @@ pub(crate) fn motion_event(what: &str, block: &crate::config::MotionConfig) -> v
             block.border.as_ref(),
             &[],
         ),
+        fade_dim: motion_category(
+            &format!("{what}.fade_dim"),
+            block.fade_dim.as_ref(),
+            &MOTION_LAYER_STYLES,
+        ),
+        fade_popups: motion_category(
+            &format!("{what}.fade_popups"),
+            block.fade_popups.as_ref(),
+            &MOTION_LAYER_STYLES,
+        ),
     }
 }
 
