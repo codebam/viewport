@@ -10,6 +10,12 @@ description = "A Wayland compositor whose shell is a web page"
 name = "viewport"
 path = "src/main.rs"
 
+# One binary, two parts: re-exec'd by the compositor as the shell (through
+# VIEWPORT_SHELL_BIN) and run by cargo as the test. See the file's header.
+[[test]]
+name = "minimize_idle_focus"
+harness = false
+
 [features]
 # `input-1-28` is on by default: `drag_3fg` calls libinput 1.27's
 # three-finger-drag setter unconditionally, and a feature meant to be a
