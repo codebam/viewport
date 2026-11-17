@@ -2123,6 +2123,25 @@ programs.viewport = {
 file, so `binds."Mod4+Shift+e" = "exit"` would leave you with that one binding
 and nothing else.
 
+Two options change what the module renders rather than what it writes:
+
+```nix
+programs.viewport = {
+  enable = true;
+  userConfig = true;
+  chromiumBinary = "${pkgs.google-chrome}/bin/google-chrome-stable";
+};
+```
+
+`userConfig` starts the session without `--config`, leaving the bootstrap tier
+to the user's own `~/.config/viewport/config.json` — the mode for a config
+written elsewhere, a home-manager `xdg.configFile` say. `--config` names the
+one bootstrap file the compositor reads, so a generated one shadows the user's
+rather than merging with it; with `userConfig` the options above are not
+written, and a warning names any that are set alongside it. `chromiumBinary`
+applies to the `chromium` backend only, naming the browser it drives — see
+[shell-backends.md](shell-backends.md).
+
 ## Media keys
 
 Bound by default, because a desktop where the play key does nothing is broken

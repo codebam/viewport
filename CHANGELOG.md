@@ -11,6 +11,22 @@ to summarise rather than to duplicate.
 
 ## [Unreleased]
 
+### Added
+- `programs.viewport.chromiumBinary` in the NixOS module, and the matching
+  `chromiumBin` package override: the browser the `chromium` backend drives,
+  named by path instead of nixpkgs' `chromium`. The backend links no engine
+  and speaks the DevTools protocol to whatever it starts, so any
+  Chromium-family browser answers — Google Chrome is the same Blink with the
+  same protocol. The path is set as `VIEWPORT_CHROMIUM_BIN` on the shell
+  process with `--set-default`, so the environment still overrides it at
+  runtime. The other backends ignore it.
+- `programs.viewport.userConfig` in the NixOS module: the session starts
+  without `--config`, leaving the bootstrap config to the user's
+  `~/.config/viewport/config.json` — the mode for a config a home-manager
+  `xdg.configFile` writes, which a generated `--config` file would shadow
+  rather than merge with. The config-rendering options are not written in
+  this mode, and a warning names any that are set alongside it.
+
 ## [0.9.0] - 2026-11-17
 
 ### Added

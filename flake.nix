@@ -423,7 +423,12 @@
         # Every backend but `wpe` adds a second binary to bin/, which the
         # compositor finds beside itself and starts. All of them install a
         # binary called `viewport`, so a system installs one of them.
-        mkViewport = { shellBackend }:
+        # `chromiumBin` names the browser the `chromium` backend drives, as
+        # the path to its executable; unset is nixpkgs' `chromium`, the engine
+        # the package names by default. That backend links no engine, so any
+        # Chromium-family browser answers — Google Chrome is the same Blink
+        # and the same DevTools protocol. Every other backend ignores it.
+        mkViewport = pkgs.lib.makeOverridable ({ shellBackend, chromiumBin ? null }:
           let
             # The crate that provides the shell process, where there is one.
             shellCrate = {
@@ -636,8 +641,15 @@
             # The engine, named rather than looked for. `chromium` on PATH is
             # whatever the session happens to have installed, and a desktop
             # should not change engine because a user installed a browser.
+            # `chromiumBin` names a different one — Google Chrome is the same
+            # Blink and the same DevTools protocol — and `--set-default`
+            # still lets VIEWPORT_CHROMIUM_BIN win at runtime.
             wrapProgram $out/bin/viewport-shell-chromium \
-              --set-default VIEWPORT_CHROMIUM_BIN ${pkgs.chromium}/bin/chromium
+              --set-default VIEWPORT_CHROMIUM_BIN ${
+                if chromiumBin != null
+                then pkgs.lib.escapeShellArg chromiumBin
+                else "${pkgs.chromium}/bin/chromium"
+              }
           '' + pkgs.lib.optionalString (shellBackend == "servoshell") ''
             # The engine, named rather than looked for, for the reason above:
             # a desktop should not change engine because a user installed a
@@ -658,7 +670,7 @@
             platforms = platforms.linux;
             mainProgram = "viewport";
           };
-        } // cargoVendoring);
+        } // cargoVendoring));
 
         # The engine in-process: what this project has always built.
         wpe = mkViewport { shellBackend = "wpe"; };
@@ -1401,6 +1413,50 @@
               '';
             };
 
+            chromiumBinary = mkOption {
+              type = types.nullOr types.str;
+              default = null;
+              example = literalExpression ''"''${pkgs.google-chrome}/bin/google-chrome-stable"'';
+              description = ''
+                The browser the `chromium` backend drives, as the path to its
+                executable. `null` — the default — keeps nixpkgs' `chromium`,
+                the engine the package is built to name.
+
+                Any Chromium-family browser answers: the backend starts one
+                and speaks the DevTools protocol to it, and Google Chrome is
+                the same Blink with the same protocol. The path is set as
+                `VIEWPORT_CHROMIUM_BIN` on the shell process, which the
+                environment still overrides at runtime.
+
+                Only the `chromium` backend reads this. The other engines are
+                linked or named by their own packages and ignore it.
+              '';
+            };
+
+            userConfig = mkOption {
+              type = types.bool;
+              default = false;
+              description = ''
+                Leave the bootstrap config to the user: the session starts
+                without `--config`, so the compositor reads
+                `~/.config/viewport/config.json` (or
+                `$XDG_CONFIG_HOME/viewport/config.json`) exactly as a launch
+                from a TTY does.
+
+                This is the mode for a config written elsewhere — a
+                home-manager `xdg.configFile`, say — that the module must not
+                replace: `--config` names the one bootstrap file the
+                compositor reads, so a generated one shadows the user's
+                rather than merging with it.
+
+                The options that render into the generated config — `url`,
+                `urlSpan`, `terminal`, `menu`, `binds`, `bindsOverride`,
+                `startup`, `vtSwitching`, `timeoutMs` and `settings` — are
+                not written in this mode. `shellBackend` still picks the
+                package, whose wrapper names the engine either way.
+              '';
+            };
+
             url = mkOption {
               type = types.nullOr types.str;
               default = null;
@@ -1540,9 +1596,19 @@
           # portal can set it — see there.
           config = mkIf cfg.enable {
             programs.viewport.package =
-              mkDefault self.packages.${pkgs.system}.${cfg.shellBackend};
+              mkDefault (self.packages.${pkgs.system}.${cfg.shellBackend}.override {
+                chromiumBin = cfg.chromiumBinary;
+              });
 
             environment.systemPackages = [ cfg.package ];
+
+            # The config-rendering options are a no-op in userConfig mode;
+            # say so rather than let a setting silently not reach the session.
+            warnings = lib.optional
+              (cfg.userConfig && (cfg.url != null || cfg.terminal != null
+                || cfg.menu != null || cfg.binds != { } || cfg.bindsOverride != { }
+                || cfg.startup != null || cfg.settings != { }))
+              "programs.viewport: userConfig leaves the bootstrap config to the user's ~/.config/viewport/config.json, so url, terminal, menu, binds, bindsOverride, startup and settings are not written.";
 
             # What makes the user manager's session graphical, which on a
             # compositor started from a TTY nothing else does.
@@ -1617,7 +1683,7 @@
                       servoshell = "Servo";
                     }.${cfg.shellBackend}
                   } shell
-                  Exec=${cfg.package}/bin/viewport --config ${configFile}
+                  Exec=${cfg.package}/bin/viewport${lib.optionalString (!cfg.userConfig) " --config ${configFile}"}
                   Type=Application
                 '';
                 passthru.providedSessions = [ "viewport" ];

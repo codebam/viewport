@@ -299,6 +299,13 @@ programs.viewport = {
 };
 ```
 
+`programs.viewport.chromiumBinary` names the browser the `chromium` backend
+drives — nixpkgs' `chromium` by default, and any other Chromium-family browser
+by path, Google Chrome included: same Blink, same DevTools protocol.
+`userConfig = true` leaves the bootstrap config to the user's
+`~/.config/viewport/config.json` instead of generating one from the module's
+options — the mode for a config a home-manager `xdg.configFile` writes.
+
 ## Licence
 
 Split, and deliberately. `crates/viewport` is **GPL-3.0-or-later**, because

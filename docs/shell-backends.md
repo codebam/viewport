@@ -150,7 +150,12 @@ page is still running starts every planned page afresh — or a session restart.
 compositor starts `viewport-shell-chromium`, which starts a browser and drives
 it. Nothing links an engine: this crate compiles in seconds on a machine with
 no browser installed, and the engine is whatever `chromium` the package names —
-`VIEWPORT_CHROMIUM_BIN` overrides it.
+`VIEWPORT_CHROMIUM_BIN` overrides it. Any Chromium-family browser answers: the
+backend speaks the DevTools protocol to whatever it starts, and Google Chrome
+is the same Blink with the same protocol. On NixOS,
+`programs.viewport.chromiumBinary = "${pkgs.google-chrome}/bin/google-chrome-stable";`
+names it for the installed session; the package itself takes the same path as
+`.override { chromiumBin = …; }`.
 
 The window is a Wayland client exactly as the WebKitGTK one is, on the
 connection the compositor handed over, so placement, input, pacing and the
