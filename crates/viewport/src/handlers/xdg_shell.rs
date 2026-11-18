@@ -407,6 +407,17 @@ impl XdgDecorationHandler for ViewportState {
         let mode = self.decoration_mode_for(toplevel.wl_surface());
         answer_decoration(&toplevel, mode);
     }
+
+    fn decoration_destroyed(&mut self, toplevel: ToplevelSurface) {
+        // The client dropped the decoration object, and the protocol resets
+        // the mode to None with it. The policy answer does not change: the
+        // shell draws the frame whether or not the object exists, and a
+        // client that insists on drawing its own still may. Re-asserting
+        // keeps the pending state the policy's, and the mode lands again if
+        // the client creates a fresh object.
+        let mode = self.decoration_mode_for(toplevel.wl_surface());
+        answer_decoration(&toplevel, mode);
+    }
 }
 
 fn answer_decoration(toplevel: &ToplevelSurface, mode: DecorationMode) {
