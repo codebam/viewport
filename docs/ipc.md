@@ -290,8 +290,9 @@ This is not a privilege escalation for an ordinary same-user process. The
 socket is 0600 and owned by the user running the session, but 0600 is an owner
 check rather than an identity one. A client the compositor did not start, and
 whose `/proc/<pid>/exe` is not the compositor binary, is untrusted: it may ask
-the read-only queries (`view.query`, `clipboard.query`, `notification.list`)
-and see public events, but `apply` refuses every privileged request —
+the read-only queries (`view.query`, `clipboard.query`, `notification.list`,
+`output.query`) and see public events, but `apply` refuses every privileged
+request —
 `shell.exec`, synthetic input, `config.save`, `quit` and the session messages.
 `shell.command` is a shell verb (focus, workspaces, layout model), not
 arbitrary execution.

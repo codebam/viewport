@@ -940,6 +940,32 @@ fn an_untrusted_client_is_refused_and_never_sees_private_events() {
 }
 
 #[test]
+fn an_untrusted_client_can_query_the_output_layout() {
+    // output.query is a read: it answers the asker with the layout as it is
+    // and reconciles nothing, so a script the compositor did not start — a
+    // screenshot helper asking which output to freeze — can ask. The answer
+    // is targeted, so a bystander hears nothing of someone else's question.
+    let compositor = Compositor::builder("untrusted-output-query")
+        .untrusted()
+        .start();
+    let mut client = compositor.connect();
+    let mut bystander = compositor.connect();
+    bystander.drain_lines(Duration::from_millis(100));
+
+    client.send(r#"{"type":"output.query"}"#);
+    let layout = client.wait_for("output.layout");
+    assert_eq!(layout["type"], "output.layout");
+    assert!(layout["outputs"].is_array(), "{layout}");
+
+    for line in bystander.drain_lines(Duration::from_millis(100)) {
+        assert!(
+            !line.contains("output.layout"),
+            "someone else's query broadcast: {line}"
+        );
+    }
+}
+
+#[test]
 fn a_pipelined_flood_is_still_answered_in_order() {
     // The read side dispatches a bounded number of messages per loop turn
     // and leaves the rest queued: the budget is what keeps one pipelining

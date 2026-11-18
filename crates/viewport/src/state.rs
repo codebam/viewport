@@ -4126,6 +4126,22 @@ impl ViewportState {
         self.notify_output_layout_to(None);
     }
 
+    /// The layout as it really is, to the one client that asked.
+    ///
+    /// A query answers the asker and reconciles nothing. The notify path
+    /// above is for a layout that *changed*: it resyncs shells, wallpaper
+    /// terminals and capture zones before it announces, and a question must
+    /// not do that — an untrusted caller could loop it, the same reason
+    /// `session.query` is privileged. Client zero is in-process and has no
+    /// entry in the socket's client map, so `send_to` drops the answer,
+    /// which is right: nothing in-process asks.
+    pub fn answer_output_layout(&mut self, client: u64) {
+        let event = Event::OutputLayout {
+            outputs: self.output_infos(None),
+        };
+        self.ipc.send_to(client, &event);
+    }
+
     /// The same, as one page sees it.
     ///
     /// `region` names a page's rectangle: only the screens it covers are

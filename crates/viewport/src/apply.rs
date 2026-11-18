@@ -90,9 +90,18 @@ fn reads_only(request: &Request) -> bool {
     // again, so an untrusted caller could make that happen in a loop. It is
     // privileged like the rest of the session messages; the shell and the
     // CLI are trusted.
+    //
+    // `OutputQuery` is a read because it answers the asker alone
+    // (`answer_output_layout`); the reconcile-and-broadcast path is for a
+    // layout that changed, not a question about it. A script the compositor
+    // did not start — a screenshot helper asking which output to freeze —
+    // is exactly who this is for.
     matches!(
         request,
-        Request::ViewQuery | Request::ClipboardQuery | Request::NotificationList
+        Request::ViewQuery
+            | Request::ClipboardQuery
+            | Request::NotificationList
+            | Request::OutputQuery
     )
 }
 
@@ -672,7 +681,7 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             }
         }
 
-        Request::OutputQuery => state.notify_output_layout(),
+        Request::OutputQuery => state.answer_output_layout(state.dispatch_client),
 
         // Somebody can see the screen they just changed, so the countdown
         // `output_configure` started can lapse. See
@@ -3827,6 +3836,11 @@ mod tests {
         assert!(!acts_while_locked(&Request::ViewQuery));
         assert!(!moves_focus(&Request::SessionQuery));
         assert!(!acts_while_locked(&Request::SessionQuery));
+        // The output layout is a read like the view list: answered to the
+        // asker alone, reconciling nothing, so any same-user script may ask.
+        assert!(reads_only(&Request::OutputQuery));
+        assert!(!moves_focus(&Request::OutputQuery));
+        assert!(!acts_while_locked(&Request::OutputQuery));
         // The draw hints belong to the same negative space: they change what
         // a frame is made of, not where the keyboard is or what the session
         // does, and behind a lock screen there is nothing to blur anyway —
