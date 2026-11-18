@@ -162,6 +162,9 @@ pub fn apply(state: &mut ViewportState, request: Request) {
                 return;
             };
             view.visible = visible;
+            // Visibility is in the auto-HDR filter too: a hidden window
+            // cannot be the fullscreen HDR one, and a shown one may be.
+            state.auto_hdr_pending = true;
             let window = view.window.clone();
             let placed = view.placed;
             if visible {
@@ -2280,6 +2283,13 @@ pub(crate) fn set_view_fullscreen(state: &mut ViewportState, id: u32, fullscreen
         fullscreen,
     );
     state.needs_render = true;
+    // Fullscreen is the property auto-HDR reads, and this is the
+    // compositor-driven half of the change: a shell `view.fullscreen` or a
+    // taskbar's foreign-toplevel request. The client-request paths mark the
+    // same re-evaluation through `notify_fullscreen`; without it here, an HDR
+    // game put fullscreen by either of these kept the screen in SDR until
+    // something else happened to move.
+    state.auto_hdr_pending = true;
     true
 }
 
@@ -2325,6 +2335,10 @@ pub(crate) fn set_view_minimized(state: &mut ViewportState, id: u32, minimized: 
     if let Some(view) = state.views.get_mut(id) {
         view.minimized = minimized;
     }
+    // A minimized window is not the fullscreen HDR one any more, and a
+    // restored one may be: the same re-evaluation `notify_fullscreen` asks
+    // for, on the other property the auto-HDR filter reads.
+    state.auto_hdr_pending = true;
 
     state.foreign_management_state.set_state(
         id,
