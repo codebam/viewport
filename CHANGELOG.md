@@ -11,6 +11,8 @@ to summarise rather than to duplicate.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-18
+
 ### Added
 - `programs.viewport.chromiumBinary` in the NixOS module, and the matching
   `chromiumBin` package override: the browser the `chromium` backend drives,
@@ -34,6 +36,60 @@ to summarise rather than to duplicate.
   `config.bar_items` / `config.bar_widgets`, remounting the widget on the new
   options. The schema is validated at registration. Documented in
   `docs/custom-widgets.md`.
+
+### Changed
+- The Smithay fork is rebased onto upstream `7ff0ede4`, nine commits on:
+  xdg-decoration v2 with proper destroy handling, the Xwayland pidfd, a
+  tablet grab deadlock fix, a keymap null-terminator fix, and additive
+  output/input-method/libei surface. The four fork patches rebase unchanged
+  (`git range-diff` shows `=` for each); the old tip is preserved as
+  `pre-rebase-d44f753b`. `viewport-vulkan` follows to the same upstream
+  commit, so the two pins agree and the `[patch]` stays a redirect. The one
+  new trait item, `decoration_destroyed`, is answered with the policy mode
+  like the other decoration handlers — the shell draws the frame whether or
+  not the client keeps the decoration object. `cargo update` moves 27 other
+  packages to their highest compatible versions; deny reports no new
+  advisories.
+- The shell backends share what they repeated. The frame guard and the load
+  gate live in `viewport-shell-bridge` as `DocumentGuard`, wiring included,
+  so cef inherits chromium's guard tests and its navigation behaviour (see
+  Fixed); the startup every backend repeated — the log subscriber, the
+  origin-checked option parse, the urandom hex, the private directory it
+  names, the extra-args environment split — lives there once; and the
+  injected bridge script is one template in `viewport-ipc` with a hole for
+  each backend's transport. The input dispatch is split into per-event
+  handlers, the chromium command pipe writes through one `File` with a
+  `VecDeque` queue and one drain helper, servoshell's events poll is
+  assembled from the log rather than re-serialized, and the embedded servo
+  bridge reads its query in one pass.
+
+### Fixed
+- Auto-HDR re-evaluates on every path that moves its inputs. A shell
+  `view.fullscreen`, a taskbar's foreign-toplevel request, a minimize or a
+  hide now mark the re-evaluation the client-request paths already asked
+  for: an HDR game put fullscreen by the shell or the taskbar kept the
+  screen in SDR until something else happened to move, and a minimized or
+  hidden fullscreen HDR window held the screen in HDR.
+- The cef backend's load gate, three behaviours chromium already had and
+  cef's copy had lost: a top-frame navigation or a cleared execution
+  context closes the gate, a method result never reopens it (the reload's
+  own `Page.reload` result could), and the first install waits for the load
+  event before draining the queue. Events are no longer evaluated into a
+  half-loaded document after a navigation or a reload. The gate is the
+  shared `DocumentGuard` now, so the fix is structural rather than a second
+  copy to keep in step.
+- The injected bridge's origin check refuses UNC-style `file://host/path`
+  URLs — the same rule the Rust classifier it mirrors
+  (`viewport_ipc::js::is_local_shell_url`) already applied. The JS had
+  accepted any `file:` URL; both Servo backends share the fixed script, and
+  the token is quoted as a string literal in both.
+- `output.query` is answered to any same-user script. It was privileged and
+  ran the layout-changed reconcile path, so an untrusted helper — the
+  screenshot binding's output picker, talking to the socket from python —
+  was refused, and the freeze-frame screenshot flow silently fell back to
+  selecting on the live desktop. The query now answers the asker alone with
+  the layout as it is, reconciling nothing, and joins the read-only class
+  beside `view.query`, `clipboard.query` and `notification.list`.
 
 ## [0.9.0] - 2026-11-17
 
