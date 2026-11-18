@@ -730,16 +730,26 @@ impl ViewportState {
         // renderer looks it up by, and forget the fades of windows and popups
         // that are gone so the maps do not grow with every window ever opened.
         let mut popup_alphas = std::collections::HashMap::new();
-        let mut live_popups = Vec::new();
         {
             use smithay::desktop::PopupManager;
             use smithay::reexports::wayland_server::Resource as _;
             use smithay::wayland::seat::WaylandFocus as _;
+            // The live set is every view's popups, not just this output's: the
+            // fade map is global state, and this builder runs once per output.
+            // Pruning against this output alone threw away the other monitors'
+            // popup fades every frame, restarting each fade at alpha 0 forever
+            // — a menu that never appears on a multi-monitor desk.
+            let live_popups: Vec<u32> = self
+                .views
+                .iter()
+                .filter_map(|view| view.window.wl_surface())
+                .flat_map(|surface| PopupManager::popups_for_surface(&surface))
+                .map(|(popup, _)| popup.wl_surface().id().protocol_id())
+                .collect();
             for frame in &windows {
                 if let Some(surface) = frame.window.wl_surface() {
                     for (popup, _) in PopupManager::popups_for_surface(&surface) {
                         let id = popup.wl_surface().id().protocol_id();
-                        live_popups.push(id);
                         let alpha = self.popup_fade_alpha(id);
                         if alpha < 1.0 {
                             popup_alphas.insert(id, alpha);
@@ -747,9 +757,9 @@ impl ViewportState {
                     }
                 }
             }
+            let live_views: Vec<u32> = self.views.iter().map(|v| v.id).collect();
+            self.prune_fades(&live_views, &live_popups);
         }
-        let live_views: Vec<u32> = self.views.iter().map(|v| v.id).collect();
-        self.prune_fades(&live_views, &live_popups);
 
         crate::render::Frame {
             layers_above,

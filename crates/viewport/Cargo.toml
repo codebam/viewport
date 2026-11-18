@@ -40,6 +40,14 @@ harness = false
 name = "anr_dialog"
 harness = false
 
+# Dual-mode: a real client maps a window and a solid-colour popup, then reads
+# the screen back while a capture is pending on every output. The popup must
+# fade in and stay visible on one output and on two — the per-output fade prune
+# reset the other monitor's popups every frame, so a menu never appeared.
+[[test]]
+name = "popup_fade"
+harness = false
+
 [features]
 # `input-1-28` is on by default: `drag_3fg` calls libinput 1.27's
 # three-finger-drag setter unconditionally, and a feature meant to be a
