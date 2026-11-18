@@ -69,8 +69,10 @@ impl ViewportState {
     }
 
     /// fadePopups: how opaque a popup first seen at `start` is now. A popup
-    /// with no recorded arrival (fade off, or one already settled) is fully
-    /// drawn. The arrival is recorded the first time the popup is seen drawn.
+    /// with no recorded arrival (fade off) is fully drawn. The arrival is
+    /// recorded the first time the popup is seen drawn, and kept once the fade
+    /// is spent so it does not fade in again; `prune_fades` forgets it when the
+    /// popup is destroyed.
     pub(crate) fn popup_fade_alpha(&mut self, popup_id: u32) -> f32 {
         let motion = self.config.motion.as_ref();
         let (duration, curve) = resolve_fade(motion, motion.and_then(|m| m.fade_popups.as_ref()));
@@ -82,7 +84,9 @@ impl ViewportState {
         let start = *self.popup_fades.entry(popup_id).or_insert(now);
         let elapsed = now.duration_since(start);
         if elapsed >= duration {
-            self.popup_fades.remove(&popup_id);
+            // Settled: fully drawn, and the entry stays. Removing it here made
+            // the next frame record a fresh arrival and fade in again — a menu
+            // blinking in and out on every fade period.
             return 1.0;
         }
         self.needs_render = true;

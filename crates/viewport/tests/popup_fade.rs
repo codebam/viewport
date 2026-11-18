@@ -2,20 +2,26 @@
 //
 // fadePopups: a menu that arrives fades in, and then is simply there.
 //
-// The regression this guards: the fade map is global state, but it was pruned
-// once per output, against only that output's popups. On a desk with two
-// monitors each output's frame builder threw away the other's popup fades every
-// frame, so a popup's fade-in restarted from alpha 0 forever and the menu never
-// became visible — a Chrome toolbar context menu that simply does not appear.
-// One output never pruned anything it was drawing, so the bug was invisible on
-// a single monitor and decisive on two.
+// Two regressions this guards, both read as "the menu is not there":
+//
+// 1. The fade map is global state, but it was pruned once per output, against
+//    only that output's popups. On a desk with two monitors each output's frame
+//    builder threw away the other's popup fades every frame, so a popup's
+//    fade-in restarted from alpha 0 forever and the menu never became visible —
+//    a Chrome toolbar context menu that simply does not appear. One output never
+//    pruned anything it was drawing, so it was invisible on a single monitor and
+//    decisive on two.
+// 2. The fade, once spent, forgot the popup had arrived: the settle path removed
+//    the arrival entry, so the next frame recorded a fresh one and faded in
+//    again. The menu blinked in and out on every fade period. Settling must keep
+//    the entry (prune_fades forgets it when the popup is destroyed).
 //
 // This maps a real window and a real solid-colour xdg_popup on the first
 // output, then reads the screen back through wlr-screencopy while keeping a
 // capture pending on every output (which is what drives a frame build per
 // output under the headless backend, exactly as a vblank does on DRM). The
-// popup's colour must show up once its fade is spent. With the per-output prune
-// it never does on two outputs; with the fix it does on one and on two.
+// popup's colour must show up once its fade is spent, and then stay: nearly
+// every frame after the fade-in grace is fully visible, not a blink.
 //
 // harness = false: one binary, re-exec'd as the shell through
 // VIEWPORT_SHELL_BIN (it maps a toplevel and sits still), or run as the test.
@@ -621,29 +627,55 @@ fn run_case(tag: &str, second_output: bool) {
     place_window(&mut ipc, &mut client, &mut queue);
     open_popup(&mut client, &mut queue);
 
-    // Watch the screen for longer than the fade: the popup's colour must appear
-    // once the fade is spent. Keep a capture on every output the whole time.
-    let mut best = 0usize;
-    let deadline = Instant::now() + Duration::from_millis(900);
-    while Instant::now() < deadline {
+    // Watch the screen across several fade periods, keeping a capture pending
+    // on every output the whole time. Two things must hold: the popup's colour
+    // appears at all (the fade is not reset every frame), and once the fade is
+    // spent it STAYS spent. green_count counts exact-colour pixels, so it is ~0
+    // while the popup is mid-fade (blended with the window behind it) and full
+    // only when the fade is done. A fade that settles and then starts over is
+    // therefore visible only a small fraction of the time — a menu blinking in
+    // and out — while one that settles and stays is visible in nearly every
+    // frame after the fade-in grace.
+    let start = Instant::now();
+    let grace = Duration::from_millis(400);
+    let window = Duration::from_millis(1500);
+    let mut ever_green = false;
+    let mut frames = 0usize;
+    let mut green_frames = 0usize;
+    while start.elapsed() < window {
         request_captures(&mut client, &mut queue);
         if !wait_captures(&connection, &mut queue, &mut client) {
             panic!("a capture never settled ({tag}):\n{}", compositor.log());
         }
         let failed = client.captures.values().any(|cap| cap.failed);
         assert!(!failed, "a capture failed ({tag}):\n{}", compositor.log());
-        best = best.max(green_count(&client));
+        let green = green_count(&client);
         clear_captures(&mut client);
-        if best > 5000 {
-            break;
+        if green > 5000 {
+            ever_green = true;
+        }
+        if start.elapsed() >= grace {
+            frames += 1;
+            if green > 5000 {
+                green_frames += 1;
+            }
         }
         std::thread::sleep(Duration::from_millis(10));
     }
 
     assert!(
-        best > 5000,
-        "the popup never became visible on the {tag}-output desk: at most {best} \
-         green pixels in any frame (the fade was reset every frame):\n{}",
+        ever_green,
+        "the popup never became visible on the {tag}-output desk (the fade was \
+         reset every frame):\n{}",
+        compositor.log()
+    );
+    assert!(frames > 0, "no frames were sampled after the fade-in grace");
+    // At least 80% of the post-grace frames fully visible: settled and staying.
+    assert!(
+        green_frames * 5 >= frames * 4,
+        "the popup blinked in and out on the {tag}-output desk: only \
+         {green_frames}/{frames} frames visible after fade-in (the fade restarts \
+         each time it settles):\n{}",
         compositor.log()
     );
     println!("ok: the popup fades in and stays visible on the {tag}-output desk");
