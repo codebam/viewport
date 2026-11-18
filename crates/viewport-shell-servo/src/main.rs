@@ -661,61 +661,8 @@ fn bridge_token() -> Result<String> {
 /// document start for every document, and the fetch it builds is refused by
 /// the embedder unless it carries the token.
 fn bridge_script(token: &str) -> String {
-    let token_literal = viewport_ipc::js::string_literal(token);
-    let allow_remote = viewport_ipc::js::remote_shell_allowed();
-    format!(
-        r#"(function () {{
-  'use strict';
-
-  /* A frame inside the shell is not the shell. This is also what keeps a
-     remote document from reaching the fetch below after a reload or a
-     navigation to an origin the policy does not allow. */
-  if (window.top !== window) {{
-    return;
-  }}
-
-  var TOKEN = {token_literal};
-  var ALLOW_REMOTE = {allow_remote};
-
-  function bridgeOriginAllowed() {{
-    try {{
-      var location = window.location;
-      var protocol = (location.protocol || '').toLowerCase();
-      if (protocol === 'file:') {{
-        return true;
-      }}
-      if (protocol !== 'http:' && protocol !== 'https:') {{
-        return false;
-      }}
-      var host = (location.hostname || '').toLowerCase();
-      return host === 'localhost' || host === '127.0.0.1' ||
-             host === '::1' || host === '[::1]';
-    }} catch (e) {{
-      return false;
-    }}
-  }}
-
-  if (!ALLOW_REMOTE && !bridgeOriginAllowed()) {{
-    console.error('viewport: the bridge is disabled on this origin; ' +
-                  'set VIEWPORT_ALLOW_REMOTE_SHELL=1 to allow a remote shell');
-    return;
-  }}
-
-  /* Outbound messages are batched to one request per task rather than one
-     request each, and the reason is a measurement rather than tidiness: the
-     shell sends a message per window per frame while anything is animating,
-     and the script thread was spending its frame on ~190 fetches a second —
-     26 frames a second painted against the 122 this engine reaches on a page
-     that does not talk to a compositor. A microtask flush adds no latency of
-     its own: every message produced by one frame's handlers is still delivered
-     before the frame ends, as one request with a line per message. */
-  var pending = [];
-  var scheduled = false;
-
-  /* `batch=1` is what says `m` is a line per message. Without it `m` is one
-     message whatever is in it, which is what a message carrying a newline is
-     sent as: the separator cannot corrupt a body nobody splits. */
-  function post(message, batched) {{
+    let post = format!(
+        r#"  function post(message, batched) {{
     /* Intercepted by the embedder before it reaches the network. `no-cors`
        so that no preflight is needed and no origin matters; the response is
        an empty 200 nobody reads. The token is what the embedder checks. */
@@ -728,50 +675,9 @@ fn bridge_script(token: &str) -> String {
       console.error('viewport: the compositor bridge refused a message', e);
     }});
   }}
-
-  function flush() {{
-    scheduled = false;
-    if (pending.length === 0) {{
-      return;
-    }}
-    var batch = pending;
-    pending = [];
-    if (batch.length === 1) {{
-      post(batch[0], false);
-      return;
-    }}
-    post(batch.join('\n'), true);
-  }}
-
-  window.__viewport_send = function (message) {{
-    /* Nothing the shell sends carries a newline — every message is
-       `JSON.stringify` output, which escapes them — but one that did would
-       corrupt the message after it rather than itself, which is the hardest
-       kind of bug to find. It goes on its own, unbatched and unsplit. */
-    if (message.indexOf('\n') !== -1) {{
-      flush();
-      post(message, false);
-      return;
-    }}
-    pending.push(message);
-    if (!scheduled) {{
-      scheduled = true;
-      Promise.resolve().then(flush);
-    }}
-  }};
-
-  /* The page going away does not run a microtask that was only scheduled, so
-     whatever is still queued is sent while there is still a page to send it. */
-  window.addEventListener('pagehide', flush);
-  window.addEventListener('beforeunload', flush);
-
-{shim}
-}})();
-"#,
-        token_literal = token_literal,
-        allow_remote = allow_remote,
-        shim = viewport_ipc::js::BRIDGE_SHIM
-    )
+"#
+    );
+    viewport_ipc::js::bridge_script(token, "", &post, "")
 }
 
 fn mouse_button(button: winit::event::MouseButton) -> MouseButton {
@@ -918,6 +824,10 @@ mod tests {
         assert!(script.contains("bridgeOriginAllowed"), "{script}");
         assert!(script.contains("127.0.0.1"), "{script}");
         assert!(script.contains("ALLOW_REMOTE"), "{script}");
+        // The file: branch mirrors is_local_shell_url: only an empty or
+        // loopback host, never any file: URL.
+        assert!(script.contains("host === ''"), "{script}");
+        assert!(script.contains("is_local_shell_url"), "{script}");
     }
 
     /// The delegate refuses anything without the run's token, so the token

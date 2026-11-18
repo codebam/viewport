@@ -246,6 +246,132 @@ pub const SUBFRAME_GUARD: &str = r#"
 })();
 "#;
 
+/// The one outbound bridge script, shared by every backend that has to build
+/// it from the web platform.
+///
+/// Both Servo backends inject this before the page's own scripts. The sender
+/// is a `fetch` the backend supplies as `post`; [`BRIDGE_SHIM`] wraps it in the
+/// `window.webkit.messageHandlers.viewport` name `data/shell/state.js` calls;
+/// `tail` is whatever the backend needs after the shim (servoshell's `/events`
+/// long poll, nothing for the in-process engine). `vars` carries any extra
+/// declarations the transport needs, such as servoshell's `ORIGIN`.
+///
+/// The pieces are spliced in a fixed order because the order is part of the
+/// contract: the subframe guard and the origin gate run before anything is
+/// installed, `vars` and the token come next, the batching machine defines
+/// `window.__viewport_send`, and only then is the shim interpolated — the shim
+/// reads the sender at install time and gives up loudly if it is not there.
+///
+/// `token` is quoted with [`string_literal`] rather than interpolated raw, so
+/// a token that could end a literal early cannot. `vars`, `post` and `tail`
+/// may each be empty.
+pub fn bridge_script(token: &str, vars: &str, post: &str, tail: &str) -> String {
+    format!(
+        r#"(function () {{
+  'use strict';
+
+  /* A frame inside the shell is not the shell. The script is injected into
+     every document, including one the shell navigates or reloads to, so this
+     is also what keeps a remote document from reaching the transport below
+     after a navigation to an origin the policy does not allow. */
+  if (window.top !== window) {{
+    return;
+  }}
+
+{vars}  var TOKEN = {token};
+  var ALLOW_REMOTE = {allow_remote};
+
+  function bridgeOriginAllowed() {{
+    try {{
+      var location = window.location;
+      var protocol = (location.protocol || '').toLowerCase();
+      var host = (location.hostname || '').toLowerCase();
+      if (protocol === 'file:') {{
+        /* `file://host/path` with a real host is a UNC-style remote path on
+           some platforms, so only an empty or loopback authority is allowed —
+           the same rule `is_local_shell_url` applies on the Rust side. */
+        return host === '' || host === 'localhost' || host === '127.0.0.1' ||
+               host === '::1' || host === '[::1]';
+      }}
+      if (protocol !== 'http:' && protocol !== 'https:') {{
+        return false;
+      }}
+      return host === 'localhost' || host === '127.0.0.1' ||
+             host === '::1' || host === '[::1]';
+    }} catch (e) {{
+      return false;
+    }}
+  }}
+
+  if (!ALLOW_REMOTE && !bridgeOriginAllowed()) {{
+    console.error('viewport: the bridge is disabled on this origin; ' +
+                  'set VIEWPORT_ALLOW_REMOTE_SHELL=1 to allow a remote shell');
+    return;
+  }}
+
+  /* Outbound messages are batched to one request per task rather than one
+     request each, and the reason is a measurement rather than tidiness: the
+     shell sends a message per window per frame while anything is animating,
+     and Servo's script thread was spending its frame on ~190 fetches a second —
+     26 frames a second painted against the 122 the engine reaches on a page
+     that does not talk to a compositor. A microtask flush adds no latency of
+     its own: every message produced by one frame's handlers is still delivered
+     before the frame ends, as one request with a line per message. */
+  var pending = [];
+  var scheduled = false;
+
+  /* `batch=1` is what says the payload is a line per message. Without it the
+     payload is one message whatever is in it, which is what a message carrying
+     a newline is sent as: the separator cannot corrupt a body nobody splits. */
+{post}
+  function flush() {{
+    scheduled = false;
+    if (pending.length === 0) {{
+      return;
+    }}
+    var batch = pending;
+    pending = [];
+    if (batch.length === 1) {{
+      post(batch[0], false);
+      return;
+    }}
+    post(batch.join('\n'), true);
+  }}
+
+  window.__viewport_send = function (message) {{
+    /* Nothing the shell sends carries a newline — every message is
+       `JSON.stringify` output, which escapes them — but one that did would
+       corrupt the message after it rather than itself, which is the hardest
+       kind of bug to find. It goes on its own, unbatched and unsplit. */
+    if (message.indexOf('\n') !== -1) {{
+      flush();
+      post(message, false);
+      return;
+    }}
+    pending.push(message);
+    if (!scheduled) {{
+      scheduled = true;
+      Promise.resolve().then(flush);
+    }}
+  }};
+
+  /* The page going away does not run a microtask that was only scheduled, so
+     whatever is still queued is sent while there is still a page to send it. */
+  window.addEventListener('pagehide', flush);
+  window.addEventListener('beforeunload', flush);
+
+{shim}
+{tail}}})();
+"#,
+        token = string_literal(token),
+        allow_remote = remote_shell_allowed(),
+        vars = vars,
+        post = post,
+        shim = BRIDGE_SHIM,
+        tail = tail,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -353,5 +479,99 @@ mod tests {
             "window.dispatchEvent(new CustomEvent('viewport',\
              {detail:JSON.parse(\"{\\\"type\\\":\\\"view.added\\\",\\\"id\\\":1}\")}));"
         );
+    }
+
+    /// The shared bridge is what both Servo backends inject, so its gates are
+    /// pinned here rather than in either backend alone.
+    #[test]
+    fn the_bridge_script_refuses_subframes() {
+        let script = bridge_script("t", "", "", "");
+        assert!(
+            script.contains("if (window.top !== window) {\n    return;\n  }"),
+            "{script}"
+        );
+    }
+
+    #[test]
+    fn the_bridge_script_file_branch_allows_only_empty_or_loopback_hosts() {
+        let script = bridge_script("t", "", "", "");
+        // The UNC rule is named and pointed at the classifier it mirrors.
+        assert!(script.contains("UNC"), "{script}");
+        assert!(script.contains("is_local_shell_url"), "{script}");
+        let file_branch = script
+            .split("if (protocol === 'file:')")
+            .nth(1)
+            .expect("the file branch");
+        let file_branch = file_branch.split("if (protocol !==").next().unwrap();
+        assert!(file_branch.contains("host === ''"), "{script}");
+        assert!(file_branch.contains("host === 'localhost'"), "{script}");
+        assert!(file_branch.contains("host === '127.0.0.1'"), "{script}");
+        assert!(file_branch.contains("host === '::1'"), "{script}");
+        assert!(file_branch.contains("host === '[::1]'"), "{script}");
+        // The drift was `return true;` for any file: URL; it must be gone.
+        assert!(!file_branch.contains("return true;"), "{script}");
+    }
+
+    #[test]
+    fn the_bridge_script_defines_the_sender_before_the_shim() {
+        let script = bridge_script("t", "", "", "");
+        let sender = script.find("window.__viewport_send").expect("the sender");
+        let shim = script
+            .find("window.webkit.messageHandlers.viewport = handler")
+            .expect("the shim installs the name");
+        assert!(sender < shim, "{script}");
+    }
+
+    #[test]
+    fn the_bridge_script_quotes_the_token_as_a_literal() {
+        // A quote in the token would end a raw interpolation early; the
+        // literal escapes it. Spelled out, not rebuilt from string_literal.
+        let script = bridge_script("a\"b", "", "", "");
+        assert!(script.contains(r#"var TOKEN = "a\"b""#), "{script}");
+    }
+
+    #[test]
+    fn the_bridge_script_gates_on_allow_remote() {
+        let script = bridge_script("t", "", "", "");
+        assert!(
+            script.contains("if (!ALLOW_REMOTE && !bridgeOriginAllowed())"),
+            "{script}"
+        );
+        assert!(script.contains("VIEWPORT_ALLOW_REMOTE_SHELL=1"), "{script}");
+    }
+
+    #[test]
+    fn the_bridge_script_keeps_the_batching_and_the_newline_escape_hatch() {
+        let script = bridge_script("t", "", "", "");
+        assert!(script.contains("Promise.resolve().then(flush)"), "{script}");
+        assert!(script.contains(r"post(batch.join('\n'), true)"), "{script}");
+        assert!(
+            script.contains(r"if (message.indexOf('\n') !== -1)"),
+            "{script}"
+        );
+        assert!(
+            script.contains("window.addEventListener('pagehide', flush)"),
+            "{script}"
+        );
+        assert!(
+            script.contains("window.addEventListener('beforeunload', flush)"),
+            "{script}"
+        );
+    }
+
+    #[test]
+    fn the_bridge_script_splices_the_backends_pieces() {
+        let script = bridge_script(
+            "t",
+            "  var ORIGIN = 'http://127.0.0.1:1';\n",
+            "  function post(m, b) {}\n",
+            "  pump();\n",
+        );
+        assert!(
+            script.contains("var ORIGIN = 'http://127.0.0.1:1';"),
+            "{script}"
+        );
+        assert!(script.contains("function post(m, b) {}"), "{script}");
+        assert!(script.contains("pump();"), "{script}");
     }
 }

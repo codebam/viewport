@@ -1064,121 +1064,28 @@ impl Drop for ScriptDir {
 
 /// The script servoshell injects into the page before the page's own scripts.
 ///
-/// Two halves and a shim. The sender is a `fetch` at this process;
+/// Two halves and a shim, assembled by the shared
+/// `viewport_ipc::js::bridge_script`. The sender is a `fetch` at this process;
 /// `viewport_ipc::js::BRIDGE_SHIM` wraps it in the
 /// `window.webkit.messageHandlers.viewport` name `data/shell/state.js` calls;
 /// the pump is a long poll that dispatches the same `CustomEvent('viewport')`
 /// every other backend delivers.
 fn bridge_script(port: u16, token: &str) -> String {
-    let shim = viewport_ipc::js::BRIDGE_SHIM;
-    let allow_remote = viewport_ipc::js::remote_shell_allowed();
-    format!(
-        r#"(function () {{
-  'use strict';
-
-  /* A frame inside the shell is not the shell. The userscript directory is
-     injected into every document, including a document the shell navigates
-     to, so this is also what keeps a disallowed origin from installing the
-     bridge after a navigation. */
-  if (window.top !== window) {{
-    return;
-  }}
-
-  var ORIGIN = 'http://127.0.0.1:{port}';
-  var TOKEN = '{token}';
-  var ALLOW_REMOTE = {allow_remote};
-
-  function bridgeOriginAllowed() {{
-    try {{
-      var location = window.location;
-      var protocol = (location.protocol || '').toLowerCase();
-      if (protocol === 'file:') {{
-        return true;
-      }}
-      if (protocol !== 'http:' && protocol !== 'https:') {{
-        return false;
-      }}
-      var host = (location.hostname || '').toLowerCase();
-      return host === 'localhost' || host === '127.0.0.1' ||
-             host === '::1' || host === '[::1]';
-    }} catch (e) {{
-      return false;
-    }}
-  }}
-
-  if (!ALLOW_REMOTE && !bridgeOriginAllowed()) {{
-    console.error('viewport: the bridge is disabled on this origin; ' +
-                  'set VIEWPORT_ALLOW_REMOTE_SHELL=1 to allow a remote shell');
-    return;
-  }}
-
-  /* Outbound messages are batched to one request per task rather than one
-     request each, and the reason is a measurement rather than tidiness: the
-     shell sends a message per window per frame while anything is animating,
-     this server keeps no connection alive, and Servo's script thread was
-     spending its frame on ~190 fetches a second — 26 frames a second painted
-     against the 122 the same engine reaches on a page that does not talk to a
-     compositor. A microtask flush adds no latency of its own: every message
-     produced by one frame's handlers is still delivered before the frame ends,
-     as one request with a line per message. */
-  var pending = [];
-  var scheduled = false;
-
-  /* `batch=1` is what says the body is a line per message. Without it the body
-     is one message whatever is in it, which is what a message carrying a
-     newline is sent as: the separator cannot corrupt a body nobody splits. */
-  function post(body, batched) {{
+    let vars = format!("  var ORIGIN = 'http://127.0.0.1:{port}';\n");
+    let post = r#"  function post(body, batched) {
     /* `keepalive` so that a message sent while the page is going away — a
        reload, a navigation — is still delivered. */
-    fetch(ORIGIN + '/send?t=' + TOKEN + (batched ? '&batch=1' : ''), {{
+    fetch(ORIGIN + '/send?t=' + TOKEN + (batched ? '&batch=1' : ''), {
       method: 'POST',
       body: body,
       cache: 'no-store',
       keepalive: true,
-    }}).catch(function (e) {{
+    }).catch(function (e) {
       console.error('viewport: the compositor bridge refused a message', e);
-    }});
-  }}
-
-  function flush() {{
-    scheduled = false;
-    if (pending.length === 0) {{
-      return;
-    }}
-    var batch = pending;
-    pending = [];
-    if (batch.length === 1) {{
-      post(batch[0], false);
-      return;
-    }}
-    post(batch.join('\n'), true);
-  }}
-
-  window.__viewport_send = function (message) {{
-    /* Nothing the shell sends carries a newline — every message is
-       `JSON.stringify` output, which escapes them — but one that did would
-       corrupt the message after it rather than itself, which is the hardest
-       kind of bug to find. It goes on its own, unbatched and unsplit. */
-    if (message.indexOf('\n') !== -1) {{
-      flush();
-      post(message, false);
-      return;
-    }}
-    pending.push(message);
-    if (!scheduled) {{
-      scheduled = true;
-      Promise.resolve().then(flush);
-    }}
-  }};
-
-  /* The page going away does not run a microtask that was only scheduled, so
-     whatever is still queued is sent while there is still a page to send it. */
-  window.addEventListener('pagehide', flush);
-  window.addEventListener('beforeunload', flush);
-
-{shim}
-
-  var after = 0;
+    });
+  }
+"#;
+    let tail = r#"  var after = 0;
   /* Whether this page has been handed anything yet.
      A reload is delivered *through* this poll — there is no engine handle on
      the other side to call `reload` on — so it is in the log with everything
@@ -1188,44 +1095,39 @@ fn bridge_script(port: u16, token: &str) -> String {
      Cleared once a batch actually arrives rather than after the first request,
      so a poll that dies in flight is retried as the new page it still is. */
   var fresh = 1;
-  function pump() {{
+  function pump() {
     fetch(ORIGIN + '/events?t=' + TOKEN + '&after=' + after + '&fresh=' + fresh,
-      {{cache: 'no-store'}})
-      .then(function (response) {{
+      {cache: 'no-store'})
+      .then(function (response) {
         return response.status === 204 ? null : response.json();
-      }})
-      .then(function (batch) {{
-        if (batch) {{
+      })
+      .then(function (batch) {
+        if (batch) {
           after = batch.next;
           fresh = 0;
-          batch.items.forEach(function (item) {{
-            if (item.kind === 'reload') {{
+          batch.items.forEach(function (item) {
+            if (item.kind === 'reload') {
               window.location.reload();
               return;
-            }}
-            window.dispatchEvent(new CustomEvent('viewport', {{
+            }
+            window.dispatchEvent(new CustomEvent('viewport', {
               detail: JSON.parse(item.data),
-            }}));
-          }});
-        }}
+            }));
+          });
+        }
         pump();
-      }})
+      })
       /* The compositor going away closes this server with it, so a failed
          poll is retried rather than treated as the end: the shell process is
          restarted by the compositor, and the page should reconnect to it
          rather than sit there having given up. */
-      .catch(function () {{
+      .catch(function () {
         setTimeout(pump, 250);
-      }});
-  }}
+      });
+  }
   pump();
-}})();
-"#,
-        port = port,
-        token = token,
-        shim = shim,
-        allow_remote = allow_remote,
-    )
+"#;
+    viewport_ipc::js::bridge_script(token, &vars, post, tail)
 }
 
 #[cfg(test)]
@@ -1650,7 +1552,9 @@ mod tests {
     fn the_script_carries_the_token_and_the_port() {
         let script = bridge_script(4321, "deadbeef");
         assert!(script.contains("http://127.0.0.1:4321"), "{script}");
-        assert!(script.contains("'deadbeef'"), "{script}");
+        // The shared template quotes the token with string_literal, so it is a
+        // double-quoted literal now rather than a raw single-quoted one.
+        assert!(script.contains(r#"var TOKEN = "deadbeef""#), "{script}");
     }
 
     /// The userscript is injected into every document, including one the page
@@ -1662,6 +1566,27 @@ mod tests {
         assert!(script.contains("window.top !== window"), "{script}");
         assert!(script.contains("bridgeOriginAllowed"), "{script}");
         assert!(script.contains("127.0.0.1"), "{script}");
+        assert!(script.contains("ALLOW_REMOTE"), "{script}");
+    }
+
+    /// `file://host/path` with a real host is a UNC-style remote path on some
+    /// platforms. The Rust classifier refuses it, so the injected script must
+    /// refuse it too — the file: branch allows only an empty or loopback host.
+    #[test]
+    fn the_script_refuses_a_file_url_with_a_real_host() {
+        let script = bridge_script(4321, "secret");
+        assert!(script.contains("is_local_shell_url"), "{script}");
+        let file_branch = script
+            .split("if (protocol === 'file:')")
+            .nth(1)
+            .expect("the file branch");
+        let file_branch = file_branch.split("if (protocol !==").next().unwrap();
+        assert!(file_branch.contains("host === ''"), "{script}");
+        assert!(file_branch.contains("host === 'localhost'"), "{script}");
+        assert!(
+            !file_branch.contains("return true;"),
+            "any file: URL was the drift: {script}"
+        );
     }
 
     #[test]
