@@ -33,6 +33,7 @@
 // what it can do there is drive the desktop; the pipe is two file descriptors
 // that only this process holds.
 
+use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd as _, OwnedFd};
 use std::os::unix::fs::DirBuilderExt as _;
@@ -156,6 +157,15 @@ fn forward_compositor(tx: &mpsc::SyncSender<Incoming>, line: Line) -> bool {
     }
 }
 
+/// Park one compositor event until the page can take it, bounded like the
+/// gtk and cef shells' queues: past the limit, the oldest goes.
+fn queue_event(queued: &mut VecDeque<String>, json: String) {
+    if queued.len() >= QUEUE_LIMIT {
+        queued.pop_front(); // full: drop the oldest
+    }
+    queued.push_back(json);
+}
+
 /// Whether a DevTools frame message had to be dropped under load.
 ///
 /// Dropped frame bookkeeping could leave the origin guard believing an old,
@@ -219,15 +229,14 @@ fn guard_critical(message: &Value) -> bool {
 ///
 /// Two facts, and the gate is their conjunction: the document is *loaded*
 /// (`Page.loadEventFired` has fired for the frame the guard is tracking) and
-/// (`Page.loadEventFired` has fired for the frame the guard is tracking) and
-/// its origin passes the policy. Kept apart
-/// from URL knowledge because they answer different questions at different
-/// times: a committed navigation names a URL long before its document's
-/// scripts have run, and both backends used to open the gate on that
-/// bookkeeping — CEF on the reload's own `Page.reload` method result,
-/// Chromium on `Page.frameNavigated`/`executionContextCreated` — and drained
-/// queued events into a document whose listener did not exist yet. What was
-/// queued during a reload was what was lost.
+/// its origin passes the policy. Kept apart from URL knowledge because they
+/// answer different questions at different times: a committed navigation
+/// names a URL long before its document's scripts have run, and both backends
+/// used to open the gate on that bookkeeping — CEF on the reload's own
+/// `Page.reload` method result, Chromium on
+/// `Page.frameNavigated`/`executionContextCreated` — and drained queued
+/// events into a document whose listener did not exist yet. What was queued
+/// during a reload was what was lost.
 #[derive(Default)]
 struct LoadGate {
     /// Whether the current document has loaded. `false` at startup, across a
@@ -470,7 +479,7 @@ fn run(browser: &mut Browser, options: &Options) -> Result<()> {
     // The load half of `ready`, tracked by the gate so no bookkeeping message
     // can open it: see `LoadGate` for the race this closes.
     let mut gate = LoadGate::default();
-    let mut queued: Vec<String> = Vec::new();
+    let mut queued: VecDeque<String> = VecDeque::new();
     // A reload that arrived before there was a session to send it to. The
     // message is not page data and must not be queued as if it were; it is
     // replayed once the page is attached.
@@ -540,10 +549,7 @@ fn run(browser: &mut Browser, options: &Options) -> Result<()> {
                 if waiting_for_url {
                     // A frame message was dropped; keep the event, bounded,
                     // until a fresh frame tree says which document it is for.
-                    if queued.len() >= QUEUE_LIMIT {
-                        queued.remove(0);
-                    }
-                    queued.push(json);
+                    queue_event(&mut queued, json);
                     continue;
                 }
                 match (ready, session.as_deref()) {
@@ -552,12 +558,7 @@ fn run(browser: &mut Browser, options: &Options) -> Result<()> {
                         session,
                         &viewport_ipc::js::dispatch(&json),
                     )?,
-                    _ => {
-                        if queued.len() >= QUEUE_LIMIT {
-                            queued.remove(0); // full: drop the oldest
-                        }
-                        queued.push(json);
-                    }
+                    _ => queue_event(&mut queued, json),
                 }
             }
             Incoming::Cdp(message) => {
@@ -591,11 +592,8 @@ fn run(browser: &mut Browser, options: &Options) -> Result<()> {
                         // known and disallowed, the queue is dropped outright.
                         ready = gate.ready();
                         if ready {
-                            for json in queued.drain(..) {
-                                let script = viewport_ipc::js::dispatch(&json);
-                                let session = session.as_deref().expect("just set");
-                                browser.evaluate(&mut next_id, session, &script)?;
-                            }
+                            let session = session.as_deref().expect("just set");
+                            drain_queued(browser, &mut next_id, session, &mut queued)?;
                         } else if guard.main_url.is_some() && !waiting_for_url {
                             queued.clear();
                             tracing::warn!(
@@ -638,10 +636,7 @@ fn run(browser: &mut Browser, options: &Options) -> Result<()> {
                         ready = gate.ready();
                         if ready {
                             if let Some(session) = session.as_deref() {
-                                for json in queued.drain(..) {
-                                    let script = viewport_ipc::js::dispatch(&json);
-                                    browser.evaluate(&mut next_id, session, &script)?;
-                                }
+                                drain_queued(browser, &mut next_id, session, &mut queued)?;
                             }
                         }
                     }
@@ -685,10 +680,7 @@ fn run(browser: &mut Browser, options: &Options) -> Result<()> {
                     // a reload sat in the queue for the life of the process.
                     if let Some(session) = session.as_deref() {
                         if gate.ready() && !waiting_for_url {
-                            for json in queued.drain(..) {
-                                let script = viewport_ipc::js::dispatch(&json);
-                                browser.evaluate(&mut next_id, session, &script)?;
-                            }
+                            drain_queued(browser, &mut next_id, session, &mut queued)?;
                         } else if guard.main_url.is_some() && !waiting_for_url {
                             queued.clear();
                             tracing::warn!(
@@ -739,6 +731,20 @@ fn install_bridge(browser: &mut Browser, next_id: &mut i64, session: &str) -> Re
     browser.evaluate(next_id, session, viewport_ipc::js::BRIDGE_SHIM)
 }
 
+/// Evaluate every queued compositor event into the page, in arrival order.
+fn drain_queued(
+    browser: &mut Browser,
+    next_id: &mut i64,
+    session: &str,
+    queued: &mut VecDeque<String>,
+) -> Result<()> {
+    for json in queued.drain(..) {
+        let script = viewport_ipc::js::dispatch(&json);
+        browser.evaluate(next_id, session, &script)?;
+    }
+    Ok(())
+}
+
 fn take(next_id: &mut i64) -> i64 {
     let id = *next_id;
     *next_id += 1;
@@ -786,7 +792,7 @@ fn binding_called(message: &Value) -> Option<(String, i64)> {
 struct Browser {
     child: Child,
     /// Commands out. The read half is the browser's fd 3.
-    write: OwnedFd,
+    write: std::fs::File,
     /// Replies and events in. The write half is the browser's fd 4.
     read: Option<OwnedFd>,
 }
@@ -881,7 +887,7 @@ impl Browser {
 
         Ok(Self {
             child,
-            write: to_browser_write,
+            write: std::fs::File::from(to_browser_write),
             read: Some(from_browser_read),
         })
     }
@@ -963,17 +969,12 @@ impl Browser {
     fn send(&mut self, message: &Value) -> Result<()> {
         let mut bytes = serde_json::to_vec(message).context("encoding a devtools command")?;
         bytes.push(0);
-        let mut pipe = std::fs::File::from(
-            self.write
-                .try_clone()
-                .context("duplicating the command pipe")?,
-        );
-        pipe.write_all(&bytes)
+        // One owned File for the browser's life: every command writes through
+        // it directly, so no fd is duplicated per command. Dropping it in
+        // `stop()` closes the pipe — the EOF that asks the browser to exit.
+        self.write
+            .write_all(&bytes)
             .context("writing a devtools command")?;
-        // Dropping closes the duplicate's own descriptor only; the one in
-        // `self.write` stays open. Forgetting it instead would leak an fd per
-        // command, which a busy session turns into EMFILE.
-        drop(pipe);
         Ok(())
     }
 
