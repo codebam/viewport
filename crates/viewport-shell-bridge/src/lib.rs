@@ -14,10 +14,17 @@
 // messages that name the main frame and its execution contexts are the same
 // CDP JSON whichever engine produced them, so the frame guard and the load
 // gate live here once too, with the wiring between them.
+//
+// The startup every shell repeats is here too (`startup`): the log subscriber,
+// the random hex a token or a private directory's name is made of, the
+// directory itself, and the extra engine arguments the environment carries.
+// The origin check on the page to load is `Options::parse_checked`.
 
 mod guard;
+mod startup;
 
 pub use guard::{DocumentGuard, FrameGuard, LoadGate};
+pub use startup::{extra_args_env, init_tracing, private_dir, random_hex};
 
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Read as _, Write};
@@ -91,6 +98,22 @@ impl Options {
             inspector: flag("--inspector").is_some()
                 || std::env::var("VIEWPORT_SHELL_INSPECTOR").is_ok(),
         })
+    }
+
+    /// [`Self::parse`], then the origin policy every shell enforces before it
+    /// loads anything.
+    ///
+    /// The compositor refuses a remote shell before starting the shell
+    /// process; this is the same policy for a shell started by hand.
+    pub fn parse_checked(args: &[String]) -> Result<Self> {
+        let options = Self::parse(args)?;
+        anyhow::ensure!(
+            viewport_ipc::js::shell_url_allowed(&options.url),
+            "refusing to load a non-loopback shell from {}; set {}=1 to allow a remote origin",
+            options.url,
+            viewport_ipc::js::ALLOW_REMOTE_SHELL_ENV
+        );
+        Ok(options)
     }
 }
 
@@ -390,6 +413,39 @@ mod tests {
         let message = format!("{error}");
         assert!(message.contains("--url"), "{message}");
         assert!(message.contains("VIEWPORT_SHELL_URL"), "{message}");
+    }
+
+    #[test]
+    fn parse_checked_accepts_a_local_shell_and_refuses_a_remote_one() {
+        // No test sets the override, but clear it so this measures the policy
+        // rather than whatever the ambient environment happens to carry.
+        std::env::remove_var(viewport_ipc::js::ALLOW_REMOTE_SHELL_ENV);
+
+        let local = Options::parse_checked(&args(&[
+            "shell",
+            "--url",
+            "file:///usr/share/viewport/shell/index.html",
+            "--socket",
+            "/tmp/s",
+        ]))
+        .expect("a file: shell is local");
+        assert_eq!(local.url, "file:///usr/share/viewport/shell/index.html");
+
+        let error = Options::parse_checked(&args(&[
+            "shell",
+            "--url",
+            "https://example.com/",
+            "--socket",
+            "/tmp/s",
+        ]))
+        .expect_err("a remote shell is refused");
+        assert_eq!(
+            format!("{error}"),
+            format!(
+                "refusing to load a non-loopback shell from https://example.com/; set {}=1 to allow a remote origin",
+                viewport_ipc::js::ALLOW_REMOTE_SHELL_ENV
+            )
+        );
     }
 
     fn sender() -> (Sender, Arc<Outbound>) {

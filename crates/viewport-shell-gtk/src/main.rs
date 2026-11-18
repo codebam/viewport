@@ -42,7 +42,7 @@ use std::rc::Rc;
 
 use anyhow::{anyhow, Result};
 use gtk4 as gtk;
-use viewport_shell_bridge::{Line, Options};
+use viewport_shell_bridge::{init_tracing, Line, Options};
 // One prelude, not two: webkit6's re-exports the GTK traits this uses, and
 // importing both is an unused import rather than a missing one.
 use webkit6::prelude::*;
@@ -102,21 +102,10 @@ const DEGRADED_EXHAUSTED: i32 = 88;
 const QUEUE_LIMIT: usize = 512;
 
 fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
+    init_tracing();
 
     let args: Vec<String> = std::env::args().collect();
-    let options = Options::parse(&args)?;
-    anyhow::ensure!(
-        viewport_ipc::js::shell_url_allowed(&options.url),
-        "refusing to load a non-loopback shell from {}; set {}=1 to allow a remote origin",
-        options.url,
-        viewport_ipc::js::ALLOW_REMOTE_SHELL_ENV
-    );
+    let options = Options::parse_checked(&args)?;
 
     // GTK must not see our arguments. It parses what it recognises and
     // complains about the rest, and `--url` is not one of its.

@@ -13,5 +13,7 @@ description = "The control-socket half of a Viewport shell that runs in a proces
 viewport-ipc.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
+# The log subscriber every shell starts with (`startup::init_tracing`).
+tracing-subscriber.workspace = true
 serde.workspace = true
 serde_json.workspace = true

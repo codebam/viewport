@@ -36,7 +36,6 @@
 use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd as _, OwnedFd};
-use std::os::unix::fs::DirBuilderExt as _;
 use std::process::{Child, Command};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
@@ -45,13 +44,9 @@ use std::time::Duration;
 use anyhow::{anyhow, Context as _, Result};
 use serde_json::{json, Value};
 
-use viewport_shell_bridge::{DocumentGuard, Line, Options};
-
-/// The name the page calls to reach the compositor.
-///
-/// `BRIDGE_SHIM` wraps it in `window.webkit.messageHandlers.viewport`, which is
-/// the name the shell was written against.
-const BINDING: &str = "__viewport_send";
+use viewport_shell_bridge::{
+    extra_args_env, init_tracing, private_dir, DocumentGuard, Line, Options,
+};
 
 /// How many events may wait for a page that never arrives.
 const QUEUE_LIMIT: usize = 512;
@@ -61,66 +56,18 @@ fn chromium_binary() -> String {
     std::env::var("VIEWPORT_CHROMIUM_BIN").unwrap_or_else(|_| "chromium".to_owned())
 }
 
-/// A fresh directory only this process can enter, under `/tmp`.
-///
-/// `DirBuilder::mode(0o700).create` is the whole point: it fails when the name
-/// exists, so a directory or symlink somebody else made at that path cannot be
-/// adopted. Retried because the suffix is random and a collision means
-/// something already holds the name, not that the filesystem is broken.
-fn private_profile_dir(prefix: &str) -> Result<std::path::PathBuf> {
-    for _ in 0..8 {
-        let path = std::env::temp_dir().join(format!("{prefix}-{}", random_suffix()?));
-        match std::fs::DirBuilder::new().mode(0o700).create(&path) {
-            Ok(()) => return Ok(path),
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(e) => return Err(e).with_context(|| format!("creating {}", path.display())),
-        }
-    }
-    Err(anyhow!(
-        "could not create a private {prefix} directory under {}",
-        std::env::temp_dir().display()
-    ))
-}
-
-/// 64 random bits, as hex, from the kernel's own source.
-fn random_suffix() -> Result<String> {
-    let mut bytes = [0u8; 8];
-    std::fs::File::open("/dev/urandom")
-        .context("opening /dev/urandom")?
-        .read_exact(&mut bytes)
-        .context("reading /dev/urandom")?;
-    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
-}
-
 fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
+    init_tracing();
 
     let args: Vec<String> = std::env::args().collect();
-    let options = Options::parse(&args)?;
-
-    // The compositor refuses a remote shell before starting this process; this
-    // is the same policy for a shell started by hand.
-    anyhow::ensure!(
-        viewport_ipc::js::shell_url_allowed(&options.url),
-        "refusing to load a non-loopback shell from {}; set {}=1 to allow a remote origin",
-        options.url,
-        viewport_ipc::js::ALLOW_REMOTE_SHELL_ENV
-    );
+    let options = Options::parse_checked(&args)?;
 
     // A profile directory of its own, thrown away with the process. Chromium
     // refuses to share one between instances, and a shell that inherited the
     // user's browsing profile would be a desktop with their cookies in it.
-    //
-    // Mode 0700 at a random name rather than a pid-only path with
-    // `create_dir_all`: a predictable directory in `/tmp` is something another
-    // local user can pre-create, symlink or read. `create` fails if anything
-    // already owns the name, and a collision is retried.
-    let profile = private_profile_dir("viewport-shell")?;
+    // The name and mode are the shared private directory's; see
+    // `viewport_shell_bridge::private_dir`.
+    let profile = private_dir("viewport-shell")?;
 
     let mut browser = Browser::start(&options, &profile)?;
     let result = run(&mut browser, &options);
@@ -481,7 +428,7 @@ fn install_bridge(browser: &mut Browser, next_id: &mut i64, session: &str) -> Re
         next_id,
         session,
         "Runtime.addBinding",
-        json!({"name": BINDING}),
+        json!({"name": viewport_ipc::js::BINDING}),
     )?;
     // The name the shell actually reaches for, wrapped around that function.
     // On every new document, before any of the page's own scripts run —
@@ -547,7 +494,7 @@ fn binding_called(message: &Value) -> Option<(String, i64)> {
         return None;
     }
     let params = message.get("params")?;
-    if params.get("name")?.as_str()? != BINDING {
+    if params.get("name")?.as_str()? != viewport_ipc::js::BINDING {
         return None;
     }
     let payload = params.get("payload")?.as_str()?.to_owned();
@@ -606,10 +553,7 @@ impl Browser {
         if options.inspector {
             command.arg("--auto-open-devtools-for-tabs");
         }
-        for extra in std::env::var("VIEWPORT_CHROMIUM_ARGS")
-            .into_iter()
-            .flat_map(|s| s.split_whitespace().map(str::to_owned).collect::<Vec<_>>())
-        {
+        for extra in extra_args_env("VIEWPORT_CHROMIUM_ARGS") {
             command.arg(extra);
         }
 
@@ -819,7 +763,7 @@ mod tests {
         let ours = json!({
             "method": "Runtime.bindingCalled",
             "params": {
-                "name": BINDING,
+                "name": viewport_ipc::js::BINDING,
                 "payload": r#"{"type":"view.query"}"#,
                 "executionContextId": 7,
             },
@@ -900,7 +844,7 @@ mod tests {
         ));
         assert!(!guard_critical(&json!({
             "method": "Runtime.bindingCalled",
-            "params": {"name": BINDING, "payload": "{}"},
+            "params": {"name": viewport_ipc::js::BINDING, "payload": "{}"},
         })));
         assert!(!guard_critical(
             &json!({"method": "Runtime.consoleAPICalled"})

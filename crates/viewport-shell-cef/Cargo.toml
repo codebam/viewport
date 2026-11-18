@@ -16,7 +16,6 @@ viewport-ipc = { path = "../viewport-ipc" }
 viewport-shell-bridge = { path = "../viewport-shell-bridge" }
 anyhow = "1"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 serde_json = "1"
 
 # The engine, embedded rather than driven. `default-features = false` drops

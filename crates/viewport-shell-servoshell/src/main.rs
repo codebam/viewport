@@ -58,7 +58,7 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -66,7 +66,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 use anyhow::{anyhow, Context as _, Result};
-use viewport_shell_bridge::{Line, Options};
+use viewport_shell_bridge::{extra_args_env, init_tracing, private_dir, random_hex, Line, Options};
 
 /// How long a poll for events waits before answering "nothing yet".
 ///
@@ -180,23 +180,12 @@ fn servoshell_binary() -> String {
 }
 
 fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
+    init_tracing();
 
     catch_stop_signals();
 
     let args: Vec<String> = std::env::args().collect();
-    let options = Options::parse(&args)?;
-    anyhow::ensure!(
-        viewport_ipc::js::shell_url_allowed(&options.url),
-        "refusing to load a non-loopback shell from {}; set {}=1 to allow a remote origin",
-        options.url,
-        viewport_ipc::js::ALLOW_REMOTE_SHELL_ENV
-    );
+    let options = Options::parse_checked(&args)?;
 
     // Bound before the browser is started, because the port it is bound to is
     // baked into the script the browser is told to inject.
@@ -205,7 +194,7 @@ fn main() -> Result<()> {
         .local_addr()
         .context("asking which port the bridge got")?
         .port();
-    let token = token().context("reading a token for the bridge")?;
+    let token = random_hex(16).context("reading a token for the bridge")?;
 
     let queue = Arc::new(Queue::new());
 
@@ -303,10 +292,7 @@ fn start(options: &Options, scripts: &Path) -> Result<Child> {
         // running a session.
         command.arg("--devtools=127.0.0.1:6080");
     }
-    for extra in std::env::var("VIEWPORT_SERVOSHELL_ARGS")
-        .into_iter()
-        .flat_map(|s| s.split_whitespace().map(str::to_owned).collect::<Vec<_>>())
-    {
+    for extra in extra_args_env("VIEWPORT_SERVOSHELL_ARGS") {
         command.arg(extra);
     }
     // Last, and positional: everything after it would be read as another URL.
@@ -600,19 +586,6 @@ fn ipv4_proc_key(addr: SocketAddr) -> Option<String> {
         }
         SocketAddr::V6(_) => None,
     }
-}
-
-/// 32 hex characters of `/dev/urandom`.
-///
-/// Not a crate: this is the one random number this process needs, and the
-/// kernel's own source of them is a file.
-fn token() -> Result<String> {
-    let mut bytes = [0u8; 16];
-    std::fs::File::open("/dev/urandom")
-        .context("opening /dev/urandom")?
-        .read_exact(&mut bytes)
-        .context("reading /dev/urandom")?;
-    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
 fn serve(listener: TcpListener, bridge: Arc<Bridge>) -> Result<()> {
@@ -1017,7 +990,7 @@ struct ScriptDir(PathBuf);
 
 impl ScriptDir {
     fn write(script: &str) -> Result<Self> {
-        let dir = Self::create()?;
+        let dir = private_dir("viewport-shell-servoshell")?;
         let path = dir.join("viewport-bridge.js");
         let mut file = std::fs::OpenOptions::new()
             .write(true)
@@ -1028,27 +1001,6 @@ impl ScriptDir {
         file.write_all(script.as_bytes())
             .with_context(|| format!("writing the bridge script into {}", dir.display()))?;
         Ok(Self(dir))
-    }
-
-    /// A directory nobody else can look into, at a name nobody else can guess.
-    ///
-    /// Retried because a name can collide — with a directory this process
-    /// cannot see into, made by whoever is trying to read the token.
-    fn create() -> Result<PathBuf> {
-        let mut last = None;
-        for _ in 0..8 {
-            let dir = std::env::temp_dir().join(format!(
-                "viewport-shell-servoshell-{}-{}",
-                std::process::id(),
-                token()?
-            ));
-            match std::fs::DirBuilder::new().mode(0o700).create(&dir) {
-                Ok(()) => return Ok(dir),
-                Err(e) => last = Some((dir, e)),
-            }
-        }
-        let (dir, e) = last.expect("the loop ran at least once");
-        Err(e).with_context(|| format!("creating {}", dir.display()))
     }
 
     fn path(&self) -> &Path {
@@ -1591,7 +1543,10 @@ mod tests {
 
     #[test]
     fn two_tokens_are_not_the_same_token() {
-        let (first, second) = (token().expect("urandom"), token().expect("urandom"));
+        let (first, second) = (
+            random_hex(16).expect("urandom"),
+            random_hex(16).expect("urandom"),
+        );
         assert_eq!(first.len(), 32);
         assert_ne!(first, second);
     }

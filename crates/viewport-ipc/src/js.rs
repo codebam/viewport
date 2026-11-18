@@ -149,6 +149,14 @@ pub fn dispatch(json: &str) -> String {
     )
 }
 
+/// The name the page calls to reach the compositor.
+///
+/// [`BRIDGE_SHIM`] wraps it in `window.webkit.messageHandlers.viewport`, which
+/// is the name the shell was written against. The DevTools backends register
+/// it with `Runtime.addBinding`; the Servo backends' bridge script defines it
+/// as the sender.
+pub const BINDING: &str = "__viewport_send";
+
 /// The script injected before any of the shell's own scripts.
 ///
 /// Servo has no `window.webkit.messageHandlers`, which is the entire outbound
@@ -416,6 +424,14 @@ mod tests {
         // data/shell/state.js:13 reads exactly this path.
         assert!(BRIDGE_SHIM.contains("window.webkit.messageHandlers.viewport"));
         assert!(BRIDGE_SHIM.contains("postMessage"));
+    }
+
+    #[test]
+    fn the_shim_wraps_the_binding_the_backends_register() {
+        // The name the DevTools backends register and the Servo backends
+        // define is the one the shim reads; a drift between them is a shell
+        // with no outbound bridge.
+        assert!(BRIDGE_SHIM.contains(BINDING));
     }
 
     #[test]

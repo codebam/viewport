@@ -51,7 +51,6 @@
 // invisible. `crates/viewport/src/shell_backend.rs` is where that is decided.
 
 use std::cell::{Cell, RefCell};
-use std::io::Read as _;
 use std::rc::Rc;
 use std::sync::mpsc::{self, Receiver};
 
@@ -116,12 +115,7 @@ fn forward_line(tx: &mpsc::SyncSender<Line>, line: Line) -> bool {
 }
 
 fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
+    viewport_shell_bridge::init_tracing();
 
     // Before anything fetches. Servo leaves the choice of provider to the
     // embedder, and without one every https load fails at the handshake with
@@ -131,13 +125,7 @@ fn main() -> Result<()> {
         .map_err(|_| anyhow!("a crypto provider was already installed"))?;
 
     let args: Vec<String> = std::env::args().collect();
-    let options = Options::parse(&args)?;
-    anyhow::ensure!(
-        viewport_ipc::js::shell_url_allowed(&options.url),
-        "refusing to load a non-loopback shell from {}; set {}=1 to allow a remote origin",
-        options.url,
-        viewport_ipc::js::ALLOW_REMOTE_SHELL_ENV
-    );
+    let options = Options::parse_checked(&args)?;
     let url = Url::parse(&options.url).with_context(|| format!("{} is not a url", options.url))?;
 
     let event_loop = EventLoop::<Wake>::with_user_event()
@@ -385,7 +373,7 @@ fn start(event_loop: &ActiveEventLoop, starting: &mut Starting) -> Result<Rc<She
 
     // A secret for this run, injected into the page with the bridge script
     // and required on every message that comes back.
-    let bridge_token = bridge_token()?;
+    let bridge_token = viewport_shell_bridge::random_hex(16)?;
 
     // Injected before the page's own scripts, which is what makes the bridge
     // exist by the time `data/shell/state.js` looks for it.
@@ -631,20 +619,6 @@ impl WebViewDelegate for Shell {
         // which is the same policy every out-of-process backend gets.
         std::process::exit(1);
     }
-}
-
-/// Read a per-run secret from the kernel's random source.
-///
-/// 128 bits as hex. The injected script embeds it and `load_web_resource`
-/// requires it on every message, so a request that was not made by this
-/// process's bridge is dropped.
-fn bridge_token() -> Result<String> {
-    let mut bytes = [0u8; 16];
-    std::fs::File::open("/dev/urandom")
-        .context("opening /dev/urandom")?
-        .read_exact(&mut bytes)
-        .context("reading /dev/urandom")?;
-    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
 /// The script that puts the compositor within reach of the page.

@@ -1254,6 +1254,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tracing",
+ "tracing-subscriber",
  "viewport-ipc",
 ]
 
@@ -1265,7 +1266,6 @@ dependencies = [
  "cef",
  "serde_json",
  "tracing",
- "tracing-subscriber",
  "viewport-ipc",
  "viewport-shell-bridge",
 ]

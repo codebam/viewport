@@ -22,7 +22,6 @@ viewport-ipc = { path = "../viewport-ipc" }
 viewport-shell-bridge = { path = "../viewport-shell-bridge" }
 anyhow = "1"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # The same versions Servo's own workspace pins, because these types cross the
 # boundary: `winit`'s window and display handles are what `WindowRenderingContext`

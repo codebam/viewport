@@ -23,20 +23,16 @@
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::ffi::{c_char, CString};
-use std::io::Read as _;
-use std::os::unix::fs::DirBuilderExt as _;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 
-use anyhow::{anyhow, Context as _, Result};
+use anyhow::{anyhow, Result};
 use cef::{args::Args, rc::*, *};
 use serde_json::{json, Value};
 
-use viewport_shell_bridge::{DocumentGuard, Line, Options};
-
-/// The name the page calls to reach the compositor, wrapped by
-/// `viewport_ipc::js::BRIDGE_SHIM` in the name the shell was written against.
-const BINDING: &str = "__viewport_send";
+use viewport_shell_bridge::{
+    extra_args_env, init_tracing, private_dir, DocumentGuard, Line, Options,
+};
 
 /// The compositor, for the DevTools observer to hand messages to.
 ///
@@ -129,24 +125,10 @@ fn main() -> Result<()> {
         std::process::exit(code);
     }
 
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
+    init_tracing();
 
     let argv: Vec<String> = std::env::args().collect();
-    let options = Options::parse(&argv)?;
-
-    // The compositor refuses a remote shell before starting this process; this
-    // is the same policy for a shell started by hand.
-    anyhow::ensure!(
-        viewport_ipc::js::shell_url_allowed(&options.url),
-        "refusing to load a non-loopback shell from {}; set {}=1 to allow a remote origin",
-        options.url,
-        viewport_ipc::js::ALLOW_REMOTE_SHELL_ENV
-    );
+    let options = Options::parse_checked(&argv)?;
 
     // A cache directory of this process's own.
     //
@@ -163,11 +145,10 @@ fn main() -> Result<()> {
     // (`--user-data-dir`), which is why it can be run beside a live session
     // and this could not.
     //
-    // Mode 0700 at a random suffix rather than a pid-only path with
-    // `create_dir_all`: a predictable name in `/tmp` is something another
-    // local user can pre-create, symlink or read, and this directory holds
-    // the renderer's profile and lock.
-    let cache = private_profile_dir("viewport-shell-cef")?;
+    // Made the shared way — 0700 at a random name, `create` rather than
+    // `create_dir_all` (`viewport_shell_bridge::private_dir`) — because this
+    // directory holds the renderer's profile and lock.
+    let cache = private_dir("viewport-shell-cef")?;
 
     let settings = Settings {
         // No sandbox: the helper is a setuid binary and a nix store path
@@ -204,14 +185,7 @@ fn main() -> Result<()> {
     // Declared before `extra` and not beside the push, because `extra` borrows
     // these strings and `Argv` borrows `extra`: a `Vec<String>` built where it
     // is used is dropped before the thing pointing into it.
-    let requested: Vec<String> = std::env::var("VIEWPORT_CEF_ARGS")
-        .into_iter()
-        .flat_map(|s| {
-            s.split_whitespace()
-                .map(str::to_owned)
-                .collect::<Vec<String>>()
-        })
-        .collect();
+    let requested: Vec<String> = extra_args_env("VIEWPORT_CEF_ARGS");
 
     // The switches the browser process needs and the command line does not
     // carry. Appended rather than required of whoever starts this, because a
@@ -510,7 +484,7 @@ fn install_bridge(browser: &Browser) {
         &json!({
             "id": next_id(),
             "method": "Runtime.addBinding",
-            "params": {"name": BINDING},
+            "params": {"name": viewport_ipc::js::BINDING},
         }),
     );
     // The name the shell reaches for, wrapped around it, before any of the
@@ -555,37 +529,6 @@ fn install_bridge(browser: &Browser) {
             }),
         );
     }
-}
-
-/// A fresh directory only this process can enter, under `/tmp`.
-///
-/// `DirBuilder::mode(0o700).create` is what makes the name safe: it fails when
-/// anything already exists there, so a directory or symlink another local user
-/// made at that path cannot be adopted. The random suffix is retried on
-/// collision.
-fn private_profile_dir(prefix: &str) -> Result<std::path::PathBuf> {
-    for _ in 0..8 {
-        let path = std::env::temp_dir().join(format!("{prefix}-{}", random_suffix()?));
-        match std::fs::DirBuilder::new().mode(0o700).create(&path) {
-            Ok(()) => return Ok(path),
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(e) => return Err(e).with_context(|| format!("creating {}", path.display())),
-        }
-    }
-    Err(anyhow!(
-        "could not create a private {prefix} directory under {}",
-        std::env::temp_dir().display()
-    ))
-}
-
-/// 64 random bits, as hex, from the kernel's own source.
-fn random_suffix() -> Result<String> {
-    let mut bytes = [0u8; 8];
-    std::fs::File::open("/dev/urandom")
-        .context("opening /dev/urandom")?
-        .read_exact(&mut bytes)
-        .context("reading /dev/urandom")?;
-    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
 fn next_id() -> i64 {
@@ -758,7 +701,7 @@ wrap_dev_tools_message_observer! {
             // A page can add bindings of its own, and a compositor that
             // forwarded them would be taking instructions from whatever the
             // page felt like naming.
-            if params.get("name").and_then(Value::as_str) != Some(BINDING) {
+            if params.get("name").and_then(Value::as_str) != Some(viewport_ipc::js::BINDING) {
                 return;
             }
             let Some(payload) = params.get("payload").and_then(Value::as_str) else {

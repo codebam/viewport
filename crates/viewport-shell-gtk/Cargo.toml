@@ -13,7 +13,6 @@ viewport-ipc.workspace = true
 viewport-shell-bridge.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
 
 # The engine. Both of these resolve to the `webkitgtk-6.0` pkg-config module
 # that nixpkgs already ships prebuilt — which is the entire reason this crate

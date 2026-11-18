@@ -7943,6 +7943,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tracing",
+ "tracing-subscriber",
  "viewport-ipc",
 ]
 
@@ -7955,7 +7956,6 @@ dependencies = [
  "rustls",
  "servo",
  "tracing",
- "tracing-subscriber",
  "url",
  "viewport-ipc",
  "viewport-shell-bridge",
