@@ -11,10 +11,8 @@
 // and cannot go stale mid-animation.
 
 use smithay::backend::input::{
-    Axis, AxisSource, ButtonState, Event, GestureBeginEvent, GestureEndEvent,
-    GesturePinchUpdateEvent as _, GestureSwipeUpdateEvent as _, InputBackend, InputEvent,
-    InputTime, KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
-    TouchEvent,
+    Axis, AxisSource, ButtonState, Event, InputBackend, InputEvent, InputTime, KeyboardKeyEvent,
+    PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
 };
 use smithay::input::keyboard::{keysyms, FilterResult, Keysym, ModifiersState};
 use smithay::input::pointer::{
@@ -1704,1522 +1702,65 @@ impl ViewportState {
         }
 
         match event {
-            InputEvent::Keyboard { event, .. } => {
-                // A grab can be installed *after* the lock: an input method's
-                // `grab_keyboard`, or a menu opened by a client that was
-                // already running. Those request handlers have no lock check
-                // to consult, so this is the floor — before Smithay forwards
-                // the key to whatever grab is current, take that grab away and
-                // put the lock screen back on the seat. Locked keys pay for
-                // this; every other key pays nothing.
-                if self.locked {
-                    self.release_input_grabs();
-                    self.refocus_lock();
-                }
-                let serial = SERIAL_COUNTER.next_serial();
-                let time = Event::time(&event);
-                let Some(keyboard) = self.seat.get_keyboard() else {
-                    return;
-                };
-                let pressed = event.state() == smithay::backend::input::KeyState::Pressed;
-                // Worked out before the keyboard's state is borrowed by the
-                // filter, which is where it is needed.
-                let inhibited = self.shortcuts_inhibited();
-                // Nothing holds the keyboard, so the keys are the shell's.
-                //
-                // By who actually holds focus rather than by whether a window
-                // is focused: a layer surface — a launcher, a lock screen —
-                // takes focus without being a toplevel, and checking the
-                // focused window alone would deliver its keystrokes to the
-                // page instead, leaving the launcher unable to type
-                // (`src/input.c:1052`).
-                let to_shell = keyboard.current_focus().is_none() && self.shell_is_up();
-                // The modifiers are read only by a page, so they are only worth
-                // computing when there is one; without the web engine they go
-                // nowhere, and the placeholder only keeps the key's shape.
-                #[cfg(feature = "wpe")]
-                let modifiers_now = self.shell_modifiers();
-                #[cfg(not(feature = "wpe"))]
-                let modifiers_now = 0;
-
-                // What the focused client currently believes is held. Compared
-                // against the state after the event, below.
-                let mods_before = keyboard.modifier_state();
-
-                // The filter runs with the keyboard's state borrowed, so it
-                // decides *what* to do and the action is carried out after.
-                let action = keyboard.input::<Option<Action>, _>(
-                    self,
-                    event.key_code(),
-                    event.state(),
-                    serial,
-                    time,
-                    |state, modifiers, handle| {
-                        let keysym = handle.modified_sym();
-                        // The key this event is *about*, with the modifiers
-                        // taken off. `modified_sym` differs between a press and
-                        // its release when a modifier is let go first — Shift
-                        // then q gives `Q` on the way down and `q` on the way up
-                        // — so every piece of bookkeeping paired across the two
-                        // halves is keyed by this, and `keysym` is left to the
-                        // places that want the symbol as typed.
-                        let unmodified_sym =
-                            handle.raw_latin_sym_or_raw_current_sym().unwrap_or(keysym);
-                        let unmodified = unmodified_sym.raw();
-                        if pressed {
-                            // The compositor's own chords first: those have to
-                            // work even when a binding table is broken.
-                            // A client holding an inhibitor gets everything
-                            // except a VT switch. That one is the session's
-                            // rather than this seat's — a client cannot be
-                            // allowed to take the only way off a frozen
-                            // desktop, and no client inside a VT has any use
-                            // for the chord that leaves it.
-                            if inhibited {
-                                match shortcut(modifiers, keysym) {
-                                    Some(action @ Action::SwitchVt(_)) => {
-                                        state.suppressed_keys.push(unmodified_sym);
-                                        return FilterResult::Intercept(Some(action));
-                                    }
-                                    // A binding that asks to bypass the
-                                    // inhibitor falls through to the binding
-                                    // match below; everything else is the
-                                    // client's. The portal shortcuts below
-                                    // have no such flag, so they stay gated
-                                    // on `!inhibited` there.
-                                    _ => {
-                                        let bypasses = crate::binding::find_binding(
-                                            &state.bindings,
-                                            modifiers,
-                                            unmodified,
-                                            &state.binding_mode,
-                                            state.locked,
-                                            false,
-                                            state.current_input_device.as_deref(),
-                                        )
-                                        .is_some_and(|bound| bound.dont_inhibit);
-                                        if !bypasses {
-                                            return FilterResult::Forward;
-                                        }
-                                    }
-                                }
-                            }
-                            // The chooser owns the keyboard while it is up.
-                            //
-                            // Everything is taken, not only the keys it uses: a
-                            // keystroke that fell through would go to whatever
-                            // was focused before the share was asked for, which
-                            // is a password typed into a terminal the user is
-                            // not looking at.
-                            if state.picker.is_some() {
-                                state.suppressed_keys.push(unmodified_sym);
-                                let pick = match keysym {
-                                    Keysym::Escape => Some(Pick::Cancel),
-                                    Keysym::Return | Keysym::KP_Enter | Keysym::space => {
-                                        Some(Pick::Confirm)
-                                    }
-                                    Keysym::Up | Keysym::k => Some(Pick::Step(-1)),
-                                    Keysym::Down | Keysym::j | Keysym::Tab => Some(Pick::Step(1)),
-                                    _ => None,
-                                };
-                                return FilterResult::Intercept(
-                                    pick.map(Action::Pick).or(Some(Action::Swallow)),
-                                );
-                            }
-
-                            if let Some(action) = shortcut(modifiers, keysym) {
-                                // VT switching still works while locked — it
-                                // is the session's, not this seat's, and a
-                                // locked session on another VT is still
-                                // locked. Quitting does not: it would drop the
-                                // lock along with the compositor. Forwarded
-                                // rather than swallowed, so Ctrl+Alt+Backspace
-                                // still reaches the lock screen as keys.
-                                if state.locked && !matches!(action, Action::SwitchVt(_)) {
-                                    return FilterResult::Forward;
-                                }
-                                // Remembered so the release is swallowed too;
-                                // a client that saw only the release would
-                                // think the key was stuck.
-                                state.suppressed_keys.push(unmodified_sym);
-                                return FilterResult::Intercept(Some(action));
-                            }
-                            // The *unmodified* keysym, computed above: a chord
-                            // is written "Mod4+Shift+q", and the key is still
-                            // q. Matching the modified symbol would look for Q
-                            // and never find it.
-
-                            // A global shortcut, but only after everything
-                            // above has declined the key. An application that
-                            // asks for a chord this desktop is already using
-                            // gets a grant that never fires, rather than a
-                            // terminal that stops opening — the desk's own
-                            // keymap is not something a portal call may
-                            // change. See `crate::shortcuts`.
-                            //
-                            // Not while locked: a grant can run a command or
-                            // drive push-to-talk, and the session is not the
-                            // user's to hand that to. The key falls through to
-                            // the lock screen below, exactly as a non-`locked`
-                            // binding does — the `match_binding` gate is not
-                            // enough here because this path precedes it.
-                            if !state.locked && !inhibited {
-                                if let Some(fired) = state.shortcut_for(modifiers, unmodified) {
-                                    state.suppressed_keys.push(unmodified_sym);
-                                    state.shortcuts_to_announce.push((true, fired.clone()));
-                                    // Remembered by the key it arrived on — the
-                                    // unmodified one, because the release is
-                                    // matched by it and by then the modifiers
-                                    // may already be up.
-                                    state.shortcuts_held.push((unmodified, fired));
-                                    return FilterResult::Intercept(Some(Action::Swallow));
-                                }
-                            }
-
-                            match crate::binding::find_binding(
-                                &state.bindings,
-                                modifiers,
-                                unmodified,
-                                &state.binding_mode,
-                                state.locked,
-                                false,
-                                state.current_input_device.as_deref(),
-                            ) {
-                                Some(bound) => {
-                                    let action = bound.action.clone();
-                                    let non_consuming = bound.non_consuming;
-                                    let auto_consuming = bound.auto_consuming;
-                                    let long_press = bound.long_press;
-                                    let repeating = bound.repeating;
-
-                                    // A `long_press+` binding is not fired
-                                    // yet: a timer owns it for the length of
-                                    // the hold, and the release takes it back
-                                    // if the key comes up first. The key is
-                                    // kept from the client for the whole hold
-                                    // so a tap cannot do both.
-                                    if long_press {
-                                        state.suppressed_keys.push(unmodified_sym);
-                                        state.arm_long_press(unmodified, action);
-                                        FilterResult::Intercept(Some(Action::Swallow))
-                                    } else if repeating {
-                                        state.suppressed_keys.push(unmodified_sym);
-                                        state.arm_repeating(unmodified, action.clone());
-                                        if non_consuming {
-                                            state.deferred_bindings.push(action);
-                                            FilterResult::Forward
-                                        } else {
-                                            FilterResult::Intercept(Some(Action::Bound(action)))
-                                        }
-                                    } else if non_consuming {
-                                        // A `non_consuming+` binding runs and
-                                        // lets the key through. The action is
-                                        // left for after the filter, which
-                                        // cannot both intercept and forward.
-                                        state.deferred_bindings.push(action);
-                                        FilterResult::Forward
-                                    } else if auto_consuming && !state.binding_will_act(&action) {
-                                        // `auto_consuming+`: the dispatcher has
-                                        // nothing to act on, so the key is given
-                                        // back rather than swallowed by a no-op.
-                                        // Whether it can act is read from the
-                                        // state now, because the action runs
-                                        // after the filter and cannot report back.
-                                        state.deferred_bindings.push(action);
-                                        FilterResult::Forward
-                                    } else {
-                                        state.suppressed_keys.push(unmodified_sym);
-                                        FilterResult::Intercept(Some(Action::Bound(action)))
-                                    }
-                                }
-                                // To the page, which is the only thing left
-                                // that could want it. Intercepted rather than
-                                // forwarded because forwarding it goes
-                                // nowhere: there is no focused surface, which
-                                // is why it is the shell's in the first place.
-                                //
-                                // While locked, forward instead: the key
-                                // belongs to the lock screen (the password),
-                                // not the page.
-                                None if to_shell => {
-                                    if state.locked {
-                                        return FilterResult::Forward;
-                                    }
-                                    state.suppressed_keys.push(unmodified_sym);
-                                    // Remember that it was the page's, so the
-                                    // release goes there even if a click moves
-                                    // focus to a window before it comes up —
-                                    // with the keycode the press sent, for the
-                                    // release no device will ever send.
-                                    remember_web_key(unmodified_sym, handle.raw_code().raw());
-                                    FilterResult::Intercept(Some(Action::Web(web_key(
-                                        handle.raw_code().raw(),
-                                        keysym.raw(),
-                                        true,
-                                        modifiers_now,
-                                        time.millis(),
-                                    ))))
-                                }
-                                None => FilterResult::Forward,
-                            }
-                        } else {
-                            // The release half. A key whose press was kept is
-                            // released to whoever kept it, and a `release+`
-                            // binding fires. Both can happen: the same chord
-                            // may have a press binding and a release one.
-                            //
-                            // A held `long_press+` or `repeating+` binding
-                            // ends here: taking it out is what cancels the
-                            // hold and stops the repeat. A push-to-talk
-                            // shortcut is told it came up at the same time.
-                            finish_key_hold(
-                                unmodified,
-                                &mut state.long_press_pending,
-                                &mut state.repeating_held,
-                                &mut state.shortcuts_held,
-                                &mut state.shortcuts_to_announce,
-                            );
-                            let mut result = FilterResult::Forward;
-                            // Whose release this is was decided by the press,
-                            // not by where focus is now: a page-bound key that
-                            // was held while a click focused a window still
-                            // belongs to the page, or the page latches it.
-                            let web = release_web_key(unmodified_sym);
-                            if take_suppressed(&mut state.suppressed_keys, unmodified_sym) {
-                                result = if web {
-                                    FilterResult::Intercept(Some(Action::Web(web_key(
-                                        handle.raw_code().raw(),
-                                        keysym.raw(),
-                                        false,
-                                        modifiers_now,
-                                        time.millis(),
-                                    ))))
-                                } else {
-                                    FilterResult::Intercept(Some(Action::Swallow))
-                                };
-                            } else if web {
-                                // The suppression is already gone — the press
-                                // was released through `release_injected_key`,
-                                // say — but the page saw it go down and still
-                                // has to see it come up.
-                                result = FilterResult::Intercept(Some(Action::Web(web_key(
-                                    handle.raw_code().raw(),
-                                    keysym.raw(),
-                                    false,
-                                    modifiers_now,
-                                    time.millis(),
-                                ))));
-                            }
-
-                            // The unmodified symbol, as on the press half.
-                            let unmodified = handle
-                                .raw_latin_sym_or_raw_current_sym()
-                                .map(|sym| sym.raw())
-                                .unwrap_or_else(|| keysym.raw());
-                            if let Some(bound) = crate::binding::find_binding(
-                                &state.bindings,
-                                modifiers,
-                                unmodified,
-                                &state.binding_mode,
-                                state.locked,
-                                true,
-                                state.current_input_device.as_deref(),
-                            ) {
-                                let action = bound.action.clone();
-                                if bound.non_consuming {
-                                    state.deferred_bindings.push(action);
-                                } else {
-                                    result = FilterResult::Intercept(Some(Action::Bound(action)));
-                                }
-                            }
-                            result
-                        }
-                    },
-                );
-
-                let intercepted = action.is_some();
-                if let Some(action) = action.flatten() {
-                    self.handle_action(action);
-                }
-                // `non_consuming+` bindings, which could not be run from inside
-                // the filter. Drained rather than indexed so an action that
-                // itself defers one — nothing does today — cannot alias the
-                // vector it is being read from.
-                if !self.deferred_bindings.is_empty() {
-                    let deferred: Vec<_> = std::mem::take(&mut self.deferred_bindings);
-                    for action in deferred {
-                        self.run_binding(action);
-                    }
-                }
-
-                // A key press puts the cursor away when the config file asks
-                // for it. Here rather than inside the filter: the filter is
-                // borrowed and only decides what to do with the key, and this
-                // is about the pointer image, which is nobody's decision but
-                // the pointer's. The next motion brings it back through
-                // `cursor_activity`.
-                if pressed && self.cursor_hide.key_press() {
-                    self.needs_render = true;
-                }
-
-                // Tell the focused client about a modifier it did not see
-                // change.
-                //
-                // Smithay sends the modifier update as part of forwarding a
-                // key, and an intercepted key is never forwarded — so a
-                // modifier the compositor took for itself changes state
-                // silently as far as the client is concerned. Mod4 is one:
-                // it goes to the shell so the bar can appear while it is held,
-                // which means both its press and its release are intercepted.
-                //
-                // What that produced: `Mod4+Return` opens a terminal, the
-                // terminal takes focus while the key is still physically down,
-                // and its `enter` correctly reports Mod4 depressed. Releasing
-                // Mod4 was then intercepted and the terminal was never told —
-                // so it read every following key as Mod4+key. Arrows did
-                // nothing, and letters looked fine because by the time anyone
-                // typed one something unrelated had pushed a fresh modifier
-                // state out. It cleared as soon as focus moved away and back,
-                // which is why opening a second window "fixed" it.
-                if intercepted && keyboard.modifier_state() != mods_before {
-                    keyboard.advertise_modifier_state(self);
-                }
-
-                // Anything the filter noticed a global shortcut on, announced
-                // now that the keyboard's own borrow has ended.
-                self.flush_shortcuts();
-
-                // And any libei client, for the same reason from further away:
-                // a remote session composes its own chords and cannot see the
-                // desk. See `sync_eis_modifiers`. Not conditional on
-                // `intercepted` — a modifier the compositor forwarded reached
-                // the focused client and still never reached the socket.
-                self.sync_eis_modifiers();
-
-                // Whether the logo key is held, which is what the bar rides on
-                // when it is set to appear only while Mod4 is down.
-                //
-                // After the key has been processed, or the state read is the
-                // one before it. Only on a change, and only while the bar is
-                // on "auto": this runs for every Shift and Ctrl of ordinary
-                // typing, and a message per keystroke saying Mod4 is still not
-                // held would be pure noise (`src/input.c:922`).
-                if self.config.bar.as_deref() == Some("auto") {
-                    let logo = self
-                        .seat
-                        .get_keyboard()
-                        .map(|keyboard| keyboard.modifier_state().logo)
-                        .unwrap_or(false);
-                    if logo != self.logo_held {
-                        self.logo_held = logo;
-                        self.notify(&viewport_ipc::Event::Modifiers { logo });
-                    }
-                }
-            }
+            InputEvent::Keyboard { event, .. } => self.on_keyboard_event(event),
 
             // A mouse sends relative motion; absolute is for tablets and
             // touchscreens. Handling only the latter leaves the pointer
             // pinned at the origin for the whole session.
-            InputEvent::PointerMotion { event, .. } => {
-                let Some(pointer) = self.seat.get_pointer() else {
-                    return;
-                };
-                let from = pointer.current_location();
-                let under = self.surface_under(from);
-
-                // What the client under the pointer has asked for, if
-                // anything. Read before the pointer moves, because a
-                // constraint applies to where it is now.
-                let (locked, confine_to) = self.pointer_constraint(&pointer, under.as_ref(), from);
-                self.note_pointer_motion(
-                    from,
-                    event.delta(),
-                    locked,
-                    confine_to.as_ref(),
-                    under.is_some(),
-                );
-
-                // Relative motion first, and always. It is what a game reads,
-                // and a locked pointer has nothing else to go on — an absolute
-                // position saturates at the screen edge, which is a game that
-                // can only turn so far.
-                pointer.relative_motion(
-                    self,
-                    under.clone(),
-                    &smithay::input::pointer::RelativeMotionEvent {
-                        delta: event.delta(),
-                        delta_unaccel: event.delta_unaccel(),
-                        time: event.time(),
-                    },
-                );
-
-                if locked {
-                    // The cursor does not move at all. That is the point: it
-                    // neither escapes onto the other monitor mid-fight nor
-                    // generates absolute motion the game would misread.
-                    pointer.frame(self);
-                    return;
-                }
-
-                self.move_pointer(from, event.delta(), confine_to.as_ref(), event.time());
-            }
+            InputEvent::PointerMotion { event, .. } => self.on_pointer_motion(event),
 
             InputEvent::PointerMotionAbsolute { event, .. } => {
-                let Some(pos) = self.touch_position(&event) else {
-                    return;
-                };
-                // A tablet in absolute mode names a place on the glass, and
-                // under the magnifier the glass is showing a blown-up piece of
-                // the layout. A relative mouse does not come through here and
-                // must not be put through this — see
-                // `ViewportState::glass_to_content`.
-                self.pointer_absolute_to(pos, event.time());
+                self.on_pointer_motion_absolute(event)
             }
 
-            InputEvent::PointerButton { event, .. } => {
-                let (Some(pointer), Some(keyboard)) =
-                    (self.seat.get_pointer(), self.seat.get_keyboard())
-                else {
-                    return;
-                };
-                let state = event.state();
-                // Subsurface stacking changes have no compositor callback.
-                // Re-hit-test the first press so an immediate place_above,
-                // place_below or role destruction cannot receive one stale
-                // click before ordinary pointer motion repairs focus.
-                if state == ButtonState::Pressed && !pointer.is_grabbed() {
-                    let _ = self.refresh_pointer_focus();
-                }
-                let serial = SERIAL_COUNTER.next_serial();
+            InputEvent::PointerButton { event, .. } => self.on_pointer_button(event),
 
-                // An xdg-shell move/resize replaced the client's implicit
-                // click grab with our own. That grab owns every button until
-                // the initiating one is released.
-                if self
-                    .pointer_drag
-                    .as_ref()
-                    .is_some_and(|drag| drag.client_requested)
-                {
-                    pointer.button(
-                        self,
-                        &ButtonEvent {
-                            button: event.button_code(),
-                            state,
-                            serial,
-                            time: event.time(),
-                        },
-                    );
-                    pointer.frame(self);
-                    return;
-                }
-
-                // Mod4 and a button drags the window under the pointer: left
-                // moves it, right resizes it. The chord every tiling
-                // compositor has, and what makes a floating window usable
-                // without a titlebar to grab — this compositor draws none,
-                // because the shell draws the frame.
-                //
-                // The shell has done the arithmetic for both since it was
-                // written, and nothing ever sent it: `layout.move.delta` and
-                // `layout.resize.delta` had a handler, a comment saying the
-                // compositor forwards the drag, and no sender anywhere.
-                //
-                // While one is running the buttons are its own, so that is
-                // settled first.
-                match drag_effect(
-                    self.pointer_drag.as_ref().map(|drag| drag.button),
-                    event.button_code(),
-                    state == ButtonState::Pressed,
-                ) {
-                    DragEffect::End => {
-                        self.finish_pointer_drag();
-                        // The hand has let go, and the shell has been drawing
-                        // without its animations for as long as the deltas
-                        // were arriving — a window under the pointer must not
-                        // ease toward it. Saying so is what puts the desktop
-                        // back under the ordinary rules on the next frame
-                        // rather than a timeout later. The shell has that
-                        // timeout as well, for the gesture that ends without a
-                        // release: a VT switch takes the pointer away and no
-                        // button is ever reported up.
-                        return;
-                    }
-                    DragEffect::Swallow => {
-                        // The drag's own release is `End`, so any release
-                        // swallowed here belongs to another button — one whose
-                        // press may already have opened the records below.
-                        // The event itself still goes nowhere, but the records
-                        // cannot wait for a release that is not coming.
-                        if state == ButtonState::Released {
-                            discard_button_records(
-                                &mut self.pending_click,
-                                &mut self.shell_grabbed_buttons,
-                                event.button_code(),
-                            );
-                        }
-                        return;
-                    }
-                    DragEffect::Free => {}
-                }
-
-                // A configured mouse binding, fired on the half it names like
-                // a key binding is: `release+` is matched on the button coming
-                // up, below, and a binding without it on the press here. The
-                // modifier prefix is the keyboard's, exactly as in a chord:
-                // `Mod4+Mouse4=shell workspace.switch 1` needs Mod4 held. Runs
-                // before the drag line so a bound button is the user's gesture,
-                // not the window's.
-                if state == ButtonState::Pressed {
-                    if let Some(bound) = crate::binding::find_button(
-                        &self.bindings,
-                        &keyboard.modifier_state(),
-                        event.button_code(),
-                        &self.binding_mode,
-                        self.locked,
-                        false,
-                        self.current_input_device.as_deref(),
-                    ) {
-                        let consuming = !bound.non_consuming
-                            && (!bound.auto_consuming || self.binding_will_act(&bound.action));
-                        let action = bound.action.clone();
-                        let click = bound.click;
-                        let drag = bound.drag;
-                        if click || drag {
-                            // Held until the release decides. The button is
-                            // kept from the client either way; what the two
-                            // flags choose is whether the release runs the
-                            // action or does nothing.
-                            self.pending_click.insert(
-                                event.button_code(),
-                                (action, pointer.current_location(), click),
-                            );
-                            suppress_button(event.button_code());
-                            return;
-                        }
-                        self.handle_action(Action::Bound(action));
-                        if consuming {
-                            // Not forwarded: the button was bound, and handing
-                            // a press it did not ask for to a client would
-                            // leave it thinking the button is still down.
-                            suppress_button(event.button_code());
-                            return;
-                        }
-                        // `non_consuming+`: the action has run, and the button
-                        // goes on to the client like any other.
-                    }
-                } else {
-                    // A `click+` or `drag+` binding: the distance between the
-                    // press and the release is the whole question. The press
-                    // kept the decision, so the release answers it.
-                    let pending = self.pending_click.remove(&event.button_code());
-                    let was_pending = pending.is_some();
-                    if let Some((action, from, click)) = pending {
-                        let at = pointer.current_location();
-                        let moved = ((at.x - from.x).powi(2) + (at.y - from.y).powi(2)).sqrt();
-                        let fires = if click {
-                            moved <= self.drag_threshold
-                        } else {
-                            moved > self.drag_threshold
-                        };
-                        if fires {
-                            self.handle_action(Action::Bound(action));
-                        }
-                    }
-                    // The press put this button in `SUPPRESSED_BUTTONS`, and
-                    // this branch is the only place its release will ever be
-                    // seen. Forgetting it here left the entry behind, and the
-                    // *next* ordinary release of the same button was swallowed
-                    // by the branch below — a client told a button came up that
-                    // never went down.
-                    let suppressed = release_suppressed(event.button_code());
-                    // A `release+` binding fires now, exactly as
-                    // `find_binding(.., true)` does for a key. It is matched
-                    // even when the press was consumed, because the two halves
-                    // are independent records and the same chord may carry
-                    // both.
-                    if let Some(bound) = crate::binding::find_button(
-                        &self.bindings,
-                        &keyboard.modifier_state(),
-                        event.button_code(),
-                        &self.binding_mode,
-                        self.locked,
-                        true,
-                        self.current_input_device.as_deref(),
-                    ) {
-                        let consuming = !bound.non_consuming
-                            && (!bound.auto_consuming || self.binding_will_act(&bound.action));
-                        self.handle_action(Action::Bound(bound.action.clone()));
-                        if consuming {
-                            // The release goes no further, so the shell grab
-                            // record cannot outlive it: the shell saw the
-                            // press, before there was a release to match.
-                            self.shell_grabbed_buttons
-                                .retain(|held| *held != event.button_code());
-                            return;
-                        }
-                    }
-                    if was_pending || suppressed {
-                        // Nothing below may see this release: either it belongs
-                        // to a press a binding kept, or the press itself was
-                        // kept and its release goes by that record, exactly as
-                        // `suppressed_keys` does for a key. Without this the
-                        // client was handed a release for a press it never saw.
-                        return;
-                    }
-                }
-
-                // Something the shell drew in front and asked to be clicked:
-                // the bar it floats over the windows, a notification, the
-                // screen-share chooser.
-                //
-                // Nothing here is a handle for a gesture — not for dragging
-                // the window underneath, which is what the old guard said, and
-                // not for panning the desktop either, which is what it missed.
-                // With no window under the pointer a Mod4 press on the bar
-                // started a *pan*, was swallowed by it, and never reached the
-                // page: in `bar: auto` the bar is on screen only while Mod4 is
-                // held, so every click it could ever receive arrived with that
-                // modifier down and was taken for a gesture. What that looks
-                // like is a bar whose workspace pills and window titles do
-                // nothing at all.
-                let on_overlay = crate::pointer::over_overlay(
-                    &self.shell_overlay_hits,
-                    pointer.current_location(),
-                );
-
-                // Nothing is dragged, moved, resized or panned behind a lock
-                // screen. `window_under` answers by geometry alone — unlike
-                // `surface_under`, which refuses while locked — so the guard
-                // has to be here, in front of every path that hit-tests.
-                if !self.locked
-                    && starts_gesture(
-                        state == ButtonState::Pressed,
-                        pointer.is_grabbed(),
-                        on_overlay,
-                        keyboard.modifier_state().logo,
-                        event.button_code(),
-                    )
-                {
-                    let hit = self.window_under(pointer.current_location());
-                    let dragging = hit.as_ref().and_then(|window| {
-                        self.views
-                            .iter()
-                            .find(|v| &v.window == window)
-                            .map(|v| v.id)
-                    });
-                    // Nothing under the pointer is the desktop itself, and a
-                    // drag there moves the *view*: the gesture every canvas
-                    // has, and the one thing a plane with no edges cannot do
-                    // without. The shell decides what that means and a layout
-                    // with no view of its own ignores it, so this stays a
-                    // question about whether a window was hit rather than
-                    // about which layout is running — which the compositor
-                    // would be wrong about anyway the moment `layout.model`
-                    // switched one at runtime.
-                    //
-                    // Left only. The right button on the desktop is not a
-                    // resize of anything.
-                    let kind = match (dragging, event.button_code()) {
-                        (Some(_), BTN_RIGHT) => crate::state::DragKind::Resize,
-                        (Some(_), _) => crate::state::DragKind::Move,
-                        (None, BTN_LEFT) => crate::state::DragKind::Pan,
-                        (None, _) => crate::state::DragKind::Move,
-                    };
-                    if dragging.is_some() || kind == crate::state::DragKind::Pan {
-                        // Which corner the resize took hold of, worked out once
-                        // at the press: a drag that asked again every frame
-                        // would change edges under the hand the moment the
-                        // pointer crossed the middle of the window it is
-                        // resizing.
-                        //
-                        // In the window's own coordinates, as `window_under`
-                        // tests: a window drawn scaled — a canvas at any zoom
-                        // but 1 — is at a different place on screen than the
-                        // `Space` holds it.
-                        let edges = hit
-                            .as_ref()
-                            .filter(|_| kind == crate::state::DragKind::Resize)
-                            .and_then(|window| {
-                                let geometry = self.space.element_geometry(window)?;
-                                let pos = self.unscaled(window, pointer.current_location());
-                                Some(resize_edges(pos, geometry))
-                            })
-                            .unwrap_or((false, false));
-                        self.pointer_drag = Some(crate::state::PointerDrag {
-                            id: dragging.unwrap_or_default(),
-                            button: event.button_code(),
-                            kind,
-                            edges,
-                            edge: None,
-                            last: pointer.current_location(),
-                            pending: (0.0, 0.0),
-                            sent: None,
-                            client_requested: false,
-                        });
-                        // Not forwarded. The client did not ask to be dragged
-                        // and a button it sees pressed and never released is a
-                        // button it thinks is still down.
-                        return;
-                    }
-                }
-
-                // And nothing takes the keyboard behind a lock screen either.
-                // The locker's surface is the only thing that may hold it, and
-                // a click where a window happens to be mapped raised that
-                // window and handed it every keystroke that followed.
-                //
-                // A press on one of the keep-focus overlays takes nothing
-                // either: the on-screen keyboard is pressed to type into
-                // wherever the keyboard already is, so raising or focusing
-                // anything for that press would steal the very focus its keys
-                // are aimed at. See `OverlayRect::keep_focus`.
-                if state == ButtonState::Pressed
-                    && !pointer.is_grabbed()
-                    && !self.locked
-                    && !crate::pointer::over_overlay(
-                        &self.shell_overlay_keep_focus,
-                        pointer.current_location(),
-                    )
-                {
-                    let hit = self.window_under(pointer.current_location());
-                    // Clicking a notification must not raise and focus the
-                    // window behind it — the click never reached that window.
-                    // `on_overlay` is worked out above, where the gesture is
-                    // declined for the same reason.
-                    match hit.filter(|_| !self.overview && !on_overlay) {
-                        Some(window) => {
-                            let id = self
-                                .views
-                                .iter()
-                                .find(|v| v.window == window)
-                                .map(|v| v.id)
-                                .unwrap_or(NO_VIEW);
-
-                            self.space.raise_element(&window, false);
-                            // A click on a tiled window must not bury the
-                            // floating one that was over it.
-                            self.restack();
-                            // By window rather than by toplevel: an X11
-                            // window has no toplevel, and reaching for one
-                            // focused nothing at all.
-                            if let Some(focus) =
-                                crate::keyboard_focus::KeyboardFocus::for_window(&window)
-                            {
-                                keyboard.set_focus(self, Some(focus), serial);
-                            }
-                            self.activate_view(id);
-                            if id != self.focused {
-                                self.notify_focus(id);
-                            }
-                        }
-                        None => {
-                            // The pointer is over the shell, or the overview is
-                            // up and every click belongs to it.
-                            self.activate_view(NO_VIEW);
-                            // To the page that was clicked, where the shell is
-                            // a client — a click on a web page is how anyone
-                            // expects to start typing into it. With the engine
-                            // in this process there is no surface to focus and
-                            // the focus has to stay empty, which is what tells
-                            // the key path to hand keys to the engine instead.
-                            let where_ = pointer.current_location();
-                            if !self.focus_shell_at(Some(where_)) {
-                                keyboard.set_focus(
-                                    self,
-                                    Option::<crate::keyboard_focus::KeyboardFocus>::None,
-                                    serial,
-                                );
-                            }
-                            if self.focused != NO_VIEW {
-                                self.notify_focus(NO_VIEW);
-                            }
-                        }
-                    }
-                }
-
-                // To the shell, when that is where the pointer is. A press
-                // holds it until release, so a drag that crosses onto a window
-                // is still the shell's — the same implicit grab Wayland gives
-                // a client.
-                //
-                // And a release goes by the grab alone. Where the pointer has
-                // got to says nothing about who the button belongs to: press
-                // on a window, drag off it onto the shell, let go, and the
-                // page was handed a button up for a button it never saw go
-                // down.
-                let pressed = state == ButtonState::Pressed;
-                let on_shell = shell_gets_button(
-                    !self.shell_grabbed_buttons.is_empty(),
-                    self.surface_under(pointer.current_location()).is_none(),
-                    pressed,
-                );
-                if on_shell && self.shell_is_up() {
-                    if pressed && !self.shell_grabbed_buttons.contains(&event.button_code()) {
-                        self.shell_grabbed_buttons.push(event.button_code());
-                    }
-                    let at = pointer.current_location();
-                    self.shell_pointer_button(
-                        at,
-                        event.button_code(),
-                        pressed,
-                        event.time().millis(),
-                    );
-                }
-                if !pressed {
-                    // Only the button that came up: another may still be down
-                    // over the page, and the grab belongs to it until then.
-                    self.shell_grabbed_buttons
-                        .retain(|button| *button != event.button_code());
-                }
-
-                pointer.button(
-                    self,
-                    &ButtonEvent {
-                        button: event.button_code(),
-                        state,
-                        serial,
-                        time: event.time(),
-                    },
-                );
-                pointer.frame(self);
-            }
-
-            InputEvent::PointerAxis { event, .. } => {
-                let source = event.source();
-                // The two settings libinput cannot carry on the device itself.
-                // A scroll factor is applied to the events as they arrive, so
-                // the merged config is consulted here — cached per device,
-                // because a high-resolution wheel must not rebuild the config
-                // identifier and re-merge the config per tick. See
-                // `scroll_settings`.
-                let device = event.device();
-                let settings = self.scroll_settings(&device);
-                let factor = settings
-                    .scroll_factor
-                    .filter(|factor| factor.is_finite() && *factor != 0.0)
-                    .unwrap_or(1.0);
-                let emulate = settings.emulate_discrete_scroll.unwrap_or(false);
-                let horizontal = event.amount(Axis::Horizontal).unwrap_or_else(|| {
-                    event.amount_v120(Axis::Horizontal).unwrap_or(0.0) * 15.0 / 120.0
-                }) * factor;
-                let vertical = event.amount(Axis::Vertical).unwrap_or_else(|| {
-                    event.amount_v120(Axis::Vertical).unwrap_or(0.0) * 15.0 / 120.0
-                }) * factor;
-
-                // A scroll binding — `Mod4+WheelUp=shell workspace.next`. Only a
-                // physical wheel, not a touchpad: two-finger scroll is the
-                // page's to answer, and a binding would fire on every tick of a
-                // swipe. Fires once per wheel notch (axis batch) while the
-                // modifier is held, and consumes the scroll — nothing is passed
-                // on to the window under the pointer.
-                if source != AxisSource::Finger && vertical != 0.0 {
-                    if let Some(keyboard) = self.seat.get_keyboard() {
-                        let wheel = if vertical > 0.0 {
-                            crate::binding::Wheel::Up
-                        } else {
-                            crate::binding::Wheel::Down
-                        };
-                        if let Some(bound) = crate::binding::find_wheel(
-                            &self.bindings,
-                            &keyboard.modifier_state(),
-                            wheel,
-                            &self.binding_mode,
-                            self.locked,
-                            false,
-                            self.current_input_device.as_deref(),
-                        ) {
-                            let consuming = !bound.non_consuming
-                                && (!bound.auto_consuming || self.binding_will_act(&bound.action));
-                            let action = bound.action.clone();
-                            self.handle_action(Action::Bound(action));
-                            if consuming {
-                                return;
-                            }
-                            // `non_consuming+`: the action has run, and the
-                            // scroll goes on to the client below.
-                        }
-                    }
-                }
-
-                // A wheel's discrete steps are scaled with the same factor.
-                // `emulate_discrete_scroll` synthesizes them from a touchpad's
-                // continuous amount, one notch per fifteen pixels — the same
-                // ratio the continuous fallback above uses.
-                let discrete = |axis: Axis, amount: f64| -> Option<i32> {
-                    if let Some(value) = event.amount_v120(axis) {
-                        return Some((value * factor).round() as i32);
-                    }
-                    (emulate && source == AxisSource::Finger)
-                        .then(|| (amount * 120.0 / 15.0).round() as i32)
-                };
-
-                let mut frame = AxisFrame::new(event.time()).source(source);
-                if horizontal != 0.0 {
-                    frame = frame.value(Axis::Horizontal, horizontal);
-                    if let Some(steps) = discrete(Axis::Horizontal, horizontal) {
-                        frame = frame.v120(Axis::Horizontal, steps);
-                    }
-                }
-                if vertical != 0.0 {
-                    frame = frame.value(Axis::Vertical, vertical);
-                    if let Some(steps) = discrete(Axis::Vertical, vertical) {
-                        frame = frame.v120(Axis::Vertical, steps);
-                    }
-                }
-                if source == AxisSource::Finger {
-                    if event.amount(Axis::Horizontal) == Some(0.0) {
-                        frame = frame.stop(Axis::Horizontal);
-                    }
-                    if event.amount(Axis::Vertical) == Some(0.0) {
-                        frame = frame.stop(Axis::Vertical);
-                    }
-                }
-
-                let Some(pointer) = self.seat.get_pointer() else {
-                    return;
-                };
-                // Scrolling the shell: the taskbar, the notification list,
-                // and a chooser longer than the screen. Compiled out without
-                // `wpe` — no page, and `shell_pointer_axis` has no body there
-                // — so the hit test is never asked in builds that cannot use
-                // its answer.
-                //
-                // The hit test is asked directly rather than through
-                // `refresh_pointer_focus`, which is what this used to call.
-                // That refresh sends a pointer *motion* first, and a motion is
-                // an absolute event with no relative component: Xwayland posts
-                // such a motion on the absolute pointer device rather than the
-                // relative one it drives everything else through, and a
-                // Chromium-family client — Steam's client among them — reads
-                // scroll valuators per device and drops the notch that arrives
-                // after the switch. Nothing is lost by not refreshing: the
-                // motion path runs this same hit test for every pointer event,
-                // so the focus the refresh was keeping current is already
-                // current, and a scroll is not a motion to be sent as one.
-                #[cfg(feature = "wpe")]
-                {
-                    let at = pointer.current_location();
-                    if self.shell_is_up() && self.surface_under(at).is_none() {
-                        self.shell_pointer_axis(
-                            at,
-                            horizontal,
-                            vertical,
-                            source == AxisSource::Finger,
-                            event.time().millis(),
-                        );
-                    }
-                }
-                pointer.axis(self, frame);
-                pointer.frame(self);
-            }
+            InputEvent::PointerAxis { event, .. } => self.on_pointer_axis(event),
 
             // A device appearing. A tablet has to be added to the seat before
             // a client can be told anything about it, and libinput is the only
             // thing that knows one is there.
-            InputEvent::DeviceAdded { device } => {
-                use smithay::backend::input::Device as _;
-                if device.has_capability(smithay::backend::input::DeviceCapability::TabletTool) {
-                    let descriptor = TabletDescriptor::from(&device);
-                    let dh = self.display_handle.clone();
-                    self.seat.tablet_seat().add_wp_tablet(&dh, &descriptor);
-                    tracing::info!("tablet: {}", descriptor.name);
-                }
-                // Sticky rather than toggled back off in DeviceRemoved — see
-                // `osk_touch_seen`'s own doc comment in state.rs for why a
-                // touchscreen unplugging mid-session should not be the thing
-                // that stops the on-screen keyboard raising itself.
-                if device.has_capability(smithay::backend::input::DeviceCapability::Touch)
-                    && !self.osk_touch_seen
-                {
-                    self.osk_touch_seen = true;
-                    // Recomputed immediately rather than waiting for the next
-                    // commit or focus change: a touchscreen appearing after
-                    // login (a USB panel plugged in, a Bluetooth one paired)
-                    // should be able to raise the keyboard for whatever
-                    // already has an enabled text-input, not only for the
-                    // next thing focused after it.
-                    self.sync_osk_wanted();
-                }
-                // The axis settings are cached per device id — warm them here,
-                // so the first scroll after a hotplug is not the one paying
-                // for the identifier and the merge. See `scroll_settings`.
-                self.scroll_settings(&device);
-            }
-            InputEvent::DeviceRemoved { device } => {
-                self.cancel_gesture();
-                use smithay::backend::input::Device as _;
-                // The cached axis settings were this device's, and the id the
-                // next device is handed may be one this one had: dropped now,
-                // so a future device resolves by its own name rather than
-                // inheriting this one's scroll factor.
-                SCROLL_SETTINGS.with(|cache| {
-                    cache.borrow_mut().remove(&device.id());
-                });
-                // A keyboard that dies mid-chord sends no releases, and no
-                // other path ends a hold: the repeat timer would run its
-                // binding for ever and a held push-to-talk shortcut would
-                // never be announced deactivated. See `release_held_keys`.
-                if device.has_capability(smithay::backend::input::DeviceCapability::Keyboard) {
-                    self.release_held_keys();
-                }
-                // The pointer's half of the same problem: a press opens
-                // records — the `click+`/`drag+` decision, the shell's
-                // implicit grab, the binding suppression — that only a
-                // release closes, and this device is not sending one. They are
-                // dropped rather than paired off: unlike a key handed to the
-                // page, a grabbed button is not proof the page saw the press
-                // (the grab is taken even where no page covers the point), so
-                // synthesizing a release could hand it an up it has no down
-                // for.
-                if device.has_capability(smithay::backend::input::DeviceCapability::Pointer) {
-                    self.pending_click.clear();
-                    self.shell_grabbed_buttons.clear();
-                    clear_suppressed_buttons();
-                }
-                if device.has_capability(smithay::backend::input::DeviceCapability::TabletTool) {
-                    let seat = self.seat.tablet_seat();
-                    seat.remove_tablet(&TabletDescriptor::from(&device));
-                    // The tools belong to the tablets. With none left there is
-                    // nothing for a tool to be on, and a client holding one
-                    // would be told about pressure from a device that is in a
-                    // drawer.
-                    if seat.count_tablets() == 0 {
-                        seat.clear_tools();
-                    }
-                }
-            }
+            InputEvent::DeviceAdded { device } => self.on_device_added(device),
+            InputEvent::DeviceRemoved { device } => self.on_device_removed(device),
 
             // A tablet pen moving. It carries what a mouse cannot: pressure,
             // tilt, and which end of the pen is down — which is the whole
             // reason a drawing program wants the protocol rather than the
             // pointer.
-            InputEvent::TabletToolAxis { event, .. } => {
-                use smithay::backend::input::TabletToolEvent as _;
-                let Some(position) = self.touch_position(&event) else {
-                    return;
-                };
-                let under = self.surface_under(position);
-                let time = event.time();
-                let tool = self.seat.tablet_seat().get_tool(&event.tool());
-
-                // The pointer moves too: a tablet is also how the cursor gets
-                // around, and a client with no tablet support still sees it.
-                if let Some(pointer) = self.seat.get_pointer() {
-                    pointer.motion(
-                        self,
-                        under.clone(),
-                        &MotionEvent {
-                            location: position,
-                            serial: SERIAL_COUNTER.next_serial(),
-                            time,
-                        },
-                    );
-                    pointer.frame(self);
-                }
-
-                if let Some(tool) = tool {
-                    tool.axis(self, axis_frame(&event));
-                    tool.motion(
-                        self,
-                        under,
-                        &smithay::input::tablet::tool::MotionEvent {
-                            location: position,
-                            serial: SERIAL_COUNTER.next_serial(),
-                            time,
-                        },
-                    );
-                    tool.frame(self, time);
-                }
-                self.needs_render = true;
-            }
+            InputEvent::TabletToolAxis { event, .. } => self.on_tablet_tool_axis(event),
 
             // The pen coming within range of the tablet, or leaving it.
-            InputEvent::TabletToolProximity { event, .. } => {
-                use smithay::backend::input::{
-                    TabletToolEvent as _, TabletToolProximityEvent as _,
-                };
-                let Some(position) = self.touch_position(&event) else {
-                    return;
-                };
-                let under = self.surface_under(position);
-                let time = event.time();
-                let dh = self.display_handle.clone();
-                let seat = self.seat.tablet_seat();
-                let tablet = seat.get_tablet(&TabletDescriptor::from(&event.device()));
-                let tool = seat.get_tool(&event.tool());
-                let tool = match tool {
-                    Some(tool) => tool,
-                    // First sight of this pen. A tablet reports its tools as
-                    // they arrive rather than up front, because a pen is not
-                    // plugged in.
-                    None => self
-                        .seat
-                        .tablet_seat()
-                        .add_wp_tool(self, &dh, &event.tool()),
-                };
-                let Some(tablet) = tablet else {
-                    return;
-                };
-
-                match event.state() {
-                    smithay::backend::input::ProximityState::In => tool.proximity_in(
-                        self,
-                        under,
-                        tablet,
-                        &smithay::input::tablet::tool::ProximityInEvent {
-                            location: position,
-                            axis: Some(axis_frame(&event)),
-                            serial: SERIAL_COUNTER.next_serial(),
-                            time,
-                        },
-                    ),
-                    smithay::backend::input::ProximityState::Out => {
-                        // The pen has been lifted away, so whatever it asked
-                        // the cursor to look like is no longer the answer:
-                        // the mouse is the device in use again and has its own
-                        // idea. Left set, a crosshair would follow a pointer
-                        // that has moved somewhere else entirely.
-                        self.tablet_cursor_status = None;
-                        self.needs_render = true;
-                        tool.proximity_out(
-                            self,
-                            &smithay::input::tablet::tool::ProximityOutEvent {
-                                serial: SERIAL_COUNTER.next_serial(),
-                                time,
-                            },
-                        )
-                    }
-                }
-                tool.frame(self, time);
-            }
+            InputEvent::TabletToolProximity { event, .. } => self.on_tablet_tool_proximity(event),
 
             // The pen touching the tablet, which is a click that also takes
             // the keyboard: there is nothing else to focus with.
-            InputEvent::TabletToolTip { event, .. } => {
-                use smithay::backend::input::{TabletToolEvent as _, TabletToolTipEvent as _};
-                let Some(tool) = self.seat.tablet_seat().get_tool(&event.tool()) else {
-                    return;
-                };
-                let serial = SERIAL_COUNTER.next_serial();
-                let time = event.time();
-                match event.tip_state() {
-                    smithay::backend::input::TabletToolTipState::Down => {
-                        tool.down(
-                            self,
-                            &smithay::input::tablet::tool::DownEvent { serial, time },
-                        );
-                        // The tip landing is the click; the keyboard comes
-                        // with it, by the same route a finger's does.
-                        let at = self
-                            .seat
-                            .get_pointer()
-                            .map(|pointer| pointer.current_location());
-                        if let Some(at) = at {
-                            let under = self.surface_under(at);
-                            self.focus_touch_target(under.as_ref(), at, serial);
-                        }
-                    }
-                    smithay::backend::input::TabletToolTipState::Up => tool.up(
-                        self,
-                        &smithay::input::tablet::tool::UpEvent { serial, time },
-                    ),
-                }
-                tool.frame(self, time);
-            }
+            InputEvent::TabletToolTip { event, .. } => self.on_tablet_tool_tip(event),
 
-            InputEvent::TabletToolButton { event, .. } => {
-                use smithay::backend::input::{TabletToolButtonEvent as _, TabletToolEvent as _};
-                let Some(tool) = self.seat.tablet_seat().get_tool(&event.tool()) else {
-                    return;
-                };
-                let time = event.time();
-                tool.button(
-                    self,
-                    &smithay::input::tablet::tool::ButtonEvent {
-                        serial: SERIAL_COUNTER.next_serial(),
-                        button: event.button(),
-                        state: event.button_state(),
-                        time,
-                    },
-                );
-                tool.frame(self, time);
-            }
+            InputEvent::TabletToolButton { event, .. } => self.on_tablet_tool_button(event),
 
             // Touchpad gestures forward whole unless this finger count has a
             // configured binding. Capture is decided at begin: waiting for a
             // threshold would leak a partial sequence to the client.
-            InputEvent::GestureSwipeBegin { event, .. } => {
-                self.cancel_gesture();
-                match gesture_capture(
-                    &self.gestures,
-                    &self.live_gestures,
-                    GestureKind::Swipe,
-                    event.fingers(),
-                    self.locked,
-                ) {
-                    GestureCapture::Discrete => {
-                        self.gesture = Some(GestureState::Swipe {
-                            fingers: event.fingers(),
-                            dx: 0.0,
-                            dy: 0.0,
-                        });
-                        return;
-                    }
-                    GestureCapture::Live => {
-                        self.gesture = Some(GestureState::LiveSwipe { dx: 0.0, dy: 0.0 });
-                        self.notify(&viewport_ipc::Event::GestureBegin {
-                            kind: viewport_ipc::GestureKind::Swipe,
-                            fingers: event.fingers(),
-                        });
-                        return;
-                    }
-                    GestureCapture::Client => {}
-                }
-                if let Some(pointer) = self.seat.get_pointer() {
-                    pointer.gesture_swipe_begin(
-                        self,
-                        &GestureSwipeBeginEvent {
-                            serial: SERIAL_COUNTER.next_serial(),
-                            time: event.time(),
-                            fingers: event.fingers(),
-                        },
-                    );
-                }
-            }
-            InputEvent::GestureSwipeUpdate { event, .. } => {
-                if let Some(GestureState::Swipe { dx, dy, .. }) = self.gesture.as_mut() {
-                    *dx += event.delta().x;
-                    *dy += event.delta().y;
-                    return;
-                }
-                if let Some(GestureState::LiveSwipe { dx, dy }) = self.gesture.as_mut() {
-                    *dx += event.delta().x;
-                    *dy += event.delta().y;
-                    let (dx, dy) = (*dx, *dy);
-                    self.pending_gesture = Some(viewport_ipc::Event::GestureUpdate {
-                        kind: viewport_ipc::GestureKind::Swipe,
-                        dx,
-                        dy,
-                        scale: None,
-                        rotation: None,
-                    });
-                    return;
-                }
-                if let Some(pointer) = self.seat.get_pointer() {
-                    pointer.gesture_swipe_update(
-                        self,
-                        &GestureSwipeUpdateEvent {
-                            time: event.time(),
-                            delta: event.delta(),
-                        },
-                    );
-                }
-            }
-            InputEvent::GestureSwipeEnd { event, .. } => {
-                if let Some(state @ GestureState::Swipe { .. }) = self.gesture.take() {
-                    if !self.locked {
-                        if let Some(action) =
-                            finish_gesture(state, &self.gestures, event.cancelled())
-                        {
-                            self.handle_action(Action::Bound(action));
-                        }
-                    }
-                    return;
-                }
-                if let Some(GestureState::LiveSwipe { .. }) = self.gesture.take() {
-                    self.notify(&viewport_ipc::Event::GestureEnd {
-                        kind: viewport_ipc::GestureKind::Swipe,
-                        cancelled: event.cancelled() || self.locked,
-                    });
-                    return;
-                }
-                if let Some(pointer) = self.seat.get_pointer() {
-                    pointer.gesture_swipe_end(
-                        self,
-                        &GestureSwipeEndEvent {
-                            serial: SERIAL_COUNTER.next_serial(),
-                            time: event.time(),
-                            // A gesture the touchpad gave up on is not a
-                            // gesture that finished, and a client that is told
-                            // it finished acts on it.
-                            cancelled: event.cancelled(),
-                        },
-                    );
-                }
-            }
-            InputEvent::GesturePinchBegin { event, .. } => {
-                self.cancel_gesture();
-                match gesture_capture(
-                    &self.gestures,
-                    &self.live_gestures,
-                    GestureKind::Pinch,
-                    event.fingers(),
-                    self.locked,
-                ) {
-                    GestureCapture::Discrete => {
-                        self.gesture = Some(GestureState::Pinch {
-                            fingers: event.fingers(),
-                            scale: 1.0,
-                        });
-                        return;
-                    }
-                    GestureCapture::Live => {
-                        self.gesture = Some(GestureState::LivePinch {
-                            dx: 0.0,
-                            dy: 0.0,
-                            scale: 1.0,
-                            rotation: 0.0,
-                        });
-                        self.notify(&viewport_ipc::Event::GestureBegin {
-                            kind: viewport_ipc::GestureKind::Pinch,
-                            fingers: event.fingers(),
-                        });
-                        return;
-                    }
-                    GestureCapture::Client => {}
-                }
-                if let Some(pointer) = self.seat.get_pointer() {
-                    pointer.gesture_pinch_begin(
-                        self,
-                        &GesturePinchBeginEvent {
-                            serial: SERIAL_COUNTER.next_serial(),
-                            time: event.time(),
-                            fingers: event.fingers(),
-                        },
-                    );
-                }
-            }
-            InputEvent::GesturePinchUpdate { event, .. } => {
-                if let Some(GestureState::Pinch { scale, .. }) = self.gesture.as_mut() {
-                    *scale = event.scale();
-                    return;
-                }
-                if let Some(GestureState::LivePinch {
-                    dx,
-                    dy,
-                    scale,
-                    rotation,
-                }) = self.gesture.as_mut()
-                {
-                    *dx += event.delta().x;
-                    *dy += event.delta().y;
-                    *scale = event.scale();
-                    *rotation += event.rotation();
-                    let (dx, dy, scale, rotation) = (*dx, *dy, *scale, *rotation);
-                    self.pending_gesture = Some(viewport_ipc::Event::GestureUpdate {
-                        kind: viewport_ipc::GestureKind::Pinch,
-                        dx,
-                        dy,
-                        scale: Some(scale),
-                        rotation: Some(rotation),
-                    });
-                    return;
-                }
-                if let Some(pointer) = self.seat.get_pointer() {
-                    pointer.gesture_pinch_update(
-                        self,
-                        &GesturePinchUpdateEvent {
-                            time: event.time(),
-                            delta: event.delta(),
-                            scale: event.scale(),
-                            rotation: event.rotation(),
-                        },
-                    );
-                }
-            }
-            InputEvent::GesturePinchEnd { event, .. } => {
-                if let Some(state @ GestureState::Pinch { .. }) = self.gesture.take() {
-                    if !self.locked {
-                        if let Some(action) =
-                            finish_gesture(state, &self.gestures, event.cancelled())
-                        {
-                            self.handle_action(Action::Bound(action));
-                        }
-                    }
-                    return;
-                }
-                if let Some(GestureState::LivePinch { .. }) = self.gesture.take() {
-                    self.notify(&viewport_ipc::Event::GestureEnd {
-                        kind: viewport_ipc::GestureKind::Pinch,
-                        cancelled: event.cancelled() || self.locked,
-                    });
-                    return;
-                }
-                if let Some(pointer) = self.seat.get_pointer() {
-                    pointer.gesture_pinch_end(
-                        self,
-                        &GesturePinchEndEvent {
-                            serial: SERIAL_COUNTER.next_serial(),
-                            time: event.time(),
-                            cancelled: event.cancelled(),
-                        },
-                    );
-                }
-            }
+            InputEvent::GestureSwipeBegin { event, .. } => self.on_gesture_swipe_begin(event),
+            InputEvent::GestureSwipeUpdate { event, .. } => self.on_gesture_swipe_update(event),
+            InputEvent::GestureSwipeEnd { event, .. } => self.on_gesture_swipe_end(event),
+            InputEvent::GesturePinchBegin { event, .. } => self.on_gesture_pinch_begin(event),
+            InputEvent::GesturePinchUpdate { event, .. } => self.on_gesture_pinch_update(event),
+            InputEvent::GesturePinchEnd { event, .. } => self.on_gesture_pinch_end(event),
             // A hold is how a touchpad says fingers are resting: what stops
             // kinetic scrolling when a hand comes down on it.
-            InputEvent::GestureHoldBegin { event, .. } => {
-                if let Some(pointer) = self.seat.get_pointer() {
-                    pointer.gesture_hold_begin(
-                        self,
-                        &GestureHoldBeginEvent {
-                            serial: SERIAL_COUNTER.next_serial(),
-                            time: event.time(),
-                            fingers: event.fingers(),
-                        },
-                    );
-                }
-            }
-            InputEvent::GestureHoldEnd { event, .. } => {
-                if let Some(pointer) = self.seat.get_pointer() {
-                    pointer.gesture_hold_end(
-                        self,
-                        &GestureHoldEndEvent {
-                            serial: SERIAL_COUNTER.next_serial(),
-                            time: event.time(),
-                            cancelled: event.cancelled(),
-                        },
-                    );
-                }
-            }
+            InputEvent::GestureHoldBegin { event, .. } => self.on_gesture_hold_begin(event),
+            InputEvent::GestureHoldEnd { event, .. } => self.on_gesture_hold_end(event),
 
             // Touch. A tap is not a click: the pointer is not moved and no
             // button is sent, because a client that supports touch expects
             // touch — and one that does not is better served by nothing than
             // by a pointer that teleports to wherever a finger landed.
-            InputEvent::TouchDown { event, .. } => {
-                // A finger is the pointer already; the arrow beside it is not
-                // being used, so `cursor.hide_on_touch` puts it away. Motion
-                // brings it back through `cursor_activity`.
-                if self.cursor_hide.touch() {
-                    self.needs_render = true;
-                }
-                let Some(position) = self.touch_position(&event) else {
-                    return;
-                };
-                self.touch_down_at(event.slot(), position, event.time());
-            }
+            InputEvent::TouchDown { event, .. } => self.on_touch_down(event),
 
-            InputEvent::TouchMotion { event, .. } => {
-                let Some(position) = self.touch_position(&event) else {
-                    return;
-                };
-                self.touch_motion_at(event.slot(), position, event.time());
-            }
+            InputEvent::TouchMotion { event, .. } => self.on_touch_motion(event),
 
-            InputEvent::TouchUp { event, .. } => {
-                let Some(touch) = self.seat.get_touch() else {
-                    return;
-                };
-                touch.up(
-                    self,
-                    &smithay::input::touch::UpEvent {
-                        slot: event.slot(),
-                        serial: SERIAL_COUNTER.next_serial(),
-                        time: event.time(),
-                    },
-                );
-            }
+            InputEvent::TouchUp { event, .. } => self.on_touch_up(event),
 
             // The end of one set of simultaneous touches, which is how a
             // client knows a two-finger gesture was two fingers rather than
@@ -3241,6 +1782,1588 @@ impl ViewportState {
 
             _ => {}
         }
+    }
+
+    /// One key press or release.
+    fn on_keyboard_event<E: KeyboardKeyEvent<I>, I: InputBackend>(&mut self, event: E) {
+        // A grab can be installed *after* the lock: an input method's
+        // `grab_keyboard`, or a menu opened by a client that was
+        // already running. Those request handlers have no lock check
+        // to consult, so this is the floor — before Smithay forwards
+        // the key to whatever grab is current, take that grab away and
+        // put the lock screen back on the seat. Locked keys pay for
+        // this; every other key pays nothing.
+        if self.locked {
+            self.release_input_grabs();
+            self.refocus_lock();
+        }
+        let serial = SERIAL_COUNTER.next_serial();
+        let time = Event::time(&event);
+        let Some(keyboard) = self.seat.get_keyboard() else {
+            return;
+        };
+        let pressed = event.state() == smithay::backend::input::KeyState::Pressed;
+        // Worked out before the keyboard's state is borrowed by the
+        // filter, which is where it is needed.
+        let inhibited = self.shortcuts_inhibited();
+        // Nothing holds the keyboard, so the keys are the shell's.
+        //
+        // By who actually holds focus rather than by whether a window
+        // is focused: a layer surface — a launcher, a lock screen —
+        // takes focus without being a toplevel, and checking the
+        // focused window alone would deliver its keystrokes to the
+        // page instead, leaving the launcher unable to type
+        // (`src/input.c:1052`).
+        let to_shell = keyboard.current_focus().is_none() && self.shell_is_up();
+        // The modifiers are read only by a page, so they are only worth
+        // computing when there is one; without the web engine they go
+        // nowhere, and the placeholder only keeps the key's shape.
+        #[cfg(feature = "wpe")]
+        let modifiers_now = self.shell_modifiers();
+        #[cfg(not(feature = "wpe"))]
+        let modifiers_now = 0;
+
+        // What the focused client currently believes is held. Compared
+        // against the state after the event, below.
+        let mods_before = keyboard.modifier_state();
+
+        // The filter runs with the keyboard's state borrowed, so it
+        // decides *what* to do and the action is carried out after.
+        let action = keyboard.input::<Option<Action>, _>(
+            self,
+            event.key_code(),
+            event.state(),
+            serial,
+            time,
+            |state, modifiers, handle| {
+                let keysym = handle.modified_sym();
+                // The key this event is *about*, with the modifiers
+                // taken off. `modified_sym` differs between a press and
+                // its release when a modifier is let go first — Shift
+                // then q gives `Q` on the way down and `q` on the way up
+                // — so every piece of bookkeeping paired across the two
+                // halves is keyed by this, and `keysym` is left to the
+                // places that want the symbol as typed.
+                let unmodified_sym = handle.raw_latin_sym_or_raw_current_sym().unwrap_or(keysym);
+                let unmodified = unmodified_sym.raw();
+                if pressed {
+                    // The compositor's own chords first: those have to
+                    // work even when a binding table is broken.
+                    // A client holding an inhibitor gets everything
+                    // except a VT switch. That one is the session's
+                    // rather than this seat's — a client cannot be
+                    // allowed to take the only way off a frozen
+                    // desktop, and no client inside a VT has any use
+                    // for the chord that leaves it.
+                    if inhibited {
+                        match shortcut(modifiers, keysym) {
+                            Some(action @ Action::SwitchVt(_)) => {
+                                state.suppressed_keys.push(unmodified_sym);
+                                return FilterResult::Intercept(Some(action));
+                            }
+                            // A binding that asks to bypass the
+                            // inhibitor falls through to the binding
+                            // match below; everything else is the
+                            // client's. The portal shortcuts below
+                            // have no such flag, so they stay gated
+                            // on `!inhibited` there.
+                            _ => {
+                                let bypasses = crate::binding::find_binding(
+                                    &state.bindings,
+                                    modifiers,
+                                    unmodified,
+                                    &state.binding_mode,
+                                    state.locked,
+                                    false,
+                                    state.current_input_device.as_deref(),
+                                )
+                                .is_some_and(|bound| bound.dont_inhibit);
+                                if !bypasses {
+                                    return FilterResult::Forward;
+                                }
+                            }
+                        }
+                    }
+                    // The chooser owns the keyboard while it is up.
+                    //
+                    // Everything is taken, not only the keys it uses: a
+                    // keystroke that fell through would go to whatever
+                    // was focused before the share was asked for, which
+                    // is a password typed into a terminal the user is
+                    // not looking at.
+                    if state.picker.is_some() {
+                        state.suppressed_keys.push(unmodified_sym);
+                        let pick = match keysym {
+                            Keysym::Escape => Some(Pick::Cancel),
+                            Keysym::Return | Keysym::KP_Enter | Keysym::space => {
+                                Some(Pick::Confirm)
+                            }
+                            Keysym::Up | Keysym::k => Some(Pick::Step(-1)),
+                            Keysym::Down | Keysym::j | Keysym::Tab => Some(Pick::Step(1)),
+                            _ => None,
+                        };
+                        return FilterResult::Intercept(
+                            pick.map(Action::Pick).or(Some(Action::Swallow)),
+                        );
+                    }
+
+                    if let Some(action) = shortcut(modifiers, keysym) {
+                        // VT switching still works while locked — it
+                        // is the session's, not this seat's, and a
+                        // locked session on another VT is still
+                        // locked. Quitting does not: it would drop the
+                        // lock along with the compositor. Forwarded
+                        // rather than swallowed, so Ctrl+Alt+Backspace
+                        // still reaches the lock screen as keys.
+                        if state.locked && !matches!(action, Action::SwitchVt(_)) {
+                            return FilterResult::Forward;
+                        }
+                        // Remembered so the release is swallowed too;
+                        // a client that saw only the release would
+                        // think the key was stuck.
+                        state.suppressed_keys.push(unmodified_sym);
+                        return FilterResult::Intercept(Some(action));
+                    }
+                    // The *unmodified* keysym, computed above: a chord
+                    // is written "Mod4+Shift+q", and the key is still
+                    // q. Matching the modified symbol would look for Q
+                    // and never find it.
+
+                    // A global shortcut, but only after everything
+                    // above has declined the key. An application that
+                    // asks for a chord this desktop is already using
+                    // gets a grant that never fires, rather than a
+                    // terminal that stops opening — the desk's own
+                    // keymap is not something a portal call may
+                    // change. See `crate::shortcuts`.
+                    //
+                    // Not while locked: a grant can run a command or
+                    // drive push-to-talk, and the session is not the
+                    // user's to hand that to. The key falls through to
+                    // the lock screen below, exactly as a non-`locked`
+                    // binding does — the `match_binding` gate is not
+                    // enough here because this path precedes it.
+                    if !state.locked && !inhibited {
+                        if let Some(fired) = state.shortcut_for(modifiers, unmodified) {
+                            state.suppressed_keys.push(unmodified_sym);
+                            state.shortcuts_to_announce.push((true, fired.clone()));
+                            // Remembered by the key it arrived on — the
+                            // unmodified one, because the release is
+                            // matched by it and by then the modifiers
+                            // may already be up.
+                            state.shortcuts_held.push((unmodified, fired));
+                            return FilterResult::Intercept(Some(Action::Swallow));
+                        }
+                    }
+
+                    match crate::binding::find_binding(
+                        &state.bindings,
+                        modifiers,
+                        unmodified,
+                        &state.binding_mode,
+                        state.locked,
+                        false,
+                        state.current_input_device.as_deref(),
+                    ) {
+                        Some(bound) => {
+                            let action = bound.action.clone();
+                            let non_consuming = bound.non_consuming;
+                            let auto_consuming = bound.auto_consuming;
+                            let long_press = bound.long_press;
+                            let repeating = bound.repeating;
+
+                            // A `long_press+` binding is not fired
+                            // yet: a timer owns it for the length of
+                            // the hold, and the release takes it back
+                            // if the key comes up first. The key is
+                            // kept from the client for the whole hold
+                            // so a tap cannot do both.
+                            if long_press {
+                                state.suppressed_keys.push(unmodified_sym);
+                                state.arm_long_press(unmodified, action);
+                                FilterResult::Intercept(Some(Action::Swallow))
+                            } else if repeating {
+                                state.suppressed_keys.push(unmodified_sym);
+                                state.arm_repeating(unmodified, action.clone());
+                                if non_consuming {
+                                    state.deferred_bindings.push(action);
+                                    FilterResult::Forward
+                                } else {
+                                    FilterResult::Intercept(Some(Action::Bound(action)))
+                                }
+                            } else if non_consuming {
+                                // A `non_consuming+` binding runs and
+                                // lets the key through. The action is
+                                // left for after the filter, which
+                                // cannot both intercept and forward.
+                                state.deferred_bindings.push(action);
+                                FilterResult::Forward
+                            } else if auto_consuming && !state.binding_will_act(&action) {
+                                // `auto_consuming+`: the dispatcher has
+                                // nothing to act on, so the key is given
+                                // back rather than swallowed by a no-op.
+                                // Whether it can act is read from the
+                                // state now, because the action runs
+                                // after the filter and cannot report back.
+                                state.deferred_bindings.push(action);
+                                FilterResult::Forward
+                            } else {
+                                state.suppressed_keys.push(unmodified_sym);
+                                FilterResult::Intercept(Some(Action::Bound(action)))
+                            }
+                        }
+                        // To the page, which is the only thing left
+                        // that could want it. Intercepted rather than
+                        // forwarded because forwarding it goes
+                        // nowhere: there is no focused surface, which
+                        // is why it is the shell's in the first place.
+                        //
+                        // While locked, forward instead: the key
+                        // belongs to the lock screen (the password),
+                        // not the page.
+                        None if to_shell => {
+                            if state.locked {
+                                return FilterResult::Forward;
+                            }
+                            state.suppressed_keys.push(unmodified_sym);
+                            // Remember that it was the page's, so the
+                            // release goes there even if a click moves
+                            // focus to a window before it comes up —
+                            // with the keycode the press sent, for the
+                            // release no device will ever send.
+                            remember_web_key(unmodified_sym, handle.raw_code().raw());
+                            FilterResult::Intercept(Some(Action::Web(web_key(
+                                handle.raw_code().raw(),
+                                keysym.raw(),
+                                true,
+                                modifiers_now,
+                                time.millis(),
+                            ))))
+                        }
+                        None => FilterResult::Forward,
+                    }
+                } else {
+                    // The release half. A key whose press was kept is
+                    // released to whoever kept it, and a `release+`
+                    // binding fires. Both can happen: the same chord
+                    // may have a press binding and a release one.
+                    //
+                    // A held `long_press+` or `repeating+` binding
+                    // ends here: taking it out is what cancels the
+                    // hold and stops the repeat. A push-to-talk
+                    // shortcut is told it came up at the same time.
+                    finish_key_hold(
+                        unmodified,
+                        &mut state.long_press_pending,
+                        &mut state.repeating_held,
+                        &mut state.shortcuts_held,
+                        &mut state.shortcuts_to_announce,
+                    );
+                    let mut result = FilterResult::Forward;
+                    // Whose release this is was decided by the press,
+                    // not by where focus is now: a page-bound key that
+                    // was held while a click focused a window still
+                    // belongs to the page, or the page latches it.
+                    let web = release_web_key(unmodified_sym);
+                    if take_suppressed(&mut state.suppressed_keys, unmodified_sym) {
+                        result = if web {
+                            FilterResult::Intercept(Some(Action::Web(web_key(
+                                handle.raw_code().raw(),
+                                keysym.raw(),
+                                false,
+                                modifiers_now,
+                                time.millis(),
+                            ))))
+                        } else {
+                            FilterResult::Intercept(Some(Action::Swallow))
+                        };
+                    } else if web {
+                        // The suppression is already gone — the press
+                        // was released through `release_injected_key`,
+                        // say — but the page saw it go down and still
+                        // has to see it come up.
+                        result = FilterResult::Intercept(Some(Action::Web(web_key(
+                            handle.raw_code().raw(),
+                            keysym.raw(),
+                            false,
+                            modifiers_now,
+                            time.millis(),
+                        ))));
+                    }
+
+                    // The unmodified symbol, as on the press half.
+                    let unmodified = handle
+                        .raw_latin_sym_or_raw_current_sym()
+                        .map(|sym| sym.raw())
+                        .unwrap_or_else(|| keysym.raw());
+                    if let Some(bound) = crate::binding::find_binding(
+                        &state.bindings,
+                        modifiers,
+                        unmodified,
+                        &state.binding_mode,
+                        state.locked,
+                        true,
+                        state.current_input_device.as_deref(),
+                    ) {
+                        let action = bound.action.clone();
+                        if bound.non_consuming {
+                            state.deferred_bindings.push(action);
+                        } else {
+                            result = FilterResult::Intercept(Some(Action::Bound(action)));
+                        }
+                    }
+                    result
+                }
+            },
+        );
+
+        let intercepted = action.is_some();
+        if let Some(action) = action.flatten() {
+            self.handle_action(action);
+        }
+        // `non_consuming+` bindings, which could not be run from inside
+        // the filter. Drained rather than indexed so an action that
+        // itself defers one — nothing does today — cannot alias the
+        // vector it is being read from.
+        if !self.deferred_bindings.is_empty() {
+            let deferred: Vec<_> = std::mem::take(&mut self.deferred_bindings);
+            for action in deferred {
+                self.run_binding(action);
+            }
+        }
+
+        // A key press puts the cursor away when the config file asks
+        // for it. Here rather than inside the filter: the filter is
+        // borrowed and only decides what to do with the key, and this
+        // is about the pointer image, which is nobody's decision but
+        // the pointer's. The next motion brings it back through
+        // `cursor_activity`.
+        if pressed && self.cursor_hide.key_press() {
+            self.needs_render = true;
+        }
+
+        // Tell the focused client about a modifier it did not see
+        // change.
+        //
+        // Smithay sends the modifier update as part of forwarding a
+        // key, and an intercepted key is never forwarded — so a
+        // modifier the compositor took for itself changes state
+        // silently as far as the client is concerned. Mod4 is one:
+        // it goes to the shell so the bar can appear while it is held,
+        // which means both its press and its release are intercepted.
+        //
+        // What that produced: `Mod4+Return` opens a terminal, the
+        // terminal takes focus while the key is still physically down,
+        // and its `enter` correctly reports Mod4 depressed. Releasing
+        // Mod4 was then intercepted and the terminal was never told —
+        // so it read every following key as Mod4+key. Arrows did
+        // nothing, and letters looked fine because by the time anyone
+        // typed one something unrelated had pushed a fresh modifier
+        // state out. It cleared as soon as focus moved away and back,
+        // which is why opening a second window "fixed" it.
+        if intercepted && keyboard.modifier_state() != mods_before {
+            keyboard.advertise_modifier_state(self);
+        }
+
+        // Anything the filter noticed a global shortcut on, announced
+        // now that the keyboard's own borrow has ended.
+        self.flush_shortcuts();
+
+        // And any libei client, for the same reason from further away:
+        // a remote session composes its own chords and cannot see the
+        // desk. See `sync_eis_modifiers`. Not conditional on
+        // `intercepted` — a modifier the compositor forwarded reached
+        // the focused client and still never reached the socket.
+        self.sync_eis_modifiers();
+
+        // Whether the logo key is held, which is what the bar rides on
+        // when it is set to appear only while Mod4 is down.
+        //
+        // After the key has been processed, or the state read is the
+        // one before it. Only on a change, and only while the bar is
+        // on "auto": this runs for every Shift and Ctrl of ordinary
+        // typing, and a message per keystroke saying Mod4 is still not
+        // held would be pure noise (`src/input.c:922`).
+        if self.config.bar.as_deref() == Some("auto") {
+            let logo = self
+                .seat
+                .get_keyboard()
+                .map(|keyboard| keyboard.modifier_state().logo)
+                .unwrap_or(false);
+            if logo != self.logo_held {
+                self.logo_held = logo;
+                self.notify(&viewport_ipc::Event::Modifiers { logo });
+            }
+        }
+    }
+
+    /// Relative pointer motion from a mouse.
+    fn on_pointer_motion<E: PointerMotionEvent<I>, I: InputBackend>(&mut self, event: E) {
+        let Some(pointer) = self.seat.get_pointer() else {
+            return;
+        };
+        let from = pointer.current_location();
+        let under = self.surface_under(from);
+
+        // What the client under the pointer has asked for, if
+        // anything. Read before the pointer moves, because a
+        // constraint applies to where it is now.
+        let (locked, confine_to) = self.pointer_constraint(&pointer, under.as_ref(), from);
+        self.note_pointer_motion(
+            from,
+            event.delta(),
+            locked,
+            confine_to.as_ref(),
+            under.is_some(),
+        );
+
+        // Relative motion first, and always. It is what a game reads,
+        // and a locked pointer has nothing else to go on — an absolute
+        // position saturates at the screen edge, which is a game that
+        // can only turn so far.
+        pointer.relative_motion(
+            self,
+            under.clone(),
+            &smithay::input::pointer::RelativeMotionEvent {
+                delta: event.delta(),
+                delta_unaccel: event.delta_unaccel(),
+                time: event.time(),
+            },
+        );
+
+        if locked {
+            // The cursor does not move at all. That is the point: it
+            // neither escapes onto the other monitor mid-fight nor
+            // generates absolute motion the game would misread.
+            pointer.frame(self);
+            return;
+        }
+
+        self.move_pointer(from, event.delta(), confine_to.as_ref(), event.time());
+    }
+
+    /// Absolute pointer motion, from a tablet or touchscreen.
+    fn on_pointer_motion_absolute<
+        E: smithay::backend::input::PointerMotionAbsoluteEvent<I>,
+        I: InputBackend,
+    >(
+        &mut self,
+        event: E,
+    ) {
+        let Some(pos) = self.touch_position(&event) else {
+            return;
+        };
+        // A tablet in absolute mode names a place on the glass, and
+        // under the magnifier the glass is showing a blown-up piece of
+        // the layout. A relative mouse does not come through here and
+        // must not be put through this — see
+        // `ViewportState::glass_to_content`.
+        self.pointer_absolute_to(pos, event.time());
+    }
+
+    /// A pointer button press or release.
+    fn on_pointer_button<E: PointerButtonEvent<I>, I: InputBackend>(&mut self, event: E) {
+        let (Some(pointer), Some(keyboard)) = (self.seat.get_pointer(), self.seat.get_keyboard())
+        else {
+            return;
+        };
+        let state = event.state();
+        // Subsurface stacking changes have no compositor callback.
+        // Re-hit-test the first press so an immediate place_above,
+        // place_below or role destruction cannot receive one stale
+        // click before ordinary pointer motion repairs focus.
+        if state == ButtonState::Pressed && !pointer.is_grabbed() {
+            let _ = self.refresh_pointer_focus();
+        }
+        let serial = SERIAL_COUNTER.next_serial();
+
+        // An xdg-shell move/resize replaced the client's implicit
+        // click grab with our own. That grab owns every button until
+        // the initiating one is released.
+        if self
+            .pointer_drag
+            .as_ref()
+            .is_some_and(|drag| drag.client_requested)
+        {
+            pointer.button(
+                self,
+                &ButtonEvent {
+                    button: event.button_code(),
+                    state,
+                    serial,
+                    time: event.time(),
+                },
+            );
+            pointer.frame(self);
+            return;
+        }
+
+        // Mod4 and a button drags the window under the pointer: left
+        // moves it, right resizes it. The chord every tiling
+        // compositor has, and what makes a floating window usable
+        // without a titlebar to grab — this compositor draws none,
+        // because the shell draws the frame.
+        //
+        // The shell has done the arithmetic for both since it was
+        // written, and nothing ever sent it: `layout.move.delta` and
+        // `layout.resize.delta` had a handler, a comment saying the
+        // compositor forwards the drag, and no sender anywhere.
+        //
+        // While one is running the buttons are its own, so that is
+        // settled first.
+        match drag_effect(
+            self.pointer_drag.as_ref().map(|drag| drag.button),
+            event.button_code(),
+            state == ButtonState::Pressed,
+        ) {
+            DragEffect::End => {
+                self.finish_pointer_drag();
+                // The hand has let go, and the shell has been drawing
+                // without its animations for as long as the deltas
+                // were arriving — a window under the pointer must not
+                // ease toward it. Saying so is what puts the desktop
+                // back under the ordinary rules on the next frame
+                // rather than a timeout later. The shell has that
+                // timeout as well, for the gesture that ends without a
+                // release: a VT switch takes the pointer away and no
+                // button is ever reported up.
+                return;
+            }
+            DragEffect::Swallow => {
+                // The drag's own release is `End`, so any release
+                // swallowed here belongs to another button — one whose
+                // press may already have opened the records below.
+                // The event itself still goes nowhere, but the records
+                // cannot wait for a release that is not coming.
+                if state == ButtonState::Released {
+                    discard_button_records(
+                        &mut self.pending_click,
+                        &mut self.shell_grabbed_buttons,
+                        event.button_code(),
+                    );
+                }
+                return;
+            }
+            DragEffect::Free => {}
+        }
+
+        // A configured mouse binding, fired on the half it names like
+        // a key binding is: `release+` is matched on the button coming
+        // up, below, and a binding without it on the press here. The
+        // modifier prefix is the keyboard's, exactly as in a chord:
+        // `Mod4+Mouse4=shell workspace.switch 1` needs Mod4 held. Runs
+        // before the drag line so a bound button is the user's gesture,
+        // not the window's.
+        if state == ButtonState::Pressed {
+            if let Some(bound) = crate::binding::find_button(
+                &self.bindings,
+                &keyboard.modifier_state(),
+                event.button_code(),
+                &self.binding_mode,
+                self.locked,
+                false,
+                self.current_input_device.as_deref(),
+            ) {
+                let consuming = !bound.non_consuming
+                    && (!bound.auto_consuming || self.binding_will_act(&bound.action));
+                let action = bound.action.clone();
+                let click = bound.click;
+                let drag = bound.drag;
+                if click || drag {
+                    // Held until the release decides. The button is
+                    // kept from the client either way; what the two
+                    // flags choose is whether the release runs the
+                    // action or does nothing.
+                    self.pending_click.insert(
+                        event.button_code(),
+                        (action, pointer.current_location(), click),
+                    );
+                    suppress_button(event.button_code());
+                    return;
+                }
+                self.handle_action(Action::Bound(action));
+                if consuming {
+                    // Not forwarded: the button was bound, and handing
+                    // a press it did not ask for to a client would
+                    // leave it thinking the button is still down.
+                    suppress_button(event.button_code());
+                    return;
+                }
+                // `non_consuming+`: the action has run, and the button
+                // goes on to the client like any other.
+            }
+        } else {
+            // A `click+` or `drag+` binding: the distance between the
+            // press and the release is the whole question. The press
+            // kept the decision, so the release answers it.
+            let pending = self.pending_click.remove(&event.button_code());
+            let was_pending = pending.is_some();
+            if let Some((action, from, click)) = pending {
+                let at = pointer.current_location();
+                let moved = ((at.x - from.x).powi(2) + (at.y - from.y).powi(2)).sqrt();
+                let fires = if click {
+                    moved <= self.drag_threshold
+                } else {
+                    moved > self.drag_threshold
+                };
+                if fires {
+                    self.handle_action(Action::Bound(action));
+                }
+            }
+            // The press put this button in `SUPPRESSED_BUTTONS`, and
+            // this branch is the only place its release will ever be
+            // seen. Forgetting it here left the entry behind, and the
+            // *next* ordinary release of the same button was swallowed
+            // by the branch below — a client told a button came up that
+            // never went down.
+            let suppressed = release_suppressed(event.button_code());
+            // A `release+` binding fires now, exactly as
+            // `find_binding(.., true)` does for a key. It is matched
+            // even when the press was consumed, because the two halves
+            // are independent records and the same chord may carry
+            // both.
+            if let Some(bound) = crate::binding::find_button(
+                &self.bindings,
+                &keyboard.modifier_state(),
+                event.button_code(),
+                &self.binding_mode,
+                self.locked,
+                true,
+                self.current_input_device.as_deref(),
+            ) {
+                let consuming = !bound.non_consuming
+                    && (!bound.auto_consuming || self.binding_will_act(&bound.action));
+                self.handle_action(Action::Bound(bound.action.clone()));
+                if consuming {
+                    // The release goes no further, so the shell grab
+                    // record cannot outlive it: the shell saw the
+                    // press, before there was a release to match.
+                    self.shell_grabbed_buttons
+                        .retain(|held| *held != event.button_code());
+                    return;
+                }
+            }
+            if was_pending || suppressed {
+                // Nothing below may see this release: either it belongs
+                // to a press a binding kept, or the press itself was
+                // kept and its release goes by that record, exactly as
+                // `suppressed_keys` does for a key. Without this the
+                // client was handed a release for a press it never saw.
+                return;
+            }
+        }
+
+        // Something the shell drew in front and asked to be clicked:
+        // the bar it floats over the windows, a notification, the
+        // screen-share chooser.
+        //
+        // Nothing here is a handle for a gesture — not for dragging
+        // the window underneath, which is what the old guard said, and
+        // not for panning the desktop either, which is what it missed.
+        // With no window under the pointer a Mod4 press on the bar
+        // started a *pan*, was swallowed by it, and never reached the
+        // page: in `bar: auto` the bar is on screen only while Mod4 is
+        // held, so every click it could ever receive arrived with that
+        // modifier down and was taken for a gesture. What that looks
+        // like is a bar whose workspace pills and window titles do
+        // nothing at all.
+        let on_overlay =
+            crate::pointer::over_overlay(&self.shell_overlay_hits, pointer.current_location());
+
+        // Nothing is dragged, moved, resized or panned behind a lock
+        // screen. `window_under` answers by geometry alone — unlike
+        // `surface_under`, which refuses while locked — so the guard
+        // has to be here, in front of every path that hit-tests.
+        if !self.locked
+            && starts_gesture(
+                state == ButtonState::Pressed,
+                pointer.is_grabbed(),
+                on_overlay,
+                keyboard.modifier_state().logo,
+                event.button_code(),
+            )
+        {
+            let hit = self.window_under(pointer.current_location());
+            let dragging = hit.as_ref().and_then(|window| {
+                self.views
+                    .iter()
+                    .find(|v| &v.window == window)
+                    .map(|v| v.id)
+            });
+            // Nothing under the pointer is the desktop itself, and a
+            // drag there moves the *view*: the gesture every canvas
+            // has, and the one thing a plane with no edges cannot do
+            // without. The shell decides what that means and a layout
+            // with no view of its own ignores it, so this stays a
+            // question about whether a window was hit rather than
+            // about which layout is running — which the compositor
+            // would be wrong about anyway the moment `layout.model`
+            // switched one at runtime.
+            //
+            // Left only. The right button on the desktop is not a
+            // resize of anything.
+            let kind = match (dragging, event.button_code()) {
+                (Some(_), BTN_RIGHT) => crate::state::DragKind::Resize,
+                (Some(_), _) => crate::state::DragKind::Move,
+                (None, BTN_LEFT) => crate::state::DragKind::Pan,
+                (None, _) => crate::state::DragKind::Move,
+            };
+            if dragging.is_some() || kind == crate::state::DragKind::Pan {
+                // Which corner the resize took hold of, worked out once
+                // at the press: a drag that asked again every frame
+                // would change edges under the hand the moment the
+                // pointer crossed the middle of the window it is
+                // resizing.
+                //
+                // In the window's own coordinates, as `window_under`
+                // tests: a window drawn scaled — a canvas at any zoom
+                // but 1 — is at a different place on screen than the
+                // `Space` holds it.
+                let edges = hit
+                    .as_ref()
+                    .filter(|_| kind == crate::state::DragKind::Resize)
+                    .and_then(|window| {
+                        let geometry = self.space.element_geometry(window)?;
+                        let pos = self.unscaled(window, pointer.current_location());
+                        Some(resize_edges(pos, geometry))
+                    })
+                    .unwrap_or((false, false));
+                self.pointer_drag = Some(crate::state::PointerDrag {
+                    id: dragging.unwrap_or_default(),
+                    button: event.button_code(),
+                    kind,
+                    edges,
+                    edge: None,
+                    last: pointer.current_location(),
+                    pending: (0.0, 0.0),
+                    sent: None,
+                    client_requested: false,
+                });
+                // Not forwarded. The client did not ask to be dragged
+                // and a button it sees pressed and never released is a
+                // button it thinks is still down.
+                return;
+            }
+        }
+
+        // And nothing takes the keyboard behind a lock screen either.
+        // The locker's surface is the only thing that may hold it, and
+        // a click where a window happens to be mapped raised that
+        // window and handed it every keystroke that followed.
+        //
+        // A press on one of the keep-focus overlays takes nothing
+        // either: the on-screen keyboard is pressed to type into
+        // wherever the keyboard already is, so raising or focusing
+        // anything for that press would steal the very focus its keys
+        // are aimed at. See `OverlayRect::keep_focus`.
+        if state == ButtonState::Pressed
+            && !pointer.is_grabbed()
+            && !self.locked
+            && !crate::pointer::over_overlay(
+                &self.shell_overlay_keep_focus,
+                pointer.current_location(),
+            )
+        {
+            let hit = self.window_under(pointer.current_location());
+            // Clicking a notification must not raise and focus the
+            // window behind it — the click never reached that window.
+            // `on_overlay` is worked out above, where the gesture is
+            // declined for the same reason.
+            match hit.filter(|_| !self.overview && !on_overlay) {
+                Some(window) => {
+                    let id = self
+                        .views
+                        .iter()
+                        .find(|v| v.window == window)
+                        .map(|v| v.id)
+                        .unwrap_or(NO_VIEW);
+
+                    self.space.raise_element(&window, false);
+                    // A click on a tiled window must not bury the
+                    // floating one that was over it.
+                    self.restack();
+                    // By window rather than by toplevel: an X11
+                    // window has no toplevel, and reaching for one
+                    // focused nothing at all.
+                    if let Some(focus) = crate::keyboard_focus::KeyboardFocus::for_window(&window) {
+                        keyboard.set_focus(self, Some(focus), serial);
+                    }
+                    self.activate_view(id);
+                    if id != self.focused {
+                        self.notify_focus(id);
+                    }
+                }
+                None => {
+                    // The pointer is over the shell, or the overview is
+                    // up and every click belongs to it.
+                    self.activate_view(NO_VIEW);
+                    // To the page that was clicked, where the shell is
+                    // a client — a click on a web page is how anyone
+                    // expects to start typing into it. With the engine
+                    // in this process there is no surface to focus and
+                    // the focus has to stay empty, which is what tells
+                    // the key path to hand keys to the engine instead.
+                    let where_ = pointer.current_location();
+                    if !self.focus_shell_at(Some(where_)) {
+                        keyboard.set_focus(
+                            self,
+                            Option::<crate::keyboard_focus::KeyboardFocus>::None,
+                            serial,
+                        );
+                    }
+                    if self.focused != NO_VIEW {
+                        self.notify_focus(NO_VIEW);
+                    }
+                }
+            }
+        }
+
+        // To the shell, when that is where the pointer is. A press
+        // holds it until release, so a drag that crosses onto a window
+        // is still the shell's — the same implicit grab Wayland gives
+        // a client.
+        //
+        // And a release goes by the grab alone. Where the pointer has
+        // got to says nothing about who the button belongs to: press
+        // on a window, drag off it onto the shell, let go, and the
+        // page was handed a button up for a button it never saw go
+        // down.
+        let pressed = state == ButtonState::Pressed;
+        let on_shell = shell_gets_button(
+            !self.shell_grabbed_buttons.is_empty(),
+            self.surface_under(pointer.current_location()).is_none(),
+            pressed,
+        );
+        if on_shell && self.shell_is_up() {
+            if pressed && !self.shell_grabbed_buttons.contains(&event.button_code()) {
+                self.shell_grabbed_buttons.push(event.button_code());
+            }
+            let at = pointer.current_location();
+            self.shell_pointer_button(at, event.button_code(), pressed, event.time().millis());
+        }
+        if !pressed {
+            // Only the button that came up: another may still be down
+            // over the page, and the grab belongs to it until then.
+            self.shell_grabbed_buttons
+                .retain(|button| *button != event.button_code());
+        }
+
+        pointer.button(
+            self,
+            &ButtonEvent {
+                button: event.button_code(),
+                state,
+                serial,
+                time: event.time(),
+            },
+        );
+        pointer.frame(self);
+    }
+
+    /// A scroll axis event, from a wheel or touchpad.
+    fn on_pointer_axis<E: PointerAxisEvent<I>, I: InputBackend>(&mut self, event: E) {
+        let source = event.source();
+        // The two settings libinput cannot carry on the device itself.
+        // A scroll factor is applied to the events as they arrive, so
+        // the merged config is consulted here — cached per device,
+        // because a high-resolution wheel must not rebuild the config
+        // identifier and re-merge the config per tick. See
+        // `scroll_settings`.
+        let device = event.device();
+        let settings = self.scroll_settings(&device);
+        let factor = settings
+            .scroll_factor
+            .filter(|factor| factor.is_finite() && *factor != 0.0)
+            .unwrap_or(1.0);
+        let emulate = settings.emulate_discrete_scroll.unwrap_or(false);
+        let horizontal = event
+            .amount(Axis::Horizontal)
+            .unwrap_or_else(|| event.amount_v120(Axis::Horizontal).unwrap_or(0.0) * 15.0 / 120.0)
+            * factor;
+        let vertical = event
+            .amount(Axis::Vertical)
+            .unwrap_or_else(|| event.amount_v120(Axis::Vertical).unwrap_or(0.0) * 15.0 / 120.0)
+            * factor;
+
+        // A scroll binding — `Mod4+WheelUp=shell workspace.next`. Only a
+        // physical wheel, not a touchpad: two-finger scroll is the
+        // page's to answer, and a binding would fire on every tick of a
+        // swipe. Fires once per wheel notch (axis batch) while the
+        // modifier is held, and consumes the scroll — nothing is passed
+        // on to the window under the pointer.
+        if source != AxisSource::Finger && vertical != 0.0 {
+            if let Some(keyboard) = self.seat.get_keyboard() {
+                let wheel = if vertical > 0.0 {
+                    crate::binding::Wheel::Up
+                } else {
+                    crate::binding::Wheel::Down
+                };
+                if let Some(bound) = crate::binding::find_wheel(
+                    &self.bindings,
+                    &keyboard.modifier_state(),
+                    wheel,
+                    &self.binding_mode,
+                    self.locked,
+                    false,
+                    self.current_input_device.as_deref(),
+                ) {
+                    let consuming = !bound.non_consuming
+                        && (!bound.auto_consuming || self.binding_will_act(&bound.action));
+                    let action = bound.action.clone();
+                    self.handle_action(Action::Bound(action));
+                    if consuming {
+                        return;
+                    }
+                    // `non_consuming+`: the action has run, and the
+                    // scroll goes on to the client below.
+                }
+            }
+        }
+
+        // A wheel's discrete steps are scaled with the same factor.
+        // `emulate_discrete_scroll` synthesizes them from a touchpad's
+        // continuous amount, one notch per fifteen pixels — the same
+        // ratio the continuous fallback above uses.
+        let discrete = |axis: Axis, amount: f64| -> Option<i32> {
+            if let Some(value) = event.amount_v120(axis) {
+                return Some((value * factor).round() as i32);
+            }
+            (emulate && source == AxisSource::Finger)
+                .then(|| (amount * 120.0 / 15.0).round() as i32)
+        };
+
+        let mut frame = AxisFrame::new(event.time()).source(source);
+        if horizontal != 0.0 {
+            frame = frame.value(Axis::Horizontal, horizontal);
+            if let Some(steps) = discrete(Axis::Horizontal, horizontal) {
+                frame = frame.v120(Axis::Horizontal, steps);
+            }
+        }
+        if vertical != 0.0 {
+            frame = frame.value(Axis::Vertical, vertical);
+            if let Some(steps) = discrete(Axis::Vertical, vertical) {
+                frame = frame.v120(Axis::Vertical, steps);
+            }
+        }
+        if source == AxisSource::Finger {
+            if event.amount(Axis::Horizontal) == Some(0.0) {
+                frame = frame.stop(Axis::Horizontal);
+            }
+            if event.amount(Axis::Vertical) == Some(0.0) {
+                frame = frame.stop(Axis::Vertical);
+            }
+        }
+
+        let Some(pointer) = self.seat.get_pointer() else {
+            return;
+        };
+        // Scrolling the shell: the taskbar, the notification list,
+        // and a chooser longer than the screen. Compiled out without
+        // `wpe` — no page, and `shell_pointer_axis` has no body there
+        // — so the hit test is never asked in builds that cannot use
+        // its answer.
+        //
+        // The hit test is asked directly rather than through
+        // `refresh_pointer_focus`, which is what this used to call.
+        // That refresh sends a pointer *motion* first, and a motion is
+        // an absolute event with no relative component: Xwayland posts
+        // such a motion on the absolute pointer device rather than the
+        // relative one it drives everything else through, and a
+        // Chromium-family client — Steam's client among them — reads
+        // scroll valuators per device and drops the notch that arrives
+        // after the switch. Nothing is lost by not refreshing: the
+        // motion path runs this same hit test for every pointer event,
+        // so the focus the refresh was keeping current is already
+        // current, and a scroll is not a motion to be sent as one.
+        #[cfg(feature = "wpe")]
+        {
+            let at = pointer.current_location();
+            if self.shell_is_up() && self.surface_under(at).is_none() {
+                self.shell_pointer_axis(
+                    at,
+                    horizontal,
+                    vertical,
+                    source == AxisSource::Finger,
+                    event.time().millis(),
+                );
+            }
+        }
+        pointer.axis(self, frame);
+        pointer.frame(self);
+    }
+
+    /// An input device appearing.
+    fn on_device_added<D: smithay::backend::input::Device>(&mut self, device: D) {
+        if device.has_capability(smithay::backend::input::DeviceCapability::TabletTool) {
+            let descriptor = TabletDescriptor::from(&device);
+            let dh = self.display_handle.clone();
+            self.seat.tablet_seat().add_wp_tablet(&dh, &descriptor);
+            tracing::info!("tablet: {}", descriptor.name);
+        }
+        // Sticky rather than toggled back off in DeviceRemoved — see
+        // `osk_touch_seen`'s own doc comment in state.rs for why a
+        // touchscreen unplugging mid-session should not be the thing
+        // that stops the on-screen keyboard raising itself.
+        if device.has_capability(smithay::backend::input::DeviceCapability::Touch)
+            && !self.osk_touch_seen
+        {
+            self.osk_touch_seen = true;
+            // Recomputed immediately rather than waiting for the next
+            // commit or focus change: a touchscreen appearing after
+            // login (a USB panel plugged in, a Bluetooth one paired)
+            // should be able to raise the keyboard for whatever
+            // already has an enabled text-input, not only for the
+            // next thing focused after it.
+            self.sync_osk_wanted();
+        }
+        // The axis settings are cached per device id — warm them here,
+        // so the first scroll after a hotplug is not the one paying
+        // for the identifier and the merge. See `scroll_settings`.
+        self.scroll_settings(&device);
+    }
+
+    /// An input device going away.
+    fn on_device_removed<D: smithay::backend::input::Device>(&mut self, device: D) {
+        self.cancel_gesture();
+        // The cached axis settings were this device's, and the id the
+        // next device is handed may be one this one had: dropped now,
+        // so a future device resolves by its own name rather than
+        // inheriting this one's scroll factor.
+        SCROLL_SETTINGS.with(|cache| {
+            cache.borrow_mut().remove(&device.id());
+        });
+        // A keyboard that dies mid-chord sends no releases, and no
+        // other path ends a hold: the repeat timer would run its
+        // binding for ever and a held push-to-talk shortcut would
+        // never be announced deactivated. See `release_held_keys`.
+        if device.has_capability(smithay::backend::input::DeviceCapability::Keyboard) {
+            self.release_held_keys();
+        }
+        // The pointer's half of the same problem: a press opens
+        // records — the `click+`/`drag+` decision, the shell's
+        // implicit grab, the binding suppression — that only a
+        // release closes, and this device is not sending one. They are
+        // dropped rather than paired off: unlike a key handed to the
+        // page, a grabbed button is not proof the page saw the press
+        // (the grab is taken even where no page covers the point), so
+        // synthesizing a release could hand it an up it has no down
+        // for.
+        if device.has_capability(smithay::backend::input::DeviceCapability::Pointer) {
+            self.pending_click.clear();
+            self.shell_grabbed_buttons.clear();
+            clear_suppressed_buttons();
+        }
+        if device.has_capability(smithay::backend::input::DeviceCapability::TabletTool) {
+            let seat = self.seat.tablet_seat();
+            seat.remove_tablet(&TabletDescriptor::from(&device));
+            // The tools belong to the tablets. With none left there is
+            // nothing for a tool to be on, and a client holding one
+            // would be told about pressure from a device that is in a
+            // drawer.
+            if seat.count_tablets() == 0 {
+                seat.clear_tools();
+            }
+        }
+    }
+
+    /// A tablet pen's axis state: position, pressure, tilt.
+    fn on_tablet_tool_axis<E: smithay::backend::input::TabletToolAxisEvent<I>, I: InputBackend>(
+        &mut self,
+        event: E,
+    ) {
+        let Some(position) = self.touch_position(&event) else {
+            return;
+        };
+        let under = self.surface_under(position);
+        let time = event.time();
+        let tool = self.seat.tablet_seat().get_tool(&event.tool());
+
+        // The pointer moves too: a tablet is also how the cursor gets
+        // around, and a client with no tablet support still sees it.
+        if let Some(pointer) = self.seat.get_pointer() {
+            pointer.motion(
+                self,
+                under.clone(),
+                &MotionEvent {
+                    location: position,
+                    serial: SERIAL_COUNTER.next_serial(),
+                    time,
+                },
+            );
+            pointer.frame(self);
+        }
+
+        if let Some(tool) = tool {
+            tool.axis(self, axis_frame(&event));
+            tool.motion(
+                self,
+                under,
+                &smithay::input::tablet::tool::MotionEvent {
+                    location: position,
+                    serial: SERIAL_COUNTER.next_serial(),
+                    time,
+                },
+            );
+            tool.frame(self, time);
+        }
+        self.needs_render = true;
+    }
+
+    /// A tablet pen coming within range of the tablet, or leaving it.
+    fn on_tablet_tool_proximity<
+        E: smithay::backend::input::TabletToolProximityEvent<I>,
+        I: InputBackend,
+    >(
+        &mut self,
+        event: E,
+    ) {
+        let Some(position) = self.touch_position(&event) else {
+            return;
+        };
+        let under = self.surface_under(position);
+        let time = event.time();
+        let dh = self.display_handle.clone();
+        let seat = self.seat.tablet_seat();
+        let tablet = seat.get_tablet(&TabletDescriptor::from(&event.device()));
+        let tool = seat.get_tool(&event.tool());
+        let tool = match tool {
+            Some(tool) => tool,
+            // First sight of this pen. A tablet reports its tools as
+            // they arrive rather than up front, because a pen is not
+            // plugged in.
+            None => self
+                .seat
+                .tablet_seat()
+                .add_wp_tool(self, &dh, &event.tool()),
+        };
+        let Some(tablet) = tablet else {
+            return;
+        };
+
+        match event.state() {
+            smithay::backend::input::ProximityState::In => tool.proximity_in(
+                self,
+                under,
+                tablet,
+                &smithay::input::tablet::tool::ProximityInEvent {
+                    location: position,
+                    axis: Some(axis_frame(&event)),
+                    serial: SERIAL_COUNTER.next_serial(),
+                    time,
+                },
+            ),
+            smithay::backend::input::ProximityState::Out => {
+                // The pen has been lifted away, so whatever it asked
+                // the cursor to look like is no longer the answer:
+                // the mouse is the device in use again and has its own
+                // idea. Left set, a crosshair would follow a pointer
+                // that has moved somewhere else entirely.
+                self.tablet_cursor_status = None;
+                self.needs_render = true;
+                tool.proximity_out(
+                    self,
+                    &smithay::input::tablet::tool::ProximityOutEvent {
+                        serial: SERIAL_COUNTER.next_serial(),
+                        time,
+                    },
+                )
+            }
+        }
+        tool.frame(self, time);
+    }
+
+    /// A tablet pen touching the tablet, or lifting off.
+    fn on_tablet_tool_tip<E: smithay::backend::input::TabletToolTipEvent<I>, I: InputBackend>(
+        &mut self,
+        event: E,
+    ) {
+        let Some(tool) = self.seat.tablet_seat().get_tool(&event.tool()) else {
+            return;
+        };
+        let serial = SERIAL_COUNTER.next_serial();
+        let time = event.time();
+        match event.tip_state() {
+            smithay::backend::input::TabletToolTipState::Down => {
+                tool.down(
+                    self,
+                    &smithay::input::tablet::tool::DownEvent { serial, time },
+                );
+                // The tip landing is the click; the keyboard comes
+                // with it, by the same route a finger's does.
+                let at = self
+                    .seat
+                    .get_pointer()
+                    .map(|pointer| pointer.current_location());
+                if let Some(at) = at {
+                    let under = self.surface_under(at);
+                    self.focus_touch_target(under.as_ref(), at, serial);
+                }
+            }
+            smithay::backend::input::TabletToolTipState::Up => tool.up(
+                self,
+                &smithay::input::tablet::tool::UpEvent { serial, time },
+            ),
+        }
+        tool.frame(self, time);
+    }
+
+    /// A button on a tablet pen.
+    fn on_tablet_tool_button<
+        E: smithay::backend::input::TabletToolButtonEvent<I>,
+        I: InputBackend,
+    >(
+        &mut self,
+        event: E,
+    ) {
+        let Some(tool) = self.seat.tablet_seat().get_tool(&event.tool()) else {
+            return;
+        };
+        let time = event.time();
+        tool.button(
+            self,
+            &smithay::input::tablet::tool::ButtonEvent {
+                serial: SERIAL_COUNTER.next_serial(),
+                button: event.button(),
+                state: event.button_state(),
+                time,
+            },
+        );
+        tool.frame(self, time);
+    }
+
+    /// The start of a touchpad swipe gesture.
+    fn on_gesture_swipe_begin<
+        E: smithay::backend::input::GestureSwipeBeginEvent<I>,
+        I: InputBackend,
+    >(
+        &mut self,
+        event: E,
+    ) {
+        self.cancel_gesture();
+        match gesture_capture(
+            &self.gestures,
+            &self.live_gestures,
+            GestureKind::Swipe,
+            event.fingers(),
+            self.locked,
+        ) {
+            GestureCapture::Discrete => {
+                self.gesture = Some(GestureState::Swipe {
+                    fingers: event.fingers(),
+                    dx: 0.0,
+                    dy: 0.0,
+                });
+                return;
+            }
+            GestureCapture::Live => {
+                self.gesture = Some(GestureState::LiveSwipe { dx: 0.0, dy: 0.0 });
+                self.notify(&viewport_ipc::Event::GestureBegin {
+                    kind: viewport_ipc::GestureKind::Swipe,
+                    fingers: event.fingers(),
+                });
+                return;
+            }
+            GestureCapture::Client => {}
+        }
+        if let Some(pointer) = self.seat.get_pointer() {
+            pointer.gesture_swipe_begin(
+                self,
+                &GestureSwipeBeginEvent {
+                    serial: SERIAL_COUNTER.next_serial(),
+                    time: event.time(),
+                    fingers: event.fingers(),
+                },
+            );
+        }
+    }
+
+    /// A touchpad swipe gesture's motion.
+    fn on_gesture_swipe_update<
+        E: smithay::backend::input::GestureSwipeUpdateEvent<I>,
+        I: InputBackend,
+    >(
+        &mut self,
+        event: E,
+    ) {
+        if let Some(GestureState::Swipe { dx, dy, .. }) = self.gesture.as_mut() {
+            *dx += event.delta().x;
+            *dy += event.delta().y;
+            return;
+        }
+        if let Some(GestureState::LiveSwipe { dx, dy }) = self.gesture.as_mut() {
+            *dx += event.delta().x;
+            *dy += event.delta().y;
+            let (dx, dy) = (*dx, *dy);
+            self.pending_gesture = Some(viewport_ipc::Event::GestureUpdate {
+                kind: viewport_ipc::GestureKind::Swipe,
+                dx,
+                dy,
+                scale: None,
+                rotation: None,
+            });
+            return;
+        }
+        if let Some(pointer) = self.seat.get_pointer() {
+            pointer.gesture_swipe_update(
+                self,
+                &GestureSwipeUpdateEvent {
+                    time: event.time(),
+                    delta: event.delta(),
+                },
+            );
+        }
+    }
+
+    /// The end of a touchpad swipe gesture.
+    fn on_gesture_swipe_end<
+        E: smithay::backend::input::GestureSwipeEndEvent<I>,
+        I: InputBackend,
+    >(
+        &mut self,
+        event: E,
+    ) {
+        if let Some(state @ GestureState::Swipe { .. }) = self.gesture.take() {
+            if !self.locked {
+                if let Some(action) = finish_gesture(state, &self.gestures, event.cancelled()) {
+                    self.handle_action(Action::Bound(action));
+                }
+            }
+            return;
+        }
+        if let Some(GestureState::LiveSwipe { .. }) = self.gesture.take() {
+            self.notify(&viewport_ipc::Event::GestureEnd {
+                kind: viewport_ipc::GestureKind::Swipe,
+                cancelled: event.cancelled() || self.locked,
+            });
+            return;
+        }
+        if let Some(pointer) = self.seat.get_pointer() {
+            pointer.gesture_swipe_end(
+                self,
+                &GestureSwipeEndEvent {
+                    serial: SERIAL_COUNTER.next_serial(),
+                    time: event.time(),
+                    // A gesture the touchpad gave up on is not a
+                    // gesture that finished, and a client that is told
+                    // it finished acts on it.
+                    cancelled: event.cancelled(),
+                },
+            );
+        }
+    }
+
+    /// The start of a touchpad pinch gesture.
+    fn on_gesture_pinch_begin<
+        E: smithay::backend::input::GesturePinchBeginEvent<I>,
+        I: InputBackend,
+    >(
+        &mut self,
+        event: E,
+    ) {
+        self.cancel_gesture();
+        match gesture_capture(
+            &self.gestures,
+            &self.live_gestures,
+            GestureKind::Pinch,
+            event.fingers(),
+            self.locked,
+        ) {
+            GestureCapture::Discrete => {
+                self.gesture = Some(GestureState::Pinch {
+                    fingers: event.fingers(),
+                    scale: 1.0,
+                });
+                return;
+            }
+            GestureCapture::Live => {
+                self.gesture = Some(GestureState::LivePinch {
+                    dx: 0.0,
+                    dy: 0.0,
+                    scale: 1.0,
+                    rotation: 0.0,
+                });
+                self.notify(&viewport_ipc::Event::GestureBegin {
+                    kind: viewport_ipc::GestureKind::Pinch,
+                    fingers: event.fingers(),
+                });
+                return;
+            }
+            GestureCapture::Client => {}
+        }
+        if let Some(pointer) = self.seat.get_pointer() {
+            pointer.gesture_pinch_begin(
+                self,
+                &GesturePinchBeginEvent {
+                    serial: SERIAL_COUNTER.next_serial(),
+                    time: event.time(),
+                    fingers: event.fingers(),
+                },
+            );
+        }
+    }
+
+    /// A touchpad pinch gesture's motion.
+    fn on_gesture_pinch_update<
+        E: smithay::backend::input::GesturePinchUpdateEvent<I>,
+        I: InputBackend,
+    >(
+        &mut self,
+        event: E,
+    ) {
+        if let Some(GestureState::Pinch { scale, .. }) = self.gesture.as_mut() {
+            *scale = event.scale();
+            return;
+        }
+        if let Some(GestureState::LivePinch {
+            dx,
+            dy,
+            scale,
+            rotation,
+        }) = self.gesture.as_mut()
+        {
+            *dx += event.delta().x;
+            *dy += event.delta().y;
+            *scale = event.scale();
+            *rotation += event.rotation();
+            let (dx, dy, scale, rotation) = (*dx, *dy, *scale, *rotation);
+            self.pending_gesture = Some(viewport_ipc::Event::GestureUpdate {
+                kind: viewport_ipc::GestureKind::Pinch,
+                dx,
+                dy,
+                scale: Some(scale),
+                rotation: Some(rotation),
+            });
+            return;
+        }
+        if let Some(pointer) = self.seat.get_pointer() {
+            pointer.gesture_pinch_update(
+                self,
+                &GesturePinchUpdateEvent {
+                    time: event.time(),
+                    delta: event.delta(),
+                    scale: event.scale(),
+                    rotation: event.rotation(),
+                },
+            );
+        }
+    }
+
+    /// The end of a touchpad pinch gesture.
+    fn on_gesture_pinch_end<
+        E: smithay::backend::input::GesturePinchEndEvent<I>,
+        I: InputBackend,
+    >(
+        &mut self,
+        event: E,
+    ) {
+        if let Some(state @ GestureState::Pinch { .. }) = self.gesture.take() {
+            if !self.locked {
+                if let Some(action) = finish_gesture(state, &self.gestures, event.cancelled()) {
+                    self.handle_action(Action::Bound(action));
+                }
+            }
+            return;
+        }
+        if let Some(GestureState::LivePinch { .. }) = self.gesture.take() {
+            self.notify(&viewport_ipc::Event::GestureEnd {
+                kind: viewport_ipc::GestureKind::Pinch,
+                cancelled: event.cancelled() || self.locked,
+            });
+            return;
+        }
+        if let Some(pointer) = self.seat.get_pointer() {
+            pointer.gesture_pinch_end(
+                self,
+                &GesturePinchEndEvent {
+                    serial: SERIAL_COUNTER.next_serial(),
+                    time: event.time(),
+                    cancelled: event.cancelled(),
+                },
+            );
+        }
+    }
+
+    /// Fingers resting on a touchpad.
+    fn on_gesture_hold_begin<
+        E: smithay::backend::input::GestureHoldBeginEvent<I>,
+        I: InputBackend,
+    >(
+        &mut self,
+        event: E,
+    ) {
+        if let Some(pointer) = self.seat.get_pointer() {
+            pointer.gesture_hold_begin(
+                self,
+                &GestureHoldBeginEvent {
+                    serial: SERIAL_COUNTER.next_serial(),
+                    time: event.time(),
+                    fingers: event.fingers(),
+                },
+            );
+        }
+    }
+
+    /// The end of a touchpad hold.
+    fn on_gesture_hold_end<E: smithay::backend::input::GestureHoldEndEvent<I>, I: InputBackend>(
+        &mut self,
+        event: E,
+    ) {
+        if let Some(pointer) = self.seat.get_pointer() {
+            pointer.gesture_hold_end(
+                self,
+                &GestureHoldEndEvent {
+                    serial: SERIAL_COUNTER.next_serial(),
+                    time: event.time(),
+                    cancelled: event.cancelled(),
+                },
+            );
+        }
+    }
+
+    /// A finger put down on a touchscreen.
+    fn on_touch_down<E: smithay::backend::input::TouchDownEvent<I>, I: InputBackend>(
+        &mut self,
+        event: E,
+    ) {
+        // A finger is the pointer already; the arrow beside it is not
+        // being used, so `cursor.hide_on_touch` puts it away. Motion
+        // brings it back through `cursor_activity`.
+        if self.cursor_hide.touch() {
+            self.needs_render = true;
+        }
+        let Some(position) = self.touch_position(&event) else {
+            return;
+        };
+        self.touch_down_at(event.slot(), position, event.time());
+    }
+
+    /// A finger moving on a touchscreen.
+    fn on_touch_motion<E: smithay::backend::input::TouchMotionEvent<I>, I: InputBackend>(
+        &mut self,
+        event: E,
+    ) {
+        let Some(position) = self.touch_position(&event) else {
+            return;
+        };
+        self.touch_motion_at(event.slot(), position, event.time());
+    }
+
+    /// A finger lifted from a touchscreen.
+    fn on_touch_up<E: smithay::backend::input::TouchUpEvent<I>, I: InputBackend>(
+        &mut self,
+        event: E,
+    ) {
+        let Some(touch) = self.seat.get_touch() else {
+            return;
+        };
+        touch.up(
+            self,
+            &smithay::input::touch::UpEvent {
+                slot: event.slot(),
+                serial: SERIAL_COUNTER.next_serial(),
+                time: event.time(),
+            },
+        );
     }
 
     /// Where an absolute event landed, in the layout's own coordinates.
