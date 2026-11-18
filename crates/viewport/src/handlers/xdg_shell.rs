@@ -647,17 +647,7 @@ impl ViewportState {
 
     /// Set the state a client asked for and tell the shell.
     fn answer_fullscreen(&mut self, surface: &ToplevelSurface, fullscreen: bool) {
-        surface.with_pending_state(|pending| {
-            if fullscreen {
-                pending.states.set(
-                    smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Fullscreen,
-                );
-            } else {
-                pending.states.unset(
-                    smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Fullscreen,
-                );
-            }
-        });
+        crate::apply::set_toplevel_state(surface, xdg_toplevel::State::Fullscreen, fullscreen);
         surface.send_configure();
 
         let Some(view) = self.views.find_by_surface(surface.wl_surface()) else {
@@ -686,15 +676,7 @@ impl ViewportState {
     }
 
     fn answer_maximized(&mut self, surface: &ToplevelSurface, maximized: bool) {
-        use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State;
-
-        surface.with_pending_state(|pending| {
-            if maximized {
-                pending.states.set(State::Maximized);
-            } else {
-                pending.states.unset(State::Maximized);
-            }
-        });
+        crate::apply::set_toplevel_state(surface, xdg_toplevel::State::Maximized, maximized);
         surface.send_configure();
 
         let Some(view) = self.views.find_by_surface(surface.wl_surface()) else {
@@ -720,27 +702,18 @@ impl ViewportState {
     /// `view.layout`. Shared by the xdg and X11 paths so both windows mean the
     /// same thing by it.
     pub(crate) fn notify_fullscreen(&mut self, id: u32, fullscreen: bool) {
-        self.notify(&Event::ShellCommand {
-            command: "window.fullscreen.set".to_owned(),
-            args: vec![id.to_string(), u8::from(fullscreen).to_string()],
-        });
+        self.notify(&super::window_state_command("fullscreen", id, fullscreen));
         // Whether a screen should be in HDR is a question about which windows
         // are fullscreen, and that just changed. Answered on the loop turn.
         self.auto_hdr_pending = true;
     }
 
     pub(crate) fn notify_maximized(&mut self, id: u32, maximized: bool) {
-        self.notify(&Event::ShellCommand {
-            command: "window.maximized.set".to_owned(),
-            args: vec![id.to_string(), u8::from(maximized).to_string()],
-        });
+        self.notify(&super::window_state_command("maximized", id, maximized));
     }
 
     pub(crate) fn notify_minimized(&mut self, id: u32, minimized: bool) {
-        self.notify(&Event::ShellCommand {
-            command: "window.minimized.set".to_owned(),
-            args: vec![id.to_string(), u8::from(minimized).to_string()],
-        });
+        self.notify(&super::window_state_command("minimized", id, minimized));
     }
 
     /// Constrain a popup against the screen its parent is on.

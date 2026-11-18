@@ -396,6 +396,18 @@ impl smithay::wayland::keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitHandl
     }
 }
 
+/// The shell command announcing a window-state change: `window.<state>.set`
+/// with the view id and the new value as `0`/`1`.
+///
+/// Centralized so the xdg notify helpers and the foreign-toplevel requests
+/// below put the same bytes on the wire for the same state change.
+pub(crate) fn window_state_command(state: &'static str, id: u32, on: bool) -> viewport_ipc::Event {
+    viewport_ipc::Event::ShellCommand {
+        command: format!("window.{state}.set"),
+        args: vec![id.to_string(), u8::from(on).to_string()],
+    }
+}
+
 /// Acting on the window list from outside: `rofi -show window`, wlrctl, a
 /// taskbar with a click-to-focus list.
 impl crate::foreign_toplevel::ForeignToplevelHandler for ViewportState {
@@ -441,30 +453,21 @@ impl crate::foreign_toplevel::ForeignToplevelHandler for ViewportState {
         if !crate::apply::set_view_fullscreen(self, id, fullscreen) {
             return;
         }
-        self.notify(&viewport_ipc::Event::ShellCommand {
-            command: "window.fullscreen.set".to_owned(),
-            args: vec![id.to_string(), u8::from(fullscreen).to_string()],
-        });
+        self.notify(&window_state_command("fullscreen", id, fullscreen));
     }
 
     fn maximize_toplevel(&mut self, id: u32, maximized: bool) {
         if !crate::apply::set_view_maximized(self, id, maximized) {
             return;
         }
-        self.notify(&viewport_ipc::Event::ShellCommand {
-            command: "window.maximized.set".to_owned(),
-            args: vec![id.to_string(), u8::from(maximized).to_string()],
-        });
+        self.notify(&window_state_command("maximized", id, maximized));
     }
 
     fn minimize_toplevel(&mut self, id: u32, minimized: bool) {
         if !crate::apply::set_view_minimized(self, id, minimized) {
             return;
         }
-        self.notify(&viewport_ipc::Event::ShellCommand {
-            command: "window.minimized.set".to_owned(),
-            args: vec![id.to_string(), u8::from(minimized).to_string()],
-        });
+        self.notify(&window_state_command("minimized", id, minimized));
     }
 }
 

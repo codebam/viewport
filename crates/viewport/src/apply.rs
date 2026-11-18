@@ -9,6 +9,7 @@
 use smithay::output::{Mode as OutputMode, Output, Scale};
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
 use smithay::utils::{Transform as SmithayTransform, SERIAL_COUNTER};
+use smithay::wayland::shell::xdg::ToplevelSurface;
 
 use viewport_ipc::request::{ModeRequest, OutputConfigure};
 use viewport_ipc::{Event, Request, Transform};
@@ -2229,6 +2230,21 @@ pub(crate) fn configure_x11_fullscreen(state: &mut ViewportState, id: u32) {
     }
 }
 
+/// Set or unset one state bit in an xdg toplevel's pending state.
+///
+/// Only the state flip: the caller keeps its own configure — `send_configure`
+/// when answering a client's request, `send_pending_configure` when applying
+/// state from elsewhere — so the timing of each path is unchanged.
+pub(crate) fn set_toplevel_state(toplevel: &ToplevelSurface, state: xdg_toplevel::State, on: bool) {
+    toplevel.with_pending_state(|pending| {
+        if on {
+            pending.states.set(state);
+        } else {
+            pending.states.unset(state);
+        }
+    });
+}
+
 /// Apply fullscreen state to either kind of managed client.
 ///
 /// Resizing the hole is not enough: applications rearrange their own layout
@@ -2239,13 +2255,7 @@ pub(crate) fn set_view_fullscreen(state: &mut ViewportState, id: u32, fullscreen
         return false;
     };
     if let Some(toplevel) = window.toplevel() {
-        toplevel.with_pending_state(|pending| {
-            if fullscreen {
-                pending.states.set(xdg_toplevel::State::Fullscreen);
-            } else {
-                pending.states.unset(xdg_toplevel::State::Fullscreen);
-            }
-        });
+        set_toplevel_state(toplevel, xdg_toplevel::State::Fullscreen, fullscreen);
         toplevel.send_pending_configure();
     } else if let Some(x11) = window.x11_surface() {
         if let Err(e) = x11.set_fullscreen(fullscreen) {
@@ -2279,13 +2289,7 @@ pub(crate) fn set_view_maximized(state: &mut ViewportState, id: u32, maximized: 
         return false;
     };
     if let Some(toplevel) = window.toplevel() {
-        toplevel.with_pending_state(|pending| {
-            if maximized {
-                pending.states.set(xdg_toplevel::State::Maximized);
-            } else {
-                pending.states.unset(xdg_toplevel::State::Maximized);
-            }
-        });
+        set_toplevel_state(toplevel, xdg_toplevel::State::Maximized, maximized);
         toplevel.send_pending_configure();
     } else if let Some(x11) = window.x11_surface() {
         if let Err(e) = x11.set_maximized(maximized) {
