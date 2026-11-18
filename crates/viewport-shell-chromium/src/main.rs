@@ -45,7 +45,7 @@ use std::time::Duration;
 use anyhow::{anyhow, Context as _, Result};
 use serde_json::{json, Value};
 
-use viewport_shell_bridge::{Line, Options};
+use viewport_shell_bridge::{DocumentGuard, Line, Options};
 
 /// The name the page calls to reach the compositor.
 ///
@@ -216,233 +216,6 @@ fn guard_critical(message: &Value) -> bool {
     }
 }
 
-/// What the page's main frame is, and which execution context belongs to it.
-///
-/// A page target has one agent and many frames. `Runtime.addBinding` installs
-/// the binding in every execution context in the target, and the injected shim
-/// only refuses to build `window.webkit` in a subframe — a page that knows the
-/// binding's name could still call `__viewport_send` directly from an iframe.
-/// So messages are accepted only from the tracked default context of the main
-/// frame, and only while the main frame's URL passes the origin policy.
-///
-/// Whether queued events may be evaluated into the document.
-///
-/// Two facts, and the gate is their conjunction: the document is *loaded*
-/// (`Page.loadEventFired` has fired for the frame the guard is tracking) and
-/// its origin passes the policy. Kept apart from URL knowledge because they
-/// answer different questions at different times: a committed navigation
-/// names a URL long before its document's scripts have run, and both backends
-/// used to open the gate on that bookkeeping — CEF on the reload's own
-/// `Page.reload` method result, Chromium on
-/// `Page.frameNavigated`/`executionContextCreated` — and drained queued
-/// events into a document whose listener did not exist yet. What was queued
-/// during a reload was what was lost.
-#[derive(Default)]
-struct LoadGate {
-    /// Whether the current document has loaded. `false` at startup, across a
-    /// reload, and across a navigation until the new document's load event.
-    loaded: bool,
-    /// Whether a URL is known and passes the policy. Separate so the gate
-    /// cannot open for a document that navigated away.
-    url_allowed: Option<bool>,
-}
-
-impl LoadGate {
-    fn reload_requested(&mut self) {
-        self.loaded = false;
-    }
-
-    /// Frame bookkeeping named a main URL. It does not open the gate: the
-    /// navigation may still be committing.
-    fn frame_navigated(&mut self, url: Option<&str>) {
-        self.loaded = false;
-        self.url_allowed = Some(url.is_some_and(viewport_ipc::js::shell_url_allowed));
-    }
-
-    /// Context bookkeeping: a cleared or replaced main-frame context is the
-    /// old document going away, so the gate closes until its load event.
-    fn context_created(&mut self) {
-        self.loaded = false;
-    }
-
-    /// The document has loaded. The one event that can open the gate.
-    fn load_event_fired(&mut self) {
-        self.loaded = true;
-    }
-
-    fn ready(&self) -> bool {
-        self.loaded && self.url_allowed.unwrap_or(false)
-    }
-}
-
-/// The document the origin policy is enforced against.
-///
-/// Every state here is client-controlled input read back from DevTools, and
-/// every field is optional because the answer to "which document is this" is
-/// genuinely unknown until the frame tree or a navigation names one.
-///
-/// The bridge talks two directions, and both have to be guarded:
-///
-/// * outbound, the compositor's events are evaluated into the page — but
-///   only into a page that is still the shell. A document that navigated or
-///   was redirected elsewhere must not be handed the desktop's clipboard,
-///   notifications or session state, so the gate's URL answer is re-checked
-///   before every drain of the queue.
-/// * inbound, a page-to-compositor message is accepted only from the main
-///   frame's default context. A subframe is a different document, and the
-///   shim only refuses to build `window.webkit` in a subframe — a page that
-///   knows the binding's name could still call `__viewport_send` directly
-///   from an iframe.
-#[derive(Default)]
-struct FrameGuard {
-    main_frame: Option<String>,
-    main_url: Option<String>,
-    main_context: Option<i64>,
-    /// The newest default context seen for each frame, because
-    /// `Runtime.enable` can report contexts before `Page.getFrameTree` has
-    /// told us which frame is the main one.
-    contexts: Vec<(String, i64)>,
-}
-
-impl FrameGuard {
-    /// Fold one DevTools message in. True when it was frame bookkeeping.
-    fn note(&mut self, message: &Value) -> bool {
-        self.note_frame_tree(message)
-            || self.note_frame_navigated(message)
-            || self.note_context_created(message)
-            || self.note_contexts_cleared(message)
-    }
-
-    fn note_frame_tree(&mut self, message: &Value) -> bool {
-        let Some(frame) = message.pointer("/result/frameTree/frame") else {
-            return false;
-        };
-        self.set_main_frame(frame);
-        true
-    }
-
-    fn note_frame_navigated(&mut self, message: &Value) -> bool {
-        if message.get("method").and_then(Value::as_str) != Some("Page.frameNavigated") {
-            return false;
-        }
-        let Some(frame) = message.get("params").and_then(|params| params.get("frame")) else {
-            return true;
-        };
-        // A subframe navigation is not a navigation of the shell document.
-        let top = match frame.get("parentId") {
-            None | Some(Value::Null) => true,
-            Some(_) => false,
-        };
-        if top {
-            self.set_main_frame(frame);
-            // A cross-document navigation replaces the default context. Until
-            // its `executionContextCreated` arrives, fail closed rather than
-            // accept messages from the outgoing document.
-            if let Some(frame_id) = self.main_frame.clone() {
-                self.contexts.retain(|(id, _)| id != &frame_id);
-            }
-            self.main_context = None;
-        }
-        true
-    }
-
-    fn note_context_created(&mut self, message: &Value) -> bool {
-        if message.get("method").and_then(Value::as_str) != Some("Runtime.executionContextCreated")
-        {
-            return false;
-        }
-        let Some(context) = message
-            .get("params")
-            .and_then(|params| params.get("context"))
-        else {
-            return true;
-        };
-        let Some(aux) = context.get("auxData") else {
-            return true;
-        };
-        if aux.get("isDefault").and_then(Value::as_bool) != Some(true) {
-            return true;
-        }
-        let (Some(frame_id), Some(context_id)) = (
-            aux.get("frameId").and_then(Value::as_str),
-            context.get("id").and_then(Value::as_i64),
-        ) else {
-            return true;
-        };
-        self.contexts.retain(|(id, _)| id != frame_id);
-        self.contexts.push((frame_id.to_owned(), context_id));
-        if self.contexts.len() > 64 {
-            self.contexts.remove(0);
-        }
-        if self.main_frame.as_deref() == Some(frame_id) {
-            self.main_context = Some(context_id);
-        }
-        true
-    }
-
-    fn note_contexts_cleared(&mut self, message: &Value) -> bool {
-        if message.get("method").and_then(Value::as_str) != Some("Runtime.executionContextsCleared")
-        {
-            return false;
-        }
-        self.contexts.clear();
-        self.main_context = None;
-        true
-    }
-
-    /// Forget the URL the origin policy was checking.
-    ///
-    /// The frame id and contexts stay: a `Page.getFrameTree` reply fills the
-    /// URL back in, and until then the guard refuses what it cannot place.
-    fn forget_url(&mut self) {
-        self.main_url = None;
-    }
-
-    fn set_main_frame(&mut self, frame: &Value) {
-        let Some(id) = frame.get("id").and_then(Value::as_str) else {
-            return;
-        };
-        let url = frame.get("url").and_then(Value::as_str).unwrap_or("");
-        self.main_frame = Some(id.to_owned());
-        self.main_url = Some(url.to_owned());
-        self.main_context = self
-            .contexts
-            .iter()
-            .rev()
-            .find(|(context_frame, _)| context_frame == id)
-            .map(|(_, context)| *context);
-    }
-
-    /// Whether a binding call came from the main frame's own default context.
-    fn context_allows(&self, context: Option<i64>) -> bool {
-        match (self.main_context, context) {
-            (Some(main), Some(called)) => main == called,
-            _ => false,
-        }
-    }
-
-    /// Whether the main frame is on an origin the bridge may speak from.
-    fn url_allows(&self) -> bool {
-        match self.main_url.as_deref() {
-            Some(url) => viewport_ipc::js::shell_url_allowed(url),
-            None => false,
-        }
-    }
-
-    /// Whether events may be evaluated into the current document.
-    ///
-    /// Before the frame tree arrives (`None`) the URL the browser was started
-    /// with already passed the policy, so waiting events are allowed. Once a
-    /// URL is known, navigation away from the allowed origin stops events at
-    /// the door instead of handing them to the remote document.
-    fn events_allowed(&self) -> bool {
-        match self.main_url.as_deref() {
-            Some(url) => viewport_ipc::js::shell_url_allowed(url),
-            None => true,
-        }
-    }
-}
-
 fn run(browser: &mut Browser, options: &Options) -> Result<()> {
     // Bounded like the GTK and servo backends' inbound queues. The two
     // readers — the compositor socket and the DevTools pipe — are both
@@ -465,7 +238,11 @@ fn run(browser: &mut Browser, options: &Options) -> Result<()> {
     // Until both are true, anything from the compositor waits: a script
     // evaluated against a page that does not exist is dropped on the floor,
     // and the compositor starts talking the moment it accepts the connection.
-    let mut guard = FrameGuard::default();
+    //
+    // The load half of `ready` is tracked by the gate inside, so no
+    // bookkeeping message can open it: see `LoadGate` for the race this
+    // closes.
+    let mut doc = DocumentGuard::default();
     // One line per session when a message is refused, not one per message:
     // a subframe that keeps trying must not become the log.
     let mut warned_drop = false;
@@ -476,9 +253,6 @@ fn run(browser: &mut Browser, options: &Options) -> Result<()> {
     // and every message the page sends arrives in triplicate.
     let mut attaching = false;
     let mut ready = false;
-    // The load half of `ready`, tracked by the gate so no bookkeeping message
-    // can open it: see `LoadGate` for the race this closes.
-    let mut gate = LoadGate::default();
     let mut queued: VecDeque<String> = VecDeque::new();
     // A reload that arrived before there was a session to send it to. The
     // message is not page data and must not be queued as if it were; it is
@@ -503,7 +277,7 @@ fn run(browser: &mut Browser, options: &Options) -> Result<()> {
         // closed: forget the URL, hold events, and ask the browser to name
         // its frame tree again.
         if GUARD_STALE.swap(false, Ordering::AcqRel) {
-            guard.forget_url();
+            doc.guard.forget_url();
             ready = false;
             waiting_for_url = true;
             tracing::warn!("the shell's frame state is stale; waiting for a fresh frame tree");
@@ -521,7 +295,7 @@ fn run(browser: &mut Browser, options: &Options) -> Result<()> {
                 return Ok(());
             }
             Incoming::Compositor(Line::Event(json)) => {
-                if !guard.events_allowed() {
+                if !doc.guard.events_allowed() {
                     if !warned_drop {
                         warned_drop = true;
                         tracing::warn!(
@@ -536,7 +310,7 @@ fn run(browser: &mut Browser, options: &Options) -> Result<()> {
                     tracing::info!("reloading the shell");
                     if let Some(session) = reload_target(session.as_deref(), &mut pending_reload) {
                         ready = false;
-                        gate.reload_requested();
+                        doc.gate.reload_requested();
                         browser.call(
                             &mut next_id,
                             session,
@@ -575,7 +349,7 @@ fn run(browser: &mut Browser, options: &Options) -> Result<()> {
                         // that is being replaced.
                         pending_reload = false;
                         ready = false;
-                        gate.reload_requested();
+                        doc.gate.reload_requested();
                         let session = session.as_deref().expect("just set");
                         browser.call(
                             &mut next_id,
@@ -590,11 +364,11 @@ fn run(browser: &mut Browser, options: &Options) -> Result<()> {
                         // queued events wait rather than being evaluated into
                         // a document that is still coming up; if the URL is
                         // known and disallowed, the queue is dropped outright.
-                        ready = gate.ready();
+                        ready = doc.gate.ready();
                         if ready {
                             let session = session.as_deref().expect("just set");
                             drain_queued(browser, &mut next_id, session, &mut queued)?;
-                        } else if guard.main_url.is_some() && !waiting_for_url {
+                        } else if doc.guard.main_url.is_some() && !waiting_for_url {
                             queued.clear();
                             tracing::warn!(
                                 "dropping queued compositor events: the shell left the allowed origin"
@@ -616,24 +390,17 @@ fn run(browser: &mut Browser, options: &Options) -> Result<()> {
                     continue;
                 }
 
-                if guard.note(&message) {
+                if doc.note(&message) {
                     // The frame tree or a navigation just arrived. The URL is
                     // now known, but the gate does not open on bookkeeping:
                     // a committed navigation is not a loaded document, and
-                    // the queue waits for its load event.
-                    if waiting_for_url && guard.main_url.is_some() {
+                    // the queue waits for its load event. The gate wiring
+                    // itself rides the note — see `DocumentGuard::note`.
+                    if waiting_for_url && doc.guard.main_url.is_some() {
                         waiting_for_url = false;
                     }
-                    gate.frame_navigated(guard.main_url.as_deref());
-                    // Context bookkeeping rides the same note — a cleared or
-                    // replaced execution context is the old document going
-                    // away, which is what the gate exists to hold events back
-                    // from.
-                    if guard.main_context.is_none() {
-                        gate.context_created();
-                    }
-                    if !waiting_for_url && !ready && guard.main_url.is_some() {
-                        ready = gate.ready();
+                    if !waiting_for_url && !ready && doc.guard.main_url.is_some() {
+                        ready = doc.gate.ready();
                         if ready {
                             if let Some(session) = session.as_deref() {
                                 drain_queued(browser, &mut next_id, session, &mut queued)?;
@@ -644,7 +411,7 @@ fn run(browser: &mut Browser, options: &Options) -> Result<()> {
                 }
 
                 if let Some((payload, context_id)) = binding_called(&message) {
-                    if guard.context_allows(Some(context_id)) && guard.url_allows() {
+                    if doc.guard.context_allows(Some(context_id)) && doc.guard.url_allows() {
                         out.send(payload);
                     } else if !warned_drop {
                         warned_drop = true;
@@ -667,11 +434,11 @@ fn run(browser: &mut Browser, options: &Options) -> Result<()> {
                 // loaded, its scripts have run, and the listener the events are
                 // dispatched to exists.
                 if message.get("method").and_then(Value::as_str) == Some("Page.loadEventFired") {
-                    if waiting_for_url && guard.main_url.is_some() {
+                    if waiting_for_url && doc.guard.main_url.is_some() {
                         waiting_for_url = false;
                     }
-                    gate.load_event_fired();
-                    ready = session.is_some() && gate.ready() && !waiting_for_url;
+                    doc.gate.load_event_fired();
+                    ready = session.is_some() && doc.gate.ready() && !waiting_for_url;
                     // The new document is up, so the events that arrived while
                     // it was loading can go to it. The attach branch above
                     // drains only on first attach, which a reload does not
@@ -679,9 +446,9 @@ fn run(browser: &mut Browser, options: &Options) -> Result<()> {
                     // `output.layout` and `session.restore` replay sent across
                     // a reload sat in the queue for the life of the process.
                     if let Some(session) = session.as_deref() {
-                        if gate.ready() && !waiting_for_url {
+                        if doc.gate.ready() && !waiting_for_url {
                             drain_queued(browser, &mut next_id, session, &mut queued)?;
-                        } else if guard.main_url.is_some() && !waiting_for_url {
+                        } else if doc.guard.main_url.is_some() && !waiting_for_url {
                             queued.clear();
                             tracing::warn!(
                                 "dropping queued compositor events: the shell left the allowed origin"
@@ -1032,98 +799,6 @@ impl Browser {
 mod tests {
     use super::*;
 
-    /// The reload gate opens on a load event, and on nothing before it.
-    ///
-    /// `ready` used to be re-opened by the frame bookkeeping itself —
-    /// `Page.frameNavigated` fires the moment navigation commits, long before
-    /// the new document's module scripts have attached their listener — and
-    /// by the reload's own `Page.reload` method result in the CEF twin of
-    /// this gate. Events drained between the commit and the load went into a
-    /// document nobody was listening on and were lost.
-    #[test]
-    fn the_reload_gate_opens_on_the_load_event_alone() {
-        let mut gate = LoadGate::default();
-
-        // A reload closes the gate and nothing else happens yet.
-        gate.reload_requested();
-        assert!(!gate.ready(), "the gate is closed across a reload");
-
-        // The navigation commits: frame bookkeeping, not a load. The gate
-        // stays shut, however good the URL looks.
-        gate.frame_navigated(Some("file:///shell/index.html"));
-        assert!(
-            !gate.ready(),
-            "a committed navigation is not a loaded document"
-        );
-
-        // An execution context arriving is not a load either — this is the
-        // exact event that used to re-open the gate.
-        gate.context_created();
-        assert!(!gate.ready());
-
-        // The load event is the one thing that opens it.
-        gate.load_event_fired();
-        assert!(gate.ready());
-    }
-
-    /// A replaced execution context closes the gate on a document that had
-    /// already loaded.
-    ///
-    /// The sibling test above pins that context bookkeeping is not a load —
-    /// but before this fix `context_created` was a no-op on the state and
-    /// never wired into the note handler, so it asserted nothing at all:
-    /// the gate was already shut for the reload and stayed shut for the
-    /// wrong reason. A cleared or replaced main-frame context is the old
-    /// document going away — `Page.frameNavigated` drops the tracked
-    /// contexts (`guard.main_context.is_none()`) before the new document's
-    /// `executionContextCreated` arrives — so a gate that is *open* must
-    /// close when one is announced, and only the new document's own load
-    /// event may open it again.
-    #[test]
-    fn a_replaced_context_closes_the_reload_gate() {
-        let mut gate = LoadGate::default();
-        // The gate is a conjunction, so the URL half has to be satisfied
-        // before "open" means anything: without this the test would fail at
-        // both commits for the wrong reason.
-        gate.frame_navigated(Some("file:///shell/index.html"));
-        gate.load_event_fired(); // gate open, document loaded
-        assert!(gate.ready(), "the gate is open on the loaded document");
-        gate.context_created(); // a NEW context replaced the old one
-        assert!(
-            !gate.ready(),
-            "a replaced execution context closes the gate until the new document loads"
-        );
-        gate.load_event_fired();
-        assert!(gate.ready(), "the new document's own load reopens it");
-    }
-
-    /// And the initial attach: the frame tree naming a good URL does not
-    /// open the gate before the document has loaded, either.
-    #[test]
-    fn the_first_frame_tree_does_not_open_the_gate() {
-        let mut gate = LoadGate::default();
-        gate.frame_navigated(Some("file:///shell/index.html"));
-        assert!(!gate.ready(), "waiting for the load event");
-        gate.load_event_fired();
-        assert!(gate.ready());
-
-        // A second navigation closes the gate again until its own load.
-        gate.frame_navigated(Some("file:///shell/index.html"));
-        assert!(!gate.ready());
-        gate.load_event_fired();
-        assert!(gate.ready());
-    }
-
-    /// A document that navigated away from an allowed origin keeps the gate
-    /// shut even when its load event fires.
-    #[test]
-    fn a_disallowed_origin_keeps_the_gate_shut() {
-        let mut gate = LoadGate::default();
-        gate.frame_navigated(Some("https://example.com/"));
-        gate.load_event_fired();
-        assert!(!gate.ready());
-    }
-
     #[test]
     fn a_page_target_is_recognised_and_a_service_worker_is_not() {
         let page = json!({
@@ -1169,61 +844,6 @@ mod tests {
         let reply = json!({"id": 2, "result": {"sessionId": "S1"}});
         assert_eq!(attached_session(&reply).as_deref(), Some("S1"));
         assert_eq!(attached_session(&json!({"id": 2, "result": {}})), None);
-    }
-
-    /// A subframe's default context is not the shell's, even though it has the
-    /// same `isDefault` flag.
-    #[test]
-    fn only_the_main_frames_context_can_speak() {
-        let mut guard = FrameGuard::default();
-        guard.note(&json!({
-            "method": "Page.frameNavigated",
-            "params": {"frame": {"id": "main", "url": "file:///shell/index.html"}},
-        }));
-        guard.note(&json!({
-            "method": "Runtime.executionContextCreated",
-            "params": {"context": {
-                "id": 1,
-                "auxData": {"isDefault": true, "frameId": "main"},
-            }},
-        }));
-        guard.note(&json!({
-            "method": "Runtime.executionContextCreated",
-            "params": {"context": {
-                "id": 2,
-                "auxData": {"isDefault": true, "frameId": "sub"},
-            }},
-        }));
-        assert!(guard.context_allows(Some(1)));
-        assert!(!guard.context_allows(Some(2)));
-        assert!(!guard.context_allows(None));
-    }
-
-    #[test]
-    fn navigating_the_main_frame_away_revokes_the_bridge() {
-        let mut guard = FrameGuard::default();
-        guard.note(&json!({
-            "method": "Page.frameNavigated",
-            "params": {"frame": {"id": "main", "url": "http://localhost:3000/"}},
-        }));
-        guard.note(&json!({
-            "method": "Runtime.executionContextCreated",
-            "params": {"context": {
-                "id": 1,
-                "auxData": {"isDefault": true, "frameId": "main"},
-            }},
-        }));
-        assert!(guard.url_allows());
-        assert!(guard.context_allows(Some(1)));
-
-        guard.note(&json!({
-            "method": "Page.frameNavigated",
-            "params": {"frame": {"id": "main", "url": "https://example.com/"}},
-        }));
-        // The new document's context has not been announced yet; until it is,
-        // the old context id is not accepted either.
-        assert!(!guard.url_allows());
-        assert!(!guard.context_allows(Some(1)));
     }
 
     /// A producer faster than the consumer must not grow the channel, but the

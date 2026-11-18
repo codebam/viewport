@@ -9,7 +9,15 @@
 // direction may block which thread. So that lives here, once.
 //
 // Nothing in this crate knows what an engine is. It hands lines up and takes
-// lines down.
+// lines down. The second shared thing is the frame/origin bookkeeping that
+// decides which document those lines may reach (`guard`): the DevTools
+// messages that name the main frame and its execution contexts are the same
+// CDP JSON whichever engine produced them, so the frame guard and the load
+// gate live here once too, with the wiring between them.
+
+mod guard;
+
+pub use guard::{DocumentGuard, FrameGuard, LoadGate};
 
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Read as _, Write};

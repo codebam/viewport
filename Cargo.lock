@@ -2827,6 +2827,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tracing",
+ "viewport-ipc",
 ]
 
 [[package]]

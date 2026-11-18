@@ -7,6 +7,10 @@ repository.workspace = true
 description = "The control-socket half of a Viewport shell that runs in a process of its own"
 
 [dependencies]
+# The origin policy the frame guard checks URLs against — protocol, not
+# engine: `js::shell_url_allowed` is the same file:/loopback rule every
+# backend enforces.
+viewport-ipc.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 serde.workspace = true

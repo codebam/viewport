@@ -32,7 +32,7 @@ use anyhow::{anyhow, Context as _, Result};
 use cef::{args::Args, rc::*, *};
 use serde_json::{json, Value};
 
-use viewport_shell_bridge::{Line, Options};
+use viewport_shell_bridge::{DocumentGuard, Line, Options};
 
 /// The name the page calls to reach the compositor, wrapped by
 /// `viewport_ipc::js::BRIDGE_SHIM` in the name the shell was written against.
@@ -52,19 +52,23 @@ static OUT: OnceLock<viewport_shell_bridge::Sender> = OnceLock::new();
 /// what keeps that from being a second copy of everything the desktop does
 /// when the page never arrives at all.
 static QUEUE: Mutex<VecDeque<String>> = Mutex::new(VecDeque::new());
-static READY: AtomicBool = AtomicBool::new(false);
 
-/// Whether the current document has loaded, which only
-/// `Page.loadEventFired` says and only a reload unsays.
+/// The document the bridge speaks to: which frame and context may talk, and
+/// whether queued events may be evaluated into it yet.
 ///
-/// `READY` alone could be reopened by the frame bookkeeping: the reload's own
-/// `Page.reload` method result flows through `on_dev_tools_method_result`
-/// microseconds after `READY.store(false)`, the guard's URL is still the old
-/// document's (known allowed), and the gate swapped itself open — draining
-/// the queue into the document that was going away and leaving every event
-/// that arrived during the reload to be evaluated the same way. The load
-/// event is the one thing that says the document the events are for exists.
-static LOADED: AtomicBool = AtomicBool::new(false);
+/// The gate half exists because of a reload bug this backend had: the
+/// reload's own `Page.reload` method result flowed through
+/// `on_dev_tools_method_result` microseconds after the gate was closed, the
+/// guard's URL was still the old document's (known allowed), and the gate
+/// swapped itself open — draining the queue into the document that was going
+/// away and leaving every event that arrived during the reload to be
+/// evaluated the same way. The load event is the one thing that says the
+/// document the events are for exists.
+///
+/// The rule is the shared one now (`viewport_shell_bridge::DocumentGuard`):
+/// only `Page.loadEventFired` opens the gate; navigation and context
+/// bookkeeping close it; method results never open it.
+static DOCUMENT: Mutex<DocumentGuard> = Mutex::new(DocumentGuard::new());
 
 /// A reload that arrived before there was a browser to send it to.
 ///
@@ -89,144 +93,6 @@ static TASK_DROP_WARNED: AtomicBool = AtomicBool::new(false);
 
 /// Whether a refused page-to-compositor message has already been logged.
 static DROP_WARNED: AtomicBool = AtomicBool::new(false);
-
-/// The main frame and the execution context that belongs to it.
-///
-/// `Runtime.addBinding` installs the binding in every execution context of the
-/// page target, including subframes, and the injected shim only refuses to
-/// install `window.webkit` in a subframe. A message is therefore accepted only
-/// from the tracked default context of the main frame, and only while the main
-/// frame's URL passes the origin policy.
-static FRAME_GUARD: Mutex<FrameGuard> = Mutex::new(FrameGuard {
-    main_frame: None,
-    main_url: None,
-    main_context: None,
-    contexts: Vec::new(),
-});
-
-/// What the page's main frame is, and which context belongs to it.
-struct FrameGuard {
-    main_frame: Option<String>,
-    main_url: Option<String>,
-    main_context: Option<i64>,
-    /// The newest default context seen for each frame. `Runtime.enable` can
-    /// report contexts before `Page.getFrameTree` names the main frame.
-    contexts: Vec<(String, i64)>,
-}
-
-impl FrameGuard {
-    /// Fold a DevTools event in. Frame bookkeeping only; the event loop has
-    /// already decided what to do with the ones it cares about.
-    fn note_event(&mut self, method: &str, params: &[u8]) {
-        match method {
-            "Page.frameNavigated" => {
-                let Ok(value) = serde_json::from_slice::<Value>(params) else {
-                    return;
-                };
-                let Some(frame) = value.get("frame") else {
-                    return;
-                };
-                let top = match frame.get("parentId") {
-                    None | Some(Value::Null) => true,
-                    Some(_) => false,
-                };
-                if top {
-                    self.set_main_frame(frame);
-                    // A cross-document navigation replaces the default
-                    // context; fail closed until its context is announced.
-                    if let Some(frame_id) = self.main_frame.clone() {
-                        self.contexts.retain(|(id, _)| id != &frame_id);
-                    }
-                    self.main_context = None;
-                }
-            }
-            "Runtime.executionContextCreated" => {
-                let Ok(value) = serde_json::from_slice::<Value>(params) else {
-                    return;
-                };
-                let Some(context) = value.get("context") else {
-                    return;
-                };
-                let Some(aux) = context.get("auxData") else {
-                    return;
-                };
-                if aux.get("isDefault").and_then(Value::as_bool) != Some(true) {
-                    return;
-                }
-                let (Some(frame_id), Some(context_id)) = (
-                    aux.get("frameId").and_then(Value::as_str),
-                    context.get("id").and_then(Value::as_i64),
-                ) else {
-                    return;
-                };
-                self.contexts.retain(|(id, _)| id != frame_id);
-                self.contexts.push((frame_id.to_owned(), context_id));
-                if self.contexts.len() > 64 {
-                    self.contexts.remove(0);
-                }
-                if self.main_frame.as_deref() == Some(frame_id) {
-                    self.main_context = Some(context_id);
-                }
-            }
-            "Runtime.executionContextsCleared" => {
-                self.contexts.clear();
-                self.main_context = None;
-            }
-            _ => {}
-        }
-    }
-
-    /// Fold a `Page.getFrameTree` method result in. The result wrapper is the
-    /// same `{"frameTree": ...}` shape CDP returns from the method.
-    fn note_result(&mut self, result: &[u8]) {
-        let Ok(value) = serde_json::from_slice::<Value>(result) else {
-            return;
-        };
-        if let Some(frame) = value.pointer("/frameTree/frame") {
-            self.set_main_frame(frame);
-        }
-    }
-
-    fn set_main_frame(&mut self, frame: &Value) {
-        let Some(id) = frame.get("id").and_then(Value::as_str) else {
-            return;
-        };
-        let url = frame.get("url").and_then(Value::as_str).unwrap_or("");
-        self.main_frame = Some(id.to_owned());
-        self.main_url = Some(url.to_owned());
-        self.main_context = self
-            .contexts
-            .iter()
-            .rev()
-            .find(|(context_frame, _)| context_frame == id)
-            .map(|(_, context)| *context);
-    }
-
-    /// Whether a binding call came from the main frame's own default context.
-    fn context_allows(&self, context: Option<i64>) -> bool {
-        match (self.main_context, context) {
-            (Some(main), Some(called)) => main == called,
-            _ => false,
-        }
-    }
-
-    /// Whether the main frame is on an origin the bridge may speak from.
-    fn url_allows(&self) -> bool {
-        match self.main_url.as_deref() {
-            Some(url) => viewport_ipc::js::shell_url_allowed(url),
-            None => false,
-        }
-    }
-
-    /// Whether a known main-frame URL passes the policy. `None` is false: the
-    /// initial queued events wait for `Page.getFrameTree`/`frameNavigated`
-    /// instead of being evaluated into a document whose origin is unknown.
-    fn url_known_allowed(&self) -> bool {
-        self.main_url
-            .as_deref()
-            .is_some_and(viewport_ipc::js::shell_url_allowed)
-    }
-}
 
 /// How many events may wait for a page that never arrives.
 const QUEUE_LIMIT: usize = 512;
@@ -662,20 +528,24 @@ fn install_bridge(browser: &Browser) {
     // is too late for.
     evaluate(browser, viewport_ipc::js::BRIDGE_SHIM);
 
-    // Ready only once the frame tree has named a main URL that passes the
-    // policy; until then queued events wait for the frame-tree result rather
-    // than being evaluated into a document whose origin is not yet known.
-    let allowed = FRAME_GUARD
-        .lock()
-        .map(|guard| guard.url_known_allowed())
-        .unwrap_or(false);
-    READY.store(allowed, Ordering::SeqCst);
+    // The frame bookkeeping arrives through the observer, not here, so the
+    // URL is likely still unknown: the gate starts shut, and only the
+    // document's own `Page.loadEventFired` opens it. Queued events wait for
+    // that load event rather than being evaluated into a document whose
+    // origin — and whose listener — is not yet known; the first install
+    // drains on the load event now, not here.
+    if let Ok(mut doc) = DOCUMENT.lock() {
+        let url = doc.guard.main_url.clone();
+        doc.gate.frame_navigated(url.as_deref());
+    }
     if PENDING_RELOAD.swap(false, Ordering::SeqCst) {
         // Asked for before the page existed. The shim above is installed, so
         // the document this reload produces has it; the queued events wait for
         // its load event rather than going into the document being replaced.
         tracing::info!("reloading the shell as soon as its page exists");
-        READY.store(false, Ordering::SeqCst);
+        if let Ok(mut doc) = DOCUMENT.lock() {
+            doc.gate.reload_requested();
+        }
         send(
             browser,
             &json!({
@@ -684,16 +554,6 @@ fn install_bridge(browser: &Browser) {
                 "params": {"ignoreCache": true},
             }),
         );
-        return;
-    }
-    if allowed {
-        let waiting: Vec<String> = QUEUE
-            .lock()
-            .map(|mut q| q.drain(..).collect())
-            .unwrap_or_default();
-        for json in waiting {
-            evaluate(browser, &viewport_ipc::js::dispatch(&json));
-        }
     }
 }
 
@@ -786,6 +646,35 @@ fn evaluate(browser: &Browser, script: &str) {
     );
 }
 
+/// Wrap a DevTools event as the frame bookkeeping `DocumentGuard::note`
+/// folds, or `None` when it is not bookkeeping.
+///
+/// Only the three methods that move the document are wrapped; everything
+/// else a page can flood — binding calls, load events, console output — is
+/// answered `None` without its parameters being parsed. Malformed params are
+/// `None` too: bookkeeping that cannot be read is not noted, which fails
+/// closed rather than guessing what it said.
+fn bookkeeping_event(method: &str, params: &[u8]) -> Option<Value> {
+    match method {
+        "Page.frameNavigated" | "Runtime.executionContextCreated" => {
+            let params = serde_json::from_slice::<Value>(params).ok()?;
+            Some(json!({"method": method, "params": params}))
+        }
+        "Runtime.executionContextsCleared" => Some(json!({"method": method})),
+        _ => None,
+    }
+}
+
+/// Wrap a `Page.getFrameTree` method result as the bookkeeping
+/// `DocumentGuard::note` folds, or `None` when the result is not a frame tree
+/// or cannot be read. The result wrapper is the same `{"frameTree": ...}`
+/// shape CDP returns from the method.
+fn frame_tree_result(result: &[u8]) -> Option<Value> {
+    let result = serde_json::from_slice::<Value>(result).ok()?;
+    result.pointer("/frameTree/frame")?;
+    Some(json!({"result": result}))
+}
+
 wrap_dev_tools_message_observer! {
     struct ShellObserver;
 
@@ -802,10 +691,13 @@ wrap_dev_tools_message_observer! {
             let method = method.map(CefString::to_string);
             // Track the main frame and its execution context before deciding
             // anything about a message. This is what lets `bindingCalled`
-            // below tell the shell document from an iframe.
+            // below tell the shell document from an iframe. The gate wiring
+            // rides the note: bookkeeping closes the gate, never opens it.
             if let (Some(method), Some(params)) = (method.as_deref(), params) {
-                if let Ok(mut guard) = FRAME_GUARD.lock() {
-                    guard.note_event(method, params);
+                if let Some(wrapped) = bookkeeping_event(method, params) {
+                    if let Ok(mut doc) = DOCUMENT.lock() {
+                        doc.note(&wrapped);
+                    }
                 }
             }
             // A document was replaced — a reload, or the shell navigating. The
@@ -813,34 +705,44 @@ wrap_dev_tools_message_observer! {
             // any of its scripts run, so this only has to let messages flow
             // again: the same signal the chromium backend waits on.
             if method.as_deref() == Some("Page.loadEventFired") {
+                // The document is up; this is the one thing that opens the
+                // gate. Both answers are read under one lock, released before
+                // the queue is touched.
+                let (ready, url_known) = DOCUMENT
+                    .lock()
+                    .map(|mut doc| (doc.load_event_fired(), doc.guard.main_url.is_some()))
+                    .unwrap_or((false, false));
                 let present = BROWSER.with(|slot| slot.borrow().is_some());
-                // The document is up; this is the one thing that says so.
-                LOADED.store(true, Ordering::SeqCst);
-                READY.store(present, Ordering::SeqCst);
                 // And hand over what arrived while the document was loading.
-                // `install_bridge` drains only on first window creation, which
-                // a reload does not produce, so without this every event sent
-                // across a reload stayed in the queue for ever.
-                if present {
-                    let allowed = FRAME_GUARD
-                        .lock()
-                        .map(|guard| guard.url_known_allowed())
-                        .unwrap_or(false);
-                    READY.store(allowed, Ordering::SeqCst);
+                // `install_bridge` no longer drains at all, so without this
+                // every event sent across a reload stayed in the queue for
+                // ever.
+                if present && ready {
                     let waiting: Vec<String> = QUEUE
                         .lock()
                         .map(|mut queue| queue.drain(..).collect())
                         .unwrap_or_default();
                     if let Some(browser) = browser {
-                        if allowed {
-                            for json in waiting {
-                                evaluate(browser, &viewport_ipc::js::dispatch(&json));
-                            }
-                        } else if !waiting.is_empty() {
-                            tracing::warn!(
-                                "dropping queued compositor events: the shell left the allowed origin"
-                            );
+                        for json in waiting {
+                            evaluate(browser, &viewport_ipc::js::dispatch(&json));
                         }
+                    }
+                } else if url_known {
+                    // The URL is known and the gate is shut: the shell left
+                    // the allowed origin, so the queue goes — the chromium
+                    // backend's drop branch.
+                    let dropped = QUEUE
+                        .lock()
+                        .map(|mut queue| {
+                            let dropped = queue.len();
+                            queue.clear();
+                            dropped
+                        })
+                        .unwrap_or(0);
+                    if dropped > 0 {
+                        tracing::warn!(
+                            "dropping queued compositor events: the shell left the allowed origin"
+                        );
                     }
                 }
                 return;
@@ -863,8 +765,8 @@ wrap_dev_tools_message_observer! {
                 return;
             };
             let context = params.get("executionContextId").and_then(Value::as_i64);
-            let allowed = match FRAME_GUARD.lock() {
-                Ok(guard) => guard.context_allows(context) && guard.url_allows(),
+            let allowed = match DOCUMENT.lock() {
+                Ok(doc) => doc.guard.context_allows(context) && doc.guard.url_allows(),
                 Err(_) => false,
             };
             if !allowed {
@@ -887,6 +789,11 @@ wrap_dev_tools_message_observer! {
 
         /// A DevTools command result. `Page.getFrameTree` is the one whose
         /// result names the main frame; the rest are not our business.
+        ///
+        /// The gate wiring rides the note — bookkeeping closes the gate —
+        /// and nothing here opens it: `Page.reload`'s own result arrives
+        /// while the old document is still up, and opening on it was how a
+        /// reload drained its queue into a page that was going away.
         fn on_dev_tools_method_result(
             &self,
             _browser: Option<&mut Browser>,
@@ -900,26 +807,11 @@ wrap_dev_tools_message_observer! {
             let Some(result) = result else {
                 return;
             };
-            let mut known_allowed = false;
-            if let Ok(mut guard) = FRAME_GUARD.lock() {
-                guard.note_result(result);
-                known_allowed = guard.url_known_allowed();
-            }
-            // The gate is ready *and* loaded. The method result alone says
-            // nothing about the document: `Page.reload`'s own result arrives
-            // here while the old document is still up, and opening on it was
-            // how a reload drained its queue into a page that was going away.
-            if known_allowed && LOADED.load(Ordering::SeqCst) && !READY.swap(true, Ordering::SeqCst)
-            {
-                if let Some(browser) = _browser {
-                    let waiting: Vec<String> = QUEUE
-                        .lock()
-                        .map(|mut queue| queue.drain(..).collect())
-                        .unwrap_or_default();
-                    for json in waiting {
-                        evaluate(browser, &viewport_ipc::js::dispatch(&json));
-                    }
-                }
+            let Some(wrapped) = frame_tree_result(result) else {
+                return;
+            };
+            if let Ok(mut doc) = DOCUMENT.lock() {
+                doc.note(&wrapped);
             }
         }
     }
@@ -953,11 +845,12 @@ wrap_task! {
                     // `Page.loadEventFired`, which the DevTools observer
                     // watches for: events that arrive meanwhile would land in
                     // a document that is going away and never be seen again.
-                    // `LOADED` with it — the reload's own method result flows
-                    // through the result path above, which reads it, and a
-                    // stale `true` there was how this gate reopened itself.
-                    READY.store(false, Ordering::SeqCst);
-                    LOADED.store(false, Ordering::SeqCst);
+                    // The reload's own method result flows through the result
+                    // path above, which only closes the gate further — it
+                    // cannot reopen it.
+                    if let Ok(mut doc) = DOCUMENT.lock() {
+                        doc.gate.reload_requested();
+                    }
                     send(browser, &json!({
                         "id": next_id(),
                         "method": "Page.reload",
@@ -965,11 +858,8 @@ wrap_task! {
                     }));
                     return;
                 }
-                let allowed = FRAME_GUARD
-                    .lock()
-                    .map(|guard| guard.url_known_allowed())
-                    .unwrap_or(false);
-                if READY.load(Ordering::SeqCst) && allowed {
+                let ready = DOCUMENT.lock().map(|doc| doc.gate.ready()).unwrap_or(false);
+                if ready {
                     evaluate(browser, &viewport_ipc::js::dispatch(&self.json));
                 } else {
                     enqueue(self.json.clone());
@@ -986,5 +876,108 @@ wrap_task! {
         fn execute(&self) {
             quit_message_loop();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The adapter shapes round-trip into the shared guard: a wrapped event
+    /// is exactly what `DocumentGuard::note` folds.
+    #[test]
+    fn a_frame_navigation_round_trips_into_bookkeeping() {
+        let wrapped = bookkeeping_event(
+            "Page.frameNavigated",
+            br#"{"frame":{"id":"main","url":"file:///shell/index.html"}}"#,
+        )
+        .expect("a frame navigation is bookkeeping");
+        let mut doc = DocumentGuard::default();
+        assert!(doc.note(&wrapped));
+        assert_eq!(
+            doc.guard.main_url.as_deref(),
+            Some("file:///shell/index.html")
+        );
+        assert!(!doc.gate.ready(), "bookkeeping names the URL, not a load");
+    }
+
+    #[test]
+    fn a_context_created_round_trips_into_bookkeeping() {
+        let mut doc = DocumentGuard::default();
+        let wrapped = bookkeeping_event(
+            "Page.frameNavigated",
+            br#"{"frame":{"id":"main","url":"file:///shell/index.html"}}"#,
+        )
+        .expect("bookkeeping");
+        assert!(doc.note(&wrapped));
+        let wrapped = bookkeeping_event(
+            "Runtime.executionContextCreated",
+            br#"{"context":{"id":1,"auxData":{"isDefault":true,"frameId":"main"}}}"#,
+        )
+        .expect("a context announcement is bookkeeping");
+        assert!(doc.note(&wrapped));
+        assert!(doc.guard.context_allows(Some(1)));
+        assert!(!doc.guard.context_allows(Some(2)));
+    }
+
+    #[test]
+    fn contexts_cleared_round_trips_without_params() {
+        let mut doc = DocumentGuard::default();
+        let wrapped = bookkeeping_event(
+            "Page.frameNavigated",
+            br#"{"frame":{"id":"main","url":"file:///shell/index.html"}}"#,
+        )
+        .expect("bookkeeping");
+        assert!(doc.note(&wrapped));
+        let wrapped = bookkeeping_event(
+            "Runtime.executionContextCreated",
+            br#"{"context":{"id":1,"auxData":{"isDefault":true,"frameId":"main"}}}"#,
+        )
+        .expect("bookkeeping");
+        assert!(doc.note(&wrapped));
+
+        // Clearing carries no params at all.
+        let wrapped =
+            bookkeeping_event("Runtime.executionContextsCleared", b"").expect("bookkeeping");
+        assert!(doc.note(&wrapped));
+        assert!(!doc.guard.context_allows(Some(1)));
+        assert!(!doc.gate.ready(), "the old document is going away");
+    }
+
+    #[test]
+    fn malformed_params_are_not_noted() {
+        assert!(bookkeeping_event("Page.frameNavigated", b"{not json").is_none());
+        assert!(bookkeeping_event("Runtime.executionContextCreated", b"\xff").is_none());
+    }
+
+    #[test]
+    fn other_methods_are_not_parsed() {
+        // Not bookkeeping, so not even parsed — malformed params included.
+        assert!(bookkeeping_event("Runtime.bindingCalled", b"{not json").is_none());
+        assert!(bookkeeping_event("Page.loadEventFired", b"{not json").is_none());
+        assert!(bookkeeping_event("Runtime.consoleAPICalled", b"{}").is_none());
+    }
+
+    #[test]
+    fn a_frame_tree_result_round_trips_into_bookkeeping() {
+        let wrapped = frame_tree_result(
+            br#"{"frameTree":{"frame":{"id":"main","url":"file:///shell/index.html"}}}"#,
+        )
+        .expect("a frame tree is bookkeeping");
+        let mut doc = DocumentGuard::default();
+        assert!(doc.note(&wrapped));
+        assert_eq!(
+            doc.guard.main_url.as_deref(),
+            Some("file:///shell/index.html")
+        );
+        assert!(!doc.gate.ready(), "the frame tree does not open the gate");
+        assert!(doc.load_event_fired());
+    }
+
+    #[test]
+    fn a_malformed_or_unrelated_result_is_not_noted() {
+        assert!(frame_tree_result(b"{not json").is_none());
+        // The reload's own result is not frame bookkeeping.
+        assert!(frame_tree_result(b"{}").is_none());
     }
 }
