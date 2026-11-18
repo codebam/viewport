@@ -113,6 +113,33 @@ the symptoms and the log lines to look for, and whoever first boots this on a
 laptop with a discrete card beside an integrated one should expect to find
 something; that is not pessimism, it is what an untested path is worth.
 
+The first boot on two cards is worth doing in this order, because each step
+exercises one more of the rules above:
+
+1. One output on each card, a window on each. Both draw; the log names both
+   devices and their renderers (`udev.rs` reports per card).
+2. A client whose buffers the scanout card cannot import — a Vulkan client
+   with a modifier the other card does not support, or `cross_gpu =
+   "portable"` left off so the advertisement is the scanout card's own. The
+   per-surface feedback line fires, then the copy: watch for the shadow
+   allocation and whether it went through the GPU blit or the CPU readback
+   (`cross_gpu.rs` logs which). The window draws on the foreign screen.
+3. Drag that window between the two screens, and resize it while it spans
+   neither cleanly. The shadow cache is per source buffer: a new buffer is a
+   new copy, a kept one is not copied again.
+4. Screencopy and a portal share of the foreign screen — the capture path
+   reads the same shadow the scanout shows.
+5. Unplug one card's monitor (or disable the output) with windows on it, and
+   plug it back. `on_gpu_removed`/`on_gpu_added` and the lease fallback are
+   the paths a hotplug exercises; the windows should land on the surviving
+   screen and come back.
+
+What a failure looks like is in `docs/debugging.md`: a hole where a window
+should be, one log line naming the format, the modifier and the cards, or a
+surface dropped from a screen. Record which of the five steps reached which
+line — that is the difference between "the copy works" and "the copy works
+on this pair of drivers".
+
 ## Runtime-togglable settings
 
 The aim is that every setting in the config file can also be changed at

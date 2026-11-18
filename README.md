@@ -250,7 +250,8 @@ The reference material lives in `docs/`:
 | [`docs/debugging.md`](docs/debugging.md) | screenshotting the session from inside it, pointer capture, XWayland, and what happens when the shell stops answering |
 | [`docs/shell-backends.md`](docs/shell-backends.md) | the six engines the shell can be drawn by — WPE, WebKitGTK, Chromium driven, Chromium embedded, Servo driven, Servo embedded — what changes between them and what does not, and how to run the shell process by hand against a live session |
 | [`docs/benchmarks.md`](docs/benchmarks.md) | Viewport measured against sway and niri on real scanout — frame rate, CPU per frame, memory, and the second monitor while the first is saturated |
-| [`docs/roadmap.md`](docs/roadmap.md) | what is still missing — the cross-GPU fallback copy, the multi-GPU path's testing — the settings that are file-only by design rather than by a missing setter, and why each open one belongs in here rather than in a daemon beside it |
+| [`docs/roadmap.md`](docs/roadmap.md) | what is still missing — the multi-GPU path's two-card run, the settings that are file-only by design rather than by a missing setter, and why each open one belongs in here rather than in a daemon beside it |
+| [`docs/stability.md`](docs/stability.md) | what a version number promises — the covered surfaces (IPC, config, extension contracts, CLI, module, packages), the additive-evolution rules, the backend tiers, and what 1.0.0 commits to |
 
 Two shells ship with it, at opposite ends of the same protocol:
 

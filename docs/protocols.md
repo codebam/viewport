@@ -112,6 +112,43 @@ against that description's reference white, and equality means no headroom. So
 setting does on Windows, and for the same reason — the state, not the
 capability, is what a client is told.
 
+### Verifying the auto-HDR transitions
+
+`render:cm_auto_hdr` switches an output into HDR for a fullscreen HDR window
+and back when the window stops qualifying. The switch runs off
+`auto_hdr_pending`, and every path that moves the filter's inputs —
+fullscreen, minimized, visible — has to set it. The client-request paths do
+that through `notify_fullscreen`; the compositor-driven paths (the shell's
+`view.fullscreen`, a taskbar's foreign-toplevel request, `view.minimized`,
+`view.visible`) do it in the shared mutators. 0.10.0 fixed the paths that
+did not, so an HDR game put fullscreen by the shell or the taskbar no longer
+keeps the screen in SDR until something else happens to move.
+
+To verify on an HDR-capable screen, watch the `hdr` flag while driving the
+transitions — each should flip it within a second:
+
+```sh
+watch -n1 "viewport msg -t output.query | jq -r '.outputs[] | select(.name==\"DP-1\") | .hdr'"
+```
+
+Start from an SDR screen: auto-HDR undoes only the switches it made, so a
+display somebody put into HDR by hand stays there. Then, with HDR content
+windowed (an HDR10 clip in `mpv --vo=gpu-next`, or an HDR game):
+
+1. Fullscreen it from the taskbar — the foreign-toplevel path. `hdr` true.
+2. Back to windowed. False.
+3. Fullscreen over the socket: `viewport msg -t view.fullscreen --id N
+   --fullscreen true`. True; `false` returns it.
+4. Minimize while fullscreen, by taskbar or `view.minimized`. False;
+   restore returns it.
+5. Hide it: `view.visible` false. False; showing it returns it.
+6. Close it while fullscreen. False — the close handlers already marked
+   this one.
+
+A window with a `no_auto_hdr` rule never causes a switch, by design, and
+`render:cm_enabled` needs a restart to change — a global cannot be taken
+back from clients that already bound it.
+
 ## Background effects
 
 `ext-background-effect-v1` is advertised only when blur behind a surface is a
