@@ -283,9 +283,13 @@ Landed for wallpaper extensions: a descriptor may carry an `options` schema
 toggle / choice), validated at registration. The settings panel draws a
 "Wallpaper extension" section from the selected extension's schema and writes
 each change back through the new `config.wallpaper_options` runtime setter. The
-gradient demo declares `angle` and `duration`. Widget extensions already carry
-per-instance options in `bar_items`; drawing those as panel controls is the same
-schema pattern left as a follow-up. Documented in `docs/wallpaper-extension.md`.
+gradient demo declares `angle` and `duration`. Widget extensions now declare the
+same `options` schema, and the panel draws a "Widget extensions" section with a
+group per custom widget on the bar — a `bar_items` override is the list it reads
+when present, otherwise `bar_widgets` — writing each change back through
+`config.bar_items` / `config.bar_widgets`, which remounts the widget on the new
+options. A name placed twice is drawn per instance. Documented in
+`docs/wallpaper-extension.md` and `docs/custom-widgets.md`.
 
 ### 5. A notification extension hook — done
 

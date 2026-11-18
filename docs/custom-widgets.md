@@ -153,6 +153,46 @@ for something new uses the shell's own network reach. That is how the built-in
 `weather` widget works: the page can `fetch()` from the network even where it
 cannot read `/proc`.
 
+## Declaring options for the settings panel
+
+A widget can declare its options so the settings panel draws them as real
+controls — tuning it then does not mean editing JSON. Add an `options` array to
+the descriptor, the same shape a
+[wallpaper extension](wallpaper-extension.md#declaring-options-for-the-settings-panel)
+uses:
+
+```js
+registerWidget('world-clock', {
+  options: [
+    { key: 'zone', label: 'Timezone', type: 'text', default: 'UTC' },
+    { key: 'seconds', label: 'Show seconds', type: 'toggle', default: false },
+  ],
+  mount(el) { /* ... */ },
+  update(el, ctx) { /* reads ctx.options.zone, ctx.options.seconds */ },
+});
+```
+
+Each entry is `{ key, type, ... }`:
+
+- `key` — the option's name in the entry's `options` object (required).
+- `type` — `number`, `text`, `toggle` or `choice` (required).
+- `label` — the row label in the panel; defaults to `key`.
+- `default` — the value shown when the entry has not set it.
+- `number` also takes `min`, `max` and `step`; `choice` takes `choices` (an
+  array of values).
+
+The schema is validated at registration: a malformed one is refused, so a bad
+script cannot break the panel. The panel draws a "Widget extensions" section
+with a group per custom widget on the bar — a `bar_items` override is the list
+it reads when present, otherwise `bar_widgets`, exactly as the bar draws them.
+A name placed twice is two groups, labelled by occurrence, each with its own
+options. Changing a control sends `config.bar_items` or `config.bar_widgets`
+with the whole list (the one entry's options changed), the compositor
+re-announces the config, and the widget is remounted on the new values — the
+same remount a config edit causes, since a widget is held by its name and its
+options. Nothing is written to disk; it is the same runtime tier as the bar
+list itself. An option that is not a single value is left to the config file.
+
 ## Lifecycle and errors
 
 The shell loads every widget script named in the manifest, in name order, as

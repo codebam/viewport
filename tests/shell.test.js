@@ -7419,6 +7419,136 @@ if (mode === 'scrolling') {
   emit({ type: 'config', layout: mode, rules: HARNESS_RULES });
 }
 
+/* --- widget extension options in the settings panel --------------------
+ *
+ * The widget half of the wallpaper options pattern: a custom widget may
+ * declare an options schema, the panel draws it as real controls per bar
+ * instance, and changing one writes the whole bar list back through
+ * config.bar_widgets (or config.bar_items when an override is present). The
+ * schema is validated at registration; a repeated name is drawn per instance.
+ * --------------------------------------------------------------------- */
+{
+  const sh = globalThis.__shell;
+  const reg = sh.registerWidget;
+  const registry = sh.widgetRegistry;
+  const hasApi = typeof reg === 'function' && registry instanceof Map;
+  const throws = (fn) => { try { fn(); return false; } catch (_) { return true; } };
+  const all = (root, cls) => {
+    const found = [];
+    const stack = [...root.children];
+    while (stack.length) {
+      const el = stack.shift();
+      if (el._classes.has(cls)) found.push(el);
+      stack.push(...el.children);
+    }
+    return found;
+  };
+  const dialog = () => sh.settingsEl.children[0];
+  const controls = (label) => all(dialog(), 'settings-row')
+    .find((row) => row.children[0]?.textContent === label)
+    ?.children[1]?.children ?? [];
+  const headings = () => all(dialog(), 'settings-heading').map((h) => h.textContent);
+
+  let registered = false;
+  if (hasApi) {
+    try {
+      reg('optwidget', {
+        options: [
+          { key: 'zone', label: 'Zone', type: 'text', default: 'UTC' },
+          { key: 'hours', label: 'Hours', type: 'number', default: 24, min: 1, max: 48 },
+        ],
+        mount() {}, update() {},
+      });
+      registered = registry.has('optwidget');
+    } catch (_) { /* reported below */ }
+  }
+  check('a widget with an options schema registers', registered);
+  check('a malformed widget options schema is rejected',
+    hasApi && throws(() => reg('badwidget', { options: 'nope', mount() {} })));
+  check('a widget option entry without a key is rejected',
+    hasApi && throws(() => reg('badwidget2', { options: [{ type: 'number' }], mount() {} })));
+
+  /* Placed through bar_widgets: the panel reads the instance's options. */
+  emit({ type: 'config', layout: mode, rules: HARNESS_RULES,
+    bar_widgets: [{ type: 'custom', name: 'optwidget',
+      options: { zone: 'Asia/Tokyo', hours: 12 } }] });
+  emit({ type: 'shell.command', command: 'settings', args: [] });
+  check('the widget option is drawn from the config value',
+    hasApi && controls('Zone')[0]?.value === 'Asia/Tokyo'
+      && controls('Hours')[0]?.value === '12');
+
+  /* Changing a control writes the whole bar list back, the one key changed. */
+  const input = controls('Hours')[0];
+  const before = sent.length;
+  if (hasApi && input) {
+    input.value = '36';
+    (input.listeners.change ?? []).forEach((fn) => fn({}));
+  }
+  check('changing a widget option writes config.bar_widgets',
+    hasApi && sent.slice(before).some((m) => m.type === 'config.bar_widgets'
+      && m.widgets?.[0]?.options?.hours === 36
+      && m.widgets?.[0]?.options?.zone === 'Asia/Tokyo'));
+
+  /* A bar_items override wins over bar_widgets, exactly as the bar draws it. */
+  emit({ type: 'shell.command', command: 'settings', args: [] });
+  emit({ type: 'config', layout: mode, rules: HARNESS_RULES,
+    bar_items: ['clock', { type: 'custom', name: 'optwidget', options: { zone: 'UTC' } }],
+    bar_widgets: [{ type: 'custom', name: 'optwidget', options: { zone: 'Asia/Tokyo' } }] });
+  emit({ type: 'shell.command', command: 'settings', args: [] });
+  check('a bar_items override is the list the panel reads',
+    hasApi && controls('Zone')[0]?.value === 'UTC');
+  const oinput = controls('Zone')[0];
+  const obefore = sent.length;
+  if (hasApi && oinput) {
+    oinput.value = 'Europe/London';
+    (oinput.listeners.change ?? []).forEach((fn) => fn({}));
+  }
+  check('changing under an override writes config.bar_items',
+    hasApi && sent.slice(obefore).some((m) => m.type === 'config.bar_items'
+      && m.items?.[1]?.options?.zone === 'Europe/London'
+      && m.items?.[0] === 'clock'));
+
+  /* A repeated name is two instances, drawn and labelled separately. */
+  emit({ type: 'shell.command', command: 'settings', args: [] });
+  emit({ type: 'config', layout: mode, rules: HARNESS_RULES,
+    bar_widgets: [
+      { type: 'custom', name: 'optwidget', options: { zone: 'UTC' } },
+      { type: 'custom', name: 'optwidget', options: { zone: 'Asia/Tokyo' } },
+    ] });
+  emit({ type: 'shell.command', command: 'settings', args: [] });
+  check('a repeated widget name is labelled by occurrence',
+    hasApi && headings().includes('optwidget (1)')
+      && headings().includes('optwidget (2)'));
+  const first = controls('Zone')[0];
+  const fbefore = sent.length;
+  if (hasApi && first) {
+    first.value = 'Europe/Paris';
+    (first.listeners.change ?? []).forEach((fn) => fn({}));
+  }
+  check('changing the first instance leaves the second alone',
+    hasApi && sent.slice(fbefore).some((m) => m.type === 'config.bar_widgets'
+      && m.widgets?.[0]?.options?.zone === 'Europe/Paris'
+      && m.widgets?.[1]?.options?.zone === 'Asia/Tokyo'));
+
+  /* A widget with no schema, and no custom widget at all, draw no section. */
+  if (hasApi) {
+    try { reg('plainwidget', { mount() {} }); } catch (_) { /* reported below */ }
+  }
+  emit({ type: 'shell.command', command: 'settings', args: [] });
+  emit({ type: 'config', layout: mode, rules: HARNESS_RULES,
+    bar_widgets: [{ type: 'custom', name: 'plainwidget' }] });
+  emit({ type: 'shell.command', command: 'settings', args: [] });
+  check('a widget without a schema draws no option rows',
+    hasApi && controls('Zone').length === 0);
+  emit({ type: 'shell.command', command: 'settings', args: [] });
+  emit({ type: 'config', layout: mode, rules: HARNESS_RULES, bar_widgets: [] });
+  emit({ type: 'shell.command', command: 'settings', args: [] });
+  check('no custom widget draws no widget extensions section',
+    hasApi && !headings().includes('Widget extensions'));
+  emit({ type: 'shell.command', command: 'settings', args: [] });
+  emit({ type: 'config', layout: mode, rules: HARNESS_RULES });
+}
+
 /* --- notification extensions -------------------------------------------
  *
  * The fourth extension family member: a script registers a descriptor that may

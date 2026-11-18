@@ -26,6 +26,14 @@ to summarise rather than to duplicate.
   `xdg.configFile` writes, which a generated `--config` file would shadow
   rather than merge with. The config-rendering options are not written in
   this mode, and a warning names any that are set alongside it.
+- Widget extensions can declare an `options` schema, the same shape wallpaper
+  extensions use, and the settings panel draws it as real controls: a "Widget
+  extensions" section with a group per custom widget on the bar (a `bar_items`
+  override wins over `bar_widgets`, as the bar draws it), a repeated name drawn
+  per instance. Changing a control writes the whole bar list back through
+  `config.bar_items` / `config.bar_widgets`, remounting the widget on the new
+  options. The schema is validated at registration. Documented in
+  `docs/custom-widgets.md`.
 
 ## [0.9.0] - 2026-11-17
 

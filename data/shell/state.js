@@ -390,7 +390,8 @@ const wallpaperSources = new Map();
 
 function validWidgetDescriptor(name, descriptor) {
   return typeof name === 'string' && /^[A-Za-z0-9_-]+$/.test(name)
-    && descriptor && typeof descriptor.mount === 'function';
+    && descriptor && typeof descriptor.mount === 'function'
+    && validOptionsSchema(descriptor.options);
 }
 
 /* Public extension API, the widget half of registerLayout. One name has one
@@ -426,8 +427,10 @@ function registerWidget(name, descriptor) {
 /* An extension may declare its options so the settings panel can draw them as
  * real controls. The schema is an array of { key, type, ... } entries; absent
  * is fine (the extension just has no panel controls). A malformed schema is
- * refused at registration so a bad script cannot break the panel later. */
-function validWallpaperOptionsSchema(options) {
+ * refused at registration so a bad script cannot break the panel later. The
+ * shape is shared by every extension family that carries options — wallpaper
+ * and widget — so the panel reads them the same way. */
+function validOptionsSchema(options) {
   if (options === undefined) return true;
   if (!Array.isArray(options)) return false;
   return options.every((o) => o && typeof o.key === 'string'
@@ -437,7 +440,7 @@ function validWallpaperOptionsSchema(options) {
 function validWallpaperDescriptor(name, descriptor) {
   return typeof name === 'string' && /^[A-Za-z0-9_-]+$/.test(name)
     && descriptor && typeof descriptor.apply === 'function'
-    && validWallpaperOptionsSchema(descriptor.options);
+    && validOptionsSchema(descriptor.options);
 }
 
 /* Public extension API, the wallpaper half of registerLayout / registerWidget.

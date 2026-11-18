@@ -244,6 +244,7 @@ function renderSettings() {
       settingsAppearance(),
       settingsWallpaper(),
       settingsWallpaperExtension(),
+      settingsWidgetExtensions(),
       settingsGaps(),
       settingsBorder(),
       settingsDisplays(),
@@ -549,55 +550,127 @@ function settingsWallpaperExtension() {
 
   for (const opt of schema) {
     const value = current[opt.key] !== undefined ? current[opt.key] : opt.default;
-    let control = null;
-    if (opt.type === 'number') {
-      const input = document.createElement('input');
-      input.type = 'number';
-      input.className = 'settings-number';
-      if (opt.min !== undefined) input.min = String(opt.min);
-      if (opt.max !== undefined) input.max = String(opt.max);
-      if (opt.step !== undefined) input.step = String(opt.step);
-      const fallback = String(value ?? opt.default ?? 0);
-      input.value = fallback;
-      const commit = () => {
-        let n = Number.parseFloat(String(input.value ?? ''));
-        if (!Number.isFinite(n)) { input.value = fallback; return; }
-        if (opt.min !== undefined && n < opt.min) n = opt.min;
-        if (opt.max !== undefined && n > opt.max) n = opt.max;
-        if (n !== value) setOption(opt.key, n);
-      };
-      input.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') { e.preventDefault?.(); commit(); }
-        else if (e.key === 'Escape') {
-          e.preventDefault?.(); e.stopPropagation?.(); input.value = fallback;
-        }
-      });
-      input.addEventListener('change', commit);
-      input.addEventListener('blur', commit);
-      control = input;
-    } else if (opt.type === 'toggle') {
-      control = settingsToggle(value === true, (on) => setOption(opt.key, on));
-    } else if (opt.type === 'choice' && Array.isArray(opt.choices)) {
-      control = settingsChoice(opt.choices.map((c) => [c, String(c)]), value,
-        (v) => setOption(opt.key, v));
-    } else if (opt.type === 'text') {
-      const input = document.createElement('input');
-      input.type = 'text';
-      input.className = 'settings-text';
-      const fallback = value !== undefined ? String(value) : '';
-      input.value = fallback;
-      const commit = () => setOption(opt.key, input.value);
-      input.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') { e.preventDefault?.(); commit(); }
-        else if (e.key === 'Escape') {
-          e.preventDefault?.(); e.stopPropagation?.(); input.value = fallback;
-        }
-      });
-      input.addEventListener('change', commit);
-      input.addEventListener('blur', commit);
-      control = input;
-    }
+    const control = settingsOptionControl(opt, value, setOption);
     if (control) section.append(settingsRow(opt.label || opt.key, control));
+  }
+  return section;
+}
+
+/* One option control drawn from a schema entry — the shared shape every
+ * extension family that carries options (wallpaper, widget) uses, so the panel
+ * reads the same `options` array the same way. `setOption(key, value)` writes
+ * the changed value back through whichever runtime setter the caller owns.
+ * Returns null for a type the panel does not draw. */
+function settingsOptionControl(opt, value, setOption) {
+  if (opt.type === 'number') {
+    const input = document.createElement('input');
+    input.type = 'number';
+    input.className = 'settings-number';
+    if (opt.min !== undefined) input.min = String(opt.min);
+    if (opt.max !== undefined) input.max = String(opt.max);
+    if (opt.step !== undefined) input.step = String(opt.step);
+    const fallback = String(value ?? opt.default ?? 0);
+    input.value = fallback;
+    const commit = () => {
+      let n = Number.parseFloat(String(input.value ?? ''));
+      if (!Number.isFinite(n)) { input.value = fallback; return; }
+      if (opt.min !== undefined && n < opt.min) n = opt.min;
+      if (opt.max !== undefined && n > opt.max) n = opt.max;
+      if (n !== value) setOption(opt.key, n);
+    };
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault?.(); commit(); }
+      else if (e.key === 'Escape') {
+        e.preventDefault?.(); e.stopPropagation?.(); input.value = fallback;
+      }
+    });
+    input.addEventListener('change', commit);
+    input.addEventListener('blur', commit);
+    return input;
+  }
+  if (opt.type === 'toggle') {
+    return settingsToggle(value === true, (on) => setOption(opt.key, on));
+  }
+  if (opt.type === 'choice' && Array.isArray(opt.choices)) {
+    return settingsChoice(opt.choices.map((c) => [c, String(c)]), value,
+      (v) => setOption(opt.key, v));
+  }
+  if (opt.type === 'text') {
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'settings-text';
+    const fallback = value !== undefined ? String(value) : '';
+    input.value = fallback;
+    const commit = () => setOption(opt.key, input.value);
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault?.(); commit(); }
+      else if (e.key === 'Escape') {
+        e.preventDefault?.(); e.stopPropagation?.(); input.value = fallback;
+      }
+    });
+    input.addEventListener('change', commit);
+    input.addEventListener('blur', commit);
+    return input;
+  }
+  return null;
+}
+
+/* Each custom bar widget's own options, drawn from the schema it registered
+ * (`descriptor.options`) with the same controls the wallpaper extension uses.
+ * A widget is placed by a `bar_items` override or a `bar_widgets` entry; the
+ * override wins when present, exactly as the bar draws it. Tuning a widget
+ * writes the whole bar list back through `config.bar_items` /
+ * `config.bar_widgets` with that one entry's options changed, which remounts
+ * the widget on the new values — the same remount a config edit causes.
+ * Nothing is drawn for a widget that declared no schema, or when no custom
+ * widget is on the bar. */
+function settingsWidgetExtensions() {
+  const overridden = Array.isArray(shellConfig.bar_items);
+  const list = overridden
+    ? shellConfig.bar_items
+    : (Array.isArray(shellConfig.bar_widgets) ? shellConfig.bar_widgets : []);
+  const setter = overridden ? 'config.bar_items' : 'config.bar_widgets';
+  const payloadKey = overridden ? 'items' : 'widgets';
+
+  /* The custom entries that declared a schema, in bar order. The same name may
+   * sit twice (two world clocks, say); each is its own instance with its own
+   * options, so they are drawn separately and labelled by occurrence. */
+  const instances = [];
+  list.forEach((entry, index) => {
+    if (!entry || typeof entry !== 'object' || entry.type !== 'custom'
+        || typeof entry.name !== 'string') return;
+    const descriptor = widgetRegistry.get(entry.name);
+    const schema = descriptor && Array.isArray(descriptor.options)
+      ? descriptor.options : null;
+    if (!schema || schema.length === 0) return;
+    instances.push({ entry, index, schema });
+  });
+  if (instances.length === 0) return null;
+
+  const section = settingsSection('Widget extensions');
+  const occurrences = new Map();
+  for (const { entry, index, schema } of instances) {
+    const seen = (occurrences.get(entry.name) ?? 0) + 1;
+    occurrences.set(entry.name, seen);
+    const total = instances.filter((i) => i.entry.name === entry.name).length;
+    const heading = total > 1 ? `${entry.name} (${seen})` : entry.name;
+    const current = entry.options && typeof entry.options === 'object'
+      ? entry.options : {};
+    /* The whole list goes back with this one entry's options changed, so the
+       compositor replaces the bar list and the widget remounts on the new
+       options rather than updating in place. */
+    const setOption = (key, value) => {
+      const next = list.slice();
+      next[index] = { ...entry, options: { ...current, [key]: value } };
+      send({ type: setter, [payloadKey]: next });
+    };
+    const group = settingsSection(heading);
+    for (const opt of schema) {
+      const value = current[opt.key] !== undefined ? current[opt.key] : opt.default;
+      const control = settingsOptionControl(opt, value, setOption);
+      if (control) group.append(settingsRow(opt.label || opt.key, control));
+    }
+    section.append(group);
   }
   return section;
 }
