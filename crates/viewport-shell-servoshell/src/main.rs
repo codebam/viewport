@@ -318,11 +318,15 @@ enum Item {
 }
 
 impl Item {
-    /// The item as the injected script reads it.
-    fn to_json(&self) -> serde_json::Value {
+    /// Append the item as the injected script reads it.
+    fn append_json(&self, out: &mut String) {
         match self {
-            Item::Event(json) => serde_json::json!({"kind": "event", "data": json}),
-            Item::Reload => serde_json::json!({"kind": "reload"}),
+            Item::Event(json) => {
+                out.push_str(r#"{"kind":"event","data":"#);
+                out.push_str(&viewport_ipc::js::string_literal(json));
+                out.push('}');
+            }
+            Item::Reload => out.push_str(r#"{"kind":"reload"}"#),
         }
     }
 }
@@ -463,7 +467,7 @@ impl Queue {
     /// or a new page with a reload behind it finds `items.len()` already past
     /// `after`, returns nothing without waiting, and asks again immediately —
     /// a long poll that has become a spin.
-    fn since(&self, after: usize, fresh: bool) -> (usize, Vec<serde_json::Value>) {
+    fn since(&self, after: usize, fresh: bool) -> (usize, String) {
         let mut state = self.state.lock().expect("the queue lock is never poisoned");
         // Asking for what comes after N is the acknowledgement of N. A fresh
         // page asks from 0 and acknowledges nothing, which is why this is a
@@ -486,10 +490,18 @@ impl Queue {
         // have trimmed past `start` while this one waited, and what is left is
         // the oldest anyone can still be given.
         let from = start.clamp(state.base, state.end()) - state.base;
-        (
-            state.end(),
-            state.items[from..].iter().map(Item::to_json).collect(),
-        )
+        // The log holds already-serialized events; the answer is assembled,
+        // not re-serialized: wrapping each one in a Value and serializing the
+        // batch would re-escape and re-allocate the whole stream a second
+        // time per delivery, and again on every retry.
+        let mut items = String::new();
+        for item in &state.items[from..] {
+            if !items.is_empty() {
+                items.push(',');
+            }
+            item.append_json(&mut items);
+        }
+        (state.end(), items)
     }
 }
 
@@ -887,8 +899,8 @@ fn serve_one(
                 respond(stream, 204, "", "", keep)?;
                 return Ok(if keep { Flow::Keep } else { Flow::Close });
             }
-            let batch = serde_json::json!({"next": next, "items": items});
-            respond(stream, 200, "application/json", &batch.to_string(), keep)?;
+            let batch = format!(r#"{{"next":{next},"items":[{items}]}}"#);
+            respond(stream, 200, "application/json", &batch, keep)?;
             Ok(if keep { Flow::Keep } else { Flow::Close })
         }
         _ => {
@@ -1088,6 +1100,11 @@ mod tests {
     use std::sync::mpsc;
 
     use super::*;
+
+    /// The items array contents parsed back the way the page reads them.
+    fn items_of(items: &str) -> Vec<serde_json::Value> {
+        serde_json::from_str(&format!("[{items}]")).expect("the items array is JSON")
+    }
 
     /// A compositor that accepts one connection and hands back what it was
     /// told, so the outbound half can be tested without a compositor.
@@ -1571,6 +1588,7 @@ mod tests {
         // The page that is running: it has read one event, so it is at 1, and
         // the reload is what it has not seen.
         let (next, items) = queue.since(1, false);
+        let items = items_of(&items);
         assert_eq!(next, 2);
         assert_eq!(items.len(), 1);
         assert_eq!(items[0]["kind"], "reload");
@@ -1579,6 +1597,7 @@ mod tests {
         // that died in flight is retried, and only a *later* mark says the
         // page has the earlier one.
         let (next, items) = queue.since(1, false);
+        let items = items_of(&items);
         assert_eq!(next, 2);
         assert_eq!(items.len(), 1);
         assert_eq!(items[0]["kind"], "reload");
@@ -1587,6 +1606,7 @@ mod tests {
         // answered with what is left rather than with the log from the top.
         // There is one page on this bridge and it only ever goes forwards.
         let (next, items) = queue.since(0, false);
+        let items = items_of(&items);
         assert_eq!(next, 2);
         assert_eq!(items.len(), 1);
         assert_eq!(items[0]["kind"], "reload");
@@ -1618,6 +1638,7 @@ mod tests {
         // gets everything the compositor says next.
         queue.push(Item::Event(r#"{"type":"config"}"#.to_owned()));
         let (next, items) = queue.since(0, true);
+        let items = items_of(&items);
         assert_eq!(next, 3);
         assert_eq!(items.len(), 1);
         assert_eq!(items[0]["data"], r#"{"type":"config"}"#);
@@ -1626,6 +1647,7 @@ mod tests {
         // makes a second Mod4+Shift+c work.
         queue.push(Item::Reload);
         let (_, items) = queue.since(3, false);
+        let items = items_of(&items);
         assert_eq!(items.len(), 1);
         assert_eq!(items[0]["kind"], "reload");
     }
@@ -1643,6 +1665,7 @@ mod tests {
 
         // The page polls from 900, which says it has the first 900.
         let (next, items) = queue.since(900, false);
+        let items = items_of(&items);
         assert_eq!(next, 1000);
         assert_eq!(items.len(), 100);
         assert_eq!(
@@ -1659,6 +1682,7 @@ mod tests {
         // And the next poll, from 1000, is what releases them.
         queue.push(Item::Event(r#"{"type":"config"}"#.to_owned()));
         let (next, items) = queue.since(1000, false);
+        let items = items_of(&items);
         assert_eq!(next, 1001, "the mark is still absolute");
         assert_eq!(items.len(), 1);
         assert_eq!(items[0]["data"], r#"{"type":"config"}"#);
@@ -1691,6 +1715,7 @@ mod tests {
 
         queue.push(Item::Event(r#"{"type":"config"}"#.to_owned()));
         let (next, items) = queue.since(0, true);
+        let items = items_of(&items);
         assert_eq!(next, 3, "the mark is still absolute");
         assert_eq!(items.len(), 1, "{items:?}");
         assert_eq!(
@@ -1714,6 +1739,7 @@ mod tests {
         queue.push(Item::Event(r#"{"type":"config"}"#.to_owned()));
 
         let (_, items) = handle.join().expect("the poll returns");
+        let items = items_of(&items);
         assert_eq!(items.len(), 1);
         assert!(
             start.elapsed() >= Duration::from_millis(40),
