@@ -569,9 +569,21 @@ impl WebViewDelegate for Shell {
         // not say which frame or document issued the load, and the page is
         // the only place that knows. This token is what makes the script's
         // check load-bearing rather than advisory.
-        let token_ok = url
-            .query_pairs()
-            .any(|(key, value)| key == "t" && value.as_ref() == self.bridge_token);
+        let mut token_ok = false;
+        let mut batched = false;
+        let mut message: Option<String> = None;
+        for (key, value) in url.query_pairs() {
+            match key.as_ref() {
+                "t" => token_ok |= value.as_ref() == self.bridge_token,
+                "batch" => batched |= value == "1",
+                "m" => {
+                    if message.is_none() {
+                        message = Some(value.into_owned());
+                    }
+                }
+                _ => {}
+            }
+        }
         if !token_ok {
             if !self.warned_bad_token.replace(true) {
                 tracing::warn!("dropping a bridge request without this session's token: {url}");
@@ -581,16 +593,13 @@ impl WebViewDelegate for Shell {
         }
         // `batch=1` says `m` is a line per message, which is what a frame's
         // worth of them is sent as. See `bridge_script`.
-        let batched = url
-            .query_pairs()
-            .any(|(key, value)| key == "batch" && value == "1");
-        match url.query_pairs().find(|(key, _)| key == "m") {
-            Some((_, message)) if batched => {
+        match message {
+            Some(message) if batched => {
                 for message in message.split('\n') {
                     self.out.send(message.to_owned());
                 }
             }
-            Some((_, message)) => self.out.send(message.into_owned()),
+            Some(message) => self.out.send(message),
             None => tracing::warn!("a bridge request carried no message: {url}"),
         }
         // Answered rather than cancelled: a cancelled fetch rejects, and the
