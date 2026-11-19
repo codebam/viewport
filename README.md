@@ -242,6 +242,7 @@ The reference material lives in `docs/`:
 
 | | |
 | --- | --- |
+| [`docs/why-web-shell.md`](docs/why-web-shell.md) | why the desktop chrome is a web page, what the browser does and does not own, the engine choices, and paste-ready answers to the "CSS over IPC?" objection |
 | [`docs/configuration.md`](docs/configuration.md) | the three config tiers, the command-line flags, the default keybindings, dark mode and the portal, media keys, window rules, and the five layout models |
 | [`docs/layout-extension.md`](docs/layout-extension.md) | the contract a sixth layout implements — what it must plan, render and clear, what it may not transform, how session restore works |
 | [`docs/custom-widgets.md`](docs/custom-widgets.md) | the contract a custom bar widget implements — how a local script registers one, what the shell hands it, when each callback runs, and how the manifest places it on the bar |
