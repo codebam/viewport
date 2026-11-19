@@ -4834,8 +4834,9 @@ impl ViewportState {
     /// sends nothing.
     /// The colour cube for an output, with the token that names it.
     ///
-    /// `None` for an output whose profile describes no matrix-and-curve
-    /// transform, which is what leaves the parametric path in place.
+    /// `None` for an output whose profile describes no readable display
+    /// transform — matrix-and-curve or LUT — which is what leaves the
+    /// parametric path in place.
     pub fn icc_cube_for(&self, name: &str) -> Option<(u64, &[[f32; 4]])> {
         self.icc_cubes
             .get(name)

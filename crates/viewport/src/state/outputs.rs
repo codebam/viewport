@@ -1004,10 +1004,10 @@ impl ViewportState {
             }
         };
         // The transform the screen needs, as opposed to the calibration ramp
-        // above: a matrix-and-curve profile says how the display renders, and
-        // the renderer samples the baked cube. Reading it here means a profile
-        // that cannot be understood is said out loud at load time rather than
-        // on the frame somebody's colours come out wrong.
+        // above: a matrix-and-curve or LUT profile says how the display
+        // renders, and the renderer samples the baked cube. Reading it here
+        // means a profile that cannot be understood is said out loud at load
+        // time rather than on the frame somebody's colours come out wrong.
         if !self.cm_enabled {
             // The pipeline is off: the calibration ramp above still applies —
             // it is a KMS gamma ramp, not part of the pipeline — but the cube
@@ -1039,7 +1039,8 @@ impl ViewportState {
             }
             None => {
                 tracing::debug!(
-                    "{name}: {path} describes no RGB matrix-and-curve transform; only its \
+                    "{name}: {path} describes no RGB display transform — neither a \
+                     matrix-and-curve nor a readable PCS-to-device LUT; only its \
                      calibration is used"
                 );
                 self.icc_cubes.remove(name);

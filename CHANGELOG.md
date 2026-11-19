@@ -11,6 +11,27 @@ to summarise rather than to duplicate.
 
 ## [Unreleased]
 
+### Added
+- LUT-described ICC display profiles are transformed, not just calibrated.
+  `outputs.<name>.icc` already read a matrix-and-curve profile backwards into
+  the cube the Vulkan renderer samples; a profile that describes the display
+  as tables instead was refused, and only its `vcgt` ramp applied. The
+  PCS-to-device direction a screen needs is the profile's `B2A`/`B2D` tag, so
+  it is read forwards — nothing is inverted — through the same bake: `B2D1`
+  (v4 float) first, then `B2A1`, then `B2A0` when the relative-colorimetric
+  tag is absent, the order LittleCMS reads an output profile in. The four tag
+  types (`mft1`, `mft2`, `mBA `, `mpet`) decompose into per-channel curves, a
+  3D CLUT and an optional matrix; the CLUT is tetrahedral-interpolated, the
+  interpolation LittleCMS uses by default, the PCS meets the 16-bit tables in
+  1.15 fixed point and the float tag at full scale, and the v4 segmented
+  curves (`curf`, sampled and the three formula types) evaluate as that engine
+  evaluates them. A profile carrying both descriptions keeps the matrix
+  transform it shipped with. Still refused
+  rather than half-read: a device-to-PCS-only (`A2B`) profile, a Lab PCS, a
+  non-RGB device space, and any tag that cannot be read whole. Cross-checked
+  against LittleCMS 2.19's own answer for the same profiles, the check the
+  matrix path already carries.
+
 ## [0.10.0] - 2026-11-18
 
 ### Added

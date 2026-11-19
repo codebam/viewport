@@ -185,32 +185,62 @@ const BRADFORD_D65_TO_D50: Mat3 = [
     [-0.009_232, 0.015_076, 0.751_930],
 ];
 
+/// XYZ in a LUT is 1.15 fixed point — 0xFFFF is just under 2.0, so a PCS
+/// component meets the table at `value × 32768/65535`, not at full scale.
+const XYZ_PCS_SCALE: f64 = 32768.0 / 65535.0;
+
+/// A clamp that does not pass NaN through: `f64::clamp` returns NaN for NaN,
+/// and a cube entry the renderer samples as NaN is a black pixel, not a colour.
+fn finite_clamp(value: f64) -> f64 {
+    if value.is_finite() {
+        value.clamp(0.0, 1.0)
+    } else {
+        0.0
+    }
+}
+
 /// What to send a monitor so that an sRGB picture looks like sRGB.
 ///
 /// A matrix-shaper display profile is three primaries (rXYZ, gXYZ, bXYZ, as PCS
 /// XYZ relative to D50) and three transfer curves (rTRC, gTRC, bTRC, device
 /// value to linear light). Reading it backwards gives the transform the screen
 /// needs: sRGB encoded → linear sRGB → PCS D50 → linear display → display
-/// encoded. `lut` is that function sampled on a cube, which is the form the
-/// renderer can upload as a 3D texture.
+/// encoded. A LUT-described profile says the same thing as a table, and the
+/// direction the screen needs is its `B2A`/`B2D` (PCS → device) tag — forward,
+/// so nothing here inverts a table. Either way, `lut` is that function sampled
+/// on a cube, which is the form the renderer can upload as a 3D texture.
 ///
-/// Profiles whose description is a LUT (`A2B0`/`B2A0`) are refused rather than
-/// half-read: their forward direction is a table, and inverting that is a
-/// different piece of work.
+/// The matrix description is tried first, so a profile that carries both keeps
+/// the transform it shipped with; the LUT is what a profile with no primaries
+/// and curves is read through. What is still refused: a profile whose only
+/// tables run device → PCS (`A2B`), a Lab PCS, a non-RGB device space, and any
+/// tag this cannot read whole — a profile that cannot be understood is not a
+/// reason to guess a transform.
 pub struct DisplayTransform {
-    /// display encoded → linear light, per channel.
-    decode: [Curve; 3],
-    /// PCS XYZ D50 → linear display RGB.
-    from_pcs: Mat3,
+    kind: Kind,
     /// sRGB encoded → PCS XYZ D50.
     srgb_to_pcs: Mat3,
     /// `r + g*N + b*N²` entries, each `[r, g, b, 1.0]`, display encoded.
     lut: Vec<[f32; 4]>,
 }
 
+/// The two ways a display profile can say what the panel does.
+enum Kind {
+    /// Three primaries and three transfer curves, read backwards.
+    Matrix {
+        /// display encoded → linear light, per channel.
+        decode: [Curve; 3],
+        /// PCS XYZ D50 → linear display RGB.
+        from_pcs: Mat3,
+    },
+    /// A PCS → device table, read forwards.
+    Lut(LutPipeline),
+}
+
 impl DisplayTransform {
-    /// Read a matrix-shaper display profile. Anything else is `None`: a
-    /// profile that cannot be understood is not a reason to guess a transform.
+    /// Read a display profile: matrix-shaper first, then a LUT. Anything else
+    /// is `None`: a profile that cannot be understood is not a reason to guess
+    /// a transform.
     pub fn for_profile(profile: &[u8]) -> Option<Self> {
         if profile.len() < 132 || &profile[36..40] != b"acsp" {
             return None;
@@ -220,6 +250,17 @@ impl DisplayTransform {
         if &profile[16..20] != b"RGB " || &profile[20..24] != b"XYZ " {
             return None;
         }
+        let kind = Self::matrix_kind(profile).or_else(|| Self::lut_kind(profile))?;
+        let mut transform = Self {
+            kind,
+            srgb_to_pcs: multiply(&BRADFORD_D65_TO_D50, &SRGB_TO_XYZ_D65),
+            lut: Vec::new(),
+        };
+        transform.lut = transform.bake();
+        Some(transform)
+    }
+
+    fn matrix_kind(profile: &[u8]) -> Option<Kind> {
         let r = xyz_tag(tag_data(profile, b"rXYZ")?)?;
         let g = xyz_tag(tag_data(profile, b"gXYZ")?)?;
         let b = xyz_tag(tag_data(profile, b"bXYZ")?)?;
@@ -230,14 +271,20 @@ impl DisplayTransform {
             Curve::from_tag(tag_data(profile, b"gTRC")?)?,
             Curve::from_tag(tag_data(profile, b"bTRC")?)?,
         ];
-        let mut transform = Self {
-            decode,
-            from_pcs,
-            srgb_to_pcs: multiply(&BRADFORD_D65_TO_D50, &SRGB_TO_XYZ_D65),
-            lut: Vec::new(),
-        };
-        transform.lut = transform.bake();
-        Some(transform)
+        Some(Kind::Matrix { decode, from_pcs })
+    }
+
+    fn lut_kind(profile: &[u8]) -> Option<Kind> {
+        // The order LittleCMS reads an output profile in for relative
+        // colorimetric: the v4 float tag first, then the 16-bit
+        // relative-colorimetric tag, then — only when that tag is absent —
+        // the perceptual one. A tag that is present but cannot be read is a
+        // refusal, not an invitation to try the next: half a transform is
+        // worse than none.
+        let data = tag_data(profile, b"B2D1")
+            .or_else(|| tag_data(profile, b"B2A1"))
+            .or_else(|| tag_data(profile, b"B2A0"))?;
+        Some(Kind::Lut(parse_lut_tag(data)?))
     }
 
     /// The transform itself: an sRGB encoded colour in, the display's encoded
@@ -250,14 +297,33 @@ impl DisplayTransform {
             srgb_decode(srgb[2]),
         ];
         let pcs = mul_vec(&self.srgb_to_pcs, &linear);
-        let device = mul_vec(&self.from_pcs, &pcs);
-        let mut out = [0.0; 3];
-        for (channel, value) in out.iter_mut().enumerate() {
-            *value = self.decode[channel]
-                .invert(device[channel].clamp(0.0, 1.0))
-                .clamp(0.0, 1.0);
+        match &self.kind {
+            Kind::Matrix { decode, from_pcs } => {
+                let device = mul_vec(from_pcs, &pcs);
+                let mut out = [0.0; 3];
+                for (channel, value) in out.iter_mut().enumerate() {
+                    *value = decode[channel]
+                        .invert(device[channel].clamp(0.0, 1.0))
+                        .clamp(0.0, 1.0);
+                }
+                out
+            }
+            Kind::Lut(pipeline) => {
+                // The table itself does the gamut mapping its intent
+                // describes; the screen clips what is left.
+                let scaled = [
+                    pcs[0] * pipeline.pcs_scale,
+                    pcs[1] * pipeline.pcs_scale,
+                    pcs[2] * pipeline.pcs_scale,
+                ];
+                let device = pipeline.eval(scaled);
+                [
+                    finite_clamp(device[0]),
+                    finite_clamp(device[1]),
+                    finite_clamp(device[2]),
+                ]
+            }
         }
-        out
     }
 
     /// The transform on a cube, in the form a 3D texture wants: r varies
@@ -290,23 +356,6 @@ struct Curve {
 }
 
 impl Curve {
-    fn identity() -> Option<Self> {
-        let samples: Vec<f64> = (0..CURVE_SAMPLES)
-            .map(|i| i as f64 / (CURVE_SAMPLES - 1) as f64)
-            .collect();
-        Self::from_samples(samples)
-    }
-
-    fn gamma(gamma: f64) -> Option<Self> {
-        if !(gamma.is_finite() && gamma > 0.0) {
-            return None;
-        }
-        let samples: Vec<f64> = (0..CURVE_SAMPLES)
-            .map(|i| (i as f64 / (CURVE_SAMPLES - 1) as f64).powf(gamma))
-            .collect();
-        Self::from_samples(samples)
-    }
-
     fn from_samples(samples: Vec<f64>) -> Option<Self> {
         if samples.len() < 2 || samples.iter().any(|value| !value.is_finite()) {
             return None;
@@ -330,73 +379,7 @@ impl Curve {
     }
 
     fn from_tag(data: &[u8]) -> Option<Self> {
-        match &data[0..4] {
-            b"curv" => Self::from_curv(data),
-            b"para" => Self::from_para(data),
-            _ => None,
-        }
-    }
-
-    fn from_curv(data: &[u8]) -> Option<Self> {
-        if data.len() < 12 {
-            return None;
-        }
-        let count = be_u32(&data[8..12]) as usize;
-        match count {
-            // An empty table is the identity, by the specification.
-            0 => Self::identity(),
-            // A single entry is a gamma in 8.8 fixed point.
-            1 => {
-                if data.len() < 14 {
-                    return None;
-                }
-                let gamma = f64::from(be_u16(&data[12..14])) / 256.0;
-                Self::gamma(gamma)
-            }
-            count => {
-                let bytes = count.checked_mul(2)?;
-                if data.len() < 12 + bytes {
-                    return None;
-                }
-                let samples = (0..count)
-                    .map(|i| f64::from(be_u16(&data[12 + 2 * i..14 + 2 * i])) / 65535.0)
-                    .collect();
-                Self::from_samples(samples)
-            }
-        }
-    }
-
-    fn from_para(data: &[u8]) -> Option<Self> {
-        // type (u16), reserved (u16), then up to seven S15Fixed16 parameters.
-        if data.len() < 12 {
-            return None;
-        }
-        let kind = be_u16(&data[8..10]);
-        let count = match kind {
-            0 => 1,
-            1 => 3,
-            2 => 4,
-            3 => 5,
-            4 => 7,
-            _ => return None,
-        };
-        if data.len() < 12 + count * 4 {
-            return None;
-        }
-        let parameter = |index: usize| -> f64 {
-            f64::from(be_i32(&data[12 + index * 4..16 + index * 4])) / 65536.0
-        };
-        let p: Vec<f64> = (0..count).map(parameter).collect();
-        if p.iter().any(|value| !value.is_finite()) {
-            return None;
-        }
-        let samples: Vec<f64> = (0..CURVE_SAMPLES)
-            .map(|i| {
-                let x = i as f64 / (CURVE_SAMPLES - 1) as f64;
-                para_value(kind, &p, x)
-            })
-            .collect();
-        Self::from_samples(samples)
+        Self::from_samples(curve_tag_samples(data)?.0)
     }
 
     /// The encoded value that produces `linear`.
@@ -466,6 +449,88 @@ fn para_value(kind: u16, p: &[f64], x: f64) -> f64 {
             }
         }
         _ => x.max(0.0).powf(g),
+    }
+}
+
+/// A `curv` or `para` tag as forward samples, and the tag's byte length — the
+/// length so a reader walking several embedded curves knows where the next one
+/// starts. The matrix path's [`Curve`] adds the monotonicity an inverse needs;
+/// a LUT's curves are only ever evaluated forwards, so they do not.
+fn curve_tag_samples(data: &[u8]) -> Option<(Vec<f64>, usize)> {
+    if data.len() < 12 {
+        return None;
+    }
+    match &data[0..4] {
+        b"curv" => {
+            let count = be_u32(&data[8..12]) as usize;
+            let (samples, size) = match count {
+                // An empty table is the identity, by the specification.
+                0 => (
+                    (0..CURVE_SAMPLES)
+                        .map(|i| i as f64 / (CURVE_SAMPLES - 1) as f64)
+                        .collect(),
+                    12,
+                ),
+                // A single entry is a gamma in 8.8 fixed point.
+                1 => {
+                    if data.len() < 14 {
+                        return None;
+                    }
+                    let gamma = f64::from(be_u16(&data[12..14])) / 256.0;
+                    if !(gamma.is_finite() && gamma > 0.0) {
+                        return None;
+                    }
+                    (
+                        (0..CURVE_SAMPLES)
+                            .map(|i| (i as f64 / (CURVE_SAMPLES - 1) as f64).powf(gamma))
+                            .collect(),
+                        14,
+                    )
+                }
+                count => {
+                    let bytes = count.checked_mul(2)?;
+                    if data.len() < 12 + bytes {
+                        return None;
+                    }
+                    let samples = (0..count)
+                        .map(|i| f64::from(be_u16(&data[12 + 2 * i..14 + 2 * i])) / 65535.0)
+                        .collect();
+                    (samples, 12 + bytes)
+                }
+            };
+            Some((samples, size))
+        }
+        b"para" => {
+            // type (u16), reserved (u16), then up to seven S15Fixed16 parameters.
+            let kind = be_u16(&data[8..10]);
+            let count = match kind {
+                0 => 1,
+                1 => 3,
+                2 => 4,
+                3 => 5,
+                4 => 7,
+                _ => return None,
+            };
+            let size = 12 + count * 4;
+            if data.len() < size {
+                return None;
+            }
+            let parameter = |index: usize| -> f64 {
+                f64::from(be_i32(&data[12 + index * 4..16 + index * 4])) / 65536.0
+            };
+            let p: Vec<f64> = (0..count).map(parameter).collect();
+            if p.iter().any(|value| !value.is_finite()) {
+                return None;
+            }
+            let samples: Vec<f64> = (0..CURVE_SAMPLES)
+                .map(|i| {
+                    let x = i as f64 / (CURVE_SAMPLES - 1) as f64;
+                    para_value(kind, &p, x)
+                })
+                .collect();
+            Some((samples, size))
+        }
+        _ => None,
     }
 }
 
@@ -571,6 +636,839 @@ fn invert(matrix: &Mat3) -> Option<Mat3> {
             (m[0][0] * m[1][1] - m[0][1] * m[1][0]) * scale,
         ],
     ])
+}
+
+// ---------------------------------------------------------------------------
+// LUT-described profiles
+// ---------------------------------------------------------------------------
+//
+// A matrix-shaper profile is not the only way to say what a display does. A
+// LUT profile stores the transform as tables: per-channel curves, a 3D CLUT
+// that mixes the channels, and sometimes a matrix. The direction a screen
+// needs — PCS to device — is the `B2A` (v2 and v4) or `B2D` (v4 float) tag
+// family, and it is read forwards, so unlike the matrix path nothing here
+// inverts anything. The four tag types this reads (`mft1`, `mft2`, `mBA `,
+// `mpet`) all decompose into the same three stage kinds, so one evaluator
+// serves them all; only the parsing differs.
+//
+// The reference for every layout and every evaluation rule below is LittleCMS
+// 2.19, the same engine the matrix path is cross-checked against: the stage
+// order, the tetrahedral CLUT interpolation, the 1.15 fixed-point PCS, and the
+// segmented-curve formulas are its behaviour, read out of its source rather
+// than guessed from the specification's prose.
+
+/// The most entries one CLUT may hold. 255 points per dimension is legal ICC
+/// and would be half a gigabyte of f64; real display LUTs are 17³ to 65³, and
+/// this cap (about 87³ uniform) leaves every real profile room while a corrupt
+/// grid cannot allocate without bound.
+const CLUT_ENTRY_CAP: usize = 1 << 21;
+
+/// The most segments one segmented curve may carry, and the most samples across
+/// them — a real curve has one to three segments; these bound a corrupt count.
+const SEGMENT_CAP: usize = 1024;
+const SEGMENT_SAMPLE_CAP: usize = 1 << 16;
+
+/// The sentinels LittleCMS uses for the open ends of a segmented curve's
+/// domain. They are finite float32 values, not infinities, and the sampled
+/// interpolation below divides in float32 exactly as it does — a first
+/// segment that is sampled rather than formula is degenerate there (its whole
+/// domain reads as one sample), and matching that is matching the engine.
+const SEG_MINUS_INF: f32 = -1e22;
+const SEG_PLUS_INF: f32 = 1e22;
+
+/// A forward curve: encoded in, encoded out, no inverse asked of it. Unlike
+/// [`Curve`] it need not be monotone — a LUT's curves may bend backwards where
+/// the gamut mapping needs them to.
+enum Table {
+    /// Samples evenly spaced over [0, 1].
+    Uniform(Vec<f64>),
+    /// A v4 segmented curve (`curf`): pieces over breakpoint-delimited ranges.
+    Segmented(Vec<Segment>),
+}
+
+struct Segment {
+    x0: f32,
+    x1: f32,
+    kind: SegmentKind,
+}
+
+enum SegmentKind {
+    /// Samples evenly spaced over [x0, x1]; the first is the curve's value at
+    /// x0, implicit in the file and filled from the preceding segment.
+    Sampled(Vec<f64>),
+    /// One of the three segmented formula types, evaluated exactly.
+    Formula { kind: u16, params: Vec<f64> },
+}
+
+impl Table {
+    fn uniform(samples: Vec<f64>) -> Option<Self> {
+        if samples.len() < 2 || samples.iter().any(|value| !value.is_finite()) {
+            return None;
+        }
+        Some(Self::Uniform(samples))
+    }
+
+    fn eval(&self, x: f64) -> f64 {
+        match self {
+            Self::Uniform(samples) => {
+                let at = x.clamp(0.0, 1.0) * (samples.len() - 1) as f64;
+                let index = (at.floor() as usize).min(samples.len() - 2);
+                let fraction = at - index as f64;
+                samples[index] * (1.0 - fraction) + samples[index + 1] * fraction
+            }
+            Self::Segmented(segments) => {
+                // LittleCMS walks the segments backwards and takes the first
+                // whose range is (x0, x1] — a breakpoint belongs to the piece
+                // below it.
+                for segment in segments.iter().rev() {
+                    if x > f64::from(segment.x0) && x <= f64::from(segment.x1) {
+                        return match &segment.kind {
+                            SegmentKind::Sampled(samples) => {
+                                let span = segment.x1 - segment.x0;
+                                let at = ((x - f64::from(segment.x0)) as f32) / span;
+                                let at = f64::from(at.clamp(0.0, 1.0)) * (samples.len() - 1) as f64;
+                                let index = (at.floor() as usize).min(samples.len() - 2);
+                                let fraction = at - index as f64;
+                                samples[index] * (1.0 - fraction) + samples[index + 1] * fraction
+                            }
+                            SegmentKind::Formula { kind, params } => {
+                                segment_formula(*kind, params, x)
+                            }
+                        };
+                    }
+                }
+                f64::from(SEG_MINUS_INF)
+            }
+        }
+    }
+}
+
+/// The three segmented-curve formula types, as LittleCMS evaluates them (its
+/// internal types 6, 7 and 8; the file stores 0, 1 and 2).
+fn segment_formula(kind: u16, p: &[f64], x: f64) -> f64 {
+    match kind {
+        // Y = (a·X + b)^g + c, with the gamma-1 and negative-base special cases.
+        6 => {
+            let e = p[1] * x + p[2];
+            if p[0] == 1.0 {
+                e + p[3]
+            } else if e < 0.0 {
+                p[3]
+            } else {
+                e.powf(p[0]) + p[3]
+            }
+        }
+        // Y = a·log10(b·X^g + c) + d.
+        7 => {
+            let e = p[2] * x.powf(p[0]) + p[3];
+            if e <= 0.0 {
+                p[4]
+            } else {
+                p[1] * e.log10() + p[4]
+            }
+        }
+        // Y = a·b^(c·X + d) + e.
+        8 => p[0] * p[1].powf(p[2] * x + p[3]) + p[4],
+        _ => 0.0,
+    }
+}
+
+/// A 3-in 3-out CLUT. The table is laid out the way ICC lays it out — the first
+/// input channel slowest, the last fastest, three output channels per node —
+/// which is the opposite end of the cube from the renderer's texture order;
+/// the bake reconciles them by sampling [`DisplayTransform::map`].
+struct Clut {
+    grid: [usize; 3],
+    table: Vec<f64>,
+}
+
+impl Clut {
+    fn new(grid: [usize; 3], table: Vec<f64>) -> Option<Self> {
+        if grid.iter().any(|&points| points < 2) {
+            return None;
+        }
+        let entries = grid[0]
+            .checked_mul(grid[1])?
+            .checked_mul(grid[2])?
+            .checked_mul(3)?;
+        if entries > CLUT_ENTRY_CAP || table.len() != entries {
+            return None;
+        }
+        if table.iter().any(|value| !value.is_finite()) {
+            return None;
+        }
+        Some(Self { grid, table })
+    }
+
+    /// Tetrahedral interpolation (Sakamoto), the default LittleCMS uses for a
+    /// 3D CLUT — trilinear is only its Lab-PCS fallback, and this pipeline is
+    /// XYZ. The six tetrahedra partition the cell by the ordering of the three
+    /// fractional coordinates; within each, the answer is affine, so the four
+    /// node differences below reproduce it exactly.
+    fn eval(&self, input: [f64; 3]) -> [f64; 3] {
+        let domain = [
+            (self.grid[0] - 1) as f64,
+            (self.grid[1] - 1) as f64,
+            (self.grid[2] - 1) as f64,
+        ];
+        let clamped = [
+            input[0].clamp(0.0, 1.0),
+            input[1].clamp(0.0, 1.0),
+            input[2].clamp(0.0, 1.0),
+        ];
+        let scaled = [
+            clamped[0] * domain[0],
+            clamped[1] * domain[1],
+            clamped[2] * domain[2],
+        ];
+        let base = [
+            scaled[0].floor() as usize,
+            scaled[1].floor() as usize,
+            scaled[2].floor() as usize,
+        ];
+        let frac = [
+            scaled[0] - base[0] as f64,
+            scaled[1] - base[1] as f64,
+            scaled[2] - base[2] as f64,
+        ];
+        let stride = [self.grid[1] * self.grid[2] * 3, self.grid[2] * 3, 3];
+        // At exactly 1.0 the floor is the last node and there is no node above
+        // it; the fraction is zero, so the upper corner is never read.
+        let lo = [
+            base[0] * stride[0],
+            base[1] * stride[1],
+            base[2] * stride[2],
+        ];
+        let hi = [
+            lo[0] + if clamped[0] >= 1.0 { 0 } else { stride[0] },
+            lo[1] + if clamped[1] >= 1.0 { 0 } else { stride[1] },
+            lo[2] + if clamped[2] >= 1.0 { 0 } else { stride[2] },
+        ];
+        let node = |x: usize, y: usize, z: usize, channel: usize| self.table[x + y + z + channel];
+        let (rx, ry, rz) = (frac[0], frac[1], frac[2]);
+        let mut out = [0.0; 3];
+        for (channel, out_value) in out.iter_mut().enumerate() {
+            let c0 = node(lo[0], lo[1], lo[2], channel);
+            let (c1, c2, c3) = if rx >= ry && ry >= rz {
+                (
+                    node(hi[0], lo[1], lo[2], channel) - c0,
+                    node(hi[0], hi[1], lo[2], channel) - node(hi[0], lo[1], lo[2], channel),
+                    node(hi[0], hi[1], hi[2], channel) - node(hi[0], hi[1], lo[2], channel),
+                )
+            } else if rx >= rz && rz >= ry {
+                (
+                    node(hi[0], lo[1], lo[2], channel) - c0,
+                    node(hi[0], hi[1], hi[2], channel) - node(hi[0], lo[1], hi[2], channel),
+                    node(hi[0], lo[1], hi[2], channel) - node(hi[0], lo[1], lo[2], channel),
+                )
+            } else if rz >= rx && rx >= ry {
+                (
+                    node(hi[0], lo[1], hi[2], channel) - node(lo[0], lo[1], hi[2], channel),
+                    node(hi[0], hi[1], hi[2], channel) - node(hi[0], lo[1], hi[2], channel),
+                    node(lo[0], lo[1], hi[2], channel) - c0,
+                )
+            } else if ry >= rx && rx >= rz {
+                (
+                    node(hi[0], hi[1], lo[2], channel) - node(lo[0], hi[1], lo[2], channel),
+                    node(lo[0], hi[1], lo[2], channel) - c0,
+                    node(hi[0], hi[1], hi[2], channel) - node(hi[0], hi[1], lo[2], channel),
+                )
+            } else if ry >= rz && rz >= rx {
+                (
+                    node(hi[0], hi[1], hi[2], channel) - node(lo[0], hi[1], hi[2], channel),
+                    node(lo[0], hi[1], lo[2], channel) - c0,
+                    node(lo[0], hi[1], hi[2], channel) - node(lo[0], hi[1], lo[2], channel),
+                )
+            } else if rz >= ry && ry >= rx {
+                (
+                    node(hi[0], hi[1], hi[2], channel) - node(lo[0], hi[1], hi[2], channel),
+                    node(lo[0], hi[1], hi[2], channel) - node(lo[0], lo[1], hi[2], channel),
+                    node(lo[0], lo[1], hi[2], channel) - c0,
+                )
+            } else {
+                (0.0, 0.0, 0.0)
+            };
+            *out_value = c0 + c1 * rx + c2 * ry + c3 * rz;
+        }
+        out
+    }
+}
+
+/// One processing element of a LUT. Every stage is 3-in 3-out: the profile is
+/// RGB and the PCS is XYZ, and anything else is refused at parse time.
+enum Stage {
+    Curves([Table; 3]),
+    Matrix(Mat3, [f64; 3]),
+    Clut(Clut),
+}
+
+/// A PCS → device transform as an ordered list of stages.
+struct LutPipeline {
+    stages: Vec<Stage>,
+    /// True for the v4 float (MPE) types, which carry full-precision values
+    /// between stages; the 16-bit types quantize at every stage boundary, so
+    /// their values are clamped there the way a u16 pipeline clamps them.
+    float: bool,
+    /// What the PCS is multiplied by before it meets the first stage. The
+    /// 16-bit tags index it in 1.15 fixed point (×32768/65535); the float tag
+    /// meets it at full scale — LittleCMS normalizes the float PCS back to
+    /// XYZ before the tag's own pipeline runs.
+    pcs_scale: f64,
+}
+
+impl LutPipeline {
+    fn eval(&self, input: [f64; 3]) -> [f64; 3] {
+        let mut value = input;
+        for stage in &self.stages {
+            value = match stage {
+                Stage::Curves(curves) => [
+                    curves[0].eval(value[0]),
+                    curves[1].eval(value[1]),
+                    curves[2].eval(value[2]),
+                ],
+                Stage::Matrix(matrix, offset) => {
+                    let mixed = mul_vec(matrix, &value);
+                    [
+                        mixed[0] + offset[0],
+                        mixed[1] + offset[1],
+                        mixed[2] + offset[2],
+                    ]
+                }
+                Stage::Clut(clut) => clut.eval(value),
+            };
+            if !self.float {
+                value = [
+                    finite_clamp(value[0]),
+                    finite_clamp(value[1]),
+                    finite_clamp(value[2]),
+                ];
+            }
+        }
+        value
+    }
+}
+
+/// Read one PCS → device tag, whichever of the four LUT types it is.
+fn parse_lut_tag(data: &[u8]) -> Option<LutPipeline> {
+    if data.len() < 8 {
+        return None;
+    }
+    match &data[0..4] {
+        b"mft1" => parse_lut_table(data, false),
+        b"mft2" => parse_lut_table(data, true),
+        b"mBA " => parse_mba(data),
+        // The MPE type is direction-agnostic — the tag it sits in says which
+        // way it runs, and the element order in its position table is the
+        // order to evaluate.
+        b"mpet" => parse_mpe(data),
+        _ => None,
+    }
+}
+
+/// `mft1` (8-bit) and `mft2` (16-bit): an optional inline matrix, input tables,
+/// an optional CLUT, output tables. The matrix comes first — LittleCMS inserts
+/// it at the head of the pipeline, ahead of the input tables.
+fn parse_lut_table(data: &[u8], wide: bool) -> Option<LutPipeline> {
+    if data.len() < 12 {
+        return None;
+    }
+    let (input, output, grid) = (
+        usize::from(data[8]),
+        usize::from(data[9]),
+        usize::from(data[10]),
+    );
+    if input != 3 || output != 3 || grid == 1 {
+        return None;
+    }
+    let mut at = 12;
+    let matrix = read_fixed_matrix(data, at)?;
+    at += 36;
+    let mut stages = Vec::new();
+    if !matrix_is_identity(&matrix) {
+        stages.push(Stage::Matrix(matrix, [0.0; 3]));
+    }
+    let (in_entries, out_entries) = if wide {
+        if data.len() < at + 4 {
+            return None;
+        }
+        let in_entries = usize::from(be_u16(&data[at..at + 2]));
+        let out_entries = usize::from(be_u16(&data[at + 2..at + 4]));
+        at += 4;
+        if in_entries > 0x7FFF || out_entries > 0x7FFF {
+            return None;
+        }
+        (in_entries, out_entries)
+    } else {
+        (256, 256)
+    };
+    if let Some(curves) = read_raw_tables(data, &mut at, in_entries, wide)? {
+        stages.push(Stage::Curves(curves));
+    }
+    if grid > 0 {
+        let entries = grid.checked_mul(grid)?.checked_mul(grid)?.checked_mul(3)?;
+        if entries > CLUT_ENTRY_CAP {
+            return None;
+        }
+        let table = read_normalized_entries(data, &mut at, entries, wide)?;
+        stages.push(Stage::Clut(Clut::new([grid; 3], table)?));
+    }
+    if let Some(curves) = read_raw_tables(data, &mut at, out_entries, wide)? {
+        stages.push(Stage::Curves(curves));
+    }
+    if stages.is_empty() {
+        return None;
+    }
+    Some(LutPipeline {
+        stages,
+        float: false,
+        pcs_scale: XYZ_PCS_SCALE,
+    })
+}
+
+/// Three per-channel tables of `entries` samples each. Zero entries is an
+/// absent table (a LittleCMS extension the spec's writers rely on); one entry
+/// is a corrupt table, not a gamma — that spelling belongs to `curv`.
+fn read_raw_tables(
+    data: &[u8],
+    at: &mut usize,
+    entries: usize,
+    wide: bool,
+) -> Option<Option<[Table; 3]>> {
+    if entries == 0 {
+        return Some(None);
+    }
+    if entries < 2 {
+        return None;
+    }
+    let mut curves = Vec::with_capacity(3);
+    for _ in 0..3 {
+        let samples = read_normalized_entries(data, at, entries, wide)?;
+        curves.push(Table::uniform(samples)?);
+    }
+    Some(Some([curves.remove(0), curves.remove(0), curves.remove(0)]))
+}
+
+/// `entries` samples, u8 or u16 big-endian, normalized to [0, 1].
+fn read_normalized_entries(
+    data: &[u8],
+    at: &mut usize,
+    entries: usize,
+    wide: bool,
+) -> Option<Vec<f64>> {
+    let size = if wide { 2 } else { 1 };
+    let bytes = entries.checked_mul(size)?;
+    let end = at.checked_add(bytes)?;
+    if end > data.len() {
+        return None;
+    }
+    let samples = (0..entries)
+        .map(|i| {
+            if wide {
+                f64::from(be_u16(&data[*at + 2 * i..*at + 2 * i + 2])) / 65535.0
+            } else {
+                f64::from(data[*at + i]) / 255.0
+            }
+        })
+        .collect();
+    *at = end;
+    Some(samples)
+}
+
+/// `mBA ` (v4): B curves, an optional matrix, optional M curves, an optional
+/// CLUT, optional A curves — in that order, each at its own offset from the
+/// tag's start, zero meaning absent. The allowed combinations are B alone,
+/// B–matrix–M, B–CLUT–A and B–matrix–M–CLUT–A; reading the offsets in order
+/// reproduces them without enumerating them.
+fn parse_mba(data: &[u8]) -> Option<LutPipeline> {
+    if data.len() < 32 {
+        return None;
+    }
+    if data[8] != 3 || data[9] != 3 {
+        return None;
+    }
+    let offset = |at: usize| usize::try_from(be_u32(&data[at..at + 4])).ok();
+    let (off_b, off_mat, off_m, off_c, off_a) = (
+        offset(12)?,
+        offset(16)?,
+        offset(20)?,
+        offset(24)?,
+        offset(28)?,
+    );
+    let mut stages = Vec::new();
+    if off_b != 0 {
+        stages.push(Stage::Curves(read_embedded_curves(data, off_b)?));
+    }
+    if off_mat != 0 {
+        stages.push(read_matrix_element(data, off_mat)?);
+    }
+    if off_m != 0 {
+        stages.push(Stage::Curves(read_embedded_curves(data, off_m)?));
+    }
+    if off_c != 0 {
+        stages.push(Stage::Clut(read_mba_clut(data, off_c)?));
+    }
+    if off_a != 0 {
+        stages.push(Stage::Curves(read_embedded_curves(data, off_a)?));
+    }
+    if stages.is_empty() {
+        return None;
+    }
+    Some(LutPipeline {
+        stages,
+        float: false,
+        pcs_scale: XYZ_PCS_SCALE,
+    })
+}
+
+/// Three `curv`/`para` curves laid out one after another, each aligned to four
+/// bytes — the way `mBA ` stores its curve sets.
+fn read_embedded_curves(data: &[u8], offset: usize) -> Option<[Table; 3]> {
+    let mut at = offset;
+    let mut curves = Vec::with_capacity(3);
+    for _ in 0..3 {
+        let (samples, size) = curve_tag_samples(data.get(at..)?)?;
+        curves.push(Table::uniform(samples)?);
+        at = at.checked_add(size)?;
+        at = (at + 3) & !3;
+    }
+    Some([curves.remove(0), curves.remove(0), curves.remove(0)])
+}
+
+/// A matrix element: nine S15Fixed16 coefficients then three offsets.
+fn read_matrix_element(data: &[u8], offset: usize) -> Option<Stage> {
+    let end = offset.checked_add(48)?;
+    if end > data.len() {
+        return None;
+    }
+    let fixed = |at: usize| f64::from(be_i32(&data[at..at + 4])) / 65536.0;
+    let matrix = [
+        [fixed(offset), fixed(offset + 4), fixed(offset + 8)],
+        [fixed(offset + 12), fixed(offset + 16), fixed(offset + 20)],
+        [fixed(offset + 24), fixed(offset + 28), fixed(offset + 32)],
+    ];
+    let offset_vec = [fixed(offset + 36), fixed(offset + 40), fixed(offset + 44)];
+    if !matrix.iter().flatten().all(|v| v.is_finite()) || !offset_vec.iter().all(|v| v.is_finite())
+    {
+        return None;
+    }
+    Some(Stage::Matrix(matrix, offset_vec))
+}
+
+/// The inline matrix of a `mft1`/`mft2` tag: nine S15Fixed16, no offsets.
+fn read_fixed_matrix(data: &[u8], at: usize) -> Option<Mat3> {
+    if at + 36 > data.len() {
+        return None;
+    }
+    let fixed = |i: usize| f64::from(be_i32(&data[at + i..at + i + 4])) / 65536.0;
+    let matrix = [
+        [fixed(0), fixed(4), fixed(8)],
+        [fixed(12), fixed(16), fixed(20)],
+        [fixed(24), fixed(28), fixed(32)],
+    ];
+    if !matrix.iter().flatten().all(|v| v.is_finite()) {
+        return None;
+    }
+    Some(matrix)
+}
+
+fn matrix_is_identity(matrix: &Mat3) -> bool {
+    const IDENTITY: Mat3 = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+    matrix == &IDENTITY
+}
+
+/// The CLUT of a `mBA ` tag: sixteen grid-point bytes (one per possible
+/// dimension, three used), a precision byte, three padding bytes, then the
+/// nodes. A grid point of 1 is impossible anywhere in the sixteen.
+fn read_mba_clut(data: &[u8], offset: usize) -> Option<Clut> {
+    let header_end = offset.checked_add(20)?;
+    if header_end > data.len() {
+        return None;
+    }
+    let grid = clut_grid(&data[offset..offset + 16])?;
+    let precision = data[offset + 16];
+    let wide = match precision {
+        1 => false,
+        2 => true,
+        _ => return None,
+    };
+    let entries = grid[0]
+        .checked_mul(grid[1])?
+        .checked_mul(grid[2])?
+        .checked_mul(3)?;
+    if entries > CLUT_ENTRY_CAP {
+        return None;
+    }
+    let mut at = header_end;
+    let table = read_normalized_entries(data, &mut at, entries, wide)?;
+    Clut::new(grid, table)
+}
+
+/// The first three of the sixteen grid-point bytes, validated: none of the
+/// sixteen may be 1, and the three used must be at least 2.
+fn clut_grid(bytes: &[u8]) -> Option<[usize; 3]> {
+    if bytes.len() < 16 || bytes.contains(&1) {
+        return None;
+    }
+    let grid = [
+        usize::from(bytes[0]),
+        usize::from(bytes[1]),
+        usize::from(bytes[2]),
+    ];
+    if grid.iter().any(|&points| points < 2) {
+        return None;
+    }
+    Some(grid)
+}
+
+/// `mpet` (v4 float): a position table of elements, each a curve set, a
+/// matrix or a float CLUT, evaluated in the order the table gives. The two
+/// ACS element signatures are skipped, as the specification directs.
+fn parse_mpe(data: &[u8]) -> Option<LutPipeline> {
+    if data.len() < 16 {
+        return None;
+    }
+    if be_u16(&data[8..10]) != 3 || be_u16(&data[10..12]) != 3 {
+        return None;
+    }
+    let count = be_u32(&data[12..16]) as usize;
+    if count == 0 || count > 256 {
+        return None;
+    }
+    let table_at = 16;
+    if data.len() < table_at + count * 8 {
+        return None;
+    }
+    let mut stages = Vec::new();
+    for i in 0..count {
+        let entry = table_at + i * 8;
+        let offset = be_u32(&data[entry..entry + 4]) as usize;
+        let size = be_u32(&data[entry + 4..entry + 8]) as usize;
+        let end = offset.checked_add(size)?;
+        if offset < table_at || size < 8 || end > data.len() {
+            return None;
+        }
+        let element = &data[offset..end];
+        match &element[0..4] {
+            b"cvst" => stages.push(Stage::Curves(parse_mpe_curves(element)?)),
+            b"matf" => stages.push(parse_mpe_matrix(element)?),
+            b"clut" => stages.push(Stage::Clut(parse_mpe_clut(element)?)),
+            b"bACS" | b"eACS" => {}
+            _ => return None,
+        }
+    }
+    if stages.is_empty() {
+        return None;
+    }
+    Some(LutPipeline {
+        stages,
+        float: true,
+        pcs_scale: 1.0,
+    })
+}
+
+/// A `cvst` element: three segmented curves at their own offsets. The element
+/// opens with its signature and a reserved word, like every MPE element; the
+/// channel counts follow, and the curve offsets are from the element's start.
+fn parse_mpe_curves(element: &[u8]) -> Option<[Table; 3]> {
+    if element.len() < 8 + 4 + 24 {
+        return None;
+    }
+    if be_u16(&element[8..10]) != 3 || be_u16(&element[10..12]) != 3 {
+        return None;
+    }
+    let mut curves = Vec::with_capacity(3);
+    for i in 0..3 {
+        let entry = 12 + i * 8;
+        let offset = be_u32(&element[entry..entry + 4]) as usize;
+        let size = be_u32(&element[entry + 4..entry + 8]) as usize;
+        let end = offset.checked_add(size)?;
+        if end > element.len() {
+            return None;
+        }
+        curves.push(segmented_table(&element[offset..end])?);
+    }
+    Some([curves.remove(0), curves.remove(0), curves.remove(0)])
+}
+
+/// A `matf` element: nine float32 coefficients then three float32 offsets.
+fn parse_mpe_matrix(element: &[u8]) -> Option<Stage> {
+    if element.len() < 8 + 4 + 48 {
+        return None;
+    }
+    if be_u16(&element[8..10]) != 3 || be_u16(&element[10..12]) != 3 {
+        return None;
+    }
+    let matrix = [
+        [
+            be_f32(&element[12..16]),
+            be_f32(&element[16..20]),
+            be_f32(&element[20..24]),
+        ],
+        [
+            be_f32(&element[24..28]),
+            be_f32(&element[28..32]),
+            be_f32(&element[32..36]),
+        ],
+        [
+            be_f32(&element[36..40]),
+            be_f32(&element[40..44]),
+            be_f32(&element[44..48]),
+        ],
+    ];
+    let offset = [
+        be_f32(&element[48..52]),
+        be_f32(&element[52..56]),
+        be_f32(&element[56..60]),
+    ];
+    if !matrix.iter().flatten().all(|v| v.is_finite()) || !offset.iter().all(|v| v.is_finite()) {
+        return None;
+    }
+    Some(Stage::Matrix(matrix, offset))
+}
+
+/// A `clut` element: sixteen grid-point bytes, then float32 nodes.
+fn parse_mpe_clut(element: &[u8]) -> Option<Clut> {
+    if element.len() < 8 + 4 + 16 {
+        return None;
+    }
+    if be_u16(&element[8..10]) != 3 || be_u16(&element[10..12]) != 3 {
+        return None;
+    }
+    let grid = clut_grid(&element[12..28])?;
+    let entries = grid[0]
+        .checked_mul(grid[1])?
+        .checked_mul(grid[2])?
+        .checked_mul(3)?;
+    if entries > CLUT_ENTRY_CAP || element.len() < 28 + entries * 4 {
+        return None;
+    }
+    let table = (0..entries)
+        .map(|i| be_f32(&element[28 + i * 4..32 + i * 4]))
+        .collect();
+    Clut::new(grid, table)
+}
+
+/// A segmented curve (`curf`): breakpoints, then formula or sampled pieces.
+/// The first piece's lower bound and the last's upper bound are the open-end
+/// sentinels; a sampled piece's first value is implicit — the curve's value at
+/// the piece's lower breakpoint, which is the preceding piece's value there.
+fn segmented_table(data: &[u8]) -> Option<Table> {
+    if data.len() < 12 || &data[0..4] != b"curf" {
+        return None;
+    }
+    let count = usize::from(be_u16(&data[8..10]));
+    if count == 0 || count > SEGMENT_CAP {
+        return None;
+    }
+    let break_bytes = (count - 1).checked_mul(4)?;
+    let mut at = 12 + break_bytes;
+    if data.len() < at {
+        return None;
+    }
+    let mut breaks = Vec::with_capacity(count - 1);
+    for i in 0..count - 1 {
+        let value = be_f32(&data[12 + i * 4..16 + i * 4]);
+        if !value.is_finite() || breaks.last().is_some_and(|&prev| value <= prev) {
+            return None;
+        }
+        breaks.push(value);
+    }
+    let mut segments = Vec::with_capacity(count);
+    let mut total_samples = 0usize;
+    let mut x0 = SEG_MINUS_INF;
+    // One upper bound per piece: the breakpoints, then the open end.
+    let bounds = breaks
+        .iter()
+        .map(|&b| b as f32)
+        .chain(std::iter::once(SEG_PLUS_INF));
+    for x1 in bounds {
+        if data.len() < at + 8 {
+            return None;
+        }
+        let signature = &data[at..at + 4];
+        at += 8;
+        let kind = match signature {
+            b"parf" => {
+                if data.len() < at + 4 {
+                    return None;
+                }
+                let kind = be_u16(&data[at..at + 2]);
+                at += 4;
+                let params = match kind {
+                    0 => 4,
+                    1 | 2 => 5,
+                    _ => return None,
+                };
+                if data.len() < at + params * 4 {
+                    return None;
+                }
+                let values: Vec<f64> = (0..params)
+                    .map(|j| be_f32(&data[at + j * 4..at + j * 4 + 4]))
+                    .collect();
+                at += params * 4;
+                if !values.iter().all(|v| v.is_finite()) {
+                    return None;
+                }
+                SegmentKind::Formula {
+                    kind: kind + 6,
+                    params: values,
+                }
+            }
+            b"samf" => {
+                if data.len() < at + 4 {
+                    return None;
+                }
+                let samples = be_u32(&data[at..at + 4]) as usize;
+                at += 4;
+                if samples == 0 || data.len() < at + samples * 4 {
+                    return None;
+                }
+                total_samples += samples + 1;
+                if total_samples > SEGMENT_SAMPLE_CAP {
+                    return None;
+                }
+                let mut values = Vec::with_capacity(samples + 1);
+                // The implicit first point, filled once every piece is read.
+                values.push(0.0);
+                for j in 0..samples {
+                    let value = be_f32(&data[at + j * 4..at + j * 4 + 4]);
+                    if !value.is_finite() {
+                        return None;
+                    }
+                    values.push(value);
+                }
+                at += samples * 4;
+                SegmentKind::Sampled(values)
+            }
+            _ => return None,
+        };
+        segments.push(Segment { x0, x1, kind });
+        x0 = x1;
+    }
+    let mut table = Table::Segmented(segments);
+    // Fill each sampled piece's implicit first point from the curve as it
+    // stands: the value at x0 comes from the piece below, already filled.
+    let mut firsts = Vec::with_capacity(count);
+    for i in 0..count {
+        if let Table::Segmented(segments) = &table {
+            firsts.push((i, table.eval(f64::from(segments[i].x0))));
+        }
+    }
+    if let Table::Segmented(segments) = &mut table {
+        for (i, first) in firsts {
+            if let SegmentKind::Sampled(values) = &mut segments[i].kind {
+                values[0] = first;
+            }
+        }
+    }
+    Some(table)
+}
+
+/// An ICC float32: big-endian IEEE 754, widened to f64 for the arithmetic.
+fn be_f32(bytes: &[u8]) -> f64 {
+    f64::from(f32::from_bits(u32::from_be_bytes([
+        bytes[0], bytes[1], bytes[2], bytes[3],
+    ])))
 }
 
 #[cfg(test)]
@@ -705,24 +1603,24 @@ mod transform_tests {
 
     /// The sRGB primaries adapted to D50, the matrix a profile for an sRGB
     /// screen carries.
-    const SRGB_D50: Mat3 = [
+    pub(super) const SRGB_D50: Mat3 = [
         [0.436_074_7, 0.385_064_9, 0.143_080_4],
         [0.222_504_5, 0.716_878_6, 0.060_616_9],
         [0.013_932_2, 0.097_104_5, 0.714_173_3],
     ];
 
     /// Rec. 2020's primaries adapted to D50.
-    const REC2020_D50: Mat3 = [
+    pub(super) const REC2020_D50: Mat3 = [
         [0.673_478, 0.165_671, 0.125_064],
         [0.279_045, 0.675_343, 0.045_634],
         [-0.001_920, 0.029_995, 0.797_121],
     ];
 
-    fn fixed(value: f64) -> [u8; 4] {
+    pub(super) fn fixed(value: f64) -> [u8; 4] {
         ((value * 65536.0).round() as i32).to_be_bytes()
     }
 
-    fn xyz_tag(value: [f64; 3]) -> Vec<u8> {
+    pub(super) fn xyz_tag(value: [f64; 3]) -> Vec<u8> {
         let mut data = b"XYZ \0\0\0\0".to_vec();
         for component in value {
             data.extend_from_slice(&fixed(component));
@@ -730,14 +1628,14 @@ mod transform_tests {
         data
     }
 
-    fn curv_gamma(gamma: f64) -> Vec<u8> {
+    pub(super) fn curv_gamma(gamma: f64) -> Vec<u8> {
         let mut data = b"curv\0\0\0\0".to_vec();
         data.extend_from_slice(&1u32.to_be_bytes());
         data.extend_from_slice(&((gamma * 256.0).round() as u16).to_be_bytes());
         data
     }
 
-    fn para_type3(g: f64, a: f64, b: f64, c: f64, d: f64) -> Vec<u8> {
+    pub(super) fn para_type3(g: f64, a: f64, b: f64, c: f64, d: f64) -> Vec<u8> {
         let mut data = b"para\0\0\0\0".to_vec();
         data.extend_from_slice(&3u16.to_be_bytes());
         data.extend_from_slice(&0u16.to_be_bytes());
@@ -748,7 +1646,7 @@ mod transform_tests {
     }
 
     /// The sRGB transfer function as an ICC parametric curve, type 3.
-    fn srgb_curve() -> Vec<u8> {
+    pub(super) fn srgb_curve() -> Vec<u8> {
         para_type3(2.4, 1.0 / 1.055, 0.055 / 1.055, 1.0 / 12.92, 0.040_45)
     }
 
@@ -985,6 +1883,779 @@ mod transform_tests {
         // A profile whose primaries have no inverse.
         let singular = [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]];
         assert!(DisplayTransform::for_profile(&profile(&singular, &srgb_curve())).is_none());
+    }
+}
+
+#[cfg(test)]
+mod lut_tests {
+    use super::transform_tests::{curv_gamma, fixed, srgb_curve, xyz_tag, SRGB_D50};
+    use super::*;
+
+    /// A profile with exactly the tags given, laid out the way a real one is.
+    fn profile_with_tags(tags: &[(&[u8; 4], Vec<u8>)]) -> Vec<u8> {
+        let mut tags = tags.to_vec();
+        tags.sort_by(|a, b| a.0.cmp(b.0));
+        let mut header = vec![0u8; 128];
+        header[4..8].copy_from_slice(b"test");
+        header[8..12].copy_from_slice(&0x0430_0000u32.to_be_bytes());
+        header[12..16].copy_from_slice(b"mntr");
+        header[16..20].copy_from_slice(b"RGB ");
+        header[20..24].copy_from_slice(b"XYZ ");
+        header[36..40].copy_from_slice(b"acsp");
+        header[68..72].copy_from_slice(&fixed(0.9642));
+        header[72..76].copy_from_slice(&fixed(1.0));
+        header[76..80].copy_from_slice(&fixed(0.8249));
+        let mut body = Vec::new();
+        let mut table = Vec::new();
+        let mut offset = 132 + 12 * tags.len();
+        for (signature, data) in &tags {
+            while !offset.is_multiple_of(4) {
+                body.push(0);
+                offset += 1;
+            }
+            table.extend_from_slice(*signature);
+            table.extend_from_slice(&(offset as u32).to_be_bytes());
+            table.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            body.extend_from_slice(data);
+            offset += data.len();
+        }
+        let total = (128 + 4 + table.len() + body.len()) as u32;
+        header[0..4].copy_from_slice(&total.to_be_bytes());
+        let mut out = header;
+        out.extend_from_slice(&(tags.len() as u32).to_be_bytes());
+        out.extend_from_slice(&table);
+        out.extend_from_slice(&body);
+        out
+    }
+
+    const IDENTITY: Mat3 = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+
+    /// The CLUT nodes of a grid, sampled from a function of the normalized
+    /// input, in ICC order: first channel slowest, three outputs per node.
+    fn clut_nodes(grid: usize, f: impl Fn([f64; 3]) -> [f64; 3]) -> Vec<f64> {
+        let step = 1.0 / (grid - 1) as f64;
+        let mut nodes = Vec::with_capacity(grid * grid * grid * 3);
+        for i in 0..grid {
+            for j in 0..grid {
+                for k in 0..grid {
+                    let out = f([i as f64 * step, j as f64 * step, k as f64 * step]);
+                    nodes.extend_from_slice(&out);
+                }
+            }
+        }
+        nodes
+    }
+
+    fn words16(values: &[f64]) -> Vec<u8> {
+        values
+            .iter()
+            .flat_map(|v| ((v.clamp(0.0, 1.0) * 65535.0).round() as u16).to_be_bytes())
+            .collect()
+    }
+
+    /// A gamma encoding table: linear light in, encoded out.
+    fn gamma_table(entries: usize, gamma: f64) -> Vec<f64> {
+        (0..entries)
+            .map(|i| (i as f64 / (entries - 1) as f64).powf(1.0 / gamma))
+            .collect()
+    }
+
+    fn identity_table(entries: usize) -> Vec<f64> {
+        (0..entries)
+            .map(|i| i as f64 / (entries - 1) as f64)
+            .collect()
+    }
+
+    /// `mft2`: matrix, input tables, CLUT, output tables.
+    fn lut16_tag(
+        matrix: &Mat3,
+        input: &[Vec<f64>; 3],
+        grid: usize,
+        clut: &[f64],
+        output: &[Vec<f64>; 3],
+    ) -> Vec<u8> {
+        let mut tag = b"mft2\0\0\0\0".to_vec();
+        tag.extend_from_slice(&[3, 3, grid as u8, 0]);
+        for row in matrix {
+            for value in row {
+                tag.extend_from_slice(&fixed(*value));
+            }
+        }
+        tag.extend_from_slice(&(input[0].len() as u16).to_be_bytes());
+        tag.extend_from_slice(&(output[0].len() as u16).to_be_bytes());
+        for channel in input {
+            tag.extend_from_slice(&words16(channel));
+        }
+        tag.extend_from_slice(&words16(clut));
+        for channel in output {
+            tag.extend_from_slice(&words16(channel));
+        }
+        tag
+    }
+
+    /// Three `curv`/`para` tags back to back, four-byte aligned — the way
+    /// `mBA ` stores a curve set. The padding follows the last curve too:
+    /// LittleCMS aligns after every curve it reads, the last included, and a
+    /// set that ends unaligned is a read past the tag's end.
+    fn curves_blob(curves: &[Vec<u8>; 3]) -> Vec<u8> {
+        let mut blob = Vec::new();
+        for curve in curves {
+            blob.extend_from_slice(curve);
+            while !blob.len().is_multiple_of(4) {
+                blob.push(0);
+            }
+        }
+        blob
+    }
+
+    fn matrix_element_bytes(matrix: &Mat3, offset: &[f64; 3]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        for row in matrix {
+            for value in row {
+                bytes.extend_from_slice(&fixed(*value));
+            }
+        }
+        for value in offset {
+            bytes.extend_from_slice(&fixed(*value));
+        }
+        bytes
+    }
+
+    fn mba_clut_bytes(grid: [u8; 3], nodes: &[f64]) -> Vec<u8> {
+        let mut bytes = vec![0u8; 16];
+        bytes[0..3].copy_from_slice(&grid);
+        bytes.push(2);
+        bytes.extend_from_slice(&[0, 0, 0]);
+        bytes.extend_from_slice(&words16(nodes));
+        bytes
+    }
+
+    /// `mBA `: the five optional elements at their offsets, zero for absent.
+    fn mba_tag(
+        b: Option<Vec<u8>>,
+        matrix: Option<Vec<u8>>,
+        m: Option<Vec<u8>>,
+        clut: Option<Vec<u8>>,
+        a: Option<Vec<u8>>,
+    ) -> Vec<u8> {
+        let mut tag = b"mBA \0\0\0\0".to_vec();
+        tag.extend_from_slice(&[3, 3]);
+        tag.extend_from_slice(&0u16.to_be_bytes());
+        let mut offsets = [0u32; 5];
+        let mut body = Vec::new();
+        let mut at: usize = 32;
+        for (i, element) in [b, matrix, m, clut, a].into_iter().enumerate() {
+            if let Some(bytes) = element {
+                while !at.is_multiple_of(4) {
+                    body.push(0);
+                    at += 1;
+                }
+                offsets[i] = at as u32;
+                body.extend_from_slice(&bytes);
+                at += bytes.len();
+            }
+        }
+        for offset in offsets {
+            tag.extend_from_slice(&offset.to_be_bytes());
+        }
+        tag.extend_from_slice(&body);
+        tag
+    }
+
+    /// A single-formula segmented curve over the whole domain.
+    fn curf_formula(kind: u16, params: &[f32]) -> Vec<u8> {
+        let mut curve = b"curf\0\0\0\0".to_vec();
+        curve.extend_from_slice(&1u16.to_be_bytes());
+        curve.extend_from_slice(&0u16.to_be_bytes());
+        curve.extend_from_slice(b"parf\0\0\0\0");
+        curve.extend_from_slice(&kind.to_be_bytes());
+        curve.extend_from_slice(&0u16.to_be_bytes());
+        for param in params {
+            curve.extend_from_slice(&param.to_be_bytes());
+        }
+        curve
+    }
+
+    /// A formula piece computing y = x (type 6, gamma 1), appended to a curve.
+    fn append_identity_piece(curve: &mut Vec<u8>) {
+        curve.extend_from_slice(b"parf\0\0\0\0");
+        curve.extend_from_slice(&0u16.to_be_bytes());
+        curve.extend_from_slice(&0u16.to_be_bytes());
+        for param in [1.0f32, 1.0, 0.0, 0.0] {
+            curve.extend_from_slice(&param.to_be_bytes());
+        }
+    }
+
+    /// A two-piece segmented curve: a formula below the breakpoint, a formula
+    /// above it.
+    fn curf_two_formulas(break_at: f32, low: (u16, Vec<f32>), high: (u16, Vec<f32>)) -> Vec<u8> {
+        let mut curve = b"curf\0\0\0\0".to_vec();
+        curve.extend_from_slice(&2u16.to_be_bytes());
+        curve.extend_from_slice(&0u16.to_be_bytes());
+        curve.extend_from_slice(&break_at.to_be_bytes());
+        for (kind, params) in [low, high] {
+            curve.extend_from_slice(b"parf\0\0\0\0");
+            curve.extend_from_slice(&kind.to_be_bytes());
+            curve.extend_from_slice(&0u16.to_be_bytes());
+            for param in params {
+                curve.extend_from_slice(&param.to_be_bytes());
+            }
+        }
+        curve
+    }
+
+    fn cvst_element(curves: &[Vec<u8>; 3]) -> Vec<u8> {
+        let mut element = b"cvst\0\0\0\0".to_vec();
+        element.extend_from_slice(&3u16.to_be_bytes());
+        element.extend_from_slice(&3u16.to_be_bytes());
+        let mut body = Vec::new();
+        let mut table = Vec::new();
+        // Signature, reserved word, two channel counts, then three offsets.
+        let mut at: usize = 12 + 24;
+        for curve in curves {
+            while !at.is_multiple_of(4) {
+                body.push(0);
+                at += 1;
+            }
+            table.extend_from_slice(&(at as u32).to_be_bytes());
+            table.extend_from_slice(&(curve.len() as u32).to_be_bytes());
+            body.extend_from_slice(curve);
+            at += curve.len();
+        }
+        element.extend_from_slice(&table);
+        element.extend_from_slice(&body);
+        element
+    }
+
+    fn matf_element(matrix: &Mat3, offset: &[f64; 3]) -> Vec<u8> {
+        let mut element = b"matf\0\0\0\0".to_vec();
+        element.extend_from_slice(&3u16.to_be_bytes());
+        element.extend_from_slice(&3u16.to_be_bytes());
+        for row in matrix {
+            for value in row {
+                element.extend_from_slice(&(*value as f32).to_be_bytes());
+            }
+        }
+        for value in offset {
+            element.extend_from_slice(&(*value as f32).to_be_bytes());
+        }
+        element
+    }
+
+    fn clut_element(grid: [u8; 3], nodes: &[f64]) -> Vec<u8> {
+        let mut element = b"clut\0\0\0\0".to_vec();
+        element.extend_from_slice(&3u16.to_be_bytes());
+        element.extend_from_slice(&3u16.to_be_bytes());
+        let mut dims = [0u8; 16];
+        dims[0..3].copy_from_slice(&grid);
+        element.extend_from_slice(&dims);
+        for value in nodes {
+            element.extend_from_slice(&(*value as f32).to_be_bytes());
+        }
+        element
+    }
+
+    fn mpe_tag(elements: &[Vec<u8>]) -> Vec<u8> {
+        let mut tag = b"mpet\0\0\0\0".to_vec();
+        tag.extend_from_slice(&3u16.to_be_bytes());
+        tag.extend_from_slice(&3u16.to_be_bytes());
+        tag.extend_from_slice(&(elements.len() as u32).to_be_bytes());
+        let mut body = Vec::new();
+        let mut table = Vec::new();
+        let mut at = 16 + elements.len() * 8;
+        for element in elements {
+            while !at.is_multiple_of(4) {
+                body.push(0);
+                at += 1;
+            }
+            table.extend_from_slice(&(at as u32).to_be_bytes());
+            table.extend_from_slice(&(element.len() as u32).to_be_bytes());
+            body.extend_from_slice(element);
+            at += element.len();
+        }
+        tag.extend_from_slice(&table);
+        tag.extend_from_slice(&body);
+        tag
+    }
+
+    /// Linear display light from normalized PCS: undo the 1.15 scaling, then
+    /// the primaries matrix. For an sRGB-primary display this is sRGB's own
+    /// linear light, which is what makes the gamma profiles below comparable
+    /// to the matrix path's gamma test.
+    fn pcs_to_linear(xyz: [f64; 3]) -> [f64; 3] {
+        let from_pcs = invert(&SRGB_D50).expect("sRGB primaries invert");
+        mul_vec(
+            &from_pcs,
+            &[
+                xyz[0] / XYZ_PCS_SCALE,
+                xyz[1] / XYZ_PCS_SCALE,
+                xyz[2] / XYZ_PCS_SCALE,
+            ],
+        )
+    }
+
+    /// A gamma-2.2 sRGB-primary display as a 16-bit LUT: identity input
+    /// tables, a CLUT that turns the PCS into linear display light, and gamma
+    /// output tables.
+    fn lut16_gamma_profile() -> Vec<u8> {
+        let input = [identity_table(2), identity_table(2), identity_table(2)];
+        let clut = clut_nodes(9, pcs_to_linear);
+        let output = [
+            gamma_table(256, 2.2),
+            gamma_table(256, 2.2),
+            gamma_table(256, 2.2),
+        ];
+        profile_with_tags(&[(b"B2A1", lut16_tag(&IDENTITY, &input, 9, &clut, &output))])
+    }
+
+    /// The same display as a v4 `mBA ` tag: identity B curves, a matrix that
+    /// undoes the PCS scaling, a small identity CLUT, gamma A curves.
+    fn mba_gamma_profile() -> Vec<u8> {
+        let identity_curves = [
+            b"curv\0\0\0\0\0\0\0\0".to_vec(),
+            b"curv\0\0\0\0\0\0\0\0".to_vec(),
+            b"curv\0\0\0\0\0\0\0\0".to_vec(),
+        ];
+        let scale = 1.0 / XYZ_PCS_SCALE;
+        let from_pcs = invert(&SRGB_D50).expect("sRGB primaries invert");
+        let matrix = multiply(
+            &from_pcs,
+            &[[scale, 0.0, 0.0], [0.0, scale, 0.0], [0.0, 0.0, scale]],
+        );
+        let clut = clut_nodes(3, |xyz| xyz);
+        // The A curves run forwards, so they encode: the reciprocal gamma.
+        let gamma = curv_gamma(1.0 / 2.2);
+        // A small black lift, the way a real panel's flare shows up in a
+        // profile: it keeps every channel away from zero, where a gamma
+        // curve's slope is infinite and two engines' rounding disagree.
+        let tag = mba_tag(
+            Some(curves_blob(&identity_curves)),
+            Some(matrix_element_bytes(&matrix, &[0.02; 3])),
+            None,
+            Some(mba_clut_bytes([3, 3, 3], &clut)),
+            Some(curves_blob(&[gamma.clone(), gamma.clone(), gamma])),
+        );
+        profile_with_tags(&[(b"B2A1", tag)])
+    }
+
+    /// The same display as a v4 float MPE (`B2D1`): identity B curves, the
+    /// primaries matrix with the same black lift, an identity float CLUT, and
+    /// gamma A curves written as segmented formulas. The float tag meets the
+    /// PCS at full XYZ scale — LittleCMS normalizes it there — so unlike the
+    /// 16-bit tags there is no 1.15 scaling to undo.
+    fn mpe_gamma_profile() -> Vec<u8> {
+        let identity = curf_formula(0, &[1.0, 1.0, 0.0, 0.0]);
+        let b_curves = cvst_element(&[identity.clone(), identity.clone(), identity]);
+        let matrix = invert(&SRGB_D50).expect("sRGB primaries invert");
+        let clut = clut_nodes(3, |xyz| xyz);
+        let gamma = curf_formula(0, &[1.0 / 2.2, 1.0, 0.0, 0.0]);
+        let a_curves = cvst_element(&[gamma.clone(), gamma.clone(), gamma]);
+        let tag = mpe_tag(&[
+            b_curves,
+            matf_element(&matrix, &[0.02; 3]),
+            clut_element([3, 3, 3], &clut),
+            a_curves,
+        ]);
+        profile_with_tags(&[(b"B2D1", tag)])
+    }
+
+    /// An MPE profile whose A curves are the sRGB encoding written as two
+    /// formula segments — linear below the knee, power above — so the whole
+    /// transform is the identity: sRGB in, sRGB out. The breakpoint and both
+    /// formula pieces are exercised end to end.
+    fn mpe_identity_profile() -> Vec<u8> {
+        let identity = curf_formula(0, &[1.0, 1.0, 0.0, 0.0]);
+        let b_curves = cvst_element(&[identity.clone(), identity.clone(), identity]);
+        let matrix = invert(&SRGB_D50).expect("sRGB primaries invert");
+        let clut = clut_nodes(3, |xyz| xyz);
+        // sRGB's encode, 1.055·x^(1/2.4) − 0.055, as a type-6 piece:
+        // (a·x)^g + c with a^g = 1.055, so a = 1.055^2.4.
+        let srgb_encode = curf_two_formulas(
+            0.003_130_8,
+            (0, vec![1.0, 12.92, 0.0, 0.0]),
+            (0, vec![1.0 / 2.4, 1.055f64.powf(2.4) as f32, 0.0, -0.055]),
+        );
+        let a_curves = cvst_element(&[srgb_encode.clone(), srgb_encode.clone(), srgb_encode]);
+        let tag = mpe_tag(&[
+            b_curves,
+            matf_element(&matrix, &[0.0; 3]),
+            clut_element([3, 3, 3], &clut),
+            a_curves,
+        ]);
+        profile_with_tags(&[(b"B2D1", tag)])
+    }
+
+    /// Write the cross-check profiles where LittleCMS can read them, and print
+    /// this engine's answer beside the colours. Run with `--ignored`, then
+    /// `transicc -o <file> -t1 -n` over the same colours; the numbers it prints
+    /// are what the assertions below pin. Not a check itself — the generator
+    /// of the checks' ground truth.
+    #[test]
+    #[ignore]
+    fn dump_lut_cross_check_fixtures() {
+        let dir = std::path::Path::new("/tmp/icc-lut-fixtures");
+        std::fs::create_dir_all(dir).unwrap();
+        let colours = [
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.501_960_8, 0.501_960_8, 0.501_960_8],
+            [0.2, 0.4, 0.6],
+        ];
+        for (name, bytes) in [
+            ("lut16_gamma.icc", lut16_gamma_profile()),
+            ("mba_gamma.icc", mba_gamma_profile()),
+            ("mpe_gamma.icc", mpe_gamma_profile()),
+            ("mpe_identity.icc", mpe_identity_profile()),
+        ] {
+            std::fs::write(dir.join(name), &bytes).unwrap();
+            let transform = DisplayTransform::for_profile(&bytes).expect("a transform");
+            for colour in colours {
+                let mapped = transform.map(colour);
+                println!("{name} {colour:?} -> {mapped:?}");
+            }
+        }
+    }
+
+    /// A 16-bit LUT display: these numbers are LittleCMS 2.19's own answer for
+    /// the same profile (sRGB in, relative colorimetric), converted from its
+    /// 8-bit output — the check that the LUT path is a colour transform and
+    /// not a plausible-looking one. Regenerate with the dump test above.
+    #[test]
+    fn a_lut16_display_matches_lcms2() {
+        let transform = DisplayTransform::for_profile(&lut16_gamma_profile()).expect("a transform");
+        let expected = [
+            ([1.0, 0.0, 0.0], [0.9463, 0.2154, 0.1702]),
+            ([0.0, 1.0, 0.0], [0.4142, 0.9709, 0.3238]),
+            ([0.0, 0.0, 1.0], [0.4088, 0.3032, 0.9803]),
+            (
+                [0.501_960_8, 0.501_960_8, 0.501_960_8],
+                [0.5111, 0.4981, 0.5048],
+            ),
+            ([0.2, 0.4, 0.6], [0.3728, 0.3995, 0.5944]),
+        ];
+        for (input, wanted) in expected {
+            let mapped = transform.map(input);
+            for channel in 0..3 {
+                assert!(
+                    (mapped[channel] - wanted[channel]).abs() < 3e-3,
+                    "{input:?} became {mapped:?}, LittleCMS says {wanted:?}"
+                );
+            }
+        }
+    }
+
+    /// The same cross-check for a v4 `mBA ` tag: B curves, a matrix with a
+    /// black lift, a CLUT and gamma A curves.
+    #[test]
+    fn an_mba_display_matches_lcms2() {
+        let transform = DisplayTransform::for_profile(&mba_gamma_profile()).expect("a transform");
+        let expected = [
+            ([1.0, 0.0, 0.0], [1.0, 0.1699, 0.1698]),
+            ([0.0, 1.0, 0.0], [0.1704, 1.0, 0.1697]),
+            ([0.0, 0.0, 1.0], [0.1700, 0.1700, 1.0]),
+            (
+                [0.501_960_8, 0.501_960_8, 0.501_960_8],
+                [0.5197, 0.5197, 0.5196],
+            ),
+            ([0.2, 0.4, 0.6], [0.2645, 0.4270, 0.6121]),
+        ];
+        for (input, wanted) in expected {
+            let mapped = transform.map(input);
+            for channel in 0..3 {
+                assert!(
+                    (mapped[channel] - wanted[channel]).abs() < 3e-3,
+                    "{input:?} became {mapped:?}, LittleCMS says {wanted:?}"
+                );
+            }
+        }
+    }
+
+    /// The same cross-check for a v4 float MPE (`B2D1`): segmented-curve sets,
+    /// a matrix with offset, and a float CLUT. The float tag meets the PCS at
+    /// full XYZ scale, which is the difference this pins against the 16-bit
+    /// tags above.
+    #[test]
+    fn an_mpe_display_matches_lcms2() {
+        let transform = DisplayTransform::for_profile(&mpe_gamma_profile()).expect("a transform");
+        let expected = [
+            ([1.0, 0.0, 0.0], [1.0, 0.1689, 0.1689]),
+            ([0.0, 1.0, 0.0], [0.1694, 1.0, 0.1687]),
+            ([0.0, 0.0, 1.0], [0.1691, 0.1690, 1.0]),
+            (
+                [0.501_960_8, 0.501_960_8, 0.501_960_8],
+                [0.5186, 0.5186, 0.5185],
+            ),
+            ([0.2, 0.4, 0.6], [0.2634, 0.4258, 0.6111]),
+        ];
+        for (input, wanted) in expected {
+            let mapped = transform.map(input);
+            for channel in 0..3 {
+                assert!(
+                    (mapped[channel] - wanted[channel]).abs() < 3e-3,
+                    "{input:?} became {mapped:?}, LittleCMS says {wanted:?}"
+                );
+            }
+        }
+    }
+
+    /// An MPE profile that describes sRGB itself leaves every colour alone —
+    /// the identity, end to end through segmented formula curves, checked
+    /// against both LittleCMS and the input it should return.
+    #[test]
+    fn an_mpe_identity_profile_leaves_colours_alone() {
+        let transform =
+            DisplayTransform::for_profile(&mpe_identity_profile()).expect("a transform");
+        let expected = [
+            ([1.0, 0.0, 0.0], [1.0, 0.0, 0.0]),
+            ([0.0, 1.0, 0.0], [0.0016, 1.0, 0.0]),
+            ([0.0, 0.0, 1.0], [0.0004, 0.0002, 0.9998]),
+            (
+                [0.501_960_8, 0.501_960_8, 0.501_960_8],
+                [0.5020, 0.5020, 0.5019],
+            ),
+            ([0.2, 0.4, 0.6], [0.2001, 0.4000, 0.5999]),
+        ];
+        for (input, wanted) in expected {
+            let mapped = transform.map(input);
+            for channel in 0..3 {
+                assert!(
+                    (mapped[channel] - wanted[channel]).abs() < 3e-3,
+                    "{input:?} became {mapped:?}, LittleCMS says {wanted:?}"
+                );
+                assert!(
+                    (mapped[channel] - input[channel]).abs() < 3e-3,
+                    "{input:?} became {mapped:?}, the identity should return it"
+                );
+            }
+        }
+    }
+
+    /// The tetrahedral CLUT reproduces an affine function exactly — the
+    /// property the cross-check profiles lean on — and clamps its input.
+    #[test]
+    fn a_clut_interpolates_affine_exactly() {
+        let grid = 5;
+        let nodes = clut_nodes(grid, |xyz| {
+            [
+                0.2 + 0.5 * xyz[0] - 0.1 * xyz[1],
+                0.1 + 0.3 * xyz[1] + 0.2 * xyz[2],
+                0.4 - 0.2 * xyz[0] + 0.3 * xyz[2],
+            ]
+        });
+        let clut = Clut::new([grid; 3], nodes).expect("a clut");
+        for input in [
+            [0.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0],
+            [0.13, 0.71, 0.42],
+            [0.5, 0.5, 0.5],
+            [0.25, 0.25, 0.75],
+        ] {
+            let want = [
+                0.2 + 0.5 * input[0] - 0.1 * input[1],
+                0.1 + 0.3 * input[1] + 0.2 * input[2],
+                0.4 - 0.2 * input[0] + 0.3 * input[2],
+            ];
+            let got = clut.eval(input);
+            for channel in 0..3 {
+                assert!(
+                    (got[channel] - want[channel]).abs() < 1e-9,
+                    "{input:?} became {got:?}, want {want:?}"
+                );
+            }
+        }
+        // Out-of-range input is clamped to the grid, not read past it.
+        let edge = clut.eval([2.0, -1.0, 0.5]);
+        let want = clut.eval([1.0, 0.0, 0.5]);
+        assert_eq!(edge, want);
+    }
+
+    /// A sampled segmented piece takes its first value from the piece below
+    /// the breakpoint, and the breakpoint belongs to the lower piece. The
+    /// sampled piece has finite bounds on both sides, the way a real profile
+    /// writes it — the open ends of the domain are formula pieces.
+    #[test]
+    fn a_segmented_curve_is_continuous_at_its_breakpoint() {
+        // y = x below 0.5 and above 0.9 (formula type 6, gamma 1); sampled
+        // 0.5 → 0.7 → 0.9 between, first point implicit.
+        let mut curve = b"curf\0\0\0\0".to_vec();
+        curve.extend_from_slice(&3u16.to_be_bytes());
+        curve.extend_from_slice(&0u16.to_be_bytes());
+        for break_at in [0.5f32, 0.9] {
+            curve.extend_from_slice(&break_at.to_be_bytes());
+        }
+        append_identity_piece(&mut curve);
+        curve.extend_from_slice(b"samf\0\0\0\0");
+        curve.extend_from_slice(&2u32.to_be_bytes());
+        for value in [0.7f32, 0.9] {
+            curve.extend_from_slice(&value.to_be_bytes());
+        }
+        append_identity_piece(&mut curve);
+        let table = segmented_table(&curve).expect("a curve");
+        // The implicit first point is the lower piece's value at 0.5.
+        assert!((table.eval(0.5) - 0.5).abs() < 1e-6);
+        assert!((table.eval(0.25) - 0.25).abs() < 1e-6);
+        // Inside the sampled piece the samples run 0.5 → 0.7 → 0.9.
+        assert!((table.eval(0.75) - 0.75).abs() < 1e-6);
+        assert!((table.eval(0.625) - 0.625).abs() < 1e-6);
+        // The upper formula piece takes over past 0.9.
+        assert!((table.eval(1.0) - 1.0).abs() < 1e-6);
+    }
+
+    /// The three segmented formula types evaluate as LittleCMS evaluates them.
+    /// The tolerance is float32's: the parameters cross the wire as f32.
+    #[test]
+    fn segmented_formula_types_match_their_definitions() {
+        // Type 6: (a·x + b)^g + c.
+        let t6 = segmented_table(&curf_formula(0, &[2.0, 1.0, 0.0, 0.1])).unwrap();
+        assert!((t6.eval(0.5) - (0.5f64.powf(2.0) + 0.1)).abs() < 1e-6);
+        // Type 7: a·log10(b·x^g + c) + d.
+        let t7 = segmented_table(&curf_formula(1, &[1.0, 2.0, 1.0, 0.0, 0.0])).unwrap();
+        assert!((t7.eval(0.5) - 2.0 * 0.5f64.log10()).abs() < 1e-6);
+        // Type 8: a·b^(c·x + d) + e.
+        let t8 = segmented_table(&curf_formula(2, &[1.0, 2.0, 1.0, 0.0, 0.0])).unwrap();
+        assert!((t8.eval(0.5) - 2.0f64.powf(0.5)).abs() < 1e-6);
+    }
+
+    /// A LUT profile bakes the same cube shape the matrix path does.
+    #[test]
+    fn a_lut_profile_bakes_the_documented_cube() {
+        let transform = DisplayTransform::for_profile(&lut16_gamma_profile()).expect("a transform");
+        let lut = transform.lut();
+        assert_eq!(lut.len(), LUT_SIZE * LUT_SIZE * LUT_SIZE);
+        assert!(lut.iter().all(|entry| entry[3] == 1.0));
+        assert!(lut[0][0] < 1e-3 && lut[0][1] < 1e-3 && lut[0][2] < 1e-3);
+        // White lands near full scale; a 16-bit CLUT is a sampled transform,
+        // so its corners are approximate where the grid nodes clamp.
+        let last = lut[lut.len() - 1];
+        assert!(last.iter().take(3).all(|&v| v > 0.9), "{last:?}");
+    }
+
+    /// The matrix description wins when a profile carries both, so a profile
+    /// that worked before keeps the transform it shipped with.
+    #[test]
+    fn a_profile_with_both_descriptions_keeps_the_matrix() {
+        let mut tags: Vec<(&[u8; 4], Vec<u8>)> = vec![
+            (b"wtpt", xyz_tag([0.9642, 1.0, 0.8249])),
+            (
+                b"rXYZ",
+                xyz_tag([SRGB_D50[0][0], SRGB_D50[1][0], SRGB_D50[2][0]]),
+            ),
+            (
+                b"gXYZ",
+                xyz_tag([SRGB_D50[0][1], SRGB_D50[1][1], SRGB_D50[2][1]]),
+            ),
+            (
+                b"bXYZ",
+                xyz_tag([SRGB_D50[0][2], SRGB_D50[1][2], SRGB_D50[2][2]]),
+            ),
+            (b"rTRC", srgb_curve()),
+            (b"gTRC", srgb_curve()),
+            (b"bTRC", srgb_curve()),
+            (
+                b"B2A1",
+                lut16_tag(
+                    &IDENTITY,
+                    &[identity_table(2), identity_table(2), identity_table(2)],
+                    2,
+                    &clut_nodes(2, |_| [1.0, 0.0, 0.0]),
+                    &[identity_table(2), identity_table(2), identity_table(2)],
+                ),
+            ),
+        ];
+        tags.sort_by(|a, b| a.0.cmp(b.0));
+        let transform = DisplayTransform::for_profile(&profile_with_tags(&tags)).unwrap();
+        // The LUT would paint everything red; the matrix leaves grey alone.
+        let grey = transform.map([0.5, 0.5, 0.5]);
+        assert!((grey[0] - 0.5).abs() < 3e-3, "{grey:?}");
+    }
+
+    /// Profiles this cannot honestly transform stay refused: the screen keeps
+    /// whatever it had rather than guessing.
+    #[test]
+    fn lut_profiles_that_cannot_be_read_are_refused() {
+        // A truncated tag, a grid of one, an unknown type, a non-RGB channel
+        // count, and a CLUT precision that is neither byte width.
+        let good = lut16_gamma_profile();
+        let mut truncated = good.clone();
+        truncated.truncate(truncated.len() - 10);
+        assert!(DisplayTransform::for_profile(&truncated).is_none());
+
+        let mut grid_one = lut16_tag(
+            &IDENTITY,
+            &[identity_table(2), identity_table(2), identity_table(2)],
+            1,
+            &[],
+            &[identity_table(2), identity_table(2), identity_table(2)],
+        );
+        assert!(
+            DisplayTransform::for_profile(&profile_with_tags(&[(b"B2A1", grid_one.clone())]))
+                .is_none()
+        );
+        grid_one[10] = 2; // a legal grid, but the CLUT nodes are missing
+        assert!(
+            DisplayTransform::for_profile(&profile_with_tags(&[(b"B2A1", grid_one)])).is_none()
+        );
+
+        let mut unknown_tag = lut16_tag(
+            &IDENTITY,
+            &[identity_table(2), identity_table(2), identity_table(2)],
+            2,
+            &clut_nodes(2, |xyz| xyz),
+            &[identity_table(2), identity_table(2), identity_table(2)],
+        );
+        unknown_tag[0..4].copy_from_slice(b"mft9");
+        assert!(
+            DisplayTransform::for_profile(&profile_with_tags(&[(b"B2A1", unknown_tag)])).is_none()
+        );
+
+        let mut cmyk = lut16_tag(
+            &IDENTITY,
+            &[identity_table(2), identity_table(2), identity_table(2)],
+            2,
+            &clut_nodes(2, |xyz| xyz),
+            &[identity_table(2), identity_table(2), identity_table(2)],
+        );
+        cmyk[8] = 4;
+        assert!(DisplayTransform::for_profile(&profile_with_tags(&[(b"B2A1", cmyk)])).is_none());
+
+        // Only a device → PCS table: the direction this would have to invert.
+        let a2b_only = mba_tag(
+            Some(curves_blob(&[
+                b"curv\0\0\0\0\0\0\0\0".to_vec(),
+                b"curv\0\0\0\0\0\0\0\0".to_vec(),
+                b"curv\0\0\0\0\0\0\0\0".to_vec(),
+            ])),
+            None,
+            None,
+            None,
+            None,
+        );
+        assert!(
+            DisplayTransform::for_profile(&profile_with_tags(&[(b"A2B0", a2b_only)])).is_none()
+        );
+
+        // Only the saturation intent: relative colorimetric does not fall
+        // back to it, the same answer LittleCMS gives.
+        let saturation = lut16_tag(
+            &IDENTITY,
+            &[identity_table(2), identity_table(2), identity_table(2)],
+            2,
+            &clut_nodes(2, |xyz| xyz),
+            &[identity_table(2), identity_table(2), identity_table(2)],
+        );
+        assert!(
+            DisplayTransform::for_profile(&profile_with_tags(&[(b"B2A2", saturation)])).is_none()
+        );
+
+        // A grid past the entry cap is refused before its nodes are read:
+        // 89³ × 3 is over the cap, and the header alone says so.
+        let mut huge = mba_clut_bytes([89, 89, 89], &[]);
+        huge.truncate(20);
+        let huge_tag = mba_tag(None, None, None, Some(huge), None);
+        assert!(
+            DisplayTransform::for_profile(&profile_with_tags(&[(b"B2A1", huge_tag)])).is_none()
+        );
     }
 }
 
