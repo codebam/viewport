@@ -1,5 +1,14 @@
 # Why the shell is a web page
 
+## On this page
+
+- [What the page does and does not do](#what-the-page-does-and-does-not-do)
+- [Why CSS instead of a layout protocol](#why-css-instead-of-a-layout-protocol)
+- [It does not mean compiling a browser](#it-does-not-mean-compiling-a-browser)
+- [The obvious questions](#the-obvious-questions)
+- [Paste-ready answers](#paste-ready-answers)
+- [Try it](#try-it)
+
 Viewport is a Wayland compositor. DRM/KMS, input, the Wayland protocols and the
 scene graph are Smithay's, exactly as in any other compositor. What is
 different is where the *desktop* comes from: the wallpaper, dock, window frames,
