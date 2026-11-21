@@ -253,6 +253,7 @@ The reference material lives in `docs/`:
 | [`docs/benchmarks.md`](docs/benchmarks.md) | Viewport measured against sway and niri on real scanout — frame rate, CPU per frame, memory, and the second monitor while the first is saturated |
 | [`docs/roadmap.md`](docs/roadmap.md) | what is still missing — the multi-GPU path's two-card run, the settings that are file-only by design rather than by a missing setter, and why each open one belongs in here rather than in a daemon beside it |
 | [`docs/stability.md`](docs/stability.md) | what a version number promises — the covered surfaces (IPC, config, extension contracts, CLI, module, packages), the additive-evolution rules, the backend tiers, and what 1.0.0 commits to |
+| [`docs/glossary.md`](docs/glossary.md) | short definitions of the Viewport-specific terms a newcomer meets across the IPC and rewrite docs — Space, output, view, shell, layout, workspace, WPEPlatform and more |
 
 Two shells ship with it, at opposite ends of the same protocol:
 
