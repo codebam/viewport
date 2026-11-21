@@ -1,5 +1,12 @@
 # IPC and writing a shell
 
+## On this page
+
+- [IPC](#ipc)
+- [Writing a shell](#writing-a-shell)
+- [Remembering the layout](#remembering-the-layout)
+- [Workspaces](#workspaces)
+
 ## IPC
 
 Two transports, one dispatch table.
