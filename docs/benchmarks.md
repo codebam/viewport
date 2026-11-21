@@ -1,5 +1,16 @@
 # Benchmarks
 
+## On this page
+
+- [The machine](#the-machine)
+- [What the scenarios are](#what-the-scenarios-are)
+- [One monitor](#one-monitor)
+- [Two monitors](#two-monitors)
+- [Caveats](#caveats)
+- [The shell backends against each other](#the-shell-backends-against-each-other)
+- [The shell under load](#the-shell-under-load)
+- [Reproducing](#reproducing)
+
 Viewport measured against [sway](https://swaywm.org/) and
 [niri](https://github.com/YaLTeR/niri), on the same machine, the same
 monitors, and the same client, by `scripts/bench-vkcube.sh`.
