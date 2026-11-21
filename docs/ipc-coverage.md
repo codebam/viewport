@@ -1,5 +1,12 @@
 # Control-socket IPC coverage
 
+## On this page
+
+- [How the count was done](#how-the-count-was-done)
+- [Shell → compositor (requests)](#shell--compositor-requests)
+- [Compositor → shell (events)](#compositor--shell-events)
+- [Documentation gaps closed alongside](#documentation-gaps-closed-alongside)
+
 How every message on the two IPC transports is covered by headless
 integration tests. The companion reference is `docs/ipc.md` (the protocol
 tables) and `docs/ipc.md`'s two tables are the source of the enumeration;
