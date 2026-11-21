@@ -1,5 +1,21 @@
 # Debugging
 
+## Where to look
+
+- [Debugging from inside](#debugging-from-inside)
+- [When the shell breaks](#when-the-shell-breaks)
+- [A window frame with the desktop showing through it](#a-window-frame-with-the-desktop-showing-through-it)
+- [A page that draws one frame and stops](#a-page-that-draws-one-frame-and-stops)
+- [A page that is up and deaf](#a-page-that-is-up-and-deaf)
+- [When the shell dies outright](#when-the-shell-dies-outright)
+- [More than one GPU](#more-than-one-gpu)
+- [A GPU that crashes and comes back](#a-gpu-that-crashes-and-comes-back)
+- [A video player dying with "Invalid stride"](#a-video-player-dying-with-invalid-stride)
+- [Fallback](#fallback)
+- [Running it in a virtual machine](#running-it-in-a-virtual-machine)
+- [Render churn, and why the throttle is off](#render-churn-and-why-the-throttle-is-off)
+- [A terminal on an empty workspace shows nothing of what is typed](#a-terminal-on-an-empty-workspace-shows-nothing-of-what-is-typed)
+
 ## Debugging from inside
 
 Both capture protocols are implemented — `ext-image-copy-capture-v1` and
