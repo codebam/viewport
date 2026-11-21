@@ -1,5 +1,16 @@
 # The solar layout
 
+## On this page
+
+- [Where it lives, and why](#where-it-lives-and-why)
+- [The three tiers](#the-three-tiers)
+- [The model](#the-model)
+- [IPC](#ipc)
+- [Keymap](#keymap)
+- [Tunables](#tunables)
+- [What it does not do](#what-it-does-not-do)
+- [Testing](#testing)
+
 One window in the middle, the rest in orbit around it. A third layout model
 beside `tiling` (i3-style splits) and `scrolling` (niri's strip), selected with
 `"layout": "solar"` in the config file, `--layout solar` on the command line,
