@@ -1,5 +1,44 @@
 # Configuration and keybindings
 
+## On this page
+
+- [Configuration](#configuration)
+- [The pointer](#the-pointer)
+- [The magnifier](#the-magnifier)
+- [A screen reader](#a-screen-reader)
+- [The keyboard](#the-keyboard)
+- [A picture or a film as the wallpaper](#a-picture-or-a-film-as-the-wallpaper)
+- [A terminal as the wallpaper](#a-terminal-as-the-wallpaper)
+- [Dark mode](#dark-mode)
+- [Screen sharing and remote control](#screen-sharing-and-remote-control)
+- [Gaps](#gaps)
+- [Window borders](#window-borders)
+- [Motion](#motion)
+- [A window that stops responding](#a-window-that-stops-responding)
+- [Window opacity](#window-opacity)
+- [Bar widgets](#bar-widgets)
+- [Overriding the whole bar](#overriding-the-whole-bar)
+- [Interacting with the bar](#interacting-with-the-bar)
+- [The clock, and the calendar under it](#the-clock-and-the-calendar-under-it)
+- [Reloading the shell while it runs](#reloading-the-shell-while-it-runs)
+- [Media keys](#media-keys)
+- [Notification sounds](#notification-sounds)
+- [The system tray](#the-system-tray)
+- [The notification centre](#the-notification-centre)
+- [The clipboard history](#the-clipboard-history)
+- [Wi-Fi and Bluetooth](#wi-fi-and-bluetooth)
+- [The on-screen keyboard](#the-on-screen-keyboard)
+- [Layer-surface rules](#layer-surface-rules)
+- [Window rules](#window-rules)
+- [Groups](#groups)
+- [Layout models](#layout-models)
+- [Dynamic tiling arrangements](#dynamic-tiling-arrangements)
+- [Focus at the edge of a monitor](#focus-at-the-edge-of-a-monitor)
+- [Pixel format](#pixel-format)
+- [Graphics cards](#graphics-cards)
+- [Outputs](#outputs)
+- [X11 applications on a HiDPI screen](#x11-applications-on-a-hidpi-screen)
+
 ## Configuration
 
 Three tiers, because a settings UI cannot run on a display that is not working
