@@ -1,5 +1,15 @@
 # Custom bar widgets
 
+## On this page
+
+- [The manifest and where the widget goes](#the-manifest-and-where-the-widget-goes)
+- [The script](#the-script)
+- [The context](#the-context)
+- [Declaring options for the settings panel](#declaring-options-for-the-settings-panel)
+- [Lifecycle and errors](#lifecycle-and-errors)
+- [A worked example](#a-worked-example)
+- [Trust](#trust)
+
 The bar ships with a fixed set of modules and a handful of widgets it already
 knows how to draw, but a user can add one of their own without editing
 `data/shell/`. A local JavaScript file registers a named widget, the config
