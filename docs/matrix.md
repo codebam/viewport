@@ -1,5 +1,14 @@
 # The matrix layout
 
+## On this page
+
+- [The model](#the-model)
+- [Why it is arithmetic](#why-it-is-arithmetic)
+- [The kernel](#the-kernel)
+- [State](#state)
+- [Tunables](#tunables)
+- [Keys](#keys)
+
 The focused window large on the left, the focus history halving away down the
 right.
 
