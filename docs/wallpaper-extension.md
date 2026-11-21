@@ -1,5 +1,15 @@
 # User wallpaper extensions
 
+## On this page
+
+- [The manifest and selecting one](#the-manifest-and-selecting-one)
+- [Per-output wallpapers](#per-output-wallpapers)
+- [The OLED drive-budget guard](#the-oled-drive-budget-guard)
+- [The panel-drive bar widget](#the-panel-drive-bar-widget)
+- [Writing one](#writing-one)
+- [Declaring options for the settings panel](#declaring-options-for-the-settings-panel)
+- [Lifecycle](#lifecycle)
+
 The shipped shell can draw the desktop background with a local script of your
 own, without edits to `data/shell/`. It is the same shape as a
 [user layout extension](layout-extension.md) or a
