@@ -382,3 +382,20 @@ Those are answers, not gaps.
 
 A gap found now goes back on this list rather than being fixed quietly, so the
 next one is written down here rather than rediscovered.
+
+## Where the retired entries landed
+
+The six entries named at the top of this page came off the list; each is now
+documented with the rest of its subject rather than here. This is an index of
+those homes, using only the paths and message names the opening already gives —
+no new claims about what any of them does. The rows follow the order they were
+named above.
+
+| Retired entry | Now documented in |
+| --- | --- |
+| Lock screen the shell draws | [`docs/configuration.md`](docs/configuration.md) — `idle.lock_command`; `crates/viewport/src/lock.rs`, `data/shell/lock.js` |
+| Settings panel and the overlay file it writes | [`docs/ipc.md`](docs/ipc.md) — `config.save` / `config.dark_mode` / `output.revert`; `crates/viewport/src/settings.rs`, `data/shell/settings.js` |
+| A keyboard for every surface that can be opened | [`docs/shell-backends.md`](docs/shell-backends.md) — `data/shell/keys.js`, and which engine can reach an accessibility bus and which cannot |
+| A screen magnifier | [`docs/shell-backends.md`](docs/shell-backends.md) — `crates/viewport/src/magnify.rs` |
+| The calendar under the clock, and a clock that reads the locale | [`docs/configuration.md`](docs/configuration.md) — `clock`, `data/shell/calendar.js` |
+| `xwayland.scale` | [`docs/protocols.md`](docs/protocols.md) — its per-toolkit limits |
