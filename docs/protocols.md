@@ -1,5 +1,31 @@
 # Protocols and hardware support
 
+## On this page
+
+- [HDR](#hdr)
+- [Background effects](#background-effects)
+- [Hardware video](#hardware-video)
+- [Notifications](#notifications)
+- [The system tray](#the-system-tray)
+- [Tablets](#tablets)
+- [Touch](#touch)
+- [Idle](#idle)
+- [What clients may ask for](#what-clients-may-ask-for)
+- [Keyboard shortcuts](#keyboard-shortcuts)
+- [Global shortcuts](#global-shortcuts)
+- [Input capture](#input-capture)
+- [wlr-layer-shell policy](#wlr-layer-shell-policy)
+- [Status](#status)
+- [ext-workspace-v1](#ext-workspace-v1)
+- [linux-dmabuf-v1](#linux-dmabuf-v1)
+- [wp-drm-lease-v1](#wp-drm-lease-v1)
+- [wp-fifo-v1 and wp-commit-timing-v1](#wp-fifo-v1-and-wp-commit-timing-v1)
+- [The rest, by delegation](#the-rest-by-delegation)
+- [xdg-toplevel-drag-v1](#xdg-toplevel-drag-v1)
+- [wlr-export-dmabuf-v1 and ext-transient-seat-v1](#wlr-export-dmabuf-v1-and-ext-transient-seat-v1)
+- [XTEST through the portal](#xtest-through-the-portal)
+- [Xwayland and HiDPI](#xwayland-and-hidpi)
+
 ## HDR
 
 `Mod4+Shift+p` switches the monitor you are looking at into HDR, and back.
