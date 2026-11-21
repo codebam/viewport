@@ -1,5 +1,24 @@
 # Rust rewrite (formerly branch `smithay`, now `main`)
 
+## On this page
+
+- [Decisions](#decisions)
+- [What Smithay gives us and what it does not](#what-smithay-gives-us-and-what-it-does-not)
+- [Scene graph](#scene-graph)
+- [Web engine: Servo](#web-engine-servo)
+- [Crates](#crates)
+- [Protocol coverage](#protocol-coverage)
+- [Why smithay is a fork](#why-smithay-is-a-fork)
+- [Order of work](#order-of-work)
+- [Parity, and when the C tree goes](#parity-and-when-the-c-tree-goes)
+- [Notifications, and where they come from](#notifications-and-where-they-come-from)
+- [The window list](#the-window-list)
+- [What the config file does, and does not](#what-the-config-file-does-and-does-not)
+- [Known rough edges on real hardware](#known-rough-edges-on-real-hardware)
+- [Two backends, one description of a frame](#two-backends-one-description-of-a-frame)
+- [Diagnostics](#diagnostics)
+- [Running it now](#running-it-now)
+
 This is a ground-up reimplementation of the Viewport compositor in Rust. The C
 compositor on `wlroots` that this replaced reached parity and was deleted;
 `main` is the Rust compositor and the daily driver.
