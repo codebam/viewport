@@ -1,5 +1,13 @@
 # Rotating an output
 
+## On this page
+
+- [The symptom, precisely](#the-symptom-precisely)
+- [Ruled out, with evidence](#ruled-out-with-evidence)
+- [Fixed along the way, none of them the cause](#fixed-along-the-way-none-of-them-the-cause)
+- [What it was](#what-it-was)
+- [Testing it](#testing-it)
+
 Fixed. `wlr-randr --output DP-3 --transform 90` used to leave the panel mostly
 black with a stretched piece of the desktop in one corner; the cause is in
 [What it was](#what-it-was), and the rest of this is kept because five attempts
