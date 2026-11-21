@@ -1,5 +1,14 @@
 # Stability
 
+## On this page
+
+- [The covered surfaces](#the-covered-surfaces)
+- [What is not covered](#what-is-not-covered)
+- [Backend tiers](#backend-tiers)
+- [The security exception](#the-security-exception)
+- [Verification behind the promise](#verification-behind-the-promise)
+- [Changing this document](#changing-this-document)
+
 What a Viewport version number promises, and what it does not. The
 [CHANGELOG](../CHANGELOG.md) records the project's adherence to semantic
 versioning; this file defines the surfaces that promise covers. It is
