@@ -1,5 +1,18 @@
 # Shell backends
 
+## On this page
+
+- [Why there is a choice at all](#why-there-is-a-choice-at-all)
+- [wpe — the engine in this process](#wpe--the-engine-in-this-process)
+- [webkitgtk — the engine in a process of its own](#webkitgtk--the-engine-in-a-process-of-its-own)
+- [chromium — the engine in a browser, driven](#chromium--the-engine-in-a-browser-driven)
+- [servo — the engine embedded, and compiled](#servo--the-engine-embedded-and-compiled)
+- [servoshell — the engine driven](#servoshell--the-engine-driven)
+- [cef — the engine embedded](#cef--the-engine-embedded)
+- [The accessibility tree](#the-accessibility-tree)
+- [Building and installing](#building-and-installing)
+- [Running the shell by hand](#running-the-shell-by-hand)
+
 The shell is a web page. Which engine renders it is a choice, and this is what
 the choices are.
 
