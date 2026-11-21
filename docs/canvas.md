@@ -1,5 +1,15 @@
 # The canvas layout
 
+## On this page
+
+- [The model](#the-model)
+- [Why the zoom stops at 1.0](#why-the-zoom-stops-at-10)
+- [Where the state lives](#where-the-state-lives)
+- [Where a new window goes](#where-a-new-window-goes)
+- [Tunables](#tunables)
+- [Keys](#keys)
+- [What is not done yet](#what-is-not-done-yet)
+
 Every workspace an unbounded plane, panned and zoomed. Windows sit where you
 put them and stay there; the view moves over them.
 
