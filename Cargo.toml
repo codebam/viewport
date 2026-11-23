@@ -62,7 +62,7 @@ viewport-web = { path = "crates/viewport-web" }
 # there, one bumping the revision here — and `cargo test --workspace` no longer
 # runs its tests, which run in its own CI instead. See the `[patch]` at the
 # bottom of this file for the other half of the arrangement.
-viewport-vulkan = { git = "https://github.com/codebam/viewport-vulkan.git", rev = "c0214ce51df6539a99bc0deedb6bc714e92c9375" }
+viewport-vulkan = { git = "https://github.com/codebam/viewport-vulkan.git", rev = "d74d6742f7029e67f5f2ed9e2cb63dff0a414372" }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -80,7 +80,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # dozen — and Cargo unions them.
 [workspace.dependencies.smithay]
 # A fork: codebam/smithay, branch explicit-sync-scanout, which is upstream
-# master with three patches on top. Rebased onto master rather than left to
+# master with four patches on top. Rebased onto master rather than left to
 # drift, so the delta stays reviewable and the day one of these lands upstream
 # it drops out of the rebase instead of having to be untangled.
 #
@@ -95,6 +95,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 #   the property and offers the change to `property_notify`, but only when the
 #   value actually differs, so the compositor's own writes never arrive as if
 #   a client had asked.
+# - xwayland: set `_NET_WM_FULLSCREEN_MONITORS` back to the client's value.
+#   Wine sends the client message and then expects EWMH's echo; without one
+#   its fullscreen handshake never completed and the request reverted about
+#   two seconds later. The compositor echoes the value; the layout stays its
+#   own.
 #
 # It was five before that. The drm_lease patch — treat EACCES from DROP_MASTER
 # like EINVAL, without which the lease global was never created on 7.1 with
@@ -104,22 +109,25 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # lost. The two virtual_keyboard patches went the same way in this pass: see
 # below.
 #
-# The previous tip is tagged pre-rebase-d44f753b over there, because a revision
+# The previous tip is tagged pre-rebase-545f816e over there, because a revision
 # no ref reaches is one GitHub may collect, and older checkouts of this
-# compositor pin it. (pre-rebase-fdb4a860, pre-rebase-9d0e3650,
-# pre-rebase-d64a9abe, pre-rebase-b2cc4c51, pre-rebase-b98f667e,
-# pre-rebase-09de0d99, pre-rebase-b6e5bf02 and pre-rebase-a8f1c00 are the ones
-# before that.)
+# compositor pin it. (pre-rebase-d44f753b, pre-rebase-fdb4a860,
+# pre-rebase-9d0e3650, pre-rebase-d64a9abe, pre-rebase-b2cc4c51,
+# pre-rebase-b98f667e, pre-rebase-09de0d99, pre-rebase-b6e5bf02 and
+# pre-rebase-a8f1c00 are the ones before that.)
 #
-# This pass rebased onto upstream 7ff0ede4, 9 commits on from the last base
-# (8fd9fe0), with `git range-diff` showing `=` for all four patches. The
+# This pass rebased onto upstream a38bb709, 2 commits on from the last base
+# (7ff0ede4), with `git range-diff` showing `=` for all four patches. The
 # renderer followed to the same commit in its own repository, so the two pins
 # agree again.
 #
-# The pass before that rebased onto upstream 8fd9fe0, 51 commits on from the
-# last base (cf43a02a), with `git range-diff` showing `=` for all four patches.
+# The pass before that rebased onto upstream 7ff0ede4, 9 commits on from
+# 8fd9fe0, with `=` for all four patches; the renderer followed there too.
 #
-# Before that, the pass onto upstream cf43a02a, 29 commits on from the
+# Before that, the pass onto upstream 8fd9fe0, 51 commits on from the last
+# base (cf43a02a), with `git range-diff` showing `=` for all four patches.
+#
+# And before that, the pass onto upstream cf43a02a, 29 commits on from the
 # last base,
 # and it is more than a bump: upstream's own virtual-keyboard rework
 # (7454d68a, 2bf8be86) landed the same idea the fork's two virtual_keyboard
@@ -132,7 +140,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # three patches — the new `_NET_WM_STATE` read-back included — applied with
 # `git range-diff` showing `=` for each.
 git = "https://github.com/codebam/smithay.git"
-rev = "545f816ea2ba9a5aa02491438e44808a811e643f"
+rev = "a1193cb87c029c0ecdf832a3959023e868881cc9"
 default-features = false
 
 # The other half of moving the renderer out of this workspace.
@@ -157,7 +165,7 @@ default-features = false
 # is what makes this a redirect and not a downgrade — rebase the fork before
 # bumping either pin, not after.
 [patch."https://github.com/Smithay/smithay"]
-smithay = { git = "https://github.com/codebam/smithay.git", rev = "545f816ea2ba9a5aa02491438e44808a811e643f" }
+smithay = { git = "https://github.com/codebam/smithay.git", rev = "a1193cb87c029c0ecdf832a3959023e868881cc9" }
 
 [profile.release]
 debug = 1
