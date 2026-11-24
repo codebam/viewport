@@ -14,11 +14,14 @@
 // compositors looks either washed out or oversaturated.
 //
 // The parametric path is implemented, and so is the display side of an ICC
-// profile: `icc.rs` reads a matrix-and-curve profile's transform backwards, or
-// a LUT profile's PCS-to-device table forwards, bakes either into a cube, and
-// `render_pass` hands the cube to the renderer, which samples it after the
-// parametric conversion. A profile that is neither is refused rather than
-// half-read.
+// profile: `icc.rs` reads a matrix-and-curve profile's transform backwards, a
+// LUT profile's PCS-to-device table forwards, and inverts the pipeline at bake
+// time when the profile carries only device-to-PCS tables: the 3D CLUT solved
+// with Newton on the tetrahedral interpolant, bounded bisection as the
+// fallback. `render_pass` hands the resulting cube to the renderer, which
+// samples it after the parametric conversion. Either PCS is read, `XYZ ` or
+// `Lab `; a profile that cannot be read whole or inverted is refused rather
+// than half-read, and the log names the rule that refused it.
 //
 // What no image description can carry, and this file therefore does not do:
 // automatic HDR switching (Hyprland's `render:cm_auto_hdr`) and tone mapping.

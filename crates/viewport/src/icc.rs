@@ -189,6 +189,85 @@ const BRADFORD_D65_TO_D50: Mat3 = [
 /// component meets the table at `value × 32768/65535`, not at full scale.
 const XYZ_PCS_SCALE: f64 = 32768.0 / 65535.0;
 
+/// Legacy v2 16-bit Lab (`mft2`) places `L* = 100` at `0xFF00` and neutral
+/// `a* = b* = 0` at `0x8000`, so a v4-normalized `[0, 1]` Lab triple meets a
+/// v2 16-bit table scaled by `0xFF00 / 0xFFFF` (`256 / 257`).
+const LAB_V2_SCALE: f64 = 65280.0 / 65535.0;
+
+/// The ICC PCS illuminant (CIE D50), matching LittleCMS's `cmsD50X/Y/Z`.
+const D50_XYZ: [f64; 3] = [0.9642, 1.0, 0.8249];
+
+/// CIE 15:2004 `f(t)` for XYZ → L*a*b*, with the `(24/116)³` continuity knee.
+fn lab_f(t: f64) -> f64 {
+    const DELTA: f64 = 24.0 / 116.0;
+    const LIMIT: f64 = DELTA * DELTA * DELTA;
+    if t <= LIMIT {
+        (841.0 / 108.0) * t + (16.0 / 116.0)
+    } else {
+        t.cbrt()
+    }
+}
+
+/// Convert CIE XYZ (relative to D50) to CIE 1976 `[L*, a*, b*]`.
+fn xyz_to_lab(xyz: [f64; 3]) -> [f64; 3] {
+    let fx = lab_f(xyz[0] / D50_XYZ[0]);
+    let fy = lab_f(xyz[1] / D50_XYZ[1]);
+    let fz = lab_f(xyz[2] / D50_XYZ[2]);
+    [116.0 * fy - 16.0, 500.0 * (fx - fy), 200.0 * (fy - fz)]
+}
+
+/// The Profile Connection Space declared in bytes 20..24 of the ICC header.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Pcs {
+    Xyz,
+    Lab,
+}
+
+/// How the PCS triple is encoded at the boundary of a specific LUT tag type.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PcsEncoding {
+    /// 8-bit or 16-bit XYZ in 1.15 fixed point (`value × 32768 / 65535`).
+    Xyz16,
+    /// v4 float XYZ (`mpet`), unscaled (`Y = 1.0` at media white).
+    XyzFloat,
+    /// Legacy v2 16-bit Lab (`mft2`): `L* 0..100` on `0..0xFF00` and `a*/b*`
+    /// `-128..+127.996` on `0..0xFFFF` (`0` at `0x8000`).
+    LabV2,
+    /// v4 16-bit Lab (`mBA `/`mAB `) and v2 8-bit Lab (`mft1`): `L* 0..100` on
+    /// `0..0xFFFF` (`0..0xFF`) and `a*/b*` `-128..+127` (`0` at `0x8080`/`0x80`).
+    LabV4,
+    /// v4 float Lab (`mpet`): direct CIE `L*` (`0..100`) and `a*/b*`
+    /// (`-128..+127`) numbers, as LittleCMS's `_cmsStageNormalizeToLabFloat`
+    /// and `_cmsStageNormalizeFromLabFloat` hand to the tag.
+    LabFloat,
+}
+
+impl PcsEncoding {
+    fn encode(self, xyz: [f64; 3]) -> [f64; 3] {
+        match self {
+            Self::Xyz16 => [
+                xyz[0] * XYZ_PCS_SCALE,
+                xyz[1] * XYZ_PCS_SCALE,
+                xyz[2] * XYZ_PCS_SCALE,
+            ],
+            Self::XyzFloat => xyz,
+            Self::LabV2 => {
+                let [l, a, b] = xyz_to_lab(xyz);
+                [
+                    (l / 100.0) * LAB_V2_SCALE,
+                    ((a + 128.0) / 255.0) * LAB_V2_SCALE,
+                    ((b + 128.0) / 255.0) * LAB_V2_SCALE,
+                ]
+            }
+            Self::LabV4 => {
+                let [l, a, b] = xyz_to_lab(xyz);
+                [l / 100.0, (a + 128.0) / 255.0, (b + 128.0) / 255.0]
+            }
+            Self::LabFloat => xyz_to_lab(xyz),
+        }
+    }
+}
+
 /// A clamp that does not pass NaN through: `f64::clamp` returns NaN for NaN,
 /// and a cube entry the renderer samples as NaN is a black pixel, not a colour.
 fn finite_clamp(value: f64) -> f64 {
@@ -205,17 +284,22 @@ fn finite_clamp(value: f64) -> f64 {
 /// XYZ relative to D50) and three transfer curves (rTRC, gTRC, bTRC, device
 /// value to linear light). Reading it backwards gives the transform the screen
 /// needs: sRGB encoded → linear sRGB → PCS D50 → linear display → display
-/// encoded. A LUT-described profile says the same thing as a table, and the
-/// direction the screen needs is its `B2A`/`B2D` (PCS → device) tag — forward,
-/// so nothing here inverts a table. Either way, `lut` is that function sampled
-/// on a cube, which is the form the renderer can upload as a 3D texture.
+/// encoded. A LUT-described profile says the same thing as a table: when it
+/// carries a `B2A`/`B2D` (PCS → device) tag, that table is read forwards; when
+/// it carries only an `A2B`/`D2B` (device → PCS) tag, the pipeline is inverted
+/// at bake time — output curves inverted, the 3D CLUT solved by Newton on the
+/// tetrahedral interpolant with bounded bisection as the fallback, input curves
+/// and matrices inverted, and out-of-gamut PCS clamped deterministically to the
+/// device gamut boundary. Both `XYZ ` and `Lab ` PCS are read. Either way,
+/// `lut` is that function sampled on a cube, which is the form the renderer can
+/// upload as a 3D texture.
 ///
 /// The matrix description is tried first, so a profile that carries both keeps
 /// the transform it shipped with; the LUT is what a profile with no primaries
-/// and curves is read through. What is still refused: a profile whose only
-/// tables run device → PCS (`A2B`), a Lab PCS, a non-RGB device space, and any
-/// tag this cannot read whole — a profile that cannot be understood is not a
-/// reason to guess a transform.
+/// and curves is read through. What is still refused: a non-RGB device space,
+/// any present tag this cannot read whole, and any curve, matrix or CLUT whose
+/// inverse is not well-defined — a profile that cannot be understood is not a
+/// reason to guess a transform, and the log names the rule that refused it.
 pub struct DisplayTransform {
     kind: Kind,
     /// sRGB encoded → PCS XYZ D50.
@@ -224,7 +308,7 @@ pub struct DisplayTransform {
     lut: Vec<[f32; 4]>,
 }
 
-/// The two ways a display profile can say what the panel does.
+/// The ways a display profile can say what the panel does.
 enum Kind {
     /// Three primaries and three transfer curves, read backwards.
     Matrix {
@@ -233,58 +317,141 @@ enum Kind {
         /// PCS XYZ D50 → linear display RGB.
         from_pcs: Mat3,
     },
-    /// A PCS → device table, read forwards.
+    /// A PCS → device table (`B2D`/`B2A`), read forwards.
     Lut(LutPipeline),
+    /// A device → PCS table (`D2B`/`A2B`), inverted stage-by-stage.
+    InvertedLut(InvertedLutPipeline),
 }
 
 impl DisplayTransform {
-    /// Read a display profile: matrix-shaper first, then a LUT. Anything else
-    /// is `None`: a profile that cannot be understood is not a reason to guess
-    /// a transform.
+    /// Read a display profile: matrix-shaper first, then a PCS → device LUT,
+    /// then an inverted device → PCS LUT. Anything else logs the rule that
+    /// refused it and returns `None`: a profile that cannot be understood is
+    /// not a reason to guess a transform.
     pub fn for_profile(profile: &[u8]) -> Option<Self> {
+        match Self::parse(profile) {
+            Ok(transform) => Some(transform),
+            Err(reason) => {
+                tracing::debug!("ICC display transform refused: {reason}");
+                None
+            }
+        }
+    }
+
+    fn parse(profile: &[u8]) -> Result<Self, &'static str> {
         if profile.len() < 132 || &profile[36..40] != b"acsp" {
-            return None;
+            return Err("header too short or missing 'acsp' signature");
         }
-        // The transform is RGB in, RGB out; an XYZ or Lab device space is a
-        // different question with a different answer.
-        if &profile[16..20] != b"RGB " || &profile[20..24] != b"XYZ " {
-            return None;
+        let count = be_u32(&profile[128..132]) as usize;
+        if count > (profile.len() - 132) / 12 {
+            return Err("tag directory count exceeds profile length");
         }
-        let kind = Self::matrix_kind(profile).or_else(|| Self::lut_kind(profile))?;
+        // The transform is RGB in, RGB out; an XYZ, Lab, CMYK or Gray device
+        // space is a different question with a different answer.
+        if &profile[16..20] != b"RGB " {
+            return Err("non-RGB device colour space");
+        }
+        let pcs = match &profile[20..24] {
+            b"XYZ " => Pcs::Xyz,
+            b"Lab " => Pcs::Lab,
+            _ => return Err("unsupported PCS in header (expected 'XYZ ' or 'Lab ')"),
+        };
+        let kind = match Self::matrix_kind(profile)? {
+            Some(kind) => kind,
+            None => Self::lut_kind(profile, pcs)?,
+        };
         let mut transform = Self {
             kind,
             srgb_to_pcs: multiply(&BRADFORD_D65_TO_D50, &SRGB_TO_XYZ_D65),
             lut: Vec::new(),
         };
         transform.lut = transform.bake();
-        Some(transform)
+        Ok(transform)
     }
 
-    fn matrix_kind(profile: &[u8]) -> Option<Kind> {
-        let r = xyz_tag(tag_data(profile, b"rXYZ")?)?;
-        let g = xyz_tag(tag_data(profile, b"gXYZ")?)?;
-        let b = xyz_tag(tag_data(profile, b"bXYZ")?)?;
+    fn matrix_kind(profile: &[u8]) -> Result<Option<Kind>, &'static str> {
+        const TAGS: [&[u8; 4]; 6] = [b"rXYZ", b"gXYZ", b"bXYZ", b"rTRC", b"gTRC", b"bTRC"];
+        let mut slices = [&[][..]; 6];
+        let mut present = 0usize;
+        for (i, sig) in TAGS.iter().enumerate() {
+            match lookup_tag(profile, sig) {
+                TagLookup::Absent => {}
+                TagLookup::InvalidSlice => {
+                    return Err("matrix-shaper tag slice exceeds profile bounds");
+                }
+                TagLookup::Present(data) => {
+                    slices[i] = data;
+                    present += 1;
+                }
+            }
+        }
+        if present < 6 {
+            // Validate any partial colorant or curve tags that are present so a
+            // corrupt tag is still refused, then let a LUT profile without TRC
+            // curves proceed to lut_kind.
+            for &slice in &slices[0..3] {
+                if !slice.is_empty() && xyz_tag(slice).is_none() {
+                    return Err("rXYZ/gXYZ/bXYZ tag is present but cannot be read whole");
+                }
+            }
+            for &slice in &slices[3..6] {
+                if !slice.is_empty() && Curve::from_tag(slice).is_none() {
+                    return Err("rTRC/gTRC/bTRC tag is present but cannot be read or inverted");
+                }
+            }
+            return Ok(None);
+        }
+        let r = xyz_tag(slices[0]).ok_or("rXYZ tag cannot be read whole")?;
+        let g = xyz_tag(slices[1]).ok_or("gXYZ tag cannot be read whole")?;
+        let b = xyz_tag(slices[2]).ok_or("bXYZ tag cannot be read whole")?;
         let to_pcs = [[r[0], g[0], b[0]], [r[1], g[1], b[1]], [r[2], g[2], b[2]]];
-        let from_pcs = invert(&to_pcs)?;
+        let from_pcs = invert(&to_pcs).ok_or("matrix-shaper primaries matrix is singular")?;
         let decode = [
-            Curve::from_tag(tag_data(profile, b"rTRC")?)?,
-            Curve::from_tag(tag_data(profile, b"gTRC")?)?,
-            Curve::from_tag(tag_data(profile, b"bTRC")?)?,
+            Curve::from_tag(slices[3]).ok_or("rTRC curve cannot be read or is non-monotone")?,
+            Curve::from_tag(slices[4]).ok_or("gTRC curve cannot be read or is non-monotone")?,
+            Curve::from_tag(slices[5]).ok_or("bTRC curve cannot be read or is non-monotone")?,
         ];
-        Some(Kind::Matrix { decode, from_pcs })
+        Ok(Some(Kind::Matrix { decode, from_pcs }))
     }
 
-    fn lut_kind(profile: &[u8]) -> Option<Kind> {
+    fn lut_kind(profile: &[u8], pcs: Pcs) -> Result<Kind, &'static str> {
         // The order LittleCMS reads an output profile in for relative
         // colorimetric: the v4 float tag first, then the 16-bit
         // relative-colorimetric tag, then — only when that tag is absent —
         // the perceptual one. A tag that is present but cannot be read is a
         // refusal, not an invitation to try the next: half a transform is
         // worse than none.
-        let data = tag_data(profile, b"B2D1")
-            .or_else(|| tag_data(profile, b"B2A1"))
-            .or_else(|| tag_data(profile, b"B2A0"))?;
-        Some(Kind::Lut(parse_lut_tag(data)?))
+        for sig in [b"B2D1", b"B2A1", b"B2A0"] {
+            match lookup_tag(profile, sig) {
+                TagLookup::Absent => continue,
+                TagLookup::InvalidSlice => {
+                    return Err("B2A/B2D tag offset or size exceeds profile bounds");
+                }
+                TagLookup::Present(data) => {
+                    let pipeline = parse_b2a_tag(data, pcs)
+                        .ok_or("B2A/B2D tag is present but cannot be read whole")?;
+                    return Ok(Kind::Lut(pipeline));
+                }
+            }
+        }
+        // Only when no PCS → device tag is present, look for a device → PCS
+        // tag to invert: v4 float D2B1 first, then A2B1 (relative
+        // colorimetric), then A2B0 (perceptual), then A2B2 (saturation).
+        for sig in [b"D2B1", b"A2B1", b"A2B0", b"A2B2"] {
+            match lookup_tag(profile, sig) {
+                TagLookup::Absent => continue,
+                TagLookup::InvalidSlice => {
+                    return Err("A2B/D2B tag offset or size exceeds profile bounds");
+                }
+                TagLookup::Present(data) => {
+                    let forward = parse_a2b_tag(data, pcs)
+                        .ok_or("A2B/D2B tag is present but cannot be read whole")?;
+                    let inverted = InvertedLutPipeline::from_forward(forward)?;
+                    return Ok(Kind::InvertedLut(inverted));
+                }
+            }
+        }
+        Err("profile carries no complete matrix-shaper, B2A/B2D, or A2B/D2B transform")
     }
 
     /// The transform itself: an sRGB encoded colour in, the display's encoded
@@ -311,12 +478,17 @@ impl DisplayTransform {
             Kind::Lut(pipeline) => {
                 // The table itself does the gamut mapping its intent
                 // describes; the screen clips what is left.
-                let scaled = [
-                    pcs[0] * pipeline.pcs_scale,
-                    pcs[1] * pipeline.pcs_scale,
-                    pcs[2] * pipeline.pcs_scale,
-                ];
-                let device = pipeline.eval(scaled);
+                let encoded_pcs = pipeline.pcs_encoding.encode(pcs);
+                let device = pipeline.eval(encoded_pcs);
+                [
+                    finite_clamp(device[0]),
+                    finite_clamp(device[1]),
+                    finite_clamp(device[2]),
+                ]
+            }
+            Kind::InvertedLut(pipeline) => {
+                let encoded_pcs = pipeline.pcs_encoding.encode(pcs);
+                let device = pipeline.eval(encoded_pcs);
                 [
                     finite_clamp(device[0]),
                     finite_clamp(device[1]),
@@ -559,11 +731,20 @@ fn srgb_decode(value: f64) -> f64 {
     }
 }
 
-/// Find one tag's data in a profile.
-fn tag_data<'a>(profile: &'a [u8], signature: &[u8; 4]) -> Option<&'a [u8]> {
+/// Whether a tag is absent from the directory, points outside the file, or has
+/// a slice ready to parse.
+enum TagLookup<'a> {
+    Absent,
+    InvalidSlice,
+    Present(&'a [u8]),
+}
+
+/// Find one tag's data in a profile, distinguishing an absent tag from a
+/// directory entry whose offset or size points past the end of the file.
+fn lookup_tag<'a>(profile: &'a [u8], signature: &[u8; 4]) -> TagLookup<'a> {
     let count = be_u32(&profile[128..132]) as usize;
     if count > (profile.len() - 132) / 12 {
-        return None;
+        return TagLookup::InvalidSlice;
     }
     let wanted = u32::from_be_bytes(*signature);
     for at in (132..132 + count * 12).step_by(12) {
@@ -572,13 +753,15 @@ fn tag_data<'a>(profile: &'a [u8], signature: &[u8; 4]) -> Option<&'a [u8]> {
         }
         let offset = be_u32(&profile[at + 4..at + 8]) as usize;
         let size = be_u32(&profile[at + 8..at + 12]) as usize;
-        let end = offset.checked_add(size)?;
+        let Some(end) = offset.checked_add(size) else {
+            return TagLookup::InvalidSlice;
+        };
         if size == 0 || end > profile.len() {
-            return None;
+            return TagLookup::InvalidSlice;
         }
-        return Some(&profile[offset..end]);
+        return TagLookup::Present(&profile[offset..end]);
     }
-    None
+    TagLookup::Absent
 }
 
 /// An `XYZ ` tag: three S15Fixed16 values, relative to the D50 PCS.
@@ -608,17 +791,21 @@ fn multiply(a: &Mat3, b: &Mat3) -> Mat3 {
     out
 }
 
+fn determinant(m: &Mat3) -> f64 {
+    m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+        - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+        + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])
+}
+
 fn invert(matrix: &Mat3) -> Option<Mat3> {
     let m = matrix;
-    let determinant = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
-        - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
-        + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+    let det = determinant(m);
     // A singular matrix is a profile with no answer, not one with a zero
     // transform: refusing keeps the screen as it was instead of blacking it.
-    if !determinant.is_finite() || determinant.abs() < 1e-9 {
+    if !det.is_finite() || det.abs() < 1e-9 {
         return None;
     }
-    let scale = determinant.recip();
+    let scale = det.recip();
     Some([
         [
             (m[1][1] * m[2][2] - m[1][2] * m[2][1]) * scale,
@@ -644,18 +831,19 @@ fn invert(matrix: &Mat3) -> Option<Mat3> {
 //
 // A matrix-shaper profile is not the only way to say what a display does. A
 // LUT profile stores the transform as tables: per-channel curves, a 3D CLUT
-// that mixes the channels, and sometimes a matrix. The direction a screen
-// needs — PCS to device — is the `B2A` (v2 and v4) or `B2D` (v4 float) tag
-// family, and it is read forwards, so unlike the matrix path nothing here
-// inverts anything. The four tag types this reads (`mft1`, `mft2`, `mBA `,
-// `mpet`) all decompose into the same three stage kinds, so one evaluator
-// serves them all; only the parsing differs.
+// that mixes the channels, and sometimes a matrix. When the profile carries a
+// `B2A` (v2 and v4) or `B2D` (v4 float) tag, it already runs PCS to device and
+// is read forwards; when it carries only an `A2B` or `D2B` (device to PCS)
+// tag, the stages are inverted in reverse order at bake time. The five tag
+// types this reads (`mft1`, `mft2`, `mBA `, `mAB `, `mpet`) all decompose into
+// the same three stage kinds.
 //
 // The reference for every layout and every evaluation rule below is LittleCMS
 // 2.19, the same engine the matrix path is cross-checked against: the stage
-// order, the tetrahedral CLUT interpolation, the 1.15 fixed-point PCS, and the
-// segmented-curve formulas are its behaviour, read out of its source rather
-// than guessed from the specification's prose.
+// order, tetrahedral CLUT interpolation (and trilinear when a 16-bit/8-bit
+// `B2A` CLUT is indexed in Lab), the 1.15 fixed-point XYZ and v2/v4 Lab PCS
+// encodings, and the segmented-curve formulas are its behaviour, read out of
+// its source rather than guessed from the specification's prose.
 
 /// The most entries one CLUT may hold. 255 points per dimension is legal ICC
 /// and would be half a gigabyte of f64; real display LUTs are 17³ to 65³, and
@@ -801,11 +989,16 @@ impl Clut {
     }
 
     /// Tetrahedral interpolation (Sakamoto), the default LittleCMS uses for a
-    /// 3D CLUT — trilinear is only its Lab-PCS fallback, and this pipeline is
-    /// XYZ. The six tetrahedra partition the cell by the ordering of the three
-    /// fractional coordinates; within each, the answer is affine, so the four
-    /// node differences below reproduce it exactly.
+    /// 3D CLUT. The six tetrahedra partition the cell by the ordering of the
+    /// three fractional coordinates; within each, the answer is affine, so the
+    /// four node differences below reproduce it exactly.
     fn eval(&self, input: [f64; 3]) -> [f64; 3] {
+        self.eval_with_jacobian(input).0
+    }
+
+    /// Evaluate the tetrahedral interpolant and its exact local Jacobian
+    /// `∂output / ∂input` inside the active tetrahedron.
+    fn eval_with_jacobian(&self, input: [f64; 3]) -> ([f64; 3], Mat3) {
         let domain = [
             (self.grid[0] - 1) as f64,
             (self.grid[1] - 1) as f64,
@@ -822,32 +1015,26 @@ impl Clut {
             clamped[2] * domain[2],
         ];
         let base = [
-            scaled[0].floor() as usize,
-            scaled[1].floor() as usize,
-            scaled[2].floor() as usize,
+            (scaled[0].floor() as usize).min(self.grid[0] - 2),
+            (scaled[1].floor() as usize).min(self.grid[1] - 2),
+            (scaled[2].floor() as usize).min(self.grid[2] - 2),
         ];
-        let frac = [
+        let (rx, ry, rz) = (
             scaled[0] - base[0] as f64,
             scaled[1] - base[1] as f64,
             scaled[2] - base[2] as f64,
-        ];
+        );
         let stride = [self.grid[1] * self.grid[2] * 3, self.grid[2] * 3, 3];
-        // At exactly 1.0 the floor is the last node and there is no node above
-        // it; the fraction is zero, so the upper corner is never read.
         let lo = [
             base[0] * stride[0],
             base[1] * stride[1],
             base[2] * stride[2],
         ];
-        let hi = [
-            lo[0] + if clamped[0] >= 1.0 { 0 } else { stride[0] },
-            lo[1] + if clamped[1] >= 1.0 { 0 } else { stride[1] },
-            lo[2] + if clamped[2] >= 1.0 { 0 } else { stride[2] },
-        ];
+        let hi = [lo[0] + stride[0], lo[1] + stride[1], lo[2] + stride[2]];
         let node = |x: usize, y: usize, z: usize, channel: usize| self.table[x + y + z + channel];
-        let (rx, ry, rz) = (frac[0], frac[1], frac[2]);
         let mut out = [0.0; 3];
-        for (channel, out_value) in out.iter_mut().enumerate() {
+        let mut jacobian = [[0.0; 3]; 3];
+        for channel in 0..3 {
             let c0 = node(lo[0], lo[1], lo[2], channel);
             let (c1, c2, c3) = if rx >= ry && ry >= rz {
                 (
@@ -879,23 +1066,179 @@ impl Clut {
                     node(lo[0], hi[1], lo[2], channel) - c0,
                     node(lo[0], hi[1], hi[2], channel) - node(lo[0], hi[1], lo[2], channel),
                 )
-            } else if rz >= ry && ry >= rx {
+            } else {
                 (
                     node(hi[0], hi[1], hi[2], channel) - node(lo[0], hi[1], hi[2], channel),
                     node(lo[0], hi[1], hi[2], channel) - node(lo[0], lo[1], hi[2], channel),
                     node(lo[0], lo[1], hi[2], channel) - c0,
                 )
-            } else {
-                (0.0, 0.0, 0.0)
             };
-            *out_value = c0 + c1 * rx + c2 * ry + c3 * rz;
+            out[channel] = c0 + c1 * rx + c2 * ry + c3 * rz;
+            jacobian[channel] = [c1 * domain[0], c2 * domain[1], c3 * domain[2]];
+        }
+        (out, jacobian)
+    }
+
+    /// Trilinear interpolation: LittleCMS switches to this (`cmsio1.c:623`)
+    /// when a 16-bit or 8-bit `B2A` CLUT is indexed in Lab space.
+    fn eval_trilinear(&self, input: [f64; 3]) -> [f64; 3] {
+        let domain = [
+            (self.grid[0] - 1) as f64,
+            (self.grid[1] - 1) as f64,
+            (self.grid[2] - 1) as f64,
+        ];
+        let clamped = [
+            input[0].clamp(0.0, 1.0),
+            input[1].clamp(0.0, 1.0),
+            input[2].clamp(0.0, 1.0),
+        ];
+        let scaled = [
+            clamped[0] * domain[0],
+            clamped[1] * domain[1],
+            clamped[2] * domain[2],
+        ];
+        let base = [
+            (scaled[0].floor() as usize).min(self.grid[0] - 2),
+            (scaled[1].floor() as usize).min(self.grid[1] - 2),
+            (scaled[2].floor() as usize).min(self.grid[2] - 2),
+        ];
+        let (rx, ry, rz) = (
+            scaled[0] - base[0] as f64,
+            scaled[1] - base[1] as f64,
+            scaled[2] - base[2] as f64,
+        );
+        let stride = [self.grid[1] * self.grid[2] * 3, self.grid[2] * 3, 3];
+        let lo = [
+            base[0] * stride[0],
+            base[1] * stride[1],
+            base[2] * stride[2],
+        ];
+        let hi = [lo[0] + stride[0], lo[1] + stride[1], lo[2] + stride[2]];
+        let node = |x: usize, y: usize, z: usize, channel: usize| self.table[x + y + z + channel];
+        let lerp = |t: f64, a: f64, b: f64| a + (b - a) * t;
+        let mut out = [0.0; 3];
+        for (channel, out_value) in out.iter_mut().enumerate() {
+            let d000 = node(lo[0], lo[1], lo[2], channel);
+            let d001 = node(lo[0], lo[1], hi[2], channel);
+            let d010 = node(lo[0], hi[1], lo[2], channel);
+            let d011 = node(lo[0], hi[1], hi[2], channel);
+            let d100 = node(hi[0], lo[1], lo[2], channel);
+            let d101 = node(hi[0], lo[1], hi[2], channel);
+            let d110 = node(hi[0], hi[1], lo[2], channel);
+            let d111 = node(hi[0], hi[1], hi[2], channel);
+            let dx00 = lerp(rx, d000, d100);
+            let dx01 = lerp(rx, d001, d101);
+            let dx10 = lerp(rx, d010, d110);
+            let dx11 = lerp(rx, d011, d111);
+            let dxy0 = lerp(ry, dx00, dx10);
+            let dxy1 = lerp(ry, dx01, dx11);
+            *out_value = lerp(rz, dxy0, dxy1);
         }
         out
     }
+
+    /// Test all six affine tetrahedra inside `cell` for an exact preimage of
+    /// `target`. Because the Sakamoto interpolant is linear on each
+    /// tetrahedron, any in-cell root is given in closed form by a 3×3 solve.
+    fn try_solve_cell(&self, cell: [usize; 3], target: [f64; 3]) -> Option<[f64; 3]> {
+        let stride = [self.grid[1] * self.grid[2] * 3, self.grid[2] * 3, 3];
+        let lo = [
+            cell[0] * stride[0],
+            cell[1] * stride[1],
+            cell[2] * stride[2],
+        ];
+        let hi = [lo[0] + stride[0], lo[1] + stride[1], lo[2] + stride[2]];
+        let node = |x: usize, y: usize, z: usize| -> [f64; 3] {
+            let at = x + y + z;
+            [self.table[at], self.table[at + 1], self.table[at + 2]]
+        };
+        let n000 = node(lo[0], lo[1], lo[2]);
+        let n001 = node(lo[0], lo[1], hi[2]);
+        let n010 = node(lo[0], hi[1], lo[2]);
+        let n011 = node(lo[0], hi[1], hi[2]);
+        let n100 = node(hi[0], lo[1], lo[2]);
+        let n101 = node(hi[0], lo[1], hi[2]);
+        let n110 = node(hi[0], hi[1], lo[2]);
+        let n111 = node(hi[0], hi[1], hi[2]);
+        let sub = |a: [f64; 3], b: [f64; 3]| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+        let rhs = sub(target, n000);
+        let tetrahedra: [([f64; 3], [f64; 3], [f64; 3], fn(f64, f64, f64) -> bool); 6] = [
+            (
+                sub(n100, n000),
+                sub(n110, n100),
+                sub(n111, n110),
+                |rx, ry, rz| rx >= ry - 1e-7 && ry >= rz - 1e-7,
+            ),
+            (
+                sub(n100, n000),
+                sub(n111, n101),
+                sub(n101, n100),
+                |rx, ry, rz| rx >= rz - 1e-7 && rz >= ry - 1e-7,
+            ),
+            (
+                sub(n101, n001),
+                sub(n111, n101),
+                sub(n001, n000),
+                |rx, ry, rz| rz >= rx - 1e-7 && rx >= ry - 1e-7,
+            ),
+            (
+                sub(n110, n010),
+                sub(n010, n000),
+                sub(n111, n110),
+                |rx, ry, rz| ry >= rx - 1e-7 && rx >= rz - 1e-7,
+            ),
+            (
+                sub(n111, n011),
+                sub(n010, n000),
+                sub(n011, n010),
+                |rx, ry, rz| ry >= rz - 1e-7 && rz >= rx - 1e-7,
+            ),
+            (
+                sub(n111, n011),
+                sub(n011, n001),
+                sub(n001, n000),
+                |rx, ry, rz| rz >= ry - 1e-7 && ry >= rx - 1e-7,
+            ),
+        ];
+        let domain = [
+            (self.grid[0] - 1) as f64,
+            (self.grid[1] - 1) as f64,
+            (self.grid[2] - 1) as f64,
+        ];
+        for (c1, c2, c3, order_ok) in tetrahedra {
+            let mat = [
+                [c1[0], c2[0], c3[0]],
+                [c1[1], c2[1], c3[1]],
+                [c1[2], c2[2], c3[2]],
+            ];
+            let Some(inv) = invert(&mat) else {
+                continue;
+            };
+            let r = mul_vec(&inv, &rhs);
+            if r.iter().all(|&v| (-1e-7..=1.0 + 1e-7).contains(&v)) && order_ok(r[0], r[1], r[2]) {
+                let candidate = [
+                    (cell[0] as f64 + r[0].clamp(0.0, 1.0)) / domain[0],
+                    (cell[1] as f64 + r[1].clamp(0.0, 1.0)) / domain[1],
+                    (cell[2] as f64 + r[2].clamp(0.0, 1.0)) / domain[2],
+                ];
+                let fx = self.eval(candidate);
+                let err = sq_dist(fx, target);
+                if err <= 1e-14 {
+                    return Some(candidate);
+                }
+            }
+        }
+        None
+    }
+}
+
+fn sq_dist(a: [f64; 3], b: [f64; 3]) -> f64 {
+    let (dx, dy, dz) = (a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+    dx * dx + dy * dy + dz * dz
 }
 
 /// One processing element of a LUT. Every stage is 3-in 3-out: the profile is
-/// RGB and the PCS is XYZ, and anything else is refused at parse time.
+/// RGB and the PCS is XYZ or Lab, and anything else is refused at parse time.
 enum Stage {
     Curves([Table; 3]),
     Matrix(Mat3, [f64; 3]),
@@ -909,11 +1252,11 @@ struct LutPipeline {
     /// between stages; the 16-bit types quantize at every stage boundary, so
     /// their values are clamped there the way a u16 pipeline clamps them.
     float: bool,
-    /// What the PCS is multiplied by before it meets the first stage. The
-    /// 16-bit tags index it in 1.15 fixed point (×32768/65535); the float tag
-    /// meets it at full scale — LittleCMS normalizes the float PCS back to
-    /// XYZ before the tag's own pipeline runs.
-    pcs_scale: f64,
+    /// True when LittleCMS switches a 16-bit/8-bit `B2A` CLUT to trilinear
+    /// interpolation because Lab is its indexer space.
+    trilinear: bool,
+    /// How the PCS triple is encoded before it meets the first stage.
+    pcs_encoding: PcsEncoding,
 }
 
 impl LutPipeline {
@@ -934,7 +1277,13 @@ impl LutPipeline {
                         mixed[2] + offset[2],
                     ]
                 }
-                Stage::Clut(clut) => clut.eval(value),
+                Stage::Clut(clut) => {
+                    if self.trilinear {
+                        clut.eval_trilinear(value)
+                    } else {
+                        clut.eval(value)
+                    }
+                }
             };
             if !self.float {
                 value = [
@@ -948,19 +1297,561 @@ impl LutPipeline {
     }
 }
 
-/// Read one PCS → device tag, whichever of the four LUT types it is.
-fn parse_lut_tag(data: &[u8]) -> Option<LutPipeline> {
+/// An inverted 1D curve from an `A2B`/`D2B` pipeline. Uniform tables invert on
+/// their original knots without resampling; segmented curves bracket on a
+/// monotone sample table over `[0, 1]` and refine on the underlying segments.
+enum InvertedTable {
+    Uniform(Vec<f64>),
+    Segmented { table: Table, samples: Vec<f64> },
+}
+
+impl InvertedTable {
+    fn from_table(table: Table) -> Result<Self, &'static str> {
+        match table {
+            Table::Uniform(samples) => {
+                validate_monotone_samples(&samples)?;
+                Ok(Self::Uniform(samples))
+            }
+            Table::Segmented(segments) => {
+                let table = Table::Segmented(segments);
+                let samples: Vec<f64> = (0..CURVE_SAMPLES)
+                    .map(|i| table.eval(i as f64 / (CURVE_SAMPLES - 1) as f64))
+                    .collect();
+                validate_monotone_samples(&samples)?;
+                Ok(Self::Segmented { table, samples })
+            }
+        }
+    }
+
+    fn invert(&self, y: f64) -> f64 {
+        if !y.is_finite() {
+            return 0.0;
+        }
+        match self {
+            Self::Uniform(samples) => invert_sample_slice(samples, y),
+            Self::Segmented { table, samples } => {
+                let first = samples[0];
+                let last = samples[CURVE_SAMPLES - 1];
+                if y <= first {
+                    if let Table::Segmented(segments) = table {
+                        if let Some(x) = segments
+                            .first()
+                            .and_then(|seg| invert_open_formula(&seg.kind, y))
+                        {
+                            return x.min(0.0);
+                        }
+                    }
+                    return 0.0;
+                }
+                if y >= last {
+                    if let Table::Segmented(segments) = table {
+                        if let Some(x) = segments
+                            .last()
+                            .and_then(|seg| invert_open_formula(&seg.kind, y))
+                        {
+                            return x.max(1.0);
+                        }
+                    }
+                    return 1.0;
+                }
+                let mut low = 0usize;
+                let mut high = CURVE_SAMPLES - 1;
+                while high - low > 1 {
+                    let mid = (low + high) / 2;
+                    if samples[mid] <= y {
+                        low = mid;
+                    } else {
+                        high = mid;
+                    }
+                }
+                let scale = 1.0 / (CURVE_SAMPLES - 1) as f64;
+                let mut x_lo = low as f64 * scale;
+                let mut x_hi = high as f64 * scale;
+                let mut f_lo = samples[low] - y;
+                let mut f_hi = samples[high] - y;
+                let mut x = if f_hi > f_lo {
+                    (x_lo + (x_hi - x_lo) * (-f_lo / (f_hi - f_lo))).clamp(x_lo, x_hi)
+                } else {
+                    0.5 * (x_lo + x_hi)
+                };
+                for _ in 0..8 {
+                    let fx = table.eval(x) - y;
+                    if fx.abs() <= 1e-12 || (x_hi - x_lo) <= 1e-12 {
+                        break;
+                    }
+                    if fx <= 0.0 {
+                        x_lo = x;
+                        f_lo = fx;
+                    } else {
+                        x_hi = x;
+                        f_hi = fx;
+                    }
+                    x = if (f_hi - f_lo).abs() > 1e-15 {
+                        let secant = x_lo - f_lo * (x_hi - x_lo) / (f_hi - f_lo);
+                        if secant > x_lo + 0.1 * (x_hi - x_lo)
+                            && secant < x_hi - 0.1 * (x_hi - x_lo)
+                        {
+                            secant
+                        } else {
+                            0.5 * (x_lo + x_hi)
+                        }
+                    } else {
+                        0.5 * (x_lo + x_hi)
+                    };
+                }
+                x.clamp(0.0, 1.0)
+            }
+        }
+    }
+}
+
+fn validate_monotone_samples(samples: &[f64]) -> Result<(), &'static str> {
+    if samples.len() < 2 || samples.iter().any(|v| !v.is_finite()) {
+        return Err("A2B curve has fewer than two finite samples");
+    }
+    for pair in samples.windows(2) {
+        if pair[1] + 1e-6 < pair[0] {
+            return Err("A2B curve is non-monotone and cannot be inverted");
+        }
+    }
+    let first = samples[0];
+    let last = *samples.last().unwrap();
+    if last - first < 0.05 {
+        return Err("A2B curve has insufficient span to invert");
+    }
+    Ok(())
+}
+
+fn invert_sample_slice(samples: &[f64], y: f64) -> f64 {
+    let last_idx = samples.len() - 1;
+    if y <= samples[0] {
+        return 0.0;
+    }
+    if y >= samples[last_idx] {
+        return 1.0;
+    }
+    let mut low = 0usize;
+    let mut high = last_idx;
+    while high - low > 1 {
+        let mid = (low + high) / 2;
+        if samples[mid] <= y {
+            low = mid;
+        } else {
+            high = mid;
+        }
+    }
+    let low_val = samples[low];
+    let high_val = samples[high];
+    if high_val <= low_val {
+        return low as f64 / last_idx as f64;
+    }
+    let fraction = ((y - low_val) / (high_val - low_val)).clamp(0.0, 1.0);
+    (low as f64 + fraction) / last_idx as f64
+}
+
+fn invert_open_formula(kind: &SegmentKind, y: f64) -> Option<f64> {
+    if let SegmentKind::Formula { kind: 6, params } = kind {
+        let (g, a, b, c) = (params[0], params[1], params[2], params[3]);
+        if !a.is_finite() || a <= 1e-9 || !g.is_finite() || g <= 0.0 {
+            return None;
+        }
+        if g == 1.0 {
+            return Some((y - c - b) / a);
+        }
+        if y >= c {
+            return Some(((y - c).powf(1.0 / g) - b) / a);
+        }
+    }
+    None
+}
+
+/// A validated 3D CLUT ready for PCS → device inversion via Newton on the
+/// tetrahedral interpolant with bounded bisection as fallback.
+struct InvertedClut {
+    clut: Clut,
+    origin: [f64; 3],
+    inv_global_jacobian: Mat3,
+    coarse_seeds: Vec<([f64; 3], [f64; 3])>,
+}
+
+impl InvertedClut {
+    fn from_clut(clut: Clut) -> Result<Self, &'static str> {
+        let [gx, gy, gz] = clut.grid;
+        let (nx, ny, nz) = (gx - 1, gy - 1, gz - 1);
+        let stride = [gy * gz * 3, gz * 3, 3];
+        let node = |ix: usize, iy: usize, iz: usize| -> [f64; 3] {
+            let at = ix * stride[0] + iy * stride[1] + iz * stride[2];
+            [clut.table[at], clut.table[at + 1], clut.table[at + 2]]
+        };
+        let total_cells = nx * ny * nz;
+        let mut global_jac = [[0.0; 3]; 3];
+        let mut cell_dets = Vec::with_capacity(total_cells);
+        for ix in 0..nx {
+            for iy in 0..ny {
+                for iz in 0..nz {
+                    let mut dx = [0.0; 3];
+                    let mut dy = [0.0; 3];
+                    let mut dz = [0.0; 3];
+                    for a in 0..2 {
+                        for b in 0..2 {
+                            let vx0 = node(ix, iy + a, iz + b);
+                            let vx1 = node(ix + 1, iy + a, iz + b);
+                            let vy0 = node(ix + a, iy, iz + b);
+                            let vy1 = node(ix + a, iy + 1, iz + b);
+                            let vz0 = node(ix + a, iy + b, iz);
+                            let vz1 = node(ix + a, iy + b, iz + 1);
+                            for c in 0..3 {
+                                dx[c] += (vx1[c] - vx0[c]) * 0.25 * nx as f64;
+                                dy[c] += (vy1[c] - vy0[c]) * 0.25 * ny as f64;
+                                dz[c] += (vz1[c] - vz0[c]) * 0.25 * nz as f64;
+                            }
+                        }
+                    }
+                    let cell_jac = [
+                        [dx[0], dy[0], dz[0]],
+                        [dx[1], dy[1], dz[1]],
+                        [dx[2], dy[2], dz[2]],
+                    ];
+                    for r in 0..3 {
+                        for c in 0..3 {
+                            global_jac[r][c] += cell_jac[r][c] / total_cells as f64;
+                        }
+                    }
+                    cell_dets.push(determinant(&cell_jac));
+                }
+            }
+        }
+        // Every input axis must move the output and the global Jacobian must
+        // be well-conditioned.
+        for col in 0..3 {
+            let norm_sq = global_jac[0][col].powi(2)
+                + global_jac[1][col].powi(2)
+                + global_jac[2][col].powi(2);
+            if norm_sq < 0.05 * 0.05 {
+                return Err("A2B CLUT axis has negligible span and cannot be inverted");
+            }
+        }
+        let global_det = determinant(&global_jac);
+        if !global_det.is_finite() || global_det.abs() < 1e-4 {
+            return Err("A2B CLUT global Jacobian is singular");
+        }
+        let inv_global_jacobian =
+            invert(&global_jac).ok_or("A2B CLUT global Jacobian cannot be inverted")?;
+        let sign = global_det.signum();
+        let mut aligned_cells = 0usize;
+        for det in cell_dets {
+            if !det.is_finite() || det * sign < -1e-5 {
+                return Err("A2B CLUT folds back on itself (orientation reversal)");
+            }
+            if det * sign > 1e-8 {
+                aligned_cells += 1;
+            }
+        }
+        if aligned_cells * 2 < total_cells {
+            return Err("A2B CLUT has too many singular cells to invert");
+        }
+
+        const SEED_STEPS: usize = 5;
+        let mut coarse_seeds = Vec::with_capacity(SEED_STEPS * SEED_STEPS * SEED_STEPS);
+        for i in 0..SEED_STEPS {
+            for j in 0..SEED_STEPS {
+                for k in 0..SEED_STEPS {
+                    let x = [
+                        i as f64 / (SEED_STEPS - 1) as f64,
+                        j as f64 / (SEED_STEPS - 1) as f64,
+                        k as f64 / (SEED_STEPS - 1) as f64,
+                    ];
+                    coarse_seeds.push((x, clut.eval(x)));
+                }
+            }
+        }
+        let origin = clut.eval([0.0, 0.0, 0.0]);
+        Ok(Self {
+            clut,
+            origin,
+            inv_global_jacobian,
+            coarse_seeds,
+        })
+    }
+
+    fn invert(&self, target: [f64; 3]) -> [f64; 3] {
+        if !target.iter().all(|v| v.is_finite()) {
+            return [0.0; 3];
+        }
+        let domain = [
+            (self.clut.grid[0] - 1) as f64,
+            (self.clut.grid[1] - 1) as f64,
+            (self.clut.grid[2] - 1) as f64,
+        ];
+        let cell_of = |x: [f64; 3]| -> [usize; 3] {
+            [
+                ((x[0].clamp(0.0, 1.0) * domain[0]).floor() as usize).min(self.clut.grid[0] - 2),
+                ((x[1].clamp(0.0, 1.0) * domain[1]).floor() as usize).min(self.clut.grid[1] - 2),
+                ((x[2].clamp(0.0, 1.0) * domain[2]).floor() as usize).min(self.clut.grid[2] - 2),
+            ]
+        };
+
+        // Seed from the global affine inverse and the 5³ coarse grid.
+        let delta0 = [
+            target[0] - self.origin[0],
+            target[1] - self.origin[1],
+            target[2] - self.origin[2],
+        ];
+        let affine_guess = mul_vec(&self.inv_global_jacobian, &delta0);
+        let mut x = [
+            finite_clamp(affine_guess[0]),
+            finite_clamp(affine_guess[1]),
+            finite_clamp(affine_guess[2]),
+        ];
+        let mut best_err = sq_dist(self.clut.eval(x), target);
+        for &(seed_x, seed_fx) in &self.coarse_seeds {
+            let err = sq_dist(seed_fx, target);
+            if err < best_err {
+                best_err = err;
+                x = seed_x;
+            }
+        }
+
+        // Newton iteration on the piecewise-affine tetrahedral interpolant.
+        for _ in 0..12 {
+            let cell = cell_of(x);
+            if let Some(exact) = self.clut.try_solve_cell(cell, target) {
+                return exact;
+            }
+            let (fx, jac) = self.clut.eval_with_jacobian(x);
+            let err = sq_dist(fx, target);
+            if err < best_err {
+                best_err = err;
+            }
+            if best_err <= 1e-18 {
+                return x;
+            }
+            let residual = [fx[0] - target[0], fx[1] - target[1], fx[2] - target[2]];
+            let inv_jac = invert(&jac).unwrap_or(self.inv_global_jacobian);
+            let step = mul_vec(&inv_jac, &residual);
+            let mut improved = false;
+            for alpha in [1.0, 0.5, 0.25, 0.125, 0.0625] {
+                let candidate = [
+                    finite_clamp(x[0] - alpha * step[0]),
+                    finite_clamp(x[1] - alpha * step[1]),
+                    finite_clamp(x[2] - alpha * step[2]),
+                ];
+                let cand_err = sq_dist(self.clut.eval(candidate), target);
+                if cand_err + 1e-18 < best_err {
+                    x = candidate;
+                    best_err = cand_err;
+                    improved = true;
+                    break;
+                }
+            }
+            if !improved {
+                break;
+            }
+        }
+
+        // Check the 3×3×3 cell neighborhood around `x` for an exact in-gamut
+        // tetrahedral root that a cell-boundary crease may have straddled.
+        let center = cell_of(x);
+        for dx in -1isize..=1 {
+            for dy in -1isize..=1 {
+                for dz in -1isize..=1 {
+                    let (ix, iy, iz) = (
+                        center[0] as isize + dx,
+                        center[1] as isize + dy,
+                        center[2] as isize + dz,
+                    );
+                    if ix >= 0
+                        && (ix as usize) < self.clut.grid[0] - 1
+                        && iy >= 0
+                        && (iy as usize) < self.clut.grid[1] - 1
+                        && iz >= 0
+                        && (iz as usize) < self.clut.grid[2] - 1
+                    {
+                        if let Some(exact) = self
+                            .clut
+                            .try_solve_cell([ix as usize, iy as usize, iz as usize], target)
+                        {
+                            return exact;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Bounded bisection and boundary-projected Gauss-Newton fallback for
+        // out-of-gamut PCS values, clamping deterministically to [0, 1]³.
+        let mut step_size = 0.25;
+        for _ in 0..16 {
+            let (fx, jac) = self.clut.eval_with_jacobian(x);
+            let residual = [fx[0] - target[0], fx[1] - target[1], fx[2] - target[2]];
+            if let Some(proj_step) = boundary_projected_step(&jac, &residual, x) {
+                for alpha in [1.0, 0.5, 0.25] {
+                    let candidate = [
+                        finite_clamp(x[0] + alpha * proj_step[0]),
+                        finite_clamp(x[1] + alpha * proj_step[1]),
+                        finite_clamp(x[2] + alpha * proj_step[2]),
+                    ];
+                    let cand_err = sq_dist(self.clut.eval(candidate), target);
+                    if cand_err < best_err {
+                        x = candidate;
+                        best_err = cand_err;
+                        break;
+                    }
+                }
+            }
+            for axis in 0..3 {
+                for dir in [-1.0, 1.0] {
+                    let mut candidate = x;
+                    candidate[axis] = finite_clamp(x[axis] + dir * step_size);
+                    let cand_err = sq_dist(self.clut.eval(candidate), target);
+                    if cand_err < best_err {
+                        x = candidate;
+                        best_err = cand_err;
+                    }
+                }
+            }
+            step_size *= 0.5;
+        }
+        [finite_clamp(x[0]), finite_clamp(x[1]), finite_clamp(x[2])]
+    }
+}
+
+/// Solve a Gauss-Newton step `JᵀJ δ = -Jᵀr` with active-set pinning on any
+/// coordinate already sitting on a face of `[0, 1]³` whose gradient pushes
+/// outward, so out-of-gamut targets slide smoothly to the closest point on the
+/// device gamut boundary.
+fn boundary_projected_step(jac: &Mat3, residual: &[f64; 3], x: [f64; 3]) -> Option<[f64; 3]> {
+    let mut grad = [0.0; 3];
+    let mut jtj = [[0.0; 3]; 3];
+    for i in 0..3 {
+        grad[i] = jac[0][i] * residual[0] + jac[1][i] * residual[1] + jac[2][i] * residual[2];
+        for j in 0..3 {
+            jtj[i][j] = jac[0][i] * jac[0][j] + jac[1][i] * jac[1][j] + jac[2][i] * jac[2][j];
+        }
+        jtj[i][i] += 1e-9;
+    }
+    for c in 0..3 {
+        let pinned_low = x[c] <= 1e-7 && grad[c] >= 0.0;
+        let pinned_high = x[c] >= 1.0 - 1e-7 && grad[c] <= 0.0;
+        if pinned_low || pinned_high {
+            grad[c] = 0.0;
+            for k in 0..3 {
+                jtj[c][k] = 0.0;
+                jtj[k][c] = 0.0;
+            }
+            jtj[c][c] = 1.0;
+        }
+    }
+    let inv_jtj = invert(&jtj)?;
+    Some(mul_vec(&inv_jtj, &[-grad[0], -grad[1], -grad[2]]))
+}
+
+enum InvertedStage {
+    Curves([InvertedTable; 3]),
+    Matrix(Mat3, [f64; 3]),
+    Clut(InvertedClut),
+}
+
+struct InvertedLutPipeline {
+    /// Stages in reverse (PCS → device) evaluation order.
+    stages: Vec<InvertedStage>,
+    float: bool,
+    pcs_encoding: PcsEncoding,
+}
+
+impl InvertedLutPipeline {
+    fn from_forward(forward: LutPipeline) -> Result<Self, &'static str> {
+        let mut stages = Vec::with_capacity(forward.stages.len());
+        for stage in forward.stages.into_iter().rev() {
+            let inverted = match stage {
+                Stage::Curves([c0, c1, c2]) => InvertedStage::Curves([
+                    InvertedTable::from_table(c0)?,
+                    InvertedTable::from_table(c1)?,
+                    InvertedTable::from_table(c2)?,
+                ]),
+                Stage::Matrix(matrix, offset) => {
+                    let inv_matrix = invert(&matrix)
+                        .ok_or("A2B matrix stage is singular and cannot be inverted")?;
+                    let inv_offset = mul_vec(&inv_matrix, &[-offset[0], -offset[1], -offset[2]]);
+                    InvertedStage::Matrix(inv_matrix, inv_offset)
+                }
+                Stage::Clut(clut) => InvertedStage::Clut(InvertedClut::from_clut(clut)?),
+            };
+            stages.push(inverted);
+        }
+        Ok(Self {
+            stages,
+            float: forward.float,
+            pcs_encoding: forward.pcs_encoding,
+        })
+    }
+
+    fn eval(&self, input: [f64; 3]) -> [f64; 3] {
+        let mut value = input;
+        if !self.float {
+            value = [
+                finite_clamp(value[0]),
+                finite_clamp(value[1]),
+                finite_clamp(value[2]),
+            ];
+        }
+        for stage in &self.stages {
+            value = match stage {
+                InvertedStage::Curves(curves) => [
+                    curves[0].invert(value[0]),
+                    curves[1].invert(value[1]),
+                    curves[2].invert(value[2]),
+                ],
+                InvertedStage::Matrix(inv_matrix, inv_offset) => {
+                    let mixed = mul_vec(inv_matrix, &value);
+                    [
+                        mixed[0] + inv_offset[0],
+                        mixed[1] + inv_offset[1],
+                        mixed[2] + inv_offset[2],
+                    ]
+                }
+                InvertedStage::Clut(clut) => clut.invert(value),
+            };
+            if !self.float {
+                value = [
+                    finite_clamp(value[0]),
+                    finite_clamp(value[1]),
+                    finite_clamp(value[2]),
+                ];
+            }
+        }
+        value
+    }
+}
+
+/// Read one PCS → device (`B2A`/`B2D`) tag, whichever of the four LUT types it is.
+fn parse_b2a_tag(data: &[u8], pcs: Pcs) -> Option<LutPipeline> {
     if data.len() < 8 {
         return None;
     }
     match &data[0..4] {
-        b"mft1" => parse_lut_table(data, false),
-        b"mft2" => parse_lut_table(data, true),
-        b"mBA " => parse_mba(data),
+        b"mft1" => parse_lut_table(data, false, pcs, true),
+        b"mft2" => parse_lut_table(data, true, pcs, true),
+        b"mBA " => parse_mba(data, pcs),
         // The MPE type is direction-agnostic — the tag it sits in says which
         // way it runs, and the element order in its position table is the
         // order to evaluate.
-        b"mpet" => parse_mpe(data),
+        b"mpet" => parse_mpe(data, pcs),
+        _ => None,
+    }
+}
+
+/// Read one device → PCS (`A2B`/`D2B`) tag in its forward stage order, ready
+/// for [`InvertedLutPipeline::from_forward`] to validate and invert.
+fn parse_a2b_tag(data: &[u8], pcs: Pcs) -> Option<LutPipeline> {
+    if data.len() < 8 {
+        return None;
+    }
+    match &data[0..4] {
+        b"mft1" => parse_lut_table(data, false, pcs, false),
+        b"mft2" => parse_lut_table(data, true, pcs, false),
+        b"mAB " => parse_mab(data, pcs),
+        b"mpet" => parse_mpe(data, pcs),
         _ => None,
     }
 }
@@ -968,7 +1859,7 @@ fn parse_lut_tag(data: &[u8]) -> Option<LutPipeline> {
 /// `mft1` (8-bit) and `mft2` (16-bit): an optional inline matrix, input tables,
 /// an optional CLUT, output tables. The matrix comes first — LittleCMS inserts
 /// it at the head of the pipeline, ahead of the input tables.
-fn parse_lut_table(data: &[u8], wide: bool) -> Option<LutPipeline> {
+fn parse_lut_table(data: &[u8], wide: bool, pcs: Pcs, is_b2a: bool) -> Option<LutPipeline> {
     if data.len() < 12 {
         return None;
     }
@@ -1018,10 +1909,16 @@ fn parse_lut_table(data: &[u8], wide: bool) -> Option<LutPipeline> {
     if stages.is_empty() {
         return None;
     }
+    let pcs_encoding = match (pcs, wide) {
+        (Pcs::Xyz, _) => PcsEncoding::Xyz16,
+        (Pcs::Lab, true) => PcsEncoding::LabV2,
+        (Pcs::Lab, false) => PcsEncoding::LabV4,
+    };
     Some(LutPipeline {
         stages,
         float: false,
-        pcs_scale: XYZ_PCS_SCALE,
+        trilinear: is_b2a && pcs == Pcs::Lab,
+        pcs_encoding,
     })
 }
 
@@ -1079,7 +1976,7 @@ fn read_normalized_entries(
 /// tag's start, zero meaning absent. The allowed combinations are B alone,
 /// B–matrix–M, B–CLUT–A and B–matrix–M–CLUT–A; reading the offsets in order
 /// reproduces them without enumerating them.
-fn parse_mba(data: &[u8]) -> Option<LutPipeline> {
+fn parse_mba(data: &[u8], pcs: Pcs) -> Option<LutPipeline> {
     if data.len() < 32 {
         return None;
     }
@@ -1113,10 +2010,64 @@ fn parse_mba(data: &[u8]) -> Option<LutPipeline> {
     if stages.is_empty() {
         return None;
     }
+    let pcs_encoding = match pcs {
+        Pcs::Xyz => PcsEncoding::Xyz16,
+        Pcs::Lab => PcsEncoding::LabV4,
+    };
     Some(LutPipeline {
         stages,
         float: false,
-        pcs_scale: XYZ_PCS_SCALE,
+        trilinear: pcs == Pcs::Lab,
+        pcs_encoding,
+    })
+}
+
+/// `mAB ` (v4): the same five element offsets in the header as `mBA `,
+/// evaluated in the reverse (device → PCS) stage order: A curves, CLUT, M
+/// curves, matrix, B curves.
+fn parse_mab(data: &[u8], pcs: Pcs) -> Option<LutPipeline> {
+    if data.len() < 32 {
+        return None;
+    }
+    if data[8] != 3 || data[9] != 3 {
+        return None;
+    }
+    let offset = |at: usize| usize::try_from(be_u32(&data[at..at + 4])).ok();
+    let (off_b, off_mat, off_m, off_c, off_a) = (
+        offset(12)?,
+        offset(16)?,
+        offset(20)?,
+        offset(24)?,
+        offset(28)?,
+    );
+    let mut stages = Vec::new();
+    if off_a != 0 {
+        stages.push(Stage::Curves(read_embedded_curves(data, off_a)?));
+    }
+    if off_c != 0 {
+        stages.push(Stage::Clut(read_mba_clut(data, off_c)?));
+    }
+    if off_m != 0 {
+        stages.push(Stage::Curves(read_embedded_curves(data, off_m)?));
+    }
+    if off_mat != 0 {
+        stages.push(read_matrix_element(data, off_mat)?);
+    }
+    if off_b != 0 {
+        stages.push(Stage::Curves(read_embedded_curves(data, off_b)?));
+    }
+    if stages.is_empty() {
+        return None;
+    }
+    let pcs_encoding = match pcs {
+        Pcs::Xyz => PcsEncoding::Xyz16,
+        Pcs::Lab => PcsEncoding::LabV4,
+    };
+    Some(LutPipeline {
+        stages,
+        float: false,
+        trilinear: false,
+        pcs_encoding,
     })
 }
 
@@ -1223,7 +2174,7 @@ fn clut_grid(bytes: &[u8]) -> Option<[usize; 3]> {
 /// `mpet` (v4 float): a position table of elements, each a curve set, a
 /// matrix or a float CLUT, evaluated in the order the table gives. The two
 /// ACS element signatures are skipped, as the specification directs.
-fn parse_mpe(data: &[u8]) -> Option<LutPipeline> {
+fn parse_mpe(data: &[u8], pcs: Pcs) -> Option<LutPipeline> {
     if data.len() < 16 {
         return None;
     }
@@ -1259,10 +2210,15 @@ fn parse_mpe(data: &[u8]) -> Option<LutPipeline> {
     if stages.is_empty() {
         return None;
     }
+    let pcs_encoding = match pcs {
+        Pcs::Xyz => PcsEncoding::XyzFloat,
+        Pcs::Lab => PcsEncoding::LabFloat,
+    };
     Some(LutPipeline {
         stages,
         float: true,
-        pcs_scale: 1.0,
+        trilinear: false,
+        pcs_encoding,
     })
 }
 

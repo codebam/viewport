@@ -1040,8 +1040,7 @@ impl ViewportState {
             None => {
                 tracing::debug!(
                     "{name}: {path} describes no RGB display transform — neither a \
-                     matrix-and-curve nor a readable PCS-to-device LUT; only its \
-                     calibration is used"
+                     matrix-and-curve nor a readable LUT; only its calibration is used"
                 );
                 self.icc_cubes.remove(name);
             }
