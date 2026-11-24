@@ -1162,50 +1162,57 @@ impl Clut {
         let n111 = node(hi[0], hi[1], hi[2]);
         let sub = |a: [f64; 3], b: [f64; 3]| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
         let rhs = sub(target, n000);
-        let tetrahedra: [([f64; 3], [f64; 3], [f64; 3], fn(f64, f64, f64) -> bool); 6] = [
-            (
-                sub(n100, n000),
-                sub(n110, n100),
-                sub(n111, n110),
-                |rx, ry, rz| rx >= ry - 1e-7 && ry >= rz - 1e-7,
-            ),
-            (
-                sub(n100, n000),
-                sub(n111, n101),
-                sub(n101, n100),
-                |rx, ry, rz| rx >= rz - 1e-7 && rz >= ry - 1e-7,
-            ),
-            (
-                sub(n101, n001),
-                sub(n111, n101),
-                sub(n001, n000),
-                |rx, ry, rz| rz >= rx - 1e-7 && rx >= ry - 1e-7,
-            ),
-            (
-                sub(n110, n010),
-                sub(n010, n000),
-                sub(n111, n110),
-                |rx, ry, rz| ry >= rx - 1e-7 && rx >= rz - 1e-7,
-            ),
-            (
-                sub(n111, n011),
-                sub(n010, n000),
-                sub(n011, n010),
-                |rx, ry, rz| ry >= rz - 1e-7 && rz >= rx - 1e-7,
-            ),
-            (
-                sub(n111, n011),
-                sub(n011, n001),
-                sub(n001, n000),
-                |rx, ry, rz| rz >= ry - 1e-7 && ry >= rx - 1e-7,
-            ),
+        struct Tetrahedron {
+            c1: [f64; 3],
+            c2: [f64; 3],
+            c3: [f64; 3],
+            order_ok: fn(f64, f64, f64) -> bool,
+        }
+        let tetrahedra = [
+            Tetrahedron {
+                c1: sub(n100, n000),
+                c2: sub(n110, n100),
+                c3: sub(n111, n110),
+                order_ok: |rx, ry, rz| rx >= ry - 1e-7 && ry >= rz - 1e-7,
+            },
+            Tetrahedron {
+                c1: sub(n100, n000),
+                c2: sub(n111, n101),
+                c3: sub(n101, n100),
+                order_ok: |rx, ry, rz| rx >= rz - 1e-7 && rz >= ry - 1e-7,
+            },
+            Tetrahedron {
+                c1: sub(n101, n001),
+                c2: sub(n111, n101),
+                c3: sub(n001, n000),
+                order_ok: |rx, ry, rz| rz >= rx - 1e-7 && rx >= ry - 1e-7,
+            },
+            Tetrahedron {
+                c1: sub(n110, n010),
+                c2: sub(n010, n000),
+                c3: sub(n111, n110),
+                order_ok: |rx, ry, rz| ry >= rx - 1e-7 && rx >= rz - 1e-7,
+            },
+            Tetrahedron {
+                c1: sub(n111, n011),
+                c2: sub(n010, n000),
+                c3: sub(n011, n010),
+                order_ok: |rx, ry, rz| ry >= rz - 1e-7 && rz >= rx - 1e-7,
+            },
+            Tetrahedron {
+                c1: sub(n111, n011),
+                c2: sub(n011, n001),
+                c3: sub(n001, n000),
+                order_ok: |rx, ry, rz| rz >= ry - 1e-7 && ry >= rx - 1e-7,
+            },
         ];
         let domain = [
             (self.grid[0] - 1) as f64,
             (self.grid[1] - 1) as f64,
             (self.grid[2] - 1) as f64,
         ];
-        for (c1, c2, c3, order_ok) in tetrahedra {
+        for tet in tetrahedra {
+            let (c1, c2, c3, order_ok) = (tet.c1, tet.c2, tet.c3, tet.order_ok);
             let mat = [
                 [c1[0], c2[0], c3[0]],
                 [c1[1], c2[1], c3[1]],
@@ -1489,23 +1496,21 @@ impl InvertedClut {
         for ix in 0..nx {
             for iy in 0..ny {
                 for iz in 0..nz {
+                    let n000 = node(ix, iy, iz);
+                    let n100 = node(ix + 1, iy, iz);
+                    let n010 = node(ix, iy + 1, iz);
+                    let n001 = node(ix, iy, iz + 1);
+                    let n011 = node(ix, iy + 1, iz + 1);
+                    let n101 = node(ix + 1, iy, iz + 1);
+                    let n110 = node(ix + 1, iy + 1, iz);
+                    let n111 = node(ix + 1, iy + 1, iz + 1);
                     let mut dx = [0.0; 3];
                     let mut dy = [0.0; 3];
                     let mut dz = [0.0; 3];
-                    for a in 0..2 {
-                        for b in 0..2 {
-                            let vx0 = node(ix, iy + a, iz + b);
-                            let vx1 = node(ix + 1, iy + a, iz + b);
-                            let vy0 = node(ix + a, iy, iz + b);
-                            let vy1 = node(ix + a, iy + 1, iz + b);
-                            let vz0 = node(ix + a, iy + b, iz);
-                            let vz1 = node(ix + a, iy + b, iz + 1);
-                            for c in 0..3 {
-                                dx[c] += (vx1[c] - vx0[c]) * 0.25 * nx as f64;
-                                dy[c] += (vy1[c] - vy0[c]) * 0.25 * ny as f64;
-                                dz[c] += (vz1[c] - vz0[c]) * 0.25 * nz as f64;
-                            }
-                        }
+                    for c in 0..3 {
+                        dx[c] = ((n100[c] - n000[c]) + (n111[c] - n011[c])) * 0.5 * nx as f64;
+                        dy[c] = ((n010[c] - n000[c]) + (n111[c] - n101[c])) * 0.5 * ny as f64;
+                        dz[c] = ((n001[c] - n000[c]) + (n111[c] - n110[c])) * 0.5 * nz as f64;
                     }
                     let cell_jac = [
                         [dx[0], dy[0], dz[0]],
@@ -1523,7 +1528,7 @@ impl InvertedClut {
         }
         // Every input axis must move the output and the global Jacobian must
         // be well-conditioned.
-        for col in 0..3 {
+        for col in [0usize, 1, 2] {
             let norm_sq = global_jac[0][col].powi(2)
                 + global_jac[1][col].powi(2)
                 + global_jac[2][col].powi(2);
@@ -1551,7 +1556,7 @@ impl InvertedClut {
             return Err("A2B CLUT has too many singular cells to invert");
         }
 
-        const SEED_STEPS: usize = 5;
+        const SEED_STEPS: usize = 3;
         let mut coarse_seeds = Vec::with_capacity(SEED_STEPS * SEED_STEPS * SEED_STEPS);
         for i in 0..SEED_STEPS {
             for j in 0..SEED_STEPS {
@@ -1591,7 +1596,8 @@ impl InvertedClut {
             ]
         };
 
-        // Seed from the global affine inverse and the 5³ coarse grid.
+        // Seed from the global affine inverse and, when not already close,
+        // the 3³ coarse grid.
         let delta0 = [
             target[0] - self.origin[0],
             target[1] - self.origin[1],
@@ -1604,40 +1610,44 @@ impl InvertedClut {
             finite_clamp(affine_guess[2]),
         ];
         let mut best_err = sq_dist(self.clut.eval(x), target);
-        for &(seed_x, seed_fx) in &self.coarse_seeds {
-            let err = sq_dist(seed_fx, target);
-            if err < best_err {
-                best_err = err;
-                x = seed_x;
+        if best_err > 1e-4 {
+            for &(seed_x, seed_fx) in &self.coarse_seeds {
+                let err = sq_dist(seed_fx, target);
+                if err < best_err {
+                    best_err = err;
+                    x = seed_x;
+                }
             }
         }
 
         // Newton iteration on the piecewise-affine tetrahedral interpolant.
-        for _ in 0..12 {
-            let cell = cell_of(x);
-            if let Some(exact) = self.clut.try_solve_cell(cell, target) {
-                return exact;
+        // Because the interpolant is exact affine inside each tetrahedron,
+        // a step that stays inside the target tetrahedron lands on the exact
+        // root in one solve.
+        for _ in 0..10 {
+            if best_err <= 1e-14 {
+                return x;
             }
             let (fx, jac) = self.clut.eval_with_jacobian(x);
             let err = sq_dist(fx, target);
             if err < best_err {
                 best_err = err;
             }
-            if best_err <= 1e-18 {
+            if best_err <= 1e-14 {
                 return x;
             }
             let residual = [fx[0] - target[0], fx[1] - target[1], fx[2] - target[2]];
             let inv_jac = invert(&jac).unwrap_or(self.inv_global_jacobian);
             let step = mul_vec(&inv_jac, &residual);
             let mut improved = false;
-            for alpha in [1.0, 0.5, 0.25, 0.125, 0.0625] {
+            for alpha in [1.0, 0.5, 0.25, 0.125] {
                 let candidate = [
                     finite_clamp(x[0] - alpha * step[0]),
                     finite_clamp(x[1] - alpha * step[1]),
                     finite_clamp(x[2] - alpha * step[2]),
                 ];
                 let cand_err = sq_dist(self.clut.eval(candidate), target);
-                if cand_err + 1e-18 < best_err {
+                if cand_err + 1e-16 < best_err {
                     x = candidate;
                     best_err = cand_err;
                     improved = true;
@@ -1649,31 +1659,39 @@ impl InvertedClut {
             }
         }
 
-        // Check the 3×3×3 cell neighborhood around `x` for an exact in-gamut
-        // tetrahedral root that a cell-boundary crease may have straddled.
+        if best_err <= 1e-9 {
+            return x;
+        }
+
+        // If Newton stalled on a crease between tetrahedra, check the current
+        // cell and its six face-adjacent neighbors in closed form.
         let center = cell_of(x);
-        for dx in -1isize..=1 {
-            for dy in -1isize..=1 {
-                for dz in -1isize..=1 {
-                    let (ix, iy, iz) = (
-                        center[0] as isize + dx,
-                        center[1] as isize + dy,
-                        center[2] as isize + dz,
-                    );
-                    if ix >= 0
-                        && (ix as usize) < self.clut.grid[0] - 1
-                        && iy >= 0
-                        && (iy as usize) < self.clut.grid[1] - 1
-                        && iz >= 0
-                        && (iz as usize) < self.clut.grid[2] - 1
-                    {
-                        if let Some(exact) = self
-                            .clut
-                            .try_solve_cell([ix as usize, iy as usize, iz as usize], target)
-                        {
-                            return exact;
-                        }
-                    }
+        for (dx, dy, dz) in [
+            (0, 0, 0),
+            (-1, 0, 0),
+            (1, 0, 0),
+            (0, -1, 0),
+            (0, 1, 0),
+            (0, 0, -1),
+            (0, 0, 1),
+        ] {
+            let (ix, iy, iz) = (
+                center[0] as isize + dx,
+                center[1] as isize + dy,
+                center[2] as isize + dz,
+            );
+            if ix >= 0
+                && (ix as usize) < self.clut.grid[0] - 1
+                && iy >= 0
+                && (iy as usize) < self.clut.grid[1] - 1
+                && iz >= 0
+                && (iz as usize) < self.clut.grid[2] - 1
+            {
+                if let Some(exact) = self
+                    .clut
+                    .try_solve_cell([ix as usize, iy as usize, iz as usize], target)
+                {
+                    return exact;
                 }
             }
         }
@@ -1681,21 +1699,23 @@ impl InvertedClut {
         // Bounded bisection and boundary-projected Gauss-Newton fallback for
         // out-of-gamut PCS values, clamping deterministically to [0, 1]³.
         let mut step_size = 0.25;
-        for _ in 0..16 {
-            let (fx, jac) = self.clut.eval_with_jacobian(x);
-            let residual = [fx[0] - target[0], fx[1] - target[1], fx[2] - target[2]];
-            if let Some(proj_step) = boundary_projected_step(&jac, &residual, x) {
-                for alpha in [1.0, 0.5, 0.25] {
-                    let candidate = [
-                        finite_clamp(x[0] + alpha * proj_step[0]),
-                        finite_clamp(x[1] + alpha * proj_step[1]),
-                        finite_clamp(x[2] + alpha * proj_step[2]),
-                    ];
-                    let cand_err = sq_dist(self.clut.eval(candidate), target);
-                    if cand_err < best_err {
-                        x = candidate;
-                        best_err = cand_err;
-                        break;
+        for round in 0..10 {
+            if round < 4 {
+                let (fx, jac) = self.clut.eval_with_jacobian(x);
+                let residual = [fx[0] - target[0], fx[1] - target[1], fx[2] - target[2]];
+                if let Some(proj_step) = boundary_projected_step(&jac, &residual, x) {
+                    for alpha in [1.0, 0.5, 0.25] {
+                        let candidate = [
+                            finite_clamp(x[0] + alpha * proj_step[0]),
+                            finite_clamp(x[1] + alpha * proj_step[1]),
+                            finite_clamp(x[2] + alpha * proj_step[2]),
+                        ];
+                        let cand_err = sq_dist(self.clut.eval(candidate), target);
+                        if cand_err < best_err {
+                            x = candidate;
+                            best_err = cand_err;
+                            break;
+                        }
                     }
                 }
             }
@@ -1709,6 +1729,9 @@ impl InvertedClut {
                         best_err = cand_err;
                     }
                 }
+            }
+            if best_err <= 1e-9 {
+                break;
             }
             step_size *= 0.5;
         }
@@ -1735,9 +1758,9 @@ fn boundary_projected_step(jac: &Mat3, residual: &[f64; 3], x: [f64; 3]) -> Opti
         let pinned_high = x[c] >= 1.0 - 1e-7 && grad[c] <= 0.0;
         if pinned_low || pinned_high {
             grad[c] = 0.0;
-            for k in 0..3 {
-                jtj[c][k] = 0.0;
-                jtj[k][c] = 0.0;
+            jtj[c] = [0.0; 3];
+            for row in &mut jtj {
+                row[c] = 0.0;
             }
             jtj[c][c] = 1.0;
         }
@@ -3241,6 +3264,375 @@ mod lut_tests {
         profile_with_tags(&[(b"B2D1", tag)])
     }
 
+    /// A profile with exactly the tags given, laid out the way a real one is,
+    /// and the PCS its header declares. `profile_with_tags` is this with the
+    /// `XYZ ` PCS the matrix-shaper tests use.
+    fn profile_with_pcs_and_tags(pcs: &[u8; 4], tags: &[(&[u8; 4], Vec<u8>)]) -> Vec<u8> {
+        let mut profile = profile_with_tags(tags);
+        profile[20..24].copy_from_slice(pcs);
+        profile
+    }
+
+    /// Eight-bit samples, the width an `mft1` table or CLUT node uses.
+    fn words8(values: &[f64]) -> Vec<u8> {
+        values
+            .iter()
+            .map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8)
+            .collect()
+    }
+
+    /// `mft1`: a matrix, 256-entry 8-bit input tables, an 8-bit CLUT and
+    /// 256-entry 8-bit output tables.
+    fn lut8_tag(
+        matrix: &Mat3,
+        input: &[Vec<f64>; 3],
+        grid: usize,
+        clut: &[f64],
+        output: &[Vec<f64>; 3],
+    ) -> Vec<u8> {
+        let mut tag = b"mft1\0\0\0\0".to_vec();
+        tag.extend_from_slice(&[3, 3, grid as u8, 0]);
+        for row in matrix {
+            for value in row {
+                tag.extend_from_slice(&fixed(*value));
+            }
+        }
+        for channel in input {
+            tag.extend_from_slice(&words8(channel));
+        }
+        tag.extend_from_slice(&words8(clut));
+        for channel in output {
+            tag.extend_from_slice(&words8(channel));
+        }
+        tag
+    }
+
+    /// `mAB `: the same five optional elements at the same offsets as `mBA `,
+    /// in the device → PCS direction (evaluated A → CLUT → M → matrix → B).
+    fn mab_tag(
+        b: Option<Vec<u8>>,
+        matrix: Option<Vec<u8>>,
+        m: Option<Vec<u8>>,
+        clut: Option<Vec<u8>>,
+        a: Option<Vec<u8>>,
+    ) -> Vec<u8> {
+        let mut tag = b"mAB \0\0\0\0".to_vec();
+        tag.extend_from_slice(&[3, 3]);
+        tag.extend_from_slice(&0u16.to_be_bytes());
+        let mut offsets = [0u32; 5];
+        let mut body = Vec::new();
+        let mut at: usize = 32;
+        for (i, element) in [b, matrix, m, clut, a].into_iter().enumerate() {
+            if let Some(bytes) = element {
+                while !at.is_multiple_of(4) {
+                    body.push(0);
+                    at += 1;
+                }
+                offsets[i] = at as u32;
+                body.extend_from_slice(&bytes);
+                at += bytes.len();
+            }
+        }
+        for offset in offsets {
+            tag.extend_from_slice(&offset.to_be_bytes());
+        }
+        tag.extend_from_slice(&body);
+        tag
+    }
+
+    /// The inverse of [`lab_f`], for L*a*b* → XYZ under D50.
+    fn lab_f_inverse(t: f64) -> f64 {
+        if t > 24.0 / 116.0 {
+            t * t * t
+        } else {
+            (108.0 / 841.0) * (t - 16.0 / 116.0)
+        }
+    }
+
+    /// CIE 1976 `[L*, a*, b*]` to PCS XYZ under D50.
+    fn lab_to_pcs_xyz(lab: [f64; 3]) -> [f64; 3] {
+        let fy = (lab[0] + 16.0) / 116.0;
+        let fx = fy + lab[1] / 500.0;
+        let fz = fy - lab[2] / 200.0;
+        [
+            D50_XYZ[0] * lab_f_inverse(fx),
+            D50_XYZ[1] * lab_f_inverse(fy),
+            D50_XYZ[2] * lab_f_inverse(fz),
+        ]
+    }
+
+    /// Normalized v2 16-bit Lab to CIE Lab.
+    fn lab_v2_from_normalized(normalized: [f64; 3]) -> [f64; 3] {
+        let top = 1.0 / LAB_V2_SCALE;
+        [
+            normalized[0] * top * 100.0,
+            normalized[1] * top * 255.0 - 128.0,
+            normalized[2] * top * 255.0 - 128.0,
+        ]
+    }
+
+    /// CIE Lab to the normalized v2 16-bit Lab an `mft2` tag carries.
+    fn lab_v2_normalized(lab: [f64; 3]) -> [f64; 3] {
+        [
+            (lab[0] / 100.0) * LAB_V2_SCALE,
+            ((lab[1] + 128.0) / 255.0) * LAB_V2_SCALE,
+            ((lab[2] + 128.0) / 255.0) * LAB_V2_SCALE,
+        ]
+    }
+
+    /// Normalized v4 16-bit Lab (`mBA `/`mAB `) or v2 8-bit Lab (`mft1`) to
+    /// CIE Lab.
+    fn lab_v4_from_normalized(normalized: [f64; 3]) -> [f64; 3] {
+        [
+            normalized[0] * 100.0,
+            normalized[1] * 255.0 - 128.0,
+            normalized[2] * 255.0 - 128.0,
+        ]
+    }
+
+    /// CIE Lab to the normalized v4 16-bit Lab an `mBA `/`mAB ` tag carries.
+    fn lab_v4_normalized(lab: [f64; 3]) -> [f64; 3] {
+        [
+            lab[0] / 100.0,
+            (lab[1] + 128.0) / 255.0,
+            (lab[2] + 128.0) / 255.0,
+        ]
+    }
+
+    /// Linear display light from PCS XYZ for the sRGB-primary display.
+    fn linear_from_pcs(xyz: [f64; 3]) -> [f64; 3] {
+        let from_pcs = invert(&SRGB_D50).expect("sRGB primaries invert");
+        mul_vec(&from_pcs, &xyz)
+    }
+
+    /// PCS XYZ from linear display light.
+    fn pcs_from_linear(linear: [f64; 3]) -> [f64; 3] {
+        mul_vec(&SRGB_D50, &linear)
+    }
+
+    fn gamma_encode_tables() -> [Vec<f64>; 3] {
+        [
+            gamma_table(256, 2.2),
+            gamma_table(256, 2.2),
+            gamma_table(256, 2.2),
+        ]
+    }
+
+    fn gamma_decode_tables() -> [Vec<f64>; 3] {
+        [
+            gamma_table(256, 1.0 / 2.2),
+            gamma_table(256, 1.0 / 2.2),
+            gamma_table(256, 1.0 / 2.2),
+        ]
+    }
+
+    fn identity_tables() -> [Vec<f64>; 3] {
+        [
+            identity_table(256),
+            identity_table(256),
+            identity_table(256),
+        ]
+    }
+
+    fn identity_curve() -> Vec<u8> {
+        b"curv\0\0\0\0\0\0\0\0".to_vec()
+    }
+
+    fn identity_curve_set() -> Vec<u8> {
+        curves_blob(&[identity_curve(), identity_curve(), identity_curve()])
+    }
+
+    fn gamma_curve_set(gamma: f64) -> Vec<u8> {
+        curves_blob(&[curv_gamma(gamma), curv_gamma(gamma), curv_gamma(gamma)])
+    }
+
+    fn cvst_formula_set(kind: u16, params: &[f32]) -> Vec<u8> {
+        let curve = curf_formula(kind, params);
+        cvst_element(&[curve.clone(), curve.clone(), curve])
+    }
+
+    /// The gamma-2.2 sRGB-primary display as a v2 16-bit Lab `B2A` table:
+    /// identity Lab input tables, a 17³ CLUT of v2-encoded Lab to linear
+    /// light, gamma-2.2 output tables.
+    fn lut16_lab_b2a_profile() -> Vec<u8> {
+        let clut = clut_nodes(17, |normalized| {
+            linear_from_pcs(lab_to_pcs_xyz(lab_v2_from_normalized(normalized)))
+        });
+        let tag = lut16_tag(
+            &IDENTITY,
+            &identity_tables(),
+            17,
+            &clut,
+            &gamma_encode_tables(),
+        );
+        profile_with_pcs_and_tags(b"Lab ", &[(b"B2A1", tag)])
+    }
+
+    /// The same display as a v4 `mBA ` with a Lab PCS: identity B curves, a
+    /// 17³ CLUT of v4-encoded Lab to linear light, gamma-2.2 A curves.
+    fn mba_lab_b2a_profile() -> Vec<u8> {
+        let clut = clut_nodes(17, |normalized| {
+            linear_from_pcs(lab_to_pcs_xyz(lab_v4_from_normalized(normalized)))
+        });
+        let tag = mba_tag(
+            Some(identity_curve_set()),
+            None,
+            None,
+            Some(mba_clut_bytes([17, 17, 17], &clut)),
+            Some(gamma_curve_set(1.0 / 2.2)),
+        );
+        profile_with_pcs_and_tags(b"Lab ", &[(b"B2A1", tag)])
+    }
+
+    /// The same display as a v4 float Lab `B2D` tag. LittleCMS hands an
+    /// `mpet` tag raw `[L*, a*, b*]`, so the first element inside the tag is
+    /// the matrix that normalizes them; the CLUT is then the same
+    /// v4-normalized Lab → linear light table, and gamma-2.2 A curves encode
+    /// the device values.
+    fn mpe_lab_b2d_profile() -> Vec<u8> {
+        let clut = clut_nodes(17, |normalized| {
+            linear_from_pcs(lab_to_pcs_xyz(lab_v4_from_normalized(normalized)))
+        });
+        let normalize = matf_element(
+            &[
+                [1.0 / 100.0, 0.0, 0.0],
+                [0.0, 1.0 / 255.0, 0.0],
+                [0.0, 0.0, 1.0 / 255.0],
+            ],
+            &[0.0, 128.0 / 255.0, 128.0 / 255.0],
+        );
+        let tag = mpe_tag(&[
+            cvst_formula_set(0, &[1.0, 1.0, 0.0, 0.0]),
+            normalize,
+            clut_element([17, 17, 17], &clut),
+            cvst_formula_set(0, &[1.0 / 2.2, 1.0, 0.0, 0.0]),
+        ]);
+        profile_with_pcs_and_tags(b"Lab ", &[(b"B2D1", tag)])
+    }
+
+    /// The display's device → PCS direction as a v2 8-bit XYZ table (`mft1`):
+    /// the inline 16.16 fixed-point matrix carries the primaries and 1.15 PCS
+    /// scale, while the 256-entry 8-bit input tables, 8-bit CLUT and 256-entry
+    /// 8-bit output tables are the identity, so all four `mft1` stages are
+    /// inverted without compounding two stages of 8-bit quantization.
+    fn lut8_xyz_a2b_profile() -> Vec<u8> {
+        let mut matrix = SRGB_D50;
+        for row in &mut matrix {
+            for value in row {
+                *value *= XYZ_PCS_SCALE;
+            }
+        }
+        let clut = clut_nodes(16, |xyz| xyz);
+        let tag = lut8_tag(&matrix, &identity_tables(), 16, &clut, &identity_tables());
+        profile_with_pcs_and_tags(b"XYZ ", &[(b"A2B1", tag)])
+    }
+
+    /// The same table at 16 bits, with a 17³ CLUT.
+    fn lut16_xyz_a2b_profile() -> Vec<u8> {
+        let clut = clut_nodes(17, |linear| {
+            let xyz = pcs_from_linear(linear);
+            [
+                xyz[0] * XYZ_PCS_SCALE,
+                xyz[1] * XYZ_PCS_SCALE,
+                xyz[2] * XYZ_PCS_SCALE,
+            ]
+        });
+        let tag = lut16_tag(
+            &IDENTITY,
+            &gamma_decode_tables(),
+            17,
+            &clut,
+            &identity_tables(),
+        );
+        profile_with_pcs_and_tags(b"XYZ ", &[(b"A2B1", tag)])
+    }
+
+    /// The same display as a v4 `mAB ` with an XYZ PCS: gamma-2.2 A curves, a
+    /// 17³ CLUT of linear light to 1.15 fixed XYZ, identity B curves.
+    fn mab_xyz_a2b_profile() -> Vec<u8> {
+        let clut = clut_nodes(17, |linear| {
+            let xyz = pcs_from_linear(linear);
+            [
+                xyz[0] * XYZ_PCS_SCALE,
+                xyz[1] * XYZ_PCS_SCALE,
+                xyz[2] * XYZ_PCS_SCALE,
+            ]
+        });
+        let tag = mab_tag(
+            Some(identity_curve_set()),
+            None,
+            None,
+            Some(mba_clut_bytes([17, 17, 17], &clut)),
+            Some(gamma_curve_set(2.2)),
+        );
+        profile_with_pcs_and_tags(b"XYZ ", &[(b"A2B1", tag)])
+    }
+
+    /// The same display as a v2 16-bit Lab `A2B`: identity input tables, a 17³
+    /// CLUT of gamma-2.2 device RGB to v2-encoded Lab, identity output tables.
+    /// Sampling the CLUT in device space rather than linear light keeps the
+    /// `L* ∝ (x^2.2)^(1/3) = x^0.733` curve smooth near black, the way a
+    /// profiler's device-grid measurement table is laid out.
+    fn lut16_lab_a2b_profile() -> Vec<u8> {
+        let clut = clut_nodes(17, |device| {
+            let linear = [
+                device[0].powf(2.2),
+                device[1].powf(2.2),
+                device[2].powf(2.2),
+            ];
+            lab_v2_normalized(xyz_to_lab(pcs_from_linear(linear)))
+        });
+        let tag = lut16_tag(&IDENTITY, &identity_tables(), 17, &clut, &identity_tables());
+        profile_with_pcs_and_tags(b"Lab ", &[(b"A2B1", tag)])
+    }
+
+    /// The same as a v4 `mAB ` with a Lab PCS: identity A curves, a 17³ CLUT
+    /// of gamma-2.2 device RGB to v4-encoded Lab, identity B curves.
+    fn mab_lab_a2b_profile() -> Vec<u8> {
+        let clut = clut_nodes(17, |device| {
+            let linear = [
+                device[0].powf(2.2),
+                device[1].powf(2.2),
+                device[2].powf(2.2),
+            ];
+            lab_v4_normalized(xyz_to_lab(pcs_from_linear(linear)))
+        });
+        let tag = mab_tag(
+            Some(identity_curve_set()),
+            None,
+            None,
+            Some(mba_clut_bytes([17, 17, 17], &clut)),
+            Some(identity_curve_set()),
+        );
+        profile_with_pcs_and_tags(b"Lab ", &[(b"A2B1", tag)])
+    }
+
+    /// The same as a v4 float Lab `D2B` tag: identity A curves, a 17³ CLUT of
+    /// gamma-2.2 device RGB to v4-normalized Lab, then the matrix that turns
+    /// the normalized Lab back into the raw `[L*, a*, b*]` LittleCMS expects
+    /// at the tag boundary, and identity B curves.
+    fn mpe_lab_d2b_profile() -> Vec<u8> {
+        let clut = clut_nodes(17, |device| {
+            let linear = [
+                device[0].powf(2.2),
+                device[1].powf(2.2),
+                device[2].powf(2.2),
+            ];
+            lab_v4_normalized(xyz_to_lab(pcs_from_linear(linear)))
+        });
+        let denormalize = matf_element(
+            &[[100.0, 0.0, 0.0], [0.0, 255.0, 0.0], [0.0, 0.0, 255.0]],
+            &[0.0, -128.0, -128.0],
+        );
+        let tag = mpe_tag(&[
+            cvst_formula_set(0, &[1.0, 1.0, 0.0, 0.0]),
+            clut_element([17, 17, 17], &clut),
+            denormalize,
+            cvst_formula_set(0, &[1.0, 1.0, 0.0, 0.0]),
+        ]);
+        profile_with_pcs_and_tags(b"Lab ", &[(b"D2B1", tag)])
+    }
+
     /// Write the cross-check profiles where LittleCMS can read them, and print
     /// this engine's answer beside the colours. Run with `--ignored`, then
     /// `transicc -o <file> -t1 -n` over the same colours; the numbers it prints
@@ -3263,6 +3655,15 @@ mod lut_tests {
             ("mba_gamma.icc", mba_gamma_profile()),
             ("mpe_gamma.icc", mpe_gamma_profile()),
             ("mpe_identity.icc", mpe_identity_profile()),
+            ("lut16_lab_b2a.icc", lut16_lab_b2a_profile()),
+            ("mba_lab_b2a.icc", mba_lab_b2a_profile()),
+            ("mpe_lab_b2d.icc", mpe_lab_b2d_profile()),
+            ("lut8_xyz_a2b.icc", lut8_xyz_a2b_profile()),
+            ("lut16_xyz_a2b.icc", lut16_xyz_a2b_profile()),
+            ("mab_xyz_a2b.icc", mab_xyz_a2b_profile()),
+            ("lut16_lab_a2b.icc", lut16_lab_a2b_profile()),
+            ("mab_lab_a2b.icc", mab_lab_a2b_profile()),
+            ("mpe_lab_d2b.icc", mpe_lab_d2b_profile()),
         ] {
             std::fs::write(dir.join(name), &bytes).unwrap();
             let transform = DisplayTransform::for_profile(&bytes).expect("a transform");
@@ -3612,6 +4013,586 @@ mod lut_tests {
         assert!(
             DisplayTransform::for_profile(&profile_with_tags(&[(b"B2A1", huge_tag)])).is_none()
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Lab PCS and inverted A2B/D2B cross-checks against LittleCMS 2.19
+    // -----------------------------------------------------------------------
+
+    /// The CIE 2000 colour difference (ΔE00), with parametric weights
+    /// kL = kC = kH = 1, following Sharma, Wu and Dalal (2005).
+    fn ciede2000(lab1: [f64; 3], lab2: [f64; 3]) -> f64 {
+        let [l1, a1, b1] = lab1;
+        let [l2, a2, b2] = lab2;
+        let c1 = (a1 * a1 + b1 * b1).sqrt();
+        let c2 = (a2 * a2 + b2 * b2).sqrt();
+        let c_bar = 0.5 * (c1 + c2);
+        const POW25_7: f64 = 6_103_515_625.0;
+        let c_bar7 = c_bar.powi(7);
+        let g = 0.5 * (1.0 - (c_bar7 / (c_bar7 + POW25_7)).sqrt());
+        let a1p = (1.0 + g) * a1;
+        let a2p = (1.0 + g) * a2;
+        let c1p = (a1p * a1p + b1 * b1).sqrt();
+        let c2p = (a2p * a2p + b2 * b2).sqrt();
+        let h1p = b1.atan2(a1p).to_degrees().rem_euclid(360.0);
+        let h2p = b2.atan2(a2p).to_degrees().rem_euclid(360.0);
+
+        let delta_lp = l2 - l1;
+        let delta_cp = c2p - c1p;
+        let hue_delta = h2p - h1p;
+        let delta_hp = if c1p * c2p == 0.0 {
+            0.0
+        } else if hue_delta.abs() <= 180.0 {
+            hue_delta
+        } else if hue_delta > 180.0 {
+            hue_delta - 360.0
+        } else {
+            hue_delta + 360.0
+        };
+        let delta_hp_big = 2.0 * (c1p * c2p).sqrt() * (delta_hp / 2.0).to_radians().sin();
+
+        let l_bar = 0.5 * (l1 + l2);
+        let c_bar_p = 0.5 * (c1p + c2p);
+        let h_bar_p = if c1p * c2p == 0.0 {
+            h1p + h2p
+        } else if (h1p - h2p).abs() <= 180.0 {
+            0.5 * (h1p + h2p)
+        } else if h1p + h2p < 360.0 {
+            0.5 * (h1p + h2p + 360.0)
+        } else {
+            0.5 * (h1p + h2p - 360.0)
+        };
+
+        let t = 1.0 - 0.17 * (h_bar_p - 30.0).to_radians().cos()
+            + 0.24 * (2.0 * h_bar_p).to_radians().cos()
+            + 0.32 * (3.0 * h_bar_p + 6.0).to_radians().cos()
+            - 0.20 * (4.0 * h_bar_p - 63.0).to_radians().cos();
+        let delta_theta = 30.0 * (-((h_bar_p - 275.0) / 25.0).powi(2)).exp();
+        let c_bar_p7 = c_bar_p.powi(7);
+        let r_c = 2.0 * (c_bar_p7 / (c_bar_p7 + POW25_7)).sqrt();
+        let l_offset = (l_bar - 50.0).powi(2);
+        let s_l = 1.0 + 0.015 * l_offset / (20.0 + l_offset).sqrt();
+        let s_c = 1.0 + 0.045 * c_bar_p;
+        let s_h = 1.0 + 0.015 * c_bar_p * t;
+        let r_t = -(2.0 * delta_theta).to_radians().sin() * r_c;
+
+        let l_term = delta_lp / s_l;
+        let c_term = delta_cp / s_c;
+        let h_term = delta_hp_big / s_h;
+        (l_term * l_term + c_term * c_term + h_term * h_term + r_t * c_term * h_term).sqrt()
+    }
+
+    fn gamma22_display_to_lab_d50(rgb: [f64; 3]) -> [f64; 3] {
+        let linear = [
+            finite_clamp(rgb[0]).powf(2.2),
+            finite_clamp(rgb[1]).powf(2.2),
+            finite_clamp(rgb[2]).powf(2.2),
+        ];
+        xyz_to_lab(pcs_from_linear(linear))
+    }
+
+    fn linear_display_to_lab_d50(rgb: [f64; 3]) -> [f64; 3] {
+        let linear = [
+            finite_clamp(rgb[0]),
+            finite_clamp(rgb[1]),
+            finite_clamp(rgb[2]),
+        ];
+        xyz_to_lab(pcs_from_linear(linear))
+    }
+
+    fn assert_matches_lcms_16bit(
+        transform: &DisplayTransform,
+        expected: &[([f64; 3], [u16; 3])],
+        display_to_lab: fn([f64; 3]) -> [f64; 3],
+    ) {
+        for &(input, wanted_u16) in expected {
+            let wanted = [
+                f64::from(wanted_u16[0]) / 65535.0,
+                f64::from(wanted_u16[1]) / 65535.0,
+                f64::from(wanted_u16[2]) / 65535.0,
+            ];
+            let mapped = transform.map(input);
+            for channel in 0..3 {
+                let err = (mapped[channel] - wanted[channel]).abs();
+                assert!(
+                    err <= 1.0 / 255.0,
+                    "{input:?} became {mapped:?}, LittleCMS says {wanted:?} (err {err})"
+                );
+            }
+            let de = ciede2000(display_to_lab(mapped), display_to_lab(wanted));
+            assert!(
+                de <= 0.5,
+                "{input:?} became {mapped:?}, LittleCMS says {wanted:?} (ΔE00 {de})"
+            );
+        }
+    }
+
+    /// v2 16-bit legacy Lab (`B2A1` `mft2`): generated with
+    /// ```sh
+    /// nix shell nixpkgs#lcms2 -c bash -c '
+    ///   printf "255 0 0\n0 255 0\n0 0 255\n128 128 128\n51 102 153\n" |
+    ///     transicc -i"*sRGB" -o/tmp/icc-lut-fixtures/lut16_lab_b2a.icc -t1 -w -e -n
+    /// '
+    /// ```
+    #[test]
+    fn a_lut16_lab_b2a_display_matches_lcms2() {
+        let transform =
+            DisplayTransform::for_profile(&lut16_lab_b2a_profile()).expect("a transform");
+        let expected = [
+            ([1.0, 0.0, 0.0], [64278, 6961, 5850]),
+            ([0.0, 1.0, 0.0], [7220, 65454, 5294]),
+            ([0.0, 0.0, 1.0], [10268, 5964, 64533]),
+            (
+                [0.501_960_8, 0.501_960_8, 0.501_960_8],
+                [32736, 32735, 32729],
+            ),
+            ([0.2, 0.4, 0.6], [14872, 26255, 39106]),
+        ];
+        assert_matches_lcms_16bit(&transform, &expected, gamma22_display_to_lab_d50);
+    }
+
+    /// v4 16-bit Lab (`B2A1` `mBA `): generated with
+    /// ```sh
+    /// nix shell nixpkgs#lcms2 -c bash -c '
+    ///   printf "255 0 0\n0 255 0\n0 0 255\n128 128 128\n51 102 153\n" |
+    ///     transicc -i"*sRGB" -o/tmp/icc-lut-fixtures/mba_lab_b2a.icc -t1 -w -e -n
+    /// '
+    /// ```
+    #[test]
+    fn an_mba_lab_b2a_display_matches_lcms2() {
+        let transform = DisplayTransform::for_profile(&mba_lab_b2a_profile()).expect("a transform");
+        let expected = [
+            ([1.0, 0.0, 0.0], [64354, 7518, 6097]),
+            ([0.0, 1.0, 0.0], [8497, 65293, 6886]),
+            ([0.0, 0.0, 1.0], [10789, 6307, 64574]),
+            (
+                [0.501_960_8, 0.501_960_8, 0.501_960_8],
+                [32807, 32802, 32824],
+            ),
+            ([0.2, 0.4, 0.6], [14955, 26328, 39151]),
+        ];
+        assert_matches_lcms_16bit(&transform, &expected, gamma22_display_to_lab_d50);
+    }
+
+    /// v4 float Lab (`B2D1` `mpet`): generated with
+    /// ```sh
+    /// nix shell nixpkgs#lcms2 -c bash -c '
+    ///   printf "255 0 0\n0 255 0\n0 0 255\n128 128 128\n51 102 153\n" |
+    ///     transicc -i"*sRGB" -o/tmp/icc-lut-fixtures/mpe_lab_b2d.icc -t1 -w -e -n
+    /// '
+    /// ```
+    #[test]
+    fn an_mpe_lab_b2d_display_matches_lcms2() {
+        let transform = DisplayTransform::for_profile(&mpe_lab_b2d_profile()).expect("a transform");
+        let expected = [
+            ([1.0, 0.0, 0.0], [65535, 1825, 2592]),
+            ([0.0, 1.0, 0.0], [3683, 65534, 2160]),
+            ([0.0, 0.0, 1.0], [4979, 0, 65535]),
+            (
+                [0.501_960_8, 0.501_960_8, 0.501_960_8],
+                [32759, 32724, 32738],
+            ),
+            ([0.2, 0.4, 0.6], [14672, 26183, 39039]),
+        ];
+        assert_matches_lcms_16bit(&transform, &expected, gamma22_display_to_lab_d50);
+    }
+
+    /// v2 8-bit XYZ (`A2B1` `mft1`, inverted): LittleCMS reads the `A2B1` tag
+    /// in the forward direction (`device → *sRGB`) via
+    /// ```sh
+    /// nix shell nixpkgs#lcms2 -c bash -c '
+    ///   printf "178.5 76.5 76.5\n76.5 178.5 76.5\n76.5 76.5 178.5\n128 128 128\n51 102 153\n" |
+    ///     transicc -i/tmp/icc-lut-fixtures/lut8_xyz_a2b.icc -o"*sRGB" -t1 -w -e -n
+    /// '
+    /// ```
+    /// and the inverted transform recovers each device triple from LittleCMS's
+    /// 16-bit sRGB output within ≤ 1/255.
+    #[test]
+    fn a_lut8_xyz_a2b_display_matches_lcms2() {
+        let transform =
+            DisplayTransform::for_profile(&lut8_xyz_a2b_profile()).expect("a transform");
+        let expected = [
+            (
+                [55989.0 / 65535.0, 38261.0 / 65535.0, 38270.0 / 65535.0],
+                [45875, 19661, 19661],
+            ),
+            (
+                [38257.0 / 65535.0, 55987.0 / 65535.0, 38270.0 / 65535.0],
+                [19661, 45875, 19661],
+            ),
+            (
+                [38264.0 / 65535.0, 38260.0 / 65535.0, 55997.0 / 65535.0],
+                [19661, 19661, 45875],
+            ),
+            (
+                [48276.0 / 65535.0, 48275.0 / 65535.0, 48285.0 / 65535.0],
+                [32896, 32896, 32896],
+            ),
+            (
+                [31750.0 / 65535.0, 43592.0 / 65535.0, 52289.0 / 65535.0],
+                [13107, 26214, 39321],
+            ),
+        ];
+        assert_matches_lcms_16bit(&transform, &expected, linear_display_to_lab_d50);
+    }
+
+    /// v2 16-bit XYZ (`A2B1` `mft2`, inverted): reference pairs generated with
+    /// ```sh
+    /// nix shell nixpkgs#lcms2 -c bash -c '
+    ///   printf "178.5 76.5 76.5\n76.5 178.5 76.5\n76.5 76.5 178.5\n128 128 128\n51 102 153\n" |
+    ///     transicc -i/tmp/icc-lut-fixtures/lut16_xyz_a2b.icc -o"*sRGB" -t1 -w -e -n
+    /// '
+    /// ```
+    #[test]
+    fn a_lut16_xyz_a2b_display_matches_lcms2() {
+        let transform =
+            DisplayTransform::for_profile(&lut16_xyz_a2b_profile()).expect("a transform");
+        let expected = [
+            (
+                [46254.0 / 65535.0, 19327.0 / 65535.0, 19332.0 / 65535.0],
+                [45875, 19661, 19661],
+            ),
+            (
+                [19313.0 / 65535.0, 46253.0 / 65535.0, 19336.0 / 65535.0],
+                [19661, 45875, 19661],
+            ),
+            (
+                [19328.0 / 65535.0, 19326.0 / 65535.0, 46261.0 / 65535.0],
+                [19661, 19661, 45875],
+            ),
+            (
+                [33153.0 / 65535.0, 33151.0 / 65535.0, 33160.0 / 65535.0],
+                [32896, 32896, 32896],
+            ),
+            (
+                [12207.0 / 65535.0, 26244.0 / 65535.0, 39689.0 / 65535.0],
+                [13107, 26214, 39321],
+            ),
+        ];
+        assert_matches_lcms_16bit(&transform, &expected, gamma22_display_to_lab_d50);
+    }
+
+    /// v4 16-bit XYZ (`A2B1` `mAB `, inverted): reference pairs generated with
+    /// ```sh
+    /// nix shell nixpkgs#lcms2 -c bash -c '
+    ///   printf "178.5 76.5 76.5\n76.5 178.5 76.5\n76.5 76.5 178.5\n128 128 128\n51 102 153\n" |
+    ///     transicc -i/tmp/icc-lut-fixtures/mab_xyz_a2b.icc -o"*sRGB" -t1 -w -e -n
+    /// '
+    /// ```
+    #[test]
+    fn an_mab_xyz_a2b_display_matches_lcms2() {
+        let transform = DisplayTransform::for_profile(&mab_xyz_a2b_profile()).expect("a transform");
+        let expected = [
+            (
+                [46262.0 / 65535.0, 19331.0 / 65535.0, 19337.0 / 65535.0],
+                [45875, 19661, 19661],
+            ),
+            (
+                [19323.0 / 65535.0, 46260.0 / 65535.0, 19339.0 / 65535.0],
+                [19661, 45875, 19661],
+            ),
+            (
+                [19334.0 / 65535.0, 19334.0 / 65535.0, 46267.0 / 65535.0],
+                [19661, 19661, 45875],
+            ),
+            (
+                [33163.0 / 65535.0, 33159.0 / 65535.0, 33167.0 / 65535.0],
+                [32896, 32896, 32896],
+            ),
+            (
+                [12203.0 / 65535.0, 26256.0 / 65535.0, 39698.0 / 65535.0],
+                [13107, 26214, 39321],
+            ),
+        ];
+        assert_matches_lcms_16bit(&transform, &expected, gamma22_display_to_lab_d50);
+    }
+
+    /// v2 16-bit legacy Lab (`A2B1` `mft2`, inverted): reference pairs
+    /// generated with
+    /// ```sh
+    /// nix shell nixpkgs#lcms2 -c bash -c '
+    ///   printf "255 0 0\n0 255 0\n0 0 255\n128 128 128\n51 102 153\n" |
+    ///     transicc -i/tmp/icc-lut-fixtures/lut16_lab_a2b.icc -o"*sRGB" -t1 -w -e -n
+    /// '
+    /// ```
+    #[test]
+    fn a_lut16_lab_a2b_display_matches_lcms2() {
+        let transform =
+            DisplayTransform::for_profile(&lut16_lab_a2b_profile()).expect("a transform");
+        let expected = [
+            ([1.0, 0.0, 0.0], [65535, 0, 0]),
+            ([0.0, 1.0, 0.0], [0, 65535, 0]),
+            ([0.0, 0.0, 1.0], [0, 0, 65535]),
+            (
+                [33150.0 / 65535.0, 33151.0 / 65535.0, 33158.0 / 65535.0],
+                [32896, 32896, 32896],
+            ),
+            (
+                [12317.0 / 65535.0, 26228.0 / 65535.0, 39680.0 / 65535.0],
+                [13107, 26214, 39321],
+            ),
+        ];
+        assert_matches_lcms_16bit(&transform, &expected, gamma22_display_to_lab_d50);
+    }
+
+    /// v4 16-bit Lab (`A2B1` `mAB `, inverted): reference pairs generated with
+    /// ```sh
+    /// nix shell nixpkgs#lcms2 -c bash -c '
+    ///   printf "255 0 0\n0 255 0\n0 0 255\n128 128 128\n51 102 153\n" |
+    ///     transicc -i/tmp/icc-lut-fixtures/mab_lab_a2b.icc -o"*sRGB" -t1 -w -e -n
+    /// '
+    /// ```
+    #[test]
+    fn an_mab_lab_a2b_display_matches_lcms2() {
+        let transform = DisplayTransform::for_profile(&mab_lab_a2b_profile()).expect("a transform");
+        let expected = [
+            ([1.0, 0.0, 0.0], [65535, 0, 0]),
+            ([0.0, 1.0, 0.0], [0, 65535, 0]),
+            ([0.0, 0.0, 1.0], [0, 0, 65535]),
+            (
+                [33150.0 / 65535.0, 33150.0 / 65535.0, 33157.0 / 65535.0],
+                [32896, 32896, 32896],
+            ),
+            (
+                [12315.0 / 65535.0, 26229.0 / 65535.0, 39682.0 / 65535.0],
+                [13107, 26214, 39321],
+            ),
+        ];
+        assert_matches_lcms_16bit(&transform, &expected, gamma22_display_to_lab_d50);
+    }
+
+    /// v4 float Lab (`D2B1` `mpet`, inverted): reference pairs generated with
+    /// ```sh
+    /// nix shell nixpkgs#lcms2 -c bash -c '
+    ///   printf "255 0 0\n0 255 0\n0 0 255\n128 128 128\n51 102 153\n" |
+    ///     transicc -i/tmp/icc-lut-fixtures/mpe_lab_d2b.icc -o"*sRGB" -t1 -w -e -n
+    /// '
+    /// ```
+    #[test]
+    fn an_mpe_lab_d2b_display_matches_lcms2() {
+        let transform = DisplayTransform::for_profile(&mpe_lab_d2b_profile()).expect("a transform");
+        let expected = [
+            ([1.0, 0.0, 0.0], [65535, 0, 0]),
+            ([0.0, 1.0, 0.0], [0, 65535, 0]),
+            ([0.0, 0.0, 1.0], [0, 0, 65535]),
+            (
+                [33149.0 / 65535.0, 33150.0 / 65535.0, 33157.0 / 65535.0],
+                [32896, 32896, 32896],
+            ),
+            (
+                [12316.0 / 65535.0, 26228.0 / 65535.0, 39681.0 / 65535.0],
+                [13107, 26214, 39321],
+            ),
+        ];
+        assert_matches_lcms_16bit(&transform, &expected, gamma22_display_to_lab_d50);
+    }
+
+    /// Out-of-gamut clamping on a narrow-gamut `A2B1` display profile whose
+    /// primaries cover only an interior 30% slice of sRGB around the D50
+    /// neutral axis: saturated sRGB primaries and out-of-range inputs clamp
+    /// deterministically to `[0, 1]` on the device gamut boundary with no NaN
+    /// or panic.
+    #[test]
+    fn a_narrow_gamut_a2b_clamps_out_of_gamut_colours() {
+        let mut narrow_primaries = [[0.0; 3]; 3];
+        for row in 0..3 {
+            for col in 0..3 {
+                narrow_primaries[row][col] = 0.3 * SRGB_D50[row][col] + 0.7 * D50_XYZ[row] / 3.0;
+            }
+        }
+        let clut = clut_nodes(9, |linear| {
+            let xyz = mul_vec(&narrow_primaries, &linear);
+            [
+                xyz[0] * XYZ_PCS_SCALE,
+                xyz[1] * XYZ_PCS_SCALE,
+                xyz[2] * XYZ_PCS_SCALE,
+            ]
+        });
+        let tag = mab_tag(
+            Some(identity_curve_set()),
+            None,
+            None,
+            Some(mba_clut_bytes([9, 9, 9], &clut)),
+            Some(gamma_curve_set(2.2)),
+        );
+        let profile = profile_with_pcs_and_tags(b"XYZ ", &[(b"A2B1", tag)]);
+        let transform = DisplayTransform::for_profile(&profile).expect("a transform");
+
+        for input in [
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 1.0],
+            [1.0, 0.0, 1.0],
+            [1.5, -0.5, 0.5],
+            [f64::NAN, 0.5, 0.5],
+            [f64::INFINITY, 0.0, 0.0],
+        ] {
+            let mapped = transform.map(input);
+            let again = transform.map(input);
+            assert_eq!(mapped, again, "{input:?} was not deterministic");
+            assert!(
+                mapped
+                    .iter()
+                    .all(|v| v.is_finite() && (0.0..=1.0).contains(v)),
+                "{input:?} became {mapped:?}"
+            );
+        }
+        // Saturated sRGB red lands on the upper red/lower green-blue boundary
+        // of the narrow display gamut.
+        let red = transform.map([1.0, 0.0, 0.0]);
+        assert!(red[0] > 0.8 && red[1] < 1e-4 && red[2] < 1e-4, "{red:?}");
+
+        let lut = transform.lut();
+        assert_eq!(lut.len(), LUT_SIZE * LUT_SIZE * LUT_SIZE);
+        assert!(lut.iter().all(|e| e[3] == 1.0
+            && e[0..3]
+                .iter()
+                .all(|v| v.is_finite() && (0.0..=1.0).contains(v))));
+    }
+
+    /// A present-but-unreadable `B2A1` tag refuses the profile rather than
+    /// falling back to a valid `A2B1` tag, and an unreadable `A2B1` refuses
+    /// rather than falling back to `A2B0`.
+    #[test]
+    fn an_unreadable_higher_priority_lut_tag_does_not_fall_back() {
+        let valid_a2b = mab_xyz_a2b_profile();
+        assert!(DisplayTransform::for_profile(&valid_a2b).is_some());
+
+        let a2b_tag = lookup_tag(&valid_a2b, b"A2B1");
+        let TagLookup::Present(a2b_bytes) = a2b_tag else {
+            panic!("expected A2B1 tag");
+        };
+        let mut corrupt_b2a = a2b_bytes.to_vec();
+        corrupt_b2a[0..4].copy_from_slice(b"mBA ");
+        corrupt_b2a.truncate(20);
+
+        let with_corrupt_b2a = profile_with_pcs_and_tags(
+            b"XYZ ",
+            &[(b"B2A1", corrupt_b2a), (b"A2B1", a2b_bytes.to_vec())],
+        );
+        assert!(DisplayTransform::for_profile(&with_corrupt_b2a).is_none());
+
+        let mut corrupt_a2b1 = a2b_bytes.to_vec();
+        corrupt_a2b1.truncate(20);
+        let with_corrupt_a2b1 = profile_with_pcs_and_tags(
+            b"XYZ ",
+            &[(b"A2B1", corrupt_a2b1), (b"A2B0", a2b_bytes.to_vec())],
+        );
+        assert!(DisplayTransform::for_profile(&with_corrupt_a2b1).is_none());
+    }
+
+    /// Non-invertible `A2B` stages — a constant or folding CLUT, a backwards
+    /// or flat curve, a singular matrix — and non-RGB device spaces are
+    /// refused.
+    #[test]
+    fn non_invertible_a2b_stages_and_non_rgb_device_spaces_are_refused() {
+        // Constant CLUT.
+        let constant_clut = clut_nodes(3, |_| [0.5, 0.5, 0.5]);
+        let constant_tag = mab_tag(
+            Some(identity_curve_set()),
+            None,
+            None,
+            Some(mba_clut_bytes([3, 3, 3], &constant_clut)),
+            Some(gamma_curve_set(2.2)),
+        );
+        assert!(DisplayTransform::for_profile(&profile_with_pcs_and_tags(
+            b"XYZ ",
+            &[(b"A2B1", constant_tag)],
+        ))
+        .is_none());
+
+        // Folding CLUT (first axis reverses direction past 0.5).
+        let folding_clut = clut_nodes(5, |rgb| {
+            [
+                if rgb[0] <= 0.5 { rgb[0] } else { 1.0 - rgb[0] },
+                rgb[1],
+                rgb[2],
+            ]
+        });
+        let folding_tag = mab_tag(
+            Some(identity_curve_set()),
+            None,
+            None,
+            Some(mba_clut_bytes([5, 5, 5], &folding_clut)),
+            Some(gamma_curve_set(2.2)),
+        );
+        assert!(DisplayTransform::for_profile(&profile_with_pcs_and_tags(
+            b"XYZ ",
+            &[(b"A2B1", folding_tag)],
+        ))
+        .is_none());
+
+        // Backwards curve in A2B.
+        let mut backwards_curv = b"curv\0\0\0\0".to_vec();
+        backwards_curv.extend_from_slice(&3u32.to_be_bytes());
+        for v in [0u16, 50_000, 20_000] {
+            backwards_curv.extend_from_slice(&v.to_be_bytes());
+        }
+        let backwards_tag = mab_tag(
+            Some(curves_blob(&[
+                backwards_curv,
+                identity_curve(),
+                identity_curve(),
+            ])),
+            None,
+            None,
+            None,
+            None,
+        );
+        assert!(DisplayTransform::for_profile(&profile_with_pcs_and_tags(
+            b"XYZ ",
+            &[(b"A2B1", backwards_tag)],
+        ))
+        .is_none());
+
+        // Singular matrix in A2B.
+        let singular = [[1.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]];
+        let singular_tag = mab_tag(
+            Some(identity_curve_set()),
+            Some(matrix_element_bytes(&singular, &[0.0; 3])),
+            None,
+            None,
+            None,
+        );
+        assert!(DisplayTransform::for_profile(&profile_with_pcs_and_tags(
+            b"XYZ ",
+            &[(b"A2B1", singular_tag)],
+        ))
+        .is_none());
+
+        // Non-RGB device spaces (CMYK, GRAY, Lab).
+        for device in [b"CMYK", b"GRAY", b"Lab "] {
+            let mut profile = lut16_xyz_a2b_profile();
+            profile[16..20].copy_from_slice(device);
+            assert!(DisplayTransform::for_profile(&profile).is_none());
+        }
+    }
+
+    /// The ΔE00 helper matches published reference pairs from Sharma, Wu and
+    /// Dalal (2005).
+    #[test]
+    fn ciede2000_matches_the_sharma_reference_pairs() {
+        let pairs = [
+            ([50.0, 2.6772, -79.7751], [50.0, 0.0, -82.7485], 2.0425),
+            ([50.0, 3.1571, -77.2803], [50.0, 0.0, -82.7485], 2.8615),
+            ([50.0, 2.8361, -74.0200], [50.0, 0.0, -82.7485], 3.4412),
+            ([50.0, -1.3802, -84.2814], [50.0, 0.0, -82.7485], 1.0000),
+            ([50.0, 0.0, 0.0], [50.0, -1.0, 2.0], 2.3669),
+            ([50.0, 2.5, 0.0], [73.0, 25.0, -18.0], 27.1492),
+            ([50.0, 2.5, 0.0], [61.0, -5.0, 29.0], 22.8977),
+            ([50.0, 2.5, 0.0], [50.0, 3.2972, 0.0], 1.0000),
+            ([50.0, 2.5, 0.0], [50.0, 1.8634, 0.5757], 1.0000),
+            ([50.0, 2.5, 0.0], [50.0, 2.5, 0.0], 0.0),
+        ];
+        for (lab1, lab2, wanted) in pairs {
+            let got = ciede2000(lab1, lab2);
+            assert!(
+                (got - wanted).abs() < 1e-4,
+                "ΔE00({lab1:?}, {lab2:?}) is {got}, reference says {wanted}"
+            );
+        }
     }
 }
 
