@@ -19,18 +19,27 @@ to summarise rather than to duplicate.
   PCS-to-device direction a screen needs is the profile's `B2A`/`B2D` tag, so
   it is read forwards — nothing is inverted — through the same bake: `B2D1`
   (v4 float) first, then `B2A1`, then `B2A0` when the relative-colorimetric
-  tag is absent, the order LittleCMS reads an output profile in. The four tag
-  types (`mft1`, `mft2`, `mBA `, `mpet`) decompose into per-channel curves, a
-  3D CLUT and an optional matrix; the CLUT is tetrahedral-interpolated, the
-  interpolation LittleCMS uses by default, the PCS meets the 16-bit tables in
+  tag is absent, the order LittleCMS reads an output profile in. A profile
+  that carries only device-to-PCS tables (`A2B1`/`A2B0`/`A2B2`, `D2B1`) is
+  read the other way, the pipeline inverted at bake time: output curves
+  inverted, the 3D CLUT solved with Newton on the tetrahedral interpolant and
+  a bounded bisection fallback, the input curves and matrices inverted, and a
+  PCS that lands outside the device gamut clamped deterministically to its
+  boundary. The tag types (`mft1`, `mft2`, `mBA `, `mAB ` — the same tables
+  the other way round — and `mpet`) decompose into per-channel curves, a 3D
+  CLUT and an optional matrix; the CLUT is tetrahedral-interpolated, the
+  interpolation LittleCMS uses by default (and trilinear when a 16-bit or
+  8-bit `B2A` CLUT is indexed in Lab), the PCS meets the 16-bit tables in
   1.15 fixed point and the float tag at full scale, and the v4 segmented
   curves (`curf`, sampled and the three formula types) evaluate as that engine
-  evaluates them. A profile carrying both descriptions keeps the matrix
-  transform it shipped with. Still refused
-  rather than half-read: a device-to-PCS-only (`A2B`) profile, a Lab PCS, a
-  non-RGB device space, and any tag that cannot be read whole. Cross-checked
-  against LittleCMS 2.19's own answer for the same profiles, the check the
-  matrix path already carries.
+  evaluates them. Both `XYZ ` and `Lab ` PCS are read: v2's 16-bit legacy Lab
+  in `mft2`, v4's 16-bit and v2's 8-bit Lab in `mBA `/`mAB `/`mft1`, and v4's
+  float Lab in `mpet`. A profile carrying both descriptions keeps the matrix
+  transform it shipped with. Still refused rather than half-read: a non-RGB
+  device space, any present tag that cannot be read whole, and any curve,
+  matrix or CLUT whose inverse is not well-defined — the log names the rule
+  that refused it. Cross-checked against LittleCMS 2.19's own answer for the
+  same profiles, the check the matrix path already carries.
 
 ### Fixed
 - The rectangles the shell floats over the windows follow what they measure.
