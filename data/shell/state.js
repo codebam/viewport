@@ -619,7 +619,12 @@ const outputsEl = document.getElementById('outputs');
  * this same buffer again, cropped to each, in front.
  *
  * Keyed by what put it there, so a notification and the screen-share chooser
- * can both float without either forgetting the other. */
+ * can both float without either forgetting the other. One name may carry
+ * several rectangles — the notifications column is one card per message with a
+ * gap between them, and a single rectangle around the column is a rectangle
+ * around the gaps too, which the compositor fills by drawing the page there:
+ * the desktop's own wallpaper, in front of whatever window is behind the
+ * column. So what is measured is the cards. */
 const overlays = new Map();
 
 /* `passthrough` names a rectangle that is drawn in front but does not take the
@@ -643,36 +648,60 @@ const overlays = new Map();
    the keyboard for the page would type into the page — and would cancel the
    text-input the very keyboard on screen is raised for. Every other overlay
    takes the keyboard on a press, which is what makes a click in the
-   launcher's input mean typing. */
-function setOverlay(name, el, { passthrough = false, blur = false, keepFocus = false } = {}) {
-  const rect = el?.getBoundingClientRect();
-  if (!rect || rect.width < 1 || rect.height < 1) {
+   launcher's input mean typing.
+
+   The target is one element or a list of them. A list is drawn as one
+   rectangle per element — the notifications column is cards with gaps between
+   them; see `overlays` for what a rectangle around the gaps costs. */
+function setOverlay(name, target, { passthrough = false, blur = false, keepFocus = false } = {}) {
+  const elements = Array.isArray(target) ? target : (target ? [target] : []);
+  const rects = elements
+    .map((el) => overlayRect(el, { passthrough, blur, keepFocus }))
+    .filter(Boolean);
+  if (rects.length === 0) {
     if (!overlays.delete(name)) return;
   } else {
-    const next = {
-      x: Math.round(rect.left),
-      y: Math.round(rect.top),
-      width: Math.round(rect.width),
-      height: Math.round(rect.height),
-      passthrough,
-      keep_focus: keepFocus,
-      /* The compositor blurs the windows behind this rectangle before drawing
-         the page's own pixels over it — the shell's half of
-         `ext-background-effect-v1`, which a page cannot ask for itself. */
-      blur,
-    };
     const previous = overlays.get(name);
-    if (previous
-      && previous.x === next.x && previous.y === next.y
-      && previous.width === next.width && previous.height === next.height
-      && previous.passthrough === next.passthrough
-      && previous.keep_focus === next.keep_focus
-      && previous.blur === next.blur) {
-      return;
-    }
-    overlays.set(name, next);
+    if (previous && sameOverlayRects(previous, rects)) return;
+    overlays.set(name, rects);
   }
-  send({ type: 'shell.overlay', rects: [...overlays.values()] });
+  sendOverlays();
+}
+
+/* One element's rectangle, or nothing when it is not there or has collapsed to
+   no size — the two cases that mean it draws nothing. */
+function overlayRect(el, { passthrough = false, blur = false, keepFocus = false } = {}) {
+  const rect = el?.getBoundingClientRect?.();
+  if (!rect || rect.width < 1 || rect.height < 1) return null;
+  return {
+    x: Math.round(rect.left),
+    y: Math.round(rect.top),
+    width: Math.round(rect.width),
+    height: Math.round(rect.height),
+    passthrough,
+    keep_focus: keepFocus,
+    /* The compositor blurs the windows behind this rectangle before drawing
+       the page's own pixels over it — the shell's half of
+       `ext-background-effect-v1`, which a page cannot ask for itself. */
+    blur,
+  };
+}
+
+function sameOverlayRects(one, other) {
+  return one.length === other.length && one.every((rect, i) => {
+    const them = other[i];
+    return rect.x === them.x && rect.y === them.y
+      && rect.width === them.width && rect.height === them.height
+      && rect.passthrough === them.passthrough
+      && rect.keep_focus === them.keep_focus
+      && rect.blur === them.blur;
+  });
+}
+
+/* Every rectangle, sent whole. The compositor keeps no list of its own, so a
+   message that named one would take the others down. */
+function sendOverlays() {
+  send({ type: 'shell.overlay', rects: [...overlays.values()].flat() });
 }
 
 /* Everything a departing monitor left in the map.
@@ -694,7 +723,7 @@ function dropOverlaysForOutput(name) {
   for (const key of [...overlays.keys()]) {
     if (key.endsWith(`:${name}`) && overlays.delete(key)) changed = true;
   }
-  if (changed) send({ type: 'shell.overlay', rects: [...overlays.values()] });
+  if (changed) sendOverlays();
 }
 const screencastEl = document.getElementById('screencast');
 const anrEl = document.getElementById('anr');

@@ -1298,6 +1298,32 @@ check('windows laid out', new Set(layouts.map((m) => m.id)).size === 4);
   check('and the binding closes it again when it is already open',
     picker().hidden === true);
 
+  /* The rectangle the compositor draws the page cropped to, in front of the
+     windows. The dialog is the same element on every answer — only the list
+     inside it is rebuilt — so its height changes with nothing new to measure,
+     and a rectangle left at the height the picker opened with is drawn over
+     the window below as a band of the page's own wallpaper. That band under
+     the last row is what a filter that shortened the list used to leave. */
+  emit({ type: 'shell.command', command: 'launcher', args: [] });
+  dialog().__rect = { left: 40, top: 60, width: 512, height: 340 };
+  emit({ type: 'launcher.list', apps, generation: 2 });
+  const overlayRects = () => sent.filter((m) => m.type === 'shell.overlay')
+    .at(-1)?.rects ?? [];
+  check('the dialog is reported where it is drawn',
+    overlayRects().some((r) => r.x === 40 && r.y === 60 && r.width === 512
+      && r.height === 340));
+
+  before = sent.length;
+  dialog().__rect = { left: 40, top: 60, width: 512, height: 120 };
+  emit({ type: 'launcher.list', apps: [apps[0]], generation: 2 });
+  check('and reported again when a shorter list makes it shorter',
+    sent.slice(before).some((m) => m.type === 'shell.overlay' &&
+      (m.rects ?? []).some((r) => r.width === 512 && r.height === 120)));
+  check('so the taller rectangle is not still drawn over the window',
+    !overlayRects().some((r) => r.height === 340));
+
+  emit({ type: 'shell.command', command: 'launcher', args: [] });
+
   /* The window the test focused goes away with the test: a view left in the
      tree is a window the next section's counts do not expect. */
   emit({ type: 'view.removed', id: 7 });
@@ -2346,6 +2372,48 @@ check('windows laid out', new Set(layouts.map((m) => m.id)).size === 4);
     summary: 'critical', body: '', urgency: 2, timeout: -1, actions: [] });
   check('a critical notification is kept', true);
   emit({ type: 'notification.close', id: 8 });
+}
+
+/* Between the cards. Each popup is a card of its own with a gap under it, and
+ * the column it sits in has no background: a rectangle around the column is a
+ * rectangle around the gaps too, and the page's pixels there are the desktop's
+ * wallpaper. The compositor drew that in front of whatever window the column
+ * was over, so a column over a window had bands of wallpaper between its
+ * cards. One rectangle per card is what leaves the window showing in between. */
+{
+  const strip = () => globalThis.__shell.outputs.get('DP-1').notificationsEl;
+  const cards = () => strip().children;
+  const notify = (id) => emit({ type: 'notification.add', id, app_name: 'test',
+    summary: `card ${id}`, body: '', urgency: 1, timeout: 0, actions: [] });
+  const overlayRects = () => sent.filter((m) => m.type === 'shell.overlay')
+    .at(-1)?.rects ?? [];
+
+  notify(101);
+  notify(102);
+  notify(103);
+  /* The three cards, where the stylesheet and their own text would have put
+     them. The gap between the first and the second is what the column's own
+     rectangle used to cover. */
+  cards()[0].__rect = { left: 1500, top: 40, width: 352, height: 80 };
+  cards()[1].__rect = { left: 1500, top: 128, width: 352, height: 64 };
+  cards()[2].__rect = { left: 1500, top: 200, width: 352, height: 72 };
+
+  emit({ type: 'notification.close', id: 101 });
+  const drawn = overlayRects().filter((r) => r.x === 1500);
+  check('each popup is its own rectangle over the windows',
+    drawn.length === 2 && drawn.some((r) => r.y === 128 && r.height === 64)
+    && drawn.some((r) => r.y === 200 && r.height === 72));
+  /* The two gaps: under where the first card was, and between the two that
+     are left. Neither may be covered by a rectangle, or the page's wallpaper
+     is what gets drawn in front of the window there. */
+  const covers = (y) => drawn.some((r) => r.y <= y && r.y + r.height > y);
+  check('and the gaps between them are left to the window underneath',
+    !covers(124) && !covers(196));
+
+  emit({ type: 'notification.close', id: 102 });
+  emit({ type: 'notification.close', id: 103 });
+  check('with none left, nothing of the column is drawn over the windows',
+    !overlayRects().some((r) => r.width > 0 && r.height > 0));
 }
 
 /* A notification lands on the output where its source window is. A chat client

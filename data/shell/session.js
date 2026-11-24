@@ -733,18 +733,22 @@ function rehomeNotifications(gone) {
 }
 
 /* Where the notifications are, so the compositor can draw them above the
-   windows. Nothing when a container is empty: the element is still there, and
-   a rectangle of empty shell drawn over a window would be a hole in it.
+   windows. One rectangle per popup rather than one around the column: the
+   column has a gap between cards and no background of its own, so its
+   rectangle includes the gaps — and the page's pixels there are the desktop's
+   wallpaper, which the compositor would then draw in front of the window the
+   column is over. That is the band of wallpaper seen between notifications.
+   Nothing when a container is empty: the element is still there, and a
+   rectangle of empty shell drawn over a window would be a hole in it.
    Reported per output, because a notification now lives in the corner of the
    output it came from — a single rectangle would put every one of them over
    one screen.
    One that is animating away still counts as being there: it is still a child
-   of the container until removal, which is what keeps the strip composited
-   for the length of its own exit. */
+   of the container until removal, which is what keeps its card composited for
+   the length of its own exit, and its collapse is what its rectangle follows. */
 function reportNotificationRect() {
   for (const [name, output] of outputs) {
-    const el = output.notificationsEl;
-    setOverlay(`notifications:${name}`, el.children.length > 0 ? el : null);
+    setOverlay(`notifications:${name}`, [...output.notificationsEl.children]);
   }
 }
 

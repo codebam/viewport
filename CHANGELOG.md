@@ -32,6 +32,20 @@ to summarise rather than to duplicate.
   against LittleCMS 2.19's own answer for the same profiles, the check the
   matrix path already carries.
 
+### Fixed
+- The rectangles the shell floats over the windows follow what they measure.
+  The compositor draws that part of the page a second time, cropped to each
+  rectangle, above the windows, so a rectangle that no longer matches its
+  element shows the page underneath it — the desktop's own wallpaper. The
+  launcher is built once and only its list is rebuilt, so a filter that
+  shortened the list left the rectangle the picker opened with: a band of
+  wallpaper under the last row, in front of the window the picker was over,
+  until the list grew back to fill the old rectangle. It is measured again on
+  every answer. The notifications column is now one rectangle per card rather
+  than one around the column, because the column's own rectangle includes the
+  gaps between cards, where the page has nothing but the same wallpaper — it
+  was drawn between notifications, over the window behind them.
+
 ## [0.10.0] - 2026-11-18
 
 ### Added

@@ -34,6 +34,11 @@ let launcherGeneration = 0;
  * picker opens and the list rebuilt on every answer, so the field being typed
  * into survives its own keystrokes. */
 let launcherListEl = null;
+/* The dialog itself, kept for the same reason the list is: it outlives every
+ * answer, and the rectangle the compositor is given is measured off it. Its
+ * height follows the list, so a measurement taken when the picker opened is
+ * the height of a list that is no longer there. */
+let launcherDialogEl = null;
 
 /* Open it, or take it down. Bound to Mod4+d by default, which arrives here as
  * a shell command — the compositor routes the keys, so this is never a key
@@ -72,6 +77,7 @@ function closeLauncher() {
   /* Gives the keyboard back to whatever had it — see keyNavClose. */
   keyNavClose('launcher');
   launcherListEl = null;
+  launcherDialogEl = null;
   launcherEl.replaceChildren();
   launcherEl.hidden = true;
   setOverlay('launcher', null);
@@ -151,6 +157,7 @@ function renderLauncher() {
   dialog.append(hint);
 
   launcherEl.append(dialog);
+  launcherDialogEl = dialog;
 
   /* The keys go on the field rather than on the dialog, and the rows are
      named rather than found under it: this is the one surface whose dialog
@@ -171,10 +178,6 @@ function renderLauncher() {
   });
 
   renderLauncherList();
-  /* Tell the compositor where the dialog is, so it draws that piece of the
-     shell above the windows — see setOverlay's own comment in state.js. The
-     dialog alone, not the docking box that spans the whole output. */
-  setOverlay('launcher', dialog);
   input.focus?.();
 }
 
@@ -192,60 +195,75 @@ function renderLauncherList() {
       ? `Nothing matches “${launcherFilter}”.`
       : 'No applications found.';
     list.append(empty);
-    /* And the field stops pointing at a row, because there are none. Skipping
-       this left `aria-activedescendant` naming the row that was under the
-       keyboard before the filter emptied the list, so a screen reader went on
-       reading an application that is no longer drawn. */
-    keyNavRefresh('launcher');
-    return;
-  }
+  } else {
+    launcherApps.forEach((app) => {
+      const row = document.createElement('button');
+      row.className = 'launcher-row';
+      /* Named for the reader rather than left to the row's own text: the icon
+         is a letter where the entry had no picture, and "F Firefox web,
+         browser" is what a reader would otherwise say. */
+      keyNavRowEl(row, app.detail ? `${app.name}, ${app.detail}` : app.name);
 
-  launcherApps.forEach((app) => {
-    const row = document.createElement('button');
-    row.className = 'launcher-row';
-    /* Named for the reader rather than left to the row's own text: the icon
-       is a letter where the entry had no picture, and "F Firefox web,
-       browser" is what a reader would otherwise say. */
-    keyNavRowEl(row, app.detail ? `${app.name}, ${app.detail}` : app.name);
+      const icon = document.createElement('span');
+      icon.className = 'launcher-icon';
+      if (app.icon) {
+        const img = document.createElement('img');
+        img.src = app.icon;
+        img.alt = '';
+        icon.append(img);
+      } else {
+        /* The tray's fallback for an item with no icon: a letter. */
+        icon.textContent = (app.name || '?').trim().charAt(0).toUpperCase();
+      }
+      row.append(icon);
 
-    const icon = document.createElement('span');
-    icon.className = 'launcher-icon';
-    if (app.icon) {
-      const img = document.createElement('img');
-      img.src = app.icon;
-      img.alt = '';
-      icon.append(img);
-    } else {
-      /* The tray's fallback for an item with no icon: a letter. */
-      icon.textContent = (app.name || '?').trim().charAt(0).toUpperCase();
-    }
-    row.append(icon);
+      const text = document.createElement('span');
+      text.className = 'launcher-text';
+      const name = document.createElement('span');
+      name.className = 'launcher-name';
+      name.textContent = app.name;
+      text.append(name);
+      if (app.detail) {
+        const detail = document.createElement('span');
+        detail.className = 'launcher-detail';
+        detail.textContent = app.detail;
+        text.append(detail);
+      }
+      row.append(text);
 
-    const text = document.createElement('span');
-    text.className = 'launcher-text';
-    const name = document.createElement('span');
-    name.className = 'launcher-name';
-    name.textContent = app.name;
-    text.append(name);
-    if (app.detail) {
-      const detail = document.createElement('span');
-      detail.className = 'launcher-detail';
-      detail.textContent = app.detail;
-      text.append(detail);
-    }
-    row.append(text);
-
-    row.addEventListener('click', (e) => {
-      e.stopPropagation?.();
-      launchApp(app.id);
+      row.addEventListener('click', (e) => {
+        e.stopPropagation?.();
+        launchApp(app.id);
+      });
+      list.append(row);
     });
-    list.append(row);
-  });
+  }
 
   /* The highlight painted back on, and the row it lands on scrolled into
      view. The list was just replaced, so nothing on the old elements survives
-     — see keys.js on why the index is kept out here rather than on them. */
+     — see keys.js on why the index is kept out here rather than on them. With
+     nothing drawn the field stops pointing at a row, because there are none:
+     skipping this left `aria-activedescendant` naming the row that was under
+     the keyboard before the filter emptied the list, so a screen reader went
+     on reading an application that is no longer drawn. */
   keyNavRefresh('launcher');
+  /* And the box those rows made: the dialog is the same element it was before
+     the answer, but its height follows the list — see reportLauncherRect. */
+  reportLauncherRect();
+}
+
+/* Where the dialog is, so the compositor can draw that piece of the page above
+ * the windows — see setOverlay's own comment in state.js. The dialog alone,
+ * not the docking box that spans the whole output.
+ *
+ * Measured again on every answer, not once when the picker opens. The dialog
+ * outlives the list it holds (see applyLauncher), so a list that got shorter
+ * leaves the rectangle at the height it had — and the page under a dialog that
+ * is no longer that tall is the desktop's own wallpaper, which the compositor
+ * then draws in front of the window the picker is over. That band of wallpaper
+ * below the last row is the one a filter used to leave on screen. */
+function reportLauncherRect() {
+  if (launcherDialogEl) setOverlay('launcher', launcherDialogEl);
 }
 
 function launchSelected() {
