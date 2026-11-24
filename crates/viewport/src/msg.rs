@@ -2558,8 +2558,20 @@ mod tests {
             .arg("sleep 30")
             .spawn()
             .expect("a helper process");
-        // `spawn` returns after the helper's exec, so its `/proc` link is
-        // already its own.
+        // `spawn` returns at the fork, not at the exec: on a loaded machine
+        // the helper's `/proc/<pid>/exe` can still name this binary for a
+        // few milliseconds, and the rule under test is about a peer that is
+        // already something else. Wait for the exec before asking.
+        let ours = std::fs::read_link("/proc/self/exe").expect("this executable");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline
+            && std::fs::read_link(format!("/proc/{}/exe", child.id()))
+                .ok()
+                .as_deref()
+                == Some(ours.as_path())
+        {
+            std::thread::sleep(Duration::from_millis(5));
+        }
         let complaint =
             peer_is_this_executable(child.id() as libc::pid_t).expect_err("a foreign executable");
         assert!(complaint.contains("--socket"), "{complaint}");
