@@ -11,6 +11,8 @@ to summarise rather than to duplicate.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-24
+
 ### Added
 - LUT-described ICC display profiles are transformed, not just calibrated.
   `outputs.<name>.icc` already read a matrix-and-curve profile backwards into
