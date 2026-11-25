@@ -2429,6 +2429,63 @@ fn head_is_unconfirmed(
     revert.is_some_and(|changes| changes.iter().any(|change| change.name == name))
 }
 
+/// The `layout_extensions` half of a save.
+///
+/// An empty registry is written down as an empty map rather than left out.
+/// Absent in the overlay means "leave what the file said" — the same rule
+/// `wallpaper` states in the struct literal below — so a registry the panel
+/// cleared and then saved came back from the file on the next start, silently.
+/// The runtime setter spells a clear as an empty list
+/// (`config.layout_extensions`) and `settings::apply` lays an empty map over
+/// the file, so the empty map is the value this has to carry, not the absence
+/// of one.
+fn saved_layout_extensions(
+    extensions: &[viewport_ipc::event::LayoutExtension],
+) -> Option<std::collections::BTreeMap<String, String>> {
+    Some(
+        extensions
+            .iter()
+            .map(|entry| (entry.name.clone(), entry.url.clone()))
+            .collect(),
+    )
+}
+
+/// The `workspaces` half of a save, on the same rule: an emptied rule set is
+/// written as `{}` rather than omitted, so a `config.workspaces` with an empty
+/// object cannot come back from the file on the next start.
+fn saved_workspaces(rules: &[viewport_ipc::event::WorkspaceRule]) -> Option<serde_json::Value> {
+    // The shell's list back in the file's map form, so the overlay parses as
+    // the file's own keys.
+    let workspaces: std::collections::HashMap<u32, crate::config::WorkspaceConfig> = rules
+        .iter()
+        .map(|rule| {
+            (
+                rule.workspace,
+                crate::config::WorkspaceConfig {
+                    output: rule.output.clone(),
+                    layout: rule.layout.clone(),
+                    tiling_mode: rule.tiling_mode.clone(),
+                    gaps: crate::config::GapsConfig {
+                        inner: rule.gaps.as_ref().and_then(|gaps| gaps.inner),
+                        outer: rule.gaps.as_ref().and_then(|gaps| gaps.outer),
+                        smart: rule.gaps.as_ref().and_then(|gaps| gaps.smart),
+                    },
+                    persistent: rule.persistent,
+                    default_name: rule.default_name.clone(),
+                    on_created_empty: rule.on_created_empty.clone(),
+                    no_border: rule.no_border,
+                    no_rounding: rule.no_rounding,
+                    decorate: rule.decorate,
+                    float_gaps: rule.float_gaps,
+                    animation: rule.animation.clone(),
+                    layout_opts: rule.layout_opts.clone(),
+                },
+            )
+        })
+        .collect();
+    serde_json::to_value(&workspaces).ok()
+}
+
 /// Write the runtime settings out so they survive the next start.
 ///
 /// The reasoning for the overlay file — and for why this is one explicit
@@ -2476,18 +2533,7 @@ fn config_save(state: &mut ViewportState) {
         tutorial: Some(state.config.tutorial),
         tiling_mode: state.config.tiling_mode.clone(),
         layout: Some(state.config.layout.clone()),
-        layout_extensions: if state.config.layout_extensions.is_empty() {
-            None
-        } else {
-            Some(
-                state
-                    .config
-                    .layout_extensions
-                    .iter()
-                    .map(|entry| (entry.name.clone(), entry.url.clone()))
-                    .collect(),
-            )
-        },
+        layout_extensions: saved_layout_extensions(&state.config.layout_extensions),
         focus_crosses_outputs: Some(state.config.focus_crosses_outputs),
         osk: Some(state.config.osk.clone()),
         tray: state.config.tray,
@@ -2497,42 +2543,7 @@ fn config_save(state: &mut ViewportState) {
         rules: state.config.rules.clone(),
         layer_rules: state.config.layer_rules.clone(),
         decorations: state.config.decorations.clone(),
-        workspaces: if state.config.workspaces.is_empty() {
-            None
-        } else {
-            // The shell's list back in the file's map form, so the overlay
-            // parses as the file's own keys.
-            let workspaces: std::collections::HashMap<u32, crate::config::WorkspaceConfig> = state
-                .config
-                .workspaces
-                .iter()
-                .map(|rule| {
-                    (
-                        rule.workspace,
-                        crate::config::WorkspaceConfig {
-                            output: rule.output.clone(),
-                            layout: rule.layout.clone(),
-                            tiling_mode: rule.tiling_mode.clone(),
-                            gaps: crate::config::GapsConfig {
-                                inner: rule.gaps.as_ref().and_then(|gaps| gaps.inner),
-                                outer: rule.gaps.as_ref().and_then(|gaps| gaps.outer),
-                                smart: rule.gaps.as_ref().and_then(|gaps| gaps.smart),
-                            },
-                            persistent: rule.persistent,
-                            default_name: rule.default_name.clone(),
-                            on_created_empty: rule.on_created_empty.clone(),
-                            no_border: rule.no_border,
-                            no_rounding: rule.no_rounding,
-                            decorate: rule.decorate,
-                            float_gaps: rule.float_gaps,
-                            animation: rule.animation.clone(),
-                            layout_opts: rule.layout_opts.clone(),
-                        },
-                    )
-                })
-                .collect();
-            serde_json::to_value(&workspaces).ok()
-        },
+        workspaces: saved_workspaces(&state.config.workspaces),
         opacity: state.config.opacity.clone(),
         idle: state.config.idle.clone(),
         lid: state.config.lid.clone(),
@@ -3959,5 +3970,52 @@ mod tests {
         // the windows are not drawn.
         assert!(!moves_focus(&Request::ViewBlur { id: 1, blur: true }));
         assert!(!acts_while_locked(&Request::ViewBlur { id: 1, blur: true }));
+    }
+
+    /// A clear made in the panel is a value the overlay has to write down.
+    ///
+    /// `None` means "leave what the file said", so an emptied extension
+    /// registry or workspace rule set saved as `None` came back from the file
+    /// on the next start — the same failure the `wallpaper` field above
+    /// documents. Both are `Some(empty)` now, and `settings::apply` lays that
+    /// empty collection back over the file.
+    #[test]
+    fn a_cleared_registry_and_rule_set_are_saved_as_empty_not_absent() {
+        let extensions = saved_layout_extensions(&[]);
+        assert_eq!(
+            serde_json::to_value(&extensions).expect("serialise"),
+            serde_json::json!({}),
+            "an empty extension registry must be written as an empty map, not omitted"
+        );
+        let workspaces = saved_workspaces(&[]);
+        assert_eq!(
+            workspaces,
+            Some(serde_json::json!({})),
+            "an empty workspace rule set must be written as an empty object, not omitted"
+        );
+
+        // The round trip the save exists for: the empty collection laid over a
+        // file that has one clears it.
+        let mut file: crate::config::File = serde_json::from_value(serde_json::json!({
+            "layout_extensions": {"mine": "file:///mine.js"},
+            "workspaces": {"2": {"persistent": true}},
+        }))
+        .expect("a file with both");
+        let overlay = crate::settings::Overlay {
+            layout_extensions: extensions,
+            workspaces,
+            ..Default::default()
+        };
+        crate::settings::apply(&mut file, &overlay);
+        assert!(
+            file.layout_extensions
+                .as_ref()
+                .is_some_and(|set| set.is_empty()),
+            "the cleared registry did not survive apply"
+        );
+        assert!(
+            file.workspaces.as_ref().is_some_and(|set| set.is_empty()),
+            "the cleared rule set did not survive apply"
+        );
     }
 }
