@@ -50,6 +50,13 @@ fn moves_focus(request: &Request) -> bool {
 /// that survives past the unlock; and quitting takes the lock screen down with
 /// the compositor — a frozen session is logind's to recover, not the socket's.
 ///
+/// Closing a window, reconfiguring a monitor and firing a tray or notification
+/// action are the same family reached from the other end. A shell replaying a
+/// click it queued before the lock, or a panel left a beat behind, could take
+/// the focused window away, move a head to another mode, or run what a tray
+/// item or a notification's button does on the host — while the user is
+/// looking at a lock screen and believes none of it can happen.
+///
 /// `power.action`'s suspend, reboot and poweroff are deliberately *not* here,
 /// though they end the session further than `quit` does. A lock screen must
 /// offer the user those: the machine is theirs to walk away from or switch
@@ -71,6 +78,11 @@ fn acts_while_locked(request: &Request) -> bool {
             | Request::AiLogin { .. }
             | Request::LauncherLaunch { .. }
             | Request::Quit
+            | Request::ViewClose { .. }
+            | Request::OutputConfigure(_)
+            | Request::TrayActivate { .. }
+            | Request::TrayMenuClick { .. }
+            | Request::NotificationAction { .. }
     )
 }
 
@@ -4017,5 +4029,264 @@ mod tests {
             file.workspaces.as_ref().is_some_and(|set| set.is_empty()),
             "the cleared rule set did not survive apply"
         );
+    }
+
+    /// The rest of the family the completeness walk below found: a close, a
+    /// monitor reconfiguration, and the two panel actions that hand a click to
+    /// an application. Asked of the predicate itself, so a variant that slips
+    /// back out of the list fails here rather than passing on the source walk.
+    #[test]
+    fn closing_configuring_and_panel_actions_act_while_locked() {
+        assert!(acts_while_locked(&Request::ViewClose { id: 1 }));
+        assert!(acts_while_locked(&Request::OutputConfigure(
+            OutputConfigure {
+                name: "DP-1".to_owned(),
+                enabled: None,
+                mode: None,
+                scale: None,
+                transform: None,
+                adaptive_sync: None,
+                vrr: None,
+                mirror: None,
+                x: None,
+                y: None,
+            }
+        )));
+        assert!(acts_while_locked(&Request::TrayActivate {
+            id: "app".to_owned(),
+            button: "primary".to_owned(),
+            x: 0,
+            y: 0,
+        }));
+        assert!(acts_while_locked(&Request::TrayMenuClick {
+            id: "app".to_owned(),
+            item: 0,
+        }));
+        assert!(acts_while_locked(&Request::NotificationAction {
+            id: 1,
+            action: Some("open".to_owned()),
+        }));
+    }
+
+    /// What may still be carried out while the session is locked, and why.
+    ///
+    /// Every request that neither gate refuses has to be named here with the
+    /// reason it is harmless behind a lock screen, grouped by family so the
+    /// reason is decided once rather than once per message. The gate's own
+    /// rule — *act on the host, as the user, or on the session itself* — is
+    /// what each reason answers.
+    #[rustfmt::skip]
+    const ALLOWED_WHILE_LOCKED: &[(&[&str], &str)] = &[
+        (
+            &["ViewQuery", "ClipboardQuery", "NotificationList", "LauncherQuery", "OutputQuery"],
+            "a read: they answer the asker from data the compositor already owns and change nothing",
+        ),
+        (
+            &["SessionQuery"],
+            "a read (privileged separately) that withdraws the lock screen and asks the shell to \
+             draw it again, which is what a restarted page needs",
+        ),
+        (
+            &["ScreencastRect", "WorkspaceList", "ShellOverlay", "GestureCapture"],
+            "the shell's own bookkeeping — what it draws above the windows, its workspace list, \
+             the gestures it owns; behind a lock the compositor draws none of it, and none of \
+             these start anything",
+        ),
+        (
+            &["ViewLayout", "ViewVisible", "ViewFullscreen", "ViewMaximized", "ViewMinimized",
+              "ViewOpacity", "ViewOpacityRule", "ViewCapture", "ViewTearing", "ViewBlur",
+              "ViewIdleInhibit", "ViewConfinePointer", "ViewAnrResolve", "ViewDecorations"],
+            "changes what a window is or how it is drawn, and a locked screen draws no windows; \
+             the one that can touch focus (`set_view_minimized`) carries its own locked guard",
+        ),
+        (
+            &["SessionLock"],
+            "locking an already locked session is idempotent; the lock screen and `viewport msg` \
+             both use it",
+        ),
+        (
+            &["SessionLockDrawn"],
+            "the shell's lock screen cannot be painted without it",
+        ),
+        (
+            &["SessionUnlock"],
+            "the only way out; the password goes to PAM, never to the page",
+        ),
+        (
+            &["SessionSave"],
+            "the shell's own restore state, which the lock screen writes before quitting",
+        ),
+        (
+            &["OskKey"],
+            "a synthetic key has to reach the lock screen; `inject_key` refuses it per key where \
+             it would not",
+        ),
+        (
+            &["NotificationDismiss", "NotificationExpire", "NotificationForget"],
+            "ends or forgets an entry in the compositor's own notification list and tells the \
+             sender the popup went; it starts nothing",
+        ),
+        (
+            &["ClipboardPaste", "ClipboardForget"],
+            "moves entries in the compositor's own history; it runs nothing and at most owns the \
+             selection",
+        ),
+        (
+            &["MprisControl", "PowerProfile", "PowerAction", "NetworkScan", "NetworkConnect",
+              "NetworkDisconnect", "NetworkRadio", "BluetoothPower", "BluetoothScan",
+              "BluetoothDevice", "StatusRefresh", "StatusVolume"],
+            "the lock screen's own bar offers media, power, network, Bluetooth and volume, and \
+             `power.action` is deliberately outside the gate (see its doc comment); these go \
+             through the workers to hardware and services the session already owns",
+        ),
+        (
+            &["TrayMenuClosed", "TrayScroll"],
+            "a tray menu the lock screen does not draw, closing or scrolling; neither opens anything",
+        ),
+        (
+            &["OutputConfirm", "OutputRevert", "OutputActive"],
+            "answers the monitor countdown the lock screen is being redrawn on, or books which \
+             head is active; neither programs a mode",
+        ),
+        (
+            &["OutputHdr"],
+            "switches an output's tone mapping; the shell still draws the lock screen over it",
+        ),
+        (
+            &["OutputTestAdd", "OutputTestRemove"],
+            "adds or removes a headless test output; a test facility, and it neither takes a real \
+             head away nor acts as the user",
+        ),
+        (
+            &["ShellCommand"],
+            "asks the shell to do something in its own tree; the shell is already the trust \
+             boundary, and its page is what draws the lock screen",
+        ),
+        (
+            &["ConfigGaps", "ConfigBorder", "ConfigWallpaper", "ConfigWallpaperOptions",
+              "ConfigDarkMode", "ConfigGameMode", "ConfigCursor", "ConfigMotion", "ConfigGroup",
+              "ConfigClock", "ConfigBar", "ConfigBarBlur", "ConfigBarWidgets", "ConfigBarItems",
+              "ConfigLogo", "ConfigTutorial", "ConfigTilingMode", "ConfigLayout",
+              "ConfigLayoutExtensions", "ConfigFocusCrossesOutputs", "ConfigOsk", "ConfigTray",
+              "ConfigClipboardHistory", "ConfigIconTheme", "ConfigTheme", "ConfigRules",
+              "ConfigLayerRules", "ConfigDecorations", "ConfigWorkspaces", "ConfigOpacity",
+              "ConfigIdle", "ConfigLid", "ConfigKeyboard", "ConfigInput", "ConfigNotifications",
+              "ConfigMagnify", "ConfigSave"],
+            "changes the compositor's copy of one setting; it runs nothing and moves no keyboard, \
+             and the settings panel is what sends them",
+        ),
+    ];
+
+    /// Every `viewport_ipc::Request` variant, read off the enum's own source.
+    ///
+    /// `msg.rs` walks the serde names the same way; this one keeps the Rust
+    /// identifier, because the gate functions are written in it. The set comes
+    /// from the enum rather than a list here, so a new variant cannot be added
+    /// without the walk below seeing it.
+    fn request_variants() -> Vec<&'static str> {
+        const SOURCE: &str = include_str!("../../viewport-ipc/src/request.rs");
+        let mut names = Vec::new();
+        let mut lines = SOURCE.lines().peekable();
+        while let Some(line) = lines.next() {
+            if !line.trim().starts_with("#[serde(rename = \"") {
+                continue;
+            }
+            let follows = lines.peek().map(|line| line.trim()).unwrap_or_default();
+            if !follows.starts_with(|c: char| c.is_ascii_uppercase()) {
+                continue;
+            }
+            let ident = follows
+                .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .next()
+                .unwrap_or_default();
+            if !ident.is_empty() {
+                names.push(ident);
+            }
+        }
+        names
+    }
+
+    /// The variants the two locked gates refuse, read off their own source.
+    ///
+    /// Reading the gate instead of a copy of its list keeps this honest: a
+    /// request moved into `acts_while_locked` leaves the allow list at once,
+    /// and the walk below fails until the classification agrees.
+    fn refused_while_locked() -> Vec<&'static str> {
+        const SOURCE: &str = include_str!("apply.rs");
+        let mut names = Vec::new();
+        for opening in [
+            "fn moves_focus(request: &Request) -> bool {",
+            "fn acts_while_locked(request: &Request) -> bool {",
+        ] {
+            let start = SOURCE.find(opening).expect("a request gate");
+            let rest = &SOURCE[start..];
+            let end = rest.find("\n}\n").expect("the end of the gate");
+            names.extend(
+                rest[..end]
+                    .match_indices("Request::")
+                    .filter_map(|(at, marker)| {
+                        rest[at + marker.len()..]
+                            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                            .next()
+                    })
+                    .filter(|name| !name.is_empty()),
+            );
+        }
+        names
+    }
+
+    /// The lock gate's whole request set, with the reasons.
+    ///
+    /// `acts_while_locked` grew one variant at a time — `launcher.launch` and
+    /// `shell.overview` after an audit, `view.minimized`'s focus half by hand —
+    /// and `view.close`, `output.configure`, the tray actions and
+    /// `notification.action` were still carried out behind a lock screen.
+    ///
+    /// This walks every variant of the enum and fails on one that is neither
+    /// refused by the gate nor named in `ALLOWED_WHILE_LOCKED`, so the next
+    /// acting request someone adds cannot inherit the hole silently.
+    #[test]
+    fn every_request_is_refused_while_locked_or_allowed_on_purpose() {
+        let declared = request_variants();
+        assert!(
+            declared.len() > 100,
+            "the source walk found only {} request variants",
+            declared.len()
+        );
+        let refused = refused_while_locked();
+        let allowed: Vec<&str> = ALLOWED_WHILE_LOCKED
+            .iter()
+            .flat_map(|(names, _)| names.iter().copied())
+            .collect();
+
+        let mut unique = allowed.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), allowed.len(), "a request is allowed twice");
+
+        let mut unexplained = Vec::new();
+        for variant in &declared {
+            let is_refused = refused.iter().any(|name| name == variant);
+            let is_allowed = allowed.contains(variant);
+            assert!(
+                !(is_refused && is_allowed),
+                "{variant} is refused by the gate and allowed by the list"
+            );
+            if !is_refused && !is_allowed {
+                unexplained.push(*variant);
+            }
+        }
+        assert!(
+            unexplained.is_empty(),
+            "neither refused while locked nor allowed on purpose: {unexplained:?} — add each \
+             to acts_while_locked, or to ALLOWED_WHILE_LOCKED with why it is harmless"
+        );
+
+        for name in &allowed {
+            assert!(
+                declared.contains(name),
+                "allowed while locked but not a Request variant: {name}"
+            );
+        }
     }
 }
