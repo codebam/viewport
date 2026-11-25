@@ -414,10 +414,15 @@ pub struct BorderConfig {
     /// Square the corners of a workspace's lone window, the way `gaps.smart`
     /// drops its inner gap — sway's `smart_borders` for the same window.
     ///
-    /// Absent follows `gaps.smart` rather than meaning off, because the two
-    /// are one decision: smart gaps push that window against the edge of the
-    /// screen, and a rounded corner there is a notch of wallpaper in the
-    /// corner of the monitor. Set it explicitly to have one without the other.
+    /// Absent is off, and it is its own setting: `gaps.smart` says nothing
+    /// about it. It used to follow `gaps.smart`, on the argument that smart
+    /// gaps push that window against the edge of the screen, where a rounded
+    /// corner is a notch of wallpaper in the corner of the monitor. The
+    /// argument holds and the default did not — a radius that had been asked
+    /// for went unhonoured on every desktop with one window on it and came
+    /// back when a second one opened, which reads as a broken setting rather
+    /// than as a rule. Ask for it with `smart: true`; `docs/configuration.md`
+    /// has the long version.
     pub smart: Option<bool>,
     /// Drift the focused window's border colour slowly through dim, low-
     /// saturation hues, for an OLED panel. A bright saturated border held in
@@ -548,10 +553,11 @@ pub struct MotionSpring {
 pub struct GroupConfig {
     /// Whether a window opened from inside a group joins it.
     ///
-    /// Absent is off, which is Hyprland's default and what this has always
-    /// effectively done when the group's axis did not match the pending split:
-    /// a new window splits beside the group rather than becoming another tab.
-    /// On, it joins — the behaviour `group:auto_group = true` asks for.
+    /// Absent keeps the behaviour this has always had, which is a third
+    /// state: the new window joins when the group's axis matches the pending
+    /// split and splits beside the group otherwise. `Some(true)` always
+    /// joins — `group:auto_group = true`; `Some(false)` always splits beside,
+    /// which is Hyprland's default.
     pub auto_group: Option<bool>,
     /// Whether dragging a window onto an unlocked group makes it one of the
     /// group's windows. Hyprland's `group:drag_into_group`, whose default is

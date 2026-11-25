@@ -1101,9 +1101,9 @@ function applyBorder(border) {
     if (Number.isFinite(px)) style.setProperty('--window-border', px + 'px');
   }
   /* Smart radius, which is not a length and so is remembered rather than set
-     on a property. Absent leaves it following `gaps.smart` — see
-     `borderSmart` — and that is not the same as setting it false, which is
-     why only a value that is actually there is read. */
+     on a property. Absent is off: it is its own setting and does not follow
+     `gaps.smart` — see `borderSmart` in scrolling.js for why that default was
+     dropped — so only a value that is actually there is read. */
   if (border.smart !== null && border.smart !== undefined) {
     borderSmart = border.smart === true;
   }
