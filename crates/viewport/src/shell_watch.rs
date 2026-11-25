@@ -79,12 +79,19 @@ pub fn is_asset(name: &str) -> bool {
         .any(|known| known.eq_ignore_ascii_case(extension))
 }
 
-/// The directory a `file://` URL's page lives in, if it is one.
+/// The directory a local `file:` URL's page lives in, if it is one.
 ///
 /// `None` for `http://` and anything else with a scheme: there is nothing local
 /// to watch, and a dev server already reloads what it serves.
 pub fn directory_of(url: &str) -> Option<PathBuf> {
-    let rest = url.strip_prefix("file://")?;
+    // The shell URL policy accepts both file:///path and file:/path. Preserve
+    // the absolute root when normalising the latter to a filesystem path.
+    let rest = if let Some(rest) = url.strip_prefix("file://") {
+        rest.to_owned()
+    } else {
+        let rest = url.strip_prefix("file:/")?;
+        format!("/{rest}")
+    };
     // A query or fragment is part of the URL and not part of the path. `--url
     // …/index.html?debug=1` is a thing people type, and a path ending in `?…`
     // exists nowhere.
@@ -595,6 +602,11 @@ mod tests {
         std::fs::write(&file, "<!doctype html>").expect("a file to point at");
 
         let url = format!("file://{}", file.display());
+        assert_eq!(directory_of(&url).as_deref(), Some(dir.as_path()));
+
+        // `file:/path` is the other local spelling accepted by the shell URL
+        // policy, and it names the same file.
+        let url = format!("file:{}", file.display());
         assert_eq!(directory_of(&url).as_deref(), Some(dir.as_path()));
 
         // A URL naming the directory itself is already the answer.
