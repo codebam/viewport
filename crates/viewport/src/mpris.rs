@@ -455,7 +455,15 @@ impl Worker {
             };
             ranked.push((rank, name));
         }
-        ranked.into_iter().min().map(|(_, name)| name)
+        Self::preferred_player(ranked)
+    }
+
+    /// The best status rank, keeping the bus's list order when ranks tie.
+    fn preferred_player(ranked: Vec<(u8, String)>) -> Option<String> {
+        ranked
+            .into_iter()
+            .min_by_key(|(rank, _)| *rank)
+            .map(|(_, name)| name)
     }
 
     fn status(&mut self, name: &str) -> String {
@@ -791,6 +799,28 @@ mod tests {
         MPRIS_OWNERS_PENDING.store(false, Ordering::Release);
         note_owner_changed("org.mpris.MediaPlayer2.c".to_owned(), &commands);
         assert!(matches!(inbox.try_recv(), Ok(Command::OwnerChanged)));
+    }
+
+    /// Two players with the same playback status keep the order the bus listed
+    /// them in. Tuple ordering would compare their names as a tiebreaker and
+    /// silently switch the widget to the alphabetically first player instead.
+    #[test]
+    fn equal_status_keeps_the_first_player_in_bus_order() {
+        let ranked = vec![
+            (0, "z-player".to_owned()),
+            (0, "a-player".to_owned()),
+            (1, "paused-player".to_owned()),
+        ];
+        assert_eq!(
+            Worker::preferred_player(ranked).as_deref(),
+            Some("z-player")
+        );
+        assert_eq!(Worker::preferred_player(Vec::new()), None);
+        let reversed = vec![(1, "paused".to_owned()), (0, "playing".to_owned())];
+        assert_eq!(
+            Worker::preferred_player(reversed).as_deref(),
+            Some("playing")
+        );
     }
 
     #[test]
