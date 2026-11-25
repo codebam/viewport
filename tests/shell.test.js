@@ -776,6 +776,27 @@ if (sessionTest) {
     globalThis.__shell.workspacePolicyForTest.layout(5) === 'matrix'
       && globalThis.__shell.workspacePolicyForTest.tiling(5) === 'grid');
 
+  /* A monitor drops and reconnects — every DPMS wake on a DisplayPort
+     connector, and the docs say so — so the same output name comes back with
+     no record behind it. The workspace it was showing must come back with it,
+     or the desk resets to the starting workspace and the next save writes
+     that reset into the file, making the loss permanent. Rust announces the
+     layout alone either way; there is no session message to lean on. */
+  emit({ type: 'output.layout', outputs: [
+    { name: 'DP-4', x: 0, y: 0, width: 1920, height: 1080,
+      usable_x: 0, usable_y: 30, usable_width: 1920, usable_height: 1050,
+      scale: 1, transform: 'normal', modes: [], enabled: true },
+  ] });
+  emit({ type: 'output.layout', outputs: [
+    { name: 'DP-1', x: 0, y: 0, width: 1920, height: 1080,
+      usable_x: 0, usable_y: 30, usable_width: 1920, usable_height: 1050,
+      scale: 1, transform: 'normal', modes: [], enabled: true },
+  ] });
+  check('a monitor that drops and reconnects comes back on its own workspace',
+    globalThis.__shell.outputs.get('DP-1')?.workspace === 5);
+  check('rather than the starting workspace a new monitor is given',
+    globalThis.__shell.outputs.get('DP-1')?.workspace !== 1);
+
   /* Applications come back in an order that has nothing to do with the
      layout — the browser last, as it usually is. */
   const open = (id, app, extra = {}) => emit({ type: 'view.added', id, title: app,
@@ -8697,6 +8718,14 @@ if (mode === 'scrolling') {
     title: app, app_id: app, output: 'DP-1', min_width: 0, min_height: 0,
     floating: false, width: 800, height: 600, ...extra });
   const workspaceOf = globalThis.__shell.workspaceOfForTest;
+
+  /* These are about what the matchers do, not about which workspace the desk
+     was left on by the blocks above — and an unmatched window goes wherever
+     that is. Start the block on the workspace the harness began on. */
+  const desk = globalThis.__shell.outputs.get('DP-1');
+  if (desk && desk.workspace !== 1) {
+    emit({ type: 'shell.command', command: 'workspace.switch', args: ['1'] });
+  }
 
   emit({ type: 'config', layout: mode, rules: [
     { match: { class: 'xclass' }, workspace: 7 },

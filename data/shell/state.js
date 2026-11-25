@@ -137,6 +137,13 @@ const OUTPUT_WORKSPACE = {
  * --------------------------------------------------------------------- */
 
 const outputs = new Map(); // name -> desktop elements + workspace + barHidden
+/* Which workspace each output name was last showing, across the output record
+ * rather than on it. A DisplayPort connector drops and reconnects on every
+ * wake (docs/ipc.md), so the record is deleted and made again while the name —
+ * and the desk behind it — is the same monitor. Without this a reconnected
+ * screen starts on the configured workspace and the arrangement it was showing
+ * is hosted by nobody; the next save then writes that reset into the file. */
+const rememberedOutputWorkspaces = new Map(); // name -> workspace
 const physicalOutputs = new Map(); // name -> physical head info, including mirrors/off
 /* The film currently set as the wallpaper, or null when there is not one.
  * The media element is per output, but the setting is one value, so it lives

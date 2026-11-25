@@ -342,7 +342,13 @@ function restoreSessionImpl(text) {
     if (!state || typeof state !== 'object') continue;
     const output = outputs.get(name);
     const workspace = ensureWorkspace(Number(state.workspace));
-    if (output && workspace !== null) {
+    if (workspace === null) continue;
+    /* Remembered even when the monitor is not attached right now — the file
+       is read on a page that may have been reloaded while a DisplayPort
+       screen was between drops, and the entry is what puts it back on its
+       desk when the compositor announces it again. */
+    rememberedOutputWorkspaces.set(name, workspace);
+    if (output) {
       output.workspace = workspace;
       const previous = ensureWorkspace(Number(state.previous));
       if (previous !== null) output.previous = previous;
