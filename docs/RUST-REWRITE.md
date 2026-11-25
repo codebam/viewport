@@ -280,41 +280,51 @@ Still not implemented: `wlr-export-dmabuf` and `ext-transient-seat`
 ## Why smithay is a fork
 
 `crates/*/Cargo.toml` point at github.com/codebam/smithay rather than upstream,
-for three patches: `DrmCompositor::set_allow_tearing`, a hook that lets the
-compositor see keys from a virtual keyboard, and one line of errno in the
-drm-lease pre-flight.
+for five patches. The list below says what each is for; the workspace
+`Cargo.toml` carries the same list beside the pin, plus the history of the
+patches that dropped out of rebases when upstream absorbed them — the
+virtual-keyboard hook and the drm-lease errno line — and the tags of every
+revision before a rebase. That file is the authoritative account, because it
+travels with the revision it describes.
 
-The second is `VirtualKeyboardKeyFilter`, on branch `virtual-keyboard-filter`.
-Keys from `zwp_virtual_keyboard_v1` went straight to the focused client, so
-nothing the compositor does with a key applied to them: `wtype hello` typed and
-`wtype -M logo -k Return` did nothing at all, and the screen-share chooser could
-only be answered by hand. wlroots delivers the same events as a keyboard on the
-seat, which is the behaviour anything driving a session by script expects. The
-hook offers each key to the compositor first, with the keysym resolved against
-the virtual keyboard's own keymap — the client picked the keycode out of a
-keymap it uploaded, and against the seat's it would mean another key — and both
-the modified symbol and the one at level 0, because a chord is written
-"Mod4+Shift+q" and the key part of it is `q`. The default keeps nothing, so a
-compositor that does not implement it sees no change. Also upstreamable.
-
-The third is smaller: `drm_lease`'s pre-flight opens the primary node and drops
-master, tolerating EINVAL as "this fd never had master". On kernel 7.1 with
-amdgpu that case answers EACCES instead — permission checked before state — so
-no lease global was created at all here. Measured by calling DROP_MASTER on a
-fresh fd directly. A fd that really is master still drops it, so tolerating
-EACCES hides nothing.
-
-Tearing is an asynchronous page flip — the frame lands as soon as the hardware
-takes it rather than at the next vblank — and the flag for it lives inside the
-atomic commit smithay builds. Nothing upstream reaches it: `FrameFlags` decides
-which planes may scan out, and `queue_frame` takes no commit flags. Without the
-patch, tearing-control-v1 is a protocol the compositor can advertise and never
-honour, which is worse than not advertising it.
-
-The patch gates on the driver capability and returns whether the request will
-be honoured, because a commit carrying a flag the driver does not know is
-refused outright — that would stop the output rather than tear it. It is
-otherwise upstreamable, and the fork should go away when it lands.
+- `DrmCompositor::set_allow_tearing`. Tearing is an asynchronous page flip —
+  the frame lands as soon as the hardware takes it rather than at the next
+  vblank — and the flag for it lives inside the atomic commit smithay builds.
+  Nothing upstream reaches it: `FrameFlags` decides which planes may scan
+  out, and `queue_frame` takes no commit flags. Without the patch,
+  tearing-control-v1 is a protocol the compositor can advertise and never
+  honour, which is worse than not advertising it. The patch gates on the
+  driver capability and returns whether the request will be honoured, because
+  a commit carrying a flag the driver does not know is refused outright — that
+  would stop the output rather than tear it. Upstreamable, and the fork
+  should go away when it lands.
+- `drm/renderer`: carry a client's acquire point instead of assuming it
+  waited. A blocker is a file descriptor in the event loop and a wakeup per
+  commit per surface; a client painting faster than the display paid for
+  thousands of those a second here. Both places that touch the buffer wait
+  on the point themselves instead.
+- xwayland: read `_NET_WM_STATE` back when a client writes it itself. Wine
+  sets fullscreen by writing the property, not by sending the EWMH
+  ClientMessage, and upstream only ever hears the message; the fork re-reads
+  the property and offers the change to `property_notify`, but only when the
+  value actually differs, so the compositor's own writes never arrive as if a
+  client had asked.
+- xwayland: set `_NET_WM_FULLSCREEN_MONITORS` back to the client's value.
+  Wine sends the client message and then expects EWMH's echo; without one its
+  fullscreen handshake never completed and the request reverted about two
+  seconds later. The compositor echoes the value; the layout stays its own.
+- drm: make the atomic exit restore a commit the kernel can accept. The old
+  restore replayed the whole pre-session snapshot in one `ALLOW_MODESET`
+  commit — a connector's DPMS, immutable properties, framebuffer objects —
+  and was answered `EINVAL` on every exit, on every atomic driver, so the
+  getty was lit again only by the console's next repaint. The fork now
+  captures only what the atomic uAPI can accept back, keeps what can go
+  stale (the mode, the colour LUTs, HDR metadata) as blobs of its own, and
+  leaves what cannot be restored — a CRTC whose connectors went away, a
+  plane whose framebuffer died with a previous compositor's fd — out of the
+  commit rather than failing it for the outputs that can come back. The
+  gamma residue this compositor had is covered by that: the night-light LUT
+  is part of the state the restore puts back. Upstreamable.
 
 ## Order of work
 
@@ -676,32 +686,60 @@ default is removed rather than replaced.
 
 ## Known rough edges on real hardware
 
-Two things the log says on every run. Neither stops it working, and one of them
-was described here for a while in a way that made it sound like flakiness. It is
-not.
+One thing the log says on every run. It does not stop it working, and it was
+described here for a while in a way that made it sound like flakiness. It is
+not. A second one — the exit restore — was fixed by the fork's fifth patch;
+its story stays because the shape of the failure is worth knowing.
 
-- `Failed to restore previous state. Error: Invalid argument` on exit. Smithay
-  restores the pre-compositor DRM state when the device drops, and that commit
-  is rejected — by construction, on every atomic driver, every time. `Drop for
-  AtomicDrmDevice` replays *every* property it captured at creation in one
-  `ALLOW_MODESET` commit, and the snapshot (its `add_props`) filters nothing. So
-  the request carries a connector's DPMS property, which the atomic API refuses
-  by design ("legacy ... can only be set via legacy uAPI"); immutable properties
-  such as a connector's EDID and a plane's `type`, which the property validator
-  rejects; and the framebuffer objects themselves, which are not atomic targets
-  at all. `EINVAL` is that refusal — a lost fd or master would answer `EBADF` or
-  `EPERM`, and master is in fact still held here. The restore has never once
-  succeeded on this machine.
+- The exit restore used to fail on every run — `Failed to restore previous
+  state. Error: Invalid argument` — and that was structural, not flaky.
+  `Drop for AtomicDrmDevice` replayed *every* property it captured at
+  creation in one `ALLOW_MODESET` commit, and the snapshot filtered
+  nothing, so the request carried a connector's DPMS, which the atomic API
+  refuses by design ("legacy ... can only be set via legacy uAPI");
+  immutable properties such as a connector's EDID and a plane's `type`,
+  which the property validator rejects; and the framebuffer objects
+  themselves, which are not atomic targets at all. `EINVAL` was that
+  refusal — a lost fd or master would answer `EBADF` or `EPERM`, and
+  master was in fact still held. The restore never once succeeded on this
+  machine.
 
-  The screen is nonetheless not left in our mode: each surface's `clear_state`
-  on the way out is a real commit that resets the planes, disconnects the
-  connectors and disables the CRTCs, and it runs before this. What fails is the
-  *positive* half — the promise that the getty's framebuffer is lit again at
-  exit. It comes back when the console next repaints, which is why a session
-  "comes back regardless". The residue is gamma: night-light ramps go through
-  the legacy gamma ioctl, `clear_state` does not touch them, and replaying the
-  pre-session LUT is exactly what this dead commit would have done — so a tint
-  can outlive the compositor until the console reprograms its colour map.
+  The screen was nonetheless never left in our mode: each surface's
+  `clear_state` on the way out is a real commit that resets the planes,
+  disconnects the connectors and disables the CRTCs, and it runs before
+  the device's drop. What the dead commit failed to do was the *positive*
+  half — lighting the getty's framebuffer again — which the console's
+  next repaint supplied, and why a session "came back regardless".
+
+  The fork now captures only what the atomic uAPI can accept back, keeps
+  what can go stale as blobs of its own (the mode, re-read through the
+  legacy CRTC ioctl; the gamma LUT and HDR metadata, copied at capture —
+  the pre-session ids can be freed by our own modesets), and leaves what
+  cannot be restored — a CRTC whose connectors went away while we ran, a
+  plane whose framebuffer died with a previous compositor's fd — out of
+  the commit rather than failing it for the outputs that can come back.
+  So the getty's framebuffer is lit by us at exit, and the residue this
+  compositor had is gone with it: the night-light LUT a session leaves
+  behind (the legacy gamma ioctl becomes the CRTC's GAMMA_LUT in the
+  kernel, and `clear_state` never touched it) is part of the state the
+  restore puts back.
+
+  What it still cannot do: DPMS is set by neither half — the atomic API
+  cannot set it, the restore sets `ACTIVE` instead, and the console
+  asserts its own blanking state the next time it touches the connector.
+  And a driver whose legacy gamma is not backed by a LUT property would
+  keep its ramp; none of the drivers this builds on is in that class. The
+  exit log line to watch is the absence of the EINVAL — and the getty
+  being visible without waiting for a repaint, which is what the line
+  never proved on its own.
+
+  **It has not had its hardware run yet.** The gate cannot start a DRM
+  session, so what stands behind the paragraph above is a code review and
+  four unit tests over a synthetic device — the ioctl half is untested.
+  Read it as what the code commits, not as what a desk showed: the check
+  is the EINVAL absent from the exit log, the getty back without a
+  repaint, and a night-light tint that does not survive the quit.
+  `docs/stability.md` carries it with the paths still waiting on a panel.
 
 - `Failed to destroy old mode property blob: No such file or directory`, once
   per output during a modeset. Harmless *in the shape we see it*, for a reason
