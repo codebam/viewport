@@ -86,6 +86,39 @@ check() {
 	fi
 }
 
+# Whether a check that needs a package this machine may not have is allowed to
+# skip. It is not, in CI: the CI job runs under `nix develop .#rust`, whose
+# package list (flake.nix) has no `foot` — that lives in `workstationShell` —
+# so a check gated on `command -v foot` reported a quiet SKIP on every
+# automated run, and a regression in the thing it checks was green there.
+# `CI` therefore turns such a skip into a failure; `VIEWPORT_STRICT_TESTS=1`
+# does the same explicitly, which is what scripts/integration.sh sets from CI
+# so the policy has one owner, and `VIEWPORT_STRICT_TESTS=0` forces a skip for
+# a CI-shaped run that genuinely cannot have the dependency.
+strict_tests() {
+	case "${VIEWPORT_STRICT_TESTS:-}" in
+	""|0|false) ;;
+	*) return 0 ;;
+	esac
+	case "${CI:-}" in
+	""|0|false) return 1 ;;
+	*) return 0 ;;
+	esac
+}
+
+# For a check that cannot run without a dependency. A developer machine keeps
+# the old behaviour — SKIP and carry on — while a strict run counts a failure
+# and still runs the rest of the suite, so the run says everything it can
+# rather than stopping at the first missing package.
+skip_or_fail() {
+	if strict_tests; then
+		echo "FAIL: $1 — a dependency required under CI; a skip here hides this check (set VIEWPORT_STRICT_TESTS=0 to skip deliberately)" >&2
+		failures=$((failures + 1))
+	else
+		echo "SKIP: $1"
+	fi
+}
+
 # Off whatever session is already running: this starts its own compositor and
 # must not join, or be joined to, the one the developer is sitting in.
 unset WAYLAND_DISPLAY
@@ -484,7 +517,9 @@ check "and a fresh view.query agrees" yes \
 # A client configured below its minimum is entitled to ignore the configure,
 # so the compositor raises it to the minimum and tells the shell once. That
 # needs a client that advertises one; foot does (6x13). Without foot there is
-# nothing to clamp and the check is skipped rather than failed.
+# nothing to clamp: on a developer machine that is a SKIP, but under CI it is
+# a failure, because CI is the only place this check is otherwise unasserted
+# and `nix develop .#rust` never has foot (see `strict_tests` above).
 if command -v foot >/dev/null 2>&1; then
 	foot -e sleep 30 >"$WORK/foot.log" 2>&1 &
 	FOOT_PID=$!
@@ -523,10 +558,10 @@ if command -v foot >/dev/null 2>&1; then
 		kill "$FOOT_PID" 2>/dev/null
 		FOOT_PID=
 	else
-		echo "SKIP: foot never mapped, so the view.configured clamp is unchecked"
+		skip_or_fail "foot never mapped, so the view.configured clamp is unchecked"
 	fi
 else
-	echo "SKIP: no foot for the view.configured clamp check"
+	skip_or_fail "no foot for the view.configured clamp check"
 fi
 
 # --- input.key / input.scroll (synthetic input on the focused window) -------
