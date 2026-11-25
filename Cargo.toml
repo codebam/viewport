@@ -79,8 +79,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Features stay per-crate — the renderer needs three, the compositor needs a
 # dozen — and Cargo unions them.
 [workspace.dependencies.smithay]
-# A fork: codebam/smithay, branch explicit-sync-scanout, which is upstream
-# master with four patches on top. Rebased onto master rather than left to
+# A fork: codebam/smithay, branch atomic-exit-restore, which is upstream
+# master with five patches on top. Rebased onto master rather than left to
 # drift, so the delta stays reviewable and the day one of these lands upstream
 # it drops out of the rebase instead of having to be untangled.
 #
@@ -100,6 +100,18 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 #   its fullscreen handshake never completed and the request reverted about
 #   two seconds later. The compositor echoes the value; the layout stays its
 #   own.
+# - drm: make the atomic exit restore a commit the kernel can accept. The old
+#   restore replayed every captured property in one ALLOW_MODESET commit —
+#   DPMS, immutable properties, framebuffer objects — and was answered with
+#   EINVAL on every exit, so the getty was never lit again by us. The new one
+#   captures only what the atomic uAPI can accept back, keeps the mode and
+#   the colour blobs as copies of its own, and leaves what cannot be restored
+#   (a CRTC whose connectors are gone, a plane whose framebuffer died) out of
+#   the commit instead of failing it. The gamma LUT a night light leaves
+#   behind is part of the restore now.
+#
+# The last patch was added on top of a1193cb8 rather than through a rebase —
+# same base, so the rebase history below is untouched.
 #
 # It was five before that. The drm_lease patch — treat EACCES from DROP_MASTER
 # like EINVAL, without which the lease global was never created on 7.1 with
@@ -140,7 +152,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # three patches — the new `_NET_WM_STATE` read-back included — applied with
 # `git range-diff` showing `=` for each.
 git = "https://github.com/codebam/smithay.git"
-rev = "a1193cb87c029c0ecdf832a3959023e868881cc9"
+rev = "8af68eccf3e0ed87fff9b7d4a82dfb8ecf120a55"
 default-features = false
 
 # The other half of moving the renderer out of this workspace.
@@ -165,7 +177,7 @@ default-features = false
 # is what makes this a redirect and not a downgrade — rebase the fork before
 # bumping either pin, not after.
 [patch."https://github.com/Smithay/smithay"]
-smithay = { git = "https://github.com/codebam/smithay.git", rev = "a1193cb87c029c0ecdf832a3959023e868881cc9" }
+smithay = { git = "https://github.com/codebam/smithay.git", rev = "8af68eccf3e0ed87fff9b7d4a82dfb8ecf120a55" }
 
 [profile.release]
 debug = 1

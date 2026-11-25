@@ -111,6 +111,26 @@ to summarise rather than to duplicate.
   rectangles inside the same accepted layout monitors are bounded to, and
   a rectangle outside it is dropped the way a zero-sized one always was.
 
+- The exit restore runs. The smithay pin is bumped to the fork revision that
+  makes `Drop for AtomicDrmDevice` commit something the kernel can accept:
+  the old restore replayed every captured property in one `ALLOW_MODESET`
+  commit — a connector's DPMS, which the atomic API refuses by design,
+  immutable properties, the framebuffer objects themselves — and was
+  answered `EINVAL` on every exit, so the getty was lit again only by the
+  console's next repaint. The fork now captures only what the atomic uAPI
+  can accept back, keeps what can go stale (the mode, the colour LUTs, HDR
+  metadata) as blobs of its own rather than as pre-session ids our own
+  modesets can invalidate, and leaves what cannot be restored — a CRTC
+  whose connectors went away while we ran, a plane whose framebuffer died
+  with a previous compositor's fd — out of the commit rather than failing
+  it for the outputs that can come back. The gamma residue is covered by
+  the same change: the night-light LUT a session leaves behind (the legacy
+  gamma ioctl becomes the CRTC's GAMMA_LUT in the kernel, and nothing was
+  putting the pre-session one back) is part of the state the restore puts
+  back, where before a tint outlived the compositor until the console
+  reprogrammed its colour map. `docs/RUST-REWRITE.md` § "Known rough edges"
+  keeps the anatomy of the old failure.
+
 - Unplugging a monitor runs `destroy` for the custom widgets mounted on its
   bar. The removal loop already stopped the film, cleared the wallpaper
   extension and closed the calendar on the way out — and then removed the
