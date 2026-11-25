@@ -1,0 +1,230 @@
+- generic [ref=f1e2]:
+  - link "Skip to main content" [ref=f1e3] [cursor=pointer]:
+    - /url: "#main-content"
+  - banner [ref=f1e4]:
+    - generic [ref=f1e6]:
+      - link "Meta" [ref=f1e7] [cursor=pointer]:
+        - /url: /
+      - navigation "Primary" [ref=f1e13]:
+        - list [ref=f1e14]:
+          - listitem [ref=f1e15]:
+            - button "AI Research" [ref=f1e16] [cursor=pointer]
+          - listitem [ref=f1e20]:
+            - link "AI Developers (opens in a new tab)" [ref=f1e21] [cursor=pointer]:
+              - /url: https://developer.meta.com/ai/?utm_source=ai_meta_site&utm_medium=web&utm_campaign=nav_AI-developers_07242026&utm_content=nav_AI-developers
+              - text: AI Developers
+      - button "Appearance, System" [ref=f1e22] [cursor=pointer]
+      - link "Try Muse (opens in a new tab)" [ref=f1e27] [cursor=pointer]:
+        - /url: https://applink.muse.ai/?pt=10684&pid=ai_meta_site&utm_source=ai_meta_site&utm_medium=web&utm_campaign=nav_try-muse_09082026&utm_content=nav_try-muse_09082026&ct=nav_try-muse_09082026&referrer=utm_source%3Dai_meta_site%26utm_medium%3Dweb%26utm_campaign%3Dnav_try-muse_09082026%26utm_content%3Dnav_try-muse_09082026
+        - text: Try Muse
+  - generic [ref=f1e28]:
+    - main [ref=f1e29]:
+      - generic [ref=f1e31]:
+        - generic [ref=f1e32]:
+          - heading "Latest from Meta AI Research" [level=1] [ref=f1e34]
+          - article [ref=f1e36]:
+            - link [ref=f1e37] [cursor=pointer]:
+              - /url: /blog/muse-wonder
+              - generic [ref=f1e38]:
+                - figure [ref=f1e39]
+                - generic: Featured
+              - generic [ref=f1e43]:
+                - time [ref=f1e45]: October 12, 2026
+                - 'heading "Muse Wonder: A Frontier Model For Personal & Professional AI Agents" [level=2] [ref=f1e46]'
+                - paragraph [ref=f1e47]: Muse Wonder is Meta's frontier AI model that keeps track of what matters to you with Active Memory & Active Focus to work towards your goals at work & life.
+        - region [ref=f1e48]:
+          - heading "Latest" [level=2] [ref=f1e49]
+          - generic [ref=f1e51]:
+            - article [ref=f1e52]:
+              - link [ref=f1e53] [cursor=pointer]:
+                - /url: /blog/muse-ember
+                - figure [ref=f1e54]
+                - generic [ref=f1e58]:
+                  - 'heading "Introducing Our Smallest, Most Efficient Model: Muse Ember" [level=2] [ref=f1e59]'
+                  - time [ref=f1e61]: November 9, 2026
+            - article [ref=f1e62]:
+              - link [ref=f1e63] [cursor=pointer]:
+                - /url: /blog/specialized-models-for-muse-and-metaai
+                - figure [ref=f1e64]:
+                  - img "Blue curved paths illustrating specialized models for Muse." [ref=f1e68]
+                - generic [ref=f1e69]:
+                  - heading "Bringing Specialized Models to Muse and Meta AI" [level=2] [ref=f1e70]
+                  - time [ref=f1e72]: November 6, 2026
+            - article [ref=f1e73]:
+              - link [ref=f1e74] [cursor=pointer]:
+                - /url: /blog/supporting-medical-scientific-research
+                - figure [ref=f1e75]:
+                  - img "Blue circular paths, arrows, and connected points in a symmetrical scientific illustration." [ref=f1e79]
+                - generic [ref=f1e80]:
+                  - heading "How American Universities Are Using AI Models From Meta to Accelerate Medical and Scientific Breakthroughs" [level=2] [ref=f1e81]
+                  - time [ref=f1e83]: October 28, 2026
+            - article [ref=f1e84]:
+              - link [ref=f1e85] [cursor=pointer]:
+                - /url: /blog/muse-spark-open
+                - figure [ref=f1e86]
+                - generic [ref=f1e90]:
+                  - heading "Introducing Muse Spark Open, The Most Capable US Open‑Weight Model to Date" [level=2] [ref=f1e91]
+                  - time [ref=f1e93]: October 15, 2026
+            - article [ref=f1e94]:
+              - link [ref=f1e95] [cursor=pointer]:
+                - /url: /blog/accelerating-scientific-research-in-health-data-science-with-muse-models
+                - figure [ref=f1e96]
+                - generic [ref=f1e100]:
+                  - heading "Accelerating Scientific Research in Health Data Science With Muse Models" [level=2] [ref=f1e101]
+                  - time [ref=f1e103]: October 14, 2026
+            - article [ref=f1e104]:
+              - link [ref=f1e105] [cursor=pointer]:
+                - /url: /blog/developing-capable-models-responsibly
+                - figure [ref=f1e106]
+                - generic [ref=f1e110]:
+                  - heading "Developing Capable Models Responsibly" [level=2] [ref=f1e111]
+                  - time [ref=f1e113]: October 2, 2026
+            - article [ref=f1e114]:
+              - link [ref=f1e115] [cursor=pointer]:
+                - /url: /blog/solving-open-research-problems-together
+                - figure [ref=f1e116]
+                - generic [ref=f1e120]:
+                  - heading "Solving Open Research Problems Together" [level=2] [ref=f1e121]
+                  - time [ref=f1e123]: October 2, 2026
+            - article [ref=f1e124]:
+              - link [ref=f1e125] [cursor=pointer]:
+                - /url: /blog/bringing-your-muse-to-life
+                - figure [ref=f1e126]
+                - generic [ref=f1e130]:
+                  - heading "Bringing Your Muse to Life" [level=2] [ref=f1e131]
+                  - time [ref=f1e133]: September 23, 2026
+            - article [ref=f1e134]:
+              - link [ref=f1e135] [cursor=pointer]:
+                - /url: https://muse.ai/blog/security-and-safety-for-ai-agents-our-approach-with-muse
+                - figure [ref=f1e136]
+                - generic [ref=f1e140]:
+                  - heading "How We Built Safety Into Muse" [level=2] [ref=f1e141]
+                  - time [ref=f1e143]: September 8, 2026
+            - article [ref=f1e144]:
+              - link [ref=f1e145] [cursor=pointer]:
+                - /url: /blog/introducing-muse-spark-1-3
+                - figure [ref=f1e146]
+                - generic [ref=f1e150]:
+                  - heading "Introducing Muse Spark 1.3" [level=2] [ref=f1e151]
+                  - time [ref=f1e153]: September 2, 2026
+            - article [ref=f1e154]:
+              - link [ref=f1e155] [cursor=pointer]:
+                - /url: /blog/introducing-muse-voice-transcribe
+                - figure [ref=f1e156]
+                - generic [ref=f1e160]:
+                  - heading "Introducing Muse Voice Transcribe" [level=2] [ref=f1e161]
+                  - time [ref=f1e163]: September 1, 2026
+            - article [ref=f1e164]:
+              - link [ref=f1e165] [cursor=pointer]:
+                - /url: /blog/multimodal-intelligence-of-muse-spark-1-2
+                - figure [ref=f1e166]
+                - generic [ref=f1e170]:
+                  - heading "The Multimodal Intelligence of Muse Spark 1.2" [level=2] [ref=f1e171]
+                  - time [ref=f1e173]: August 20, 2026
+            - article [ref=f1e174]:
+              - link [ref=f1e175] [cursor=pointer]:
+                - /url: /blog/addressing-third-party-testing-misconfiguration-muse-spark-1-1
+                - figure [ref=f1e176]
+                - generic [ref=f1e180]:
+                  - heading "Addressing an issue involving a third-party cyber evaluation of Muse Spark 1.1" [level=2] [ref=f1e181]
+                  - time [ref=f1e183]: August 14, 2026
+            - article [ref=f1e184]:
+              - link [ref=f1e185] [cursor=pointer]:
+                - /url: /blog/introducing-muse-glimmer-open-agentic-model
+                - figure [ref=f1e186]
+                - generic [ref=f1e190]:
+                  - 'heading "Introducing Muse Glimmer: An Open Agentic Model That Runs on Your Device" [level=2] [ref=f1e191]'
+                  - time [ref=f1e193]: August 10, 2026
+            - article [ref=f1e194]:
+              - link [ref=f1e195] [cursor=pointer]:
+                - /url: /blog/introducing-muse-code-and-muse-spark-1-2
+                - figure [ref=f1e196]
+                - generic [ref=f1e200]:
+                  - heading "Introducing Muse Code and Muse Spark 1.2" [level=2] [ref=f1e201]
+                  - time [ref=f1e203]: August 5, 2026
+            - article [ref=f1e204]:
+              - link [ref=f1e205] [cursor=pointer]:
+                - /url: /blog/introducing-muse-spark-meta-model-api
+                - figure [ref=f1e206]
+                - generic [ref=f1e210]:
+                  - heading "Introducing Muse Spark 1.1" [level=2] [ref=f1e211]
+                  - time [ref=f1e213]: July 9, 2026
+            - article [ref=f1e214]:
+              - link [ref=f1e215] [cursor=pointer]:
+                - /url: https://ai.meta.com/blog/introducing-muse-image-muse-video-msl/
+                - figure [ref=f1e216]
+                - generic [ref=f1e220]:
+                  - heading "Introducing Muse Image and Muse Video" [level=2] [ref=f1e221]
+                  - time [ref=f1e223]: July 7, 2026
+            - article [ref=f1e224]:
+              - link [ref=f1e225] [cursor=pointer]:
+                - /url: https://ai.meta.com/blog/introducing-muse-spark-msl/
+                - figure [ref=f1e226]
+                - generic [ref=f1e230]:
+                  - 'heading "Introducing Muse Spark: Scaling Towards Personal Superintelligence" [level=2] [ref=f1e231]'
+                  - time [ref=f1e233]: April 8, 2026
+    - contentinfo [ref=f1e234]:
+      - generic [ref=f1e236]:
+        - generic [ref=f1e237]:
+          - navigation [ref=f1e238]:
+            - heading "Meta AI" [level=2] [ref=f1e239]
+            - list [ref=f1e240]:
+              - listitem [ref=f1e241]:
+                - link "Assistant" [ref=f1e242] [cursor=pointer]:
+                  - /url: https://ai.meta.com/meta-ai/assistant/
+              - listitem [ref=f1e243]:
+                - link "Media Generation" [ref=f1e244] [cursor=pointer]:
+                  - /url: https://ai.meta.com/meta-ai/media-generation/
+          - navigation [ref=f1e245]:
+            - heading "Developers" [level=2] [ref=f1e246]
+            - list [ref=f1e247]:
+              - listitem [ref=f1e248]:
+                - link "Meta Model API" [ref=f1e249] [cursor=pointer]:
+                  - /url: https://developer.meta.com/ai/
+              - listitem [ref=f1e250]:
+                - link "Muse Code" [ref=f1e251] [cursor=pointer]:
+                  - /url: https://developer.meta.com/ai/products/muse-code
+          - navigation [ref=f1e252]:
+            - heading "Models" [level=2] [ref=f1e253]
+            - list [ref=f1e254]:
+              - listitem [ref=f1e255]:
+                - link "Muse Spark" [ref=f1e256] [cursor=pointer]:
+                  - /url: /blog/introducing-muse-spark-msl
+              - listitem [ref=f1e257]:
+                - link "Muse Spark 1.1" [ref=f1e258] [cursor=pointer]:
+                  - /url: /blog/introducing-muse-spark-meta-model-api
+              - listitem [ref=f1e259]:
+                - link "Muse Spark 1.2" [ref=f1e260] [cursor=pointer]:
+                  - /url: /blog/introducing-muse-code-and-muse-spark-1-2
+              - listitem [ref=f1e261]:
+                - link "Muse Image" [ref=f1e262] [cursor=pointer]:
+                  - /url: /blog/introducing-next-generation-unified-media-generation-model
+        - list [ref=f1e263]:
+          - listitem [ref=f1e264]:
+            - link "Facebook" [ref=f1e265] [cursor=pointer]:
+              - /url: https://www.facebook.com/AIatMeta/
+          - listitem [ref=f1e270]:
+            - link "Threads" [ref=f1e271] [cursor=pointer]:
+              - /url: https://www.threads.com/@aiatmeta
+          - listitem [ref=f1e275]:
+            - link "X" [ref=f1e276] [cursor=pointer]:
+              - /url: https://x.com/aiatmeta
+          - listitem [ref=f1e280]:
+            - link "YouTube" [ref=f1e281] [cursor=pointer]:
+              - /url: https://www.youtube.com/@aiatmeta
+          - listitem [ref=f1e285]:
+            - link "GitHub" [ref=f1e286] [cursor=pointer]:
+              - /url: https://github.com/facebookresearch/
+        - navigation [ref=f1e292]:
+          - heading "Legal" [level=2] [ref=f1e293]
+          - list [ref=f1e294]:
+            - listitem [ref=f1e295]:
+              - link "Privacy Policy" [ref=f1e296] [cursor=pointer]:
+                - /url: https://www.facebook.com/privacy/policy/?entry_point=data_policy_redirect&entry=0
+            - listitem [ref=f1e297]:
+              - link "Terms" [ref=f1e298] [cursor=pointer]:
+                - /url: https://www.facebook.com/policies/
+            - listitem [ref=f1e299]:
+              - link "Cookies" [ref=f1e300] [cursor=pointer]:
+                - /url: https://www.facebook.com/privacy/policies/cookies/?entry_point=cookie_policy_redirect&entry=0
+        - paragraph [ref=f1e301]: Meta © 2026

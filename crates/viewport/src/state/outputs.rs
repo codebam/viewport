@@ -1181,28 +1181,47 @@ mod output_mode_tests {
     /// gamma ramp, and the `icc` key's own contract says it applies "whether
     /// the pipeline is on or off" (`docs/configuration.md`: "its calibration
     /// ramp still is, because that is a KMS gamma ramp rather than part of
-    /// the pipeline"). The gate that skips the transform when colour
-    /// management is off must therefore sit *below* the vcgt read — the
-    /// order this asserts, because neither a profile load nor a
-    /// `ViewportState` can be built in a unit test.
+    /// the pipeline"). The contract is read *and stored* above the gate that
+    /// skips the transform when colour management is off: reading the tag and
+    /// keeping the ramp only on the pipeline's side of the gate would leave a
+    /// profile loaded with the pipeline off applying no calibration at all,
+    /// which is exactly the case the documentation calls out. Neither a
+    /// profile load nor a `ViewportState` can be built in a unit test, so the
+    /// order is pinned on the source — comments stripped, because a doc
+    /// comment quoting either line must not satisfy it.
     #[test]
-    fn the_calibration_ramp_is_read_before_the_pipeline_gate() {
+    fn the_calibration_ramp_is_stored_before_the_pipeline_gate() {
         let source = include_str!("outputs.rs");
         let source = source.split("#[cfg(test)]").next().unwrap_or(source);
         let start = source
             .find("pub fn load_output_icc(")
             .expect("load_output_icc in outputs.rs");
-        let body = &source[start..];
+        let rest = &source[start..];
+        let end = rest.find("\n    pub fn ").unwrap_or(rest.len());
+        let body = strip_line_comments(&rest[..end]);
+
         let vcgt = body
             .find("crate::icc::vcgt(&bytes)")
             .expect("a vcgt read in load_output_icc");
+        let store = body
+            .find("self.gamma_vcgt.insert(")
+            .expect("the vcgt store in load_output_icc");
         let gate = body
             .find("if !self.cm_enabled")
             .expect("the colour-pipeline gate in load_output_icc");
         assert!(
-            vcgt < gate,
-            "the vcgt read sits behind the colour-pipeline gate, so a profile \
+            vcgt < store,
+            "the vcgt tag is parsed but the ramp it returns is never stored"
+        );
+        assert!(
+            store < gate,
+            "the vcgt store sits behind the colour-pipeline gate, so a profile \
              loaded with the pipeline off applies no calibration"
+        );
+        assert!(
+            !body[..store].contains("cm_enabled"),
+            "the vcgt store is nested in a colour-management condition, so the \
+             ramp is only kept when the pipeline is on"
         );
         // And the gate's own exit programmes the ramp it just stored, so
         // leaving early does not leave the calibration dormant.
@@ -1218,9 +1237,14 @@ mod output_mode_tests {
 
     /// A cube change reaches the screen only through a frame, while the ramp
     /// half of the same profile is programmed into the CRTC and shows at
-    /// once — `load_output_icc` has to mark a frame, or a reload that
-    /// changed nothing but the profile leaves the two in visible
-    /// disagreement on a desk with no other reason to draw.
+    /// once. There are two cube changes, and both have to mark a frame:
+    /// installing a cube, and removing one when a reload's profile stops
+    /// describing a transform. The removal is the half that is easy to miss —
+    /// skip it and the renderer keeps sampling the old cube, and on a still
+    /// desk nothing else draws, so the desk keeps the old profile's pixels
+    /// indefinitely. Pinning both, rather than "there is a mark somewhere in
+    /// the function", is what makes either half a failing test on its own.
+    /// Comments are stripped: prose quoting the assignment is not the code.
     #[test]
     fn a_cube_change_marks_a_frame() {
         let source = include_str!("outputs.rs");
@@ -1228,10 +1252,59 @@ mod output_mode_tests {
         let start = source
             .find("pub fn load_output_icc(")
             .expect("load_output_icc in outputs.rs");
-        let body = &source[start..];
+        let rest = &source[start..];
+        let end = rest.find("\n    pub fn ").unwrap_or(rest.len());
+        let body = strip_line_comments(&rest[..end]);
+
+        let insert = body
+            .find("self.icc_cubes.insert(")
+            .expect("the cube install in load_output_icc");
+        let guard = body
+            .find("if self.icc_cubes.remove(name).is_some()")
+            .expect("the guarded stale-cube removal in load_output_icc");
         assert!(
-            body.contains("self.needs_render = true;"),
-            "load_output_icc must mark a frame when the cube it hands the renderer changes"
+            body[insert..guard].contains("self.needs_render = true;"),
+            "installing a cube must mark a frame: the cube only shows through a render pass"
         );
+        assert!(
+            block_at(&body, guard).contains("self.needs_render = true;"),
+            "removing a stale cube must mark a frame too, or a still desk keeps \
+             the old profile's pixels"
+        );
+        assert_eq!(
+            body.matches("self.needs_render = true;").count(),
+            2,
+            "the cube install and the guarded removal are the two places a cube \
+             change reaches the screen; a mark anywhere else is a frame nothing asked for"
+        );
+    }
+
+    /// A copy of `source` without whole-line comments, so an invariant about
+    /// code cannot be satisfied by prose that quotes the code.
+    fn strip_line_comments(source: &str) -> String {
+        source
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The braced block that starts at the first `{` at or after `at`.
+    fn block_at(source: &str, at: usize) -> &str {
+        let open = at + source[at..].find('{').expect("an opening brace");
+        let mut depth = 0usize;
+        for (offset, ch) in source[open..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return &source[open..=open + offset];
+                    }
+                }
+                _ => {}
+            }
+        }
+        panic!("unbalanced braces at byte {at}");
     }
 }

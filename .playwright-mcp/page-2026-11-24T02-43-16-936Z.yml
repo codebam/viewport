@@ -1,0 +1,899 @@
+- generic [active] [ref=f26e1]:
+  - link "Skip to main content" [ref=f26e2] [cursor=pointer]:
+    - /url: "#article-content"
+  - generic [ref=f26e3]:
+    - complementary [ref=f26e4]:
+      - button "Navigation menu" [ref=f26e6] [cursor=pointer]
+      - navigation "Quick navigation" [ref=f26e9]:
+        - list [ref=f26e10]:
+          - listitem [ref=f26e11]:
+            - link "Home" [ref=f26e14] [cursor=pointer]:
+              - /url: https://www.yahoo.com/
+          - listitem [ref=f26e21]:
+            - link "Mail" [ref=f26e24] [cursor=pointer]:
+              - /url: https://mail.yahoo.com/
+          - listitem [ref=f26e31]:
+            - generic [ref=f26e33]:
+              - link "News" [ref=f26e34] [cursor=pointer]:
+                - /url: https://www.yahoo.com/news/
+              - generic [ref=f26e42]: Has submenu. Press right arrow to enter the submenu, up and down to navigate between items, left arrow or escape to close it.
+          - listitem [ref=f26e43]:
+            - generic [ref=f26e45]:
+              - link "Finance" [ref=f26e46] [cursor=pointer]:
+                - /url: https://finance.yahoo.com/
+              - generic [ref=f26e53]: Has submenu. Press right arrow to enter the submenu, up and down to navigate between items, left arrow or escape to close it.
+          - listitem [ref=f26e54]:
+            - generic [ref=f26e56]:
+              - link "Sports" [ref=f26e57] [cursor=pointer]:
+                - /url: https://sports.yahoo.com/
+              - generic [ref=f26e64]: Has submenu. Press right arrow to enter the submenu, up and down to navigate between items, left arrow or escape to close it.
+          - listitem [ref=f26e65]:
+            - generic [ref=f26e67]:
+              - link "Shopping" [ref=f26e68] [cursor=pointer]:
+                - /url: https://shopping.yahoo.com/
+              - generic [ref=f26e75]: Has submenu. Press right arrow to enter the submenu, up and down to navigate between items, left arrow or escape to close it.
+          - listitem [ref=f26e76]:
+            - generic [ref=f26e78]:
+              - link "Games" [ref=f26e79] [cursor=pointer]:
+                - /url: https://www.yahoo.com/games/
+              - generic [ref=f26e88]: Has submenu. Press right arrow to enter the submenu, up and down to navigate between items, left arrow or escape to close it.
+          - listitem [ref=f26e89]:
+            - link "Weather" [ref=f26e92] [cursor=pointer]:
+              - /url: https://weather.yahoo.com/
+        - link "Ask AI (opens in new tab)" [ref=f26e101] [cursor=pointer]:
+          - /url: https://scout.com/
+          - generic [ref=f26e106]: Ask AI
+    - generic [ref=f26e107]:
+      - banner [ref=f26e108]:
+        - generic [ref=f26e110]:
+          - generic:
+            - generic:
+              - status [ref=f26e111]
+              - navigation [ref=f26e112]
+          - link [ref=f26e114] [cursor=pointer]:
+            - /url: https://tech.yahoo.com/
+            - img "Yahoo Tech" [ref=f26e115]
+          - search [ref=f26e123]:
+            - generic: Search Query for Search the web
+            - searchbox "Search Query for Search the web" [ref=f26e125]
+            - button "Search Query for Search the web" [ref=f26e127] [cursor=pointer]
+          - generic [ref=f26e130]:
+            - link "Check your mail" [ref=f26e132] [cursor=pointer]:
+              - /url: https://mail.yahoo.com/
+              - generic [ref=f26e133]: Mail
+            - button "Your Profile Menu" [ref=f26e139] [cursor=pointer]
+      - navigation "Yahoo Tech Categories" [ref=f26e146]:
+        - list [ref=f26e147]:
+          - listitem [ref=f26e148] [cursor=pointer]:
+            - link "Black Friday tech deals" [ref=f26e149]:
+              - /url: https://tech.yahoo.com/deals/breaking-news/live/black-friday-tech-deals-live-updates-on-sales-from-apple-amazon-bose-ring-and-more-during-cyber-week-2026-173146772.html
+            - region [ref=f26e154]:
+              - list [ref=f26e155]:
+                - listitem [ref=f26e156]:
+                  - link "Black Friday tech deals" [ref=f26e157]:
+                    - /url: https://tech.yahoo.com/deals/breaking-news/live/black-friday-tech-deals-live-updates-on-sales-from-apple-amazon-bose-ring-and-more-during-cyber-week-2026-173146772.html
+                  - list [ref=f26e159]:
+                    - listitem [ref=f26e160]:
+                      - link "Black Friday Apple deals" [ref=f26e161]:
+                        - /url: https://tech.yahoo.com/deals/breaking-news/live/black-friday-apple-deals-are-live-airpods-ipads-and-airtags-hit-low-prices-during-cyber-week-2026-175414699.html
+          - listitem [ref=f26e163] [cursor=pointer]:
+            - link "AI, link 7 items" [ref=f26e164]:
+              - /url: /ai/
+              - generic [ref=f26e165]: AI
+            - region [ref=f26e169]:
+              - list [ref=f26e170]:
+                - listitem [ref=f26e171]:
+                  - link "AI" [ref=f26e172]:
+                    - /url: /ai/
+                  - list [ref=f26e174]:
+                    - listitem [ref=f26e175]:
+                      - link "Explore AI" [ref=f26e176]:
+                        - /url: /AI/
+                    - listitem [ref=f26e178]:
+                      - link "Apple Intelligence" [ref=f26e179]:
+                        - /url: /ai/apple-intelligence/
+                    - listitem [ref=f26e181]:
+                      - link "ChatGPT" [ref=f26e182]:
+                        - /url: /ai/chatgpt/
+                    - listitem [ref=f26e184]:
+                      - link "Claude" [ref=f26e185]:
+                        - /url: /ai/claude/
+                    - listitem [ref=f26e187]:
+                      - link "Microsoft Copilot" [ref=f26e188]:
+                        - /url: /ai/copilot/
+                    - listitem [ref=f26e190]:
+                      - link "Gemini" [ref=f26e191]:
+                        - /url: /ai/gemini/
+                    - listitem [ref=f26e193]:
+                      - link "Meta" [ref=f26e194]:
+                        - /url: /ai/meta-ai/
+                    - listitem [ref=f26e196]:
+                      - link "Perplexity" [ref=f26e197]:
+                        - /url: /ai/perplexity-ai/
+          - listitem [ref=f26e199] [cursor=pointer]:
+            - link "Audio" [ref=f26e200]:
+              - /url: /audio/
+            - region [ref=f26e205]:
+              - list [ref=f26e206]:
+                - listitem [ref=f26e207]:
+                  - link "Audio" [ref=f26e208]:
+                    - /url: /audio/
+                  - list [ref=f26e210]:
+                    - listitem [ref=f26e211]:
+                      - link "Explore Audio" [ref=f26e212]:
+                        - /url: /audio/
+                    - listitem [ref=f26e214]:
+                      - link "Audio deals" [ref=f26e215]:
+                        - /url: https://tech.yahoo.com/audio/deals/
+                    - listitem [ref=f26e217]:
+                      - link "Best AirPods" [ref=f26e218]:
+                        - /url: https://tech.yahoo.com/audio/article/the-best-airpods-141951590.html
+                    - listitem [ref=f26e220]:
+                      - link "Best budget headphones" [ref=f26e221]:
+                        - /url: https://tech.yahoo.com/audio/article/best-budget-headphones-154621859.html
+                    - listitem [ref=f26e223]:
+                      - link "Best soundbar of 2026" [ref=f26e224]:
+                        - /url: https://tech.yahoo.com/audio/article/best-soundbar-201806176.html
+                    - listitem [ref=f26e226]:
+                      - link "Best noise cancelling earbuds" [ref=f26e227]:
+                        - /url: https://tech.yahoo.com/audio/article/best-noise-cancelling-earbuds-184654494.html
+                    - listitem [ref=f26e229]:
+                      - link "Best noise cancelling headphones" [ref=f26e230]:
+                        - /url: https://tech.yahoo.com/audio/article/best-noise-cancelling-headphones-152521694.html
+                    - listitem [ref=f26e232]:
+                      - link "Best headphones" [ref=f26e233]:
+                        - /url: https://tech.yahoo.com/audio/article/best-headphones-173002347.html
+                    - listitem [ref=f26e235]:
+                      - link "Best cheap wireless earbuds" [ref=f26e236]:
+                        - /url: https://tech.yahoo.com/audio/article/best-cheap-earbuds-171052338.html
+                    - listitem [ref=f26e238]:
+                      - link "Best open ear headphones" [ref=f26e239]:
+                        - /url: https://tech.yahoo.com/audio/article/best-open-ear-headphones-165502093.html
+                    - listitem [ref=f26e241]:
+                      - link "Best outdoor speakers" [ref=f26e242]:
+                        - /url: https://tech.yahoo.com/audio/article/best-outdoor-speakers-185322069.html
+                    - listitem [ref=f26e244]:
+                      - link "Best wireless tv headphones" [ref=f26e245]:
+                        - /url: https://tech.yahoo.com/audio/article/best-wireless-tv-headphones-132231517.html
+                    - listitem [ref=f26e247]:
+                      - link "Best portable bluetooth speakers" [ref=f26e248]:
+                        - /url: https://tech.yahoo.com/audio/article/best-small-speakers-110032998.html
+                    - listitem [ref=f26e250]:
+                      - link "Best wireless earbuds" [ref=f26e251]:
+                        - /url: https://tech.yahoo.com/audio/article/best-wireless-earbuds-191737075.html
+          - listitem [ref=f26e253] [cursor=pointer]:
+            - link "Computing" [ref=f26e254]:
+              - /url: /computing/
+            - region [ref=f26e259]:
+              - list [ref=f26e260]:
+                - listitem [ref=f26e261]:
+                  - link "Computing" [ref=f26e262]:
+                    - /url: /computing/
+                  - list [ref=f26e264]:
+                    - listitem [ref=f26e265]:
+                      - link "Explore Computing" [ref=f26e266]:
+                        - /url: /computing/
+                    - listitem [ref=f26e268]:
+                      - link "Best iPad" [ref=f26e269]:
+                        - /url: https://tech.yahoo.com/computing/article/best-ipad-135040315.html
+                    - listitem [ref=f26e271]:
+                      - link "Best tablets of 2026" [ref=f26e272]:
+                        - /url: https://tech.yahoo.com/computing/article/best-tablets-165149966.html
+                    - listitem [ref=f26e274]:
+                      - link "Best portable monitor" [ref=f26e275]:
+                        - /url: https://tech.yahoo.com/computing/article/best-portable-monitor-132539410.html
+                    - listitem [ref=f26e277]:
+                      - link "Best laptop for 2026" [ref=f26e278]:
+                        - /url: https://tech.yahoo.com/computing/article/best-laptops-work-from-home-gaming-214704161.html
+                    - listitem [ref=f26e280]:
+                      - link "Best tablet for kids" [ref=f26e281]:
+                        - /url: https://tech.yahoo.com/computing/article/best-tablet-for-kids-142802152.html
+                    - listitem [ref=f26e283]:
+                      - link "Best microSD cards" [ref=f26e284]:
+                        - /url: https://tech.yahoo.com/computing/article/best-microsd-card-160000699.html
+          - listitem [ref=f26e286] [cursor=pointer]:
+            - link "Gaming, link 5 items" [ref=f26e287]:
+              - /url: /gaming/
+              - generic [ref=f26e288]: Gaming
+            - region [ref=f26e292]:
+              - list [ref=f26e293]:
+                - listitem [ref=f26e294]:
+                  - link "Gaming" [ref=f26e295]:
+                    - /url: /gaming/
+                  - list [ref=f26e297]:
+                    - listitem [ref=f26e298]:
+                      - link "Explore Gaming" [ref=f26e299]:
+                        - /url: /gaming/
+                    - listitem [ref=f26e301]:
+                      - link "Gaming deals" [ref=f26e302]:
+                        - /url: /gaming/deals/
+                    - listitem [ref=f26e304]:
+                      - link "Nintendo" [ref=f26e305]:
+                        - /url: /gaming/nintendo/
+                    - listitem [ref=f26e307]:
+                      - link "PC" [ref=f26e308]:
+                        - /url: /gaming/pc/
+                    - listitem [ref=f26e310]:
+                      - link "PlayStation" [ref=f26e311]:
+                        - /url: /gaming/playstation/
+                    - listitem [ref=f26e313]:
+                      - link "Xbox" [ref=f26e314]:
+                        - /url: /gaming/xbox/
+          - listitem [ref=f26e316] [cursor=pointer]:
+            - link "Guides, link 2 items" [ref=f26e317]:
+              - /url: /guides/
+              - generic [ref=f26e318]: Guides
+            - region [ref=f26e322]:
+              - list [ref=f26e323]:
+                - listitem [ref=f26e324]:
+                  - link "Guides" [ref=f26e325]:
+                    - /url: /guides/
+                  - list [ref=f26e327]:
+                    - listitem [ref=f26e328]:
+                      - link "Explore Guides" [ref=f26e329]:
+                        - /url: /guides/
+                    - listitem [ref=f26e331]:
+                      - link "One Small Fix" [ref=f26e332]:
+                        - /url: /guides/one-small-fix/
+                    - listitem [ref=f26e334]:
+                      - link "Scroll Time-Out" [ref=f26e335]:
+                        - /url: /guides/scroll-time-out/
+          - listitem [ref=f26e337] [cursor=pointer]:
+            - link "Home entertainment" [ref=f26e338]:
+              - /url: /home-entertainment/
+            - region [ref=f26e343]:
+              - list [ref=f26e344]:
+                - listitem [ref=f26e345]:
+                  - link "Home entertainment" [ref=f26e346]:
+                    - /url: /home-entertainment/
+                  - list [ref=f26e348]:
+                    - listitem [ref=f26e349]:
+                      - link "Explore Home entertainment" [ref=f26e350]:
+                        - /url: /home-entertainment/
+                    - listitem [ref=f26e352]:
+                      - link "TVs" [ref=f26e353]:
+                        - /url: https://tech.yahoo.com/home-entertainment/tvs/
+                    - listitem [ref=f26e355]:
+                      - link "Best frame TV" [ref=f26e356]:
+                        - /url: https://tech.yahoo.com/home-entertainment/tvs/article/best-art-tvs-140642933.html
+                    - listitem [ref=f26e358]:
+                      - link "Best OLED TV" [ref=f26e359]:
+                        - /url: https://tech.yahoo.com/home-entertainment/tvs/article/best-oled-tv-193024796.html
+                    - listitem [ref=f26e361]:
+                      - link "Best budget TV" [ref=f26e362]:
+                        - /url: https://tech.yahoo.com/home-entertainment/tvs/article/best-budget-tvs-145149609.html
+                    - listitem [ref=f26e364]:
+                      - link "Best digital TV antenna" [ref=f26e365]:
+                        - /url: https://tech.yahoo.com/streaming/article/best-streaming-devices-165920204.html
+          - listitem [ref=f26e367] [cursor=pointer]:
+            - link "Phones" [ref=f26e368]:
+              - /url: /phones/
+          - listitem [ref=f26e369] [cursor=pointer]:
+            - link "Science" [ref=f26e370]:
+              - /url: /science/
+            - region [ref=f26e375]:
+              - list [ref=f26e376]:
+                - listitem [ref=f26e377]:
+                  - link "Science" [ref=f26e378]:
+                    - /url: /science/
+                  - list [ref=f26e380]:
+                    - listitem [ref=f26e381]:
+                      - link "Explore Science" [ref=f26e382]:
+                        - /url: /science/
+                    - listitem [ref=f26e384]:
+                      - link "Space" [ref=f26e385]:
+                        - /url: https://tech.yahoo.com/science/space/
+          - listitem [ref=f26e387] [cursor=pointer]:
+            - link "Streaming" [ref=f26e388]:
+              - /url: /streaming/
+            - region [ref=f26e393]:
+              - list [ref=f26e394]:
+                - listitem [ref=f26e395]:
+                  - link "Streaming" [ref=f26e396]:
+                    - /url: /streaming/
+                  - list [ref=f26e398]:
+                    - listitem [ref=f26e399]:
+                      - link "Explore Streaming" [ref=f26e400]:
+                        - /url: /streaming/
+                    - listitem [ref=f26e402]:
+                      - link "Streaming reviews" [ref=f26e403]:
+                        - /url: https://tech.yahoo.com/streaming/reviews/
+                    - listitem [ref=f26e405]:
+                      - link "Streaming deals" [ref=f26e406]:
+                        - /url: https://tech.yahoo.com/streaming/deals/
+                    - listitem [ref=f26e408]:
+                      - link "Best streaming services" [ref=f26e409]:
+                        - /url: https://tech.yahoo.com/streaming/article/best-streaming-services-173846237.html
+                    - listitem [ref=f26e411]:
+                      - link "Best live TV streaming services" [ref=f26e412]:
+                        - /url: https://tech.yahoo.com/streaming/article/best-live-tv-streaming-services-120051955.html
+                    - listitem [ref=f26e414]:
+                      - link "Best free streaming services" [ref=f26e415]:
+                        - /url: https://tech.yahoo.com/streaming/article/best-free-tv-streaming-services-192511497.html
+                    - listitem [ref=f26e417]:
+                      - link "Best streaming device of 2026" [ref=f26e418]:
+                        - /url: https://tech.yahoo.com/streaming/article/best-streaming-devices-165920204.html
+          - listitem [ref=f26e420] [cursor=pointer]:
+            - link "Tech news" [ref=f26e421]:
+              - /url: /news/
+          - listitem [ref=f26e422] [cursor=pointer]:
+            - link "VPN" [ref=f26e423]:
+              - /url: /vpn/
+            - region [ref=f26e428]:
+              - list [ref=f26e429]:
+                - listitem [ref=f26e430]:
+                  - link "VPN" [ref=f26e431]:
+                    - /url: /vpn/
+                  - list [ref=f26e433]:
+                    - listitem [ref=f26e434]:
+                      - link "Explore VPN" [ref=f26e435]:
+                        - /url: /vpn/
+                    - listitem [ref=f26e437]:
+                      - link "Best VPNs" [ref=f26e438]:
+                        - /url: https://tech.yahoo.com/vpn/article/best-vpn-120000856.html
+                    - listitem [ref=f26e440]:
+                      - link "VPN deals" [ref=f26e441]:
+                        - /url: https://tech.yahoo.com/vpn/deals/
+                    - listitem [ref=f26e443]:
+                      - link "Most secure VPN for 2026" [ref=f26e444]:
+                        - /url: https://tech.yahoo.com/vpn/article/most-secure-vpn-130000023.html
+                    - listitem [ref=f26e446]:
+                      - link "Best VPN for streaming" [ref=f26e447]:
+                        - /url: https://tech.yahoo.com/vpn/article/best-vpn-for-streaming-172123918.html
+                    - listitem [ref=f26e449]:
+                      - link "Fastest VPNs for 2026" [ref=f26e450]:
+                        - /url: https://tech.yahoo.com/vpn/article/fastest-vpns-130000819.html
+                    - listitem [ref=f26e452]:
+                      - link "Best VPN for Mac" [ref=f26e453]:
+                        - /url: https://tech.yahoo.com/vpn/article/best-vpn-for-mac-200000271.html
+                    - listitem [ref=f26e455]:
+                      - link "Best VPNs with free trials" [ref=f26e456]:
+                        - /url: https://tech.yahoo.com/vpn/article/the-best-vpns-with-free-trials-in-2026-140000301.html
+                    - listitem [ref=f26e458]:
+                      - link "Best cheap VPN for 2026" [ref=f26e459]:
+                        - /url: https://tech.yahoo.com/vpn/article/best-cheap-vpn-120000439.html
+                    - listitem [ref=f26e461]:
+                      - link "Best free VPN for 2026" [ref=f26e462]:
+                        - /url: https://tech.yahoo.com/vpn/article/best-free-vpn-190000279.html
+          - listitem [ref=f26e464] [cursor=pointer]:
+            - link "Deals" [ref=f26e465]:
+              - /url: /deals/
+          - listitem [ref=f26e466] [cursor=pointer]:
+            - link "General" [ref=f26e467]:
+              - /url: /general/
+          - listitem [ref=f26e468] [cursor=pointer]:
+            - link "Apps" [ref=f26e469]:
+              - /url: https://tech.yahoo.com/apps/
+          - listitem [ref=f26e470] [cursor=pointer]:
+            - link "AR and VR" [ref=f26e471]:
+              - /url: /ar-vr/
+          - listitem [ref=f26e472] [cursor=pointer]:
+            - link "Business" [ref=f26e473]:
+              - /url: /business/
+          - listitem [ref=f26e474] [cursor=pointer]:
+            - link "Cameras" [ref=f26e475]:
+              - /url: /Cameras/
+            - region [ref=f26e480]:
+              - list [ref=f26e481]:
+                - listitem [ref=f26e482]:
+                  - link "Cameras" [ref=f26e483]:
+                    - /url: /Cameras/
+                  - list [ref=f26e485]:
+                    - listitem [ref=f26e486]:
+                      - link "Explore Cameras" [ref=f26e487]:
+                        - /url: /Cameras/
+          - listitem [ref=f26e489] [cursor=pointer]:
+            - link "Cybersecurity, link 1 items" [ref=f26e490]:
+              - /url: /cybersecurity/
+              - generic [ref=f26e491]: Cybersecurity
+            - region [ref=f26e495]:
+              - list [ref=f26e496]:
+                - listitem [ref=f26e497]:
+                  - link "Cybersecurity" [ref=f26e498]:
+                    - /url: /cybersecurity/
+                  - list [ref=f26e500]:
+                    - listitem [ref=f26e501]:
+                      - link "Explore Cybersecurity" [ref=f26e502]:
+                        - /url: /cybersecurity/
+                    - listitem [ref=f26e504]:
+                      - link "Deals" [ref=f26e505]:
+                        - /url: /cybersecurity/deals/
+          - listitem [ref=f26e507] [cursor=pointer]:
+            - link "Entertainment" [ref=f26e508]:
+              - /url: /Entertainment/
+            - region [ref=f26e513]:
+              - list [ref=f26e514]:
+                - listitem [ref=f26e515]:
+                  - link "Entertainment" [ref=f26e516]:
+                    - /url: /Entertainment/
+                  - list [ref=f26e518]:
+                    - listitem [ref=f26e519]:
+                      - link "Explore Entertainment" [ref=f26e520]:
+                        - /url: /Entertainment/
+          - listitem [ref=f26e522] [cursor=pointer]:
+            - link "Reviews and guides, link 8 items" [ref=f26e523]:
+              - /url: /reviews-and-guides/
+              - generic [ref=f26e524]: Reviews and guides
+            - region [ref=f26e528]:
+              - list [ref=f26e529]:
+                - listitem [ref=f26e530]:
+                  - link "Reviews and guides" [ref=f26e531]:
+                    - /url: /reviews-and-guides/
+                  - list [ref=f26e533]:
+                    - listitem [ref=f26e534]:
+                      - link "Explore Reviews and guides" [ref=f26e535]:
+                        - /url: /reviews-and-guides/
+                    - listitem [ref=f26e537]:
+                      - link "Audio" [ref=f26e538]:
+                        - /url: /reviews-and-guides/audio/
+                    - listitem [ref=f26e540]:
+                      - link "Computing" [ref=f26e541]:
+                        - /url: /reviews-and-guides/computing/
+                    - listitem [ref=f26e543]:
+                      - link "General" [ref=f26e544]:
+                        - /url: /reviews-and-guides/general/
+                    - listitem [ref=f26e546]:
+                      - link "Home" [ref=f26e547]:
+                        - /url: /reviews-and-guides/home/
+                    - listitem [ref=f26e549]:
+                      - link "Home entertainment" [ref=f26e550]:
+                        - /url: /reviews-and-guides/home-entertainment/
+                    - listitem [ref=f26e552]:
+                      - link "Phones" [ref=f26e553]:
+                        - /url: /reviews-and-guides/phones/
+                    - listitem [ref=f26e555]:
+                      - link "Streaming" [ref=f26e556]:
+                        - /url: /reviews-and-guides/streaming/
+                    - listitem [ref=f26e558]:
+                      - link "Vpn" [ref=f26e559]:
+                        - /url: /reviews-and-guides/vpn/
+          - listitem [ref=f26e561] [cursor=pointer]:
+            - link "Smart home, link 1 items" [ref=f26e562]:
+              - /url: /home/
+              - generic [ref=f26e563]: Smart home
+            - region [ref=f26e567]:
+              - list [ref=f26e568]:
+                - listitem [ref=f26e569]:
+                  - link "Smart home" [ref=f26e570]:
+                    - /url: /home/
+                  - list [ref=f26e572]:
+                    - listitem [ref=f26e573]:
+                      - link "Explore Smart home" [ref=f26e574]:
+                        - /url: /home/
+                    - listitem [ref=f26e576]:
+                      - link "Deals" [ref=f26e577]:
+                        - /url: /home/deals/
+          - listitem [ref=f26e579] [cursor=pointer]:
+            - link "Social media" [ref=f26e580]:
+              - /url: /social-media/
+            - region [ref=f26e585]:
+              - list [ref=f26e586]:
+                - listitem [ref=f26e587]:
+                  - link "Social media" [ref=f26e588]:
+                    - /url: /social-media/
+                  - list [ref=f26e590]:
+                    - listitem [ref=f26e591]:
+                      - link "Explore Social media" [ref=f26e592]:
+                        - /url: /social-media/
+          - listitem [ref=f26e594] [cursor=pointer]:
+            - link "Transportation, link 1 items" [ref=f26e595]:
+              - /url: /transportation/
+              - generic [ref=f26e596]: Transportation
+            - region [ref=f26e600]:
+              - list [ref=f26e601]:
+                - listitem [ref=f26e602]:
+                  - link "Transportation" [ref=f26e603]:
+                    - /url: /transportation/
+                  - list [ref=f26e605]:
+                    - listitem [ref=f26e606]:
+                      - link "Explore Transportation" [ref=f26e607]:
+                        - /url: /transportation/
+                    - listitem [ref=f26e609]:
+                      - link "Evs" [ref=f26e610]:
+                        - /url: /transportation/evs/
+          - listitem [ref=f26e612] [cursor=pointer]:
+            - link "Wearables, link 1 items" [ref=f26e613]:
+              - /url: /wearables/
+              - generic [ref=f26e614]: Wearables
+            - region [ref=f26e618]:
+              - list [ref=f26e619]:
+                - listitem [ref=f26e620]:
+                  - link "Wearables" [ref=f26e621]:
+                    - /url: /wearables/
+                  - list [ref=f26e623]:
+                    - listitem [ref=f26e624]:
+                      - link "Explore Wearables" [ref=f26e625]:
+                        - /url: /wearables/
+                    - listitem [ref=f26e627]:
+                      - link "Deals" [ref=f26e628]:
+                        - /url: /wearables/deals/
+          - listitem [ref=f26e630] [cursor=pointer]:
+            - link "Puzzle hints, link 4 items" [ref=f26e631]:
+              - /url: /puzzles/
+              - generic [ref=f26e632]: Puzzle hints
+            - region [ref=f26e636]:
+              - list [ref=f26e637]:
+                - listitem [ref=f26e638]:
+                  - link "Puzzle hints" [ref=f26e639]:
+                    - /url: /puzzles/
+                  - list [ref=f26e641]:
+                    - listitem [ref=f26e642]:
+                      - link "Explore Puzzle hints" [ref=f26e643]:
+                        - /url: /puzzles/
+                    - listitem [ref=f26e645]:
+                      - link "Connections" [ref=f26e646]:
+                        - /url: /puzzles/connections/
+                    - listitem [ref=f26e648]:
+                      - link "Quordle" [ref=f26e649]:
+                        - /url: /puzzles/quordle/
+                    - listitem [ref=f26e651]:
+                      - link "Strands" [ref=f26e652]:
+                        - /url: /puzzles/strands/
+                    - listitem [ref=f26e654]:
+                      - link "Wordle" [ref=f26e655]:
+                        - /url: /puzzles/wordle/
+      - main [ref=f26e658]:
+        - generic [ref=f26e659]:
+          - region "Top Center Ad" [ref=f26e663]:
+            - generic [ref=f26e664]: Advertisement
+          - generic [ref=f26e668]:
+            - navigation "Trending" [ref=f26e669]:
+              - generic [ref=f26e672]:
+                - heading "Trending:" [level=2] [ref=f26e673]
+                - list [ref=f26e675]:
+                  - listitem [ref=f26e676]:
+                    - link "Apple’s $299 HomeView hub" [ref=f26e677] [cursor=pointer]:
+                      - /url: https://tech.yahoo.com/home/breaking-news/article/apples-new-siri-infused-homeview-hub-might-be-too-little-too-late-134206236.html
+                    - text: "|"
+                  - listitem [ref=f26e678]:
+                    - link "Gianna on GTA 6 backlash" [ref=f26e679] [cursor=pointer]:
+                      - /url: https://tech.yahoo.com/gaming/articles/woman-calls-gta-6-sims-193800048.html
+                    - text: "|"
+                  - listitem [ref=f26e680]:
+                    - link "Cleverbridge payment card breach" [ref=f26e681] [cursor=pointer]:
+                      - /url: https://tech.yahoo.com/cybersecurity/articles/major-hack-sees-attackers-steal-151110354.html
+                    - text: "|"
+                  - listitem [ref=f26e682]:
+                    - link "AI autoimmune disease era" [ref=f26e683] [cursor=pointer]:
+                      - /url: https://tech.yahoo.com/cybersecurity/articles/age-computer-virus-over-welcome-140000925.html
+                    - text: "|"
+                  - listitem [ref=f26e684]:
+                    - link "GTA 6 goth girl Vicki fans" [ref=f26e685] [cursor=pointer]:
+                      - /url: https://tech.yahoo.com/gaming/articles/gta-6-goth-girl-vicki-143851432.html
+                    - text: "|"
+                  - listitem [ref=f26e686]:
+                    - link "Alexandr Wang on superintelligence" [ref=f26e687] [cursor=pointer]:
+                      - /url: https://tech.yahoo.com/ai/meta-ai/articles/meta-ai-chief-alexandr-wang-043034815.html
+                    - text: "|"
+                  - listitem [ref=f26e688]:
+                    - link "Meta AI control warning" [ref=f26e689] [cursor=pointer]:
+                      - /url: https://tech.yahoo.com/ai/meta-ai/articles/meta-chief-ai-officer-sends-154615956.html
+                    - text: "|"
+                  - listitem [ref=f26e690]:
+                    - link "GTA 6 Vice City secret found" [ref=f26e691] [cursor=pointer]:
+                      - /url: https://tech.yahoo.com/gaming/articles/gta-6-player-finds-tommy-153115849.html
+                    - text: "|"
+                  - listitem [ref=f26e692]:
+                    - link "GTA 6 breaks sales records" [ref=f26e693] [cursor=pointer]:
+                      - /url: https://tech.yahoo.com/gaming/articles/gta-6-breaks-sales-records-091913703.html
+                    - text: "|"
+                  - listitem [ref=f26e694]:
+                    - link "Remove Advanced Trackers in GTA 6" [ref=f26e695] [cursor=pointer]:
+                      - /url: https://tech.yahoo.com/gaming/articles/remove-advanced-trackers-cars-gta-060511945.html
+            - generic [ref=f26e699]:
+              - article [ref=f26e700]:
+                - generic [ref=f26e701]:
+                  - generic [ref=f26e702]:
+                    - navigation "breadcrumbs" [ref=f26e703]:
+                      - list [ref=f26e704]:
+                        - listitem [ref=f26e705]:
+                          - link "Tech" [ref=f26e706] [cursor=pointer]:
+                            - /url: https://tech.yahoo.com/
+                        - listitem [ref=f26e709]:
+                          - link "AI" [ref=f26e710] [cursor=pointer]:
+                            - /url: https://tech.yahoo.com/ai/
+                        - listitem [ref=f26e713]:
+                          - link "Gemini" [ref=f26e714] [cursor=pointer]:
+                            - /url: https://tech.yahoo.com/ai/gemini/
+                    - generic [ref=f26e715]:
+                      - heading "Tencent's Hy3 Bets On AI Agents Over Model Size" [level=1] [ref=f26e716]
+                      - generic [ref=f26e717]:
+                        - generic [ref=f26e718]:
+                          - generic [ref=f26e720]:
+                            - link [aria-hidden] [ref=f26e723] [cursor=pointer]:
+                              - /url: https://profiles.yahoo.com/brands/forbes/
+                            - generic [ref=f26e725]:
+                              - generic [ref=f26e726]:
+                                - link "Forbes" [ref=f26e727] [cursor=pointer]:
+                                  - /url: https://profiles.yahoo.com/brands/forbes/
+                                - generic [ref=f26e728]:
+                                  - text: ·
+                                  - button "Follow" [disabled] [ref=f26e730]
+                              - generic [ref=f26e732]: Vivian Toh, Contributor
+                          - generic [ref=f26e733]:
+                            - link "Add to Preferred Sources on Google, opens in a new tab" [ref=f26e736] [cursor=pointer]:
+                              - /url: https://www.google.com/preferences/source?q=tech.yahoo.com
+                              - text: Add to Preferred Sources
+                            - link "View comments" [ref=f26e737] [cursor=pointer]:
+                              - /url: "#article-comments-8364c079-7f2e-3f4a-b8ef-368fd9cc1b1a"
+                            - button "Share this article" [ref=f26e742] [cursor=pointer]
+                        - generic [ref=f26e747]:
+                          - text: Updated
+                          - time [ref=f26e748]: Mon, July 13, 2026 at 8:05 AM UTC
+                  - generic [ref=f26e749]:
+                    - generic [ref=f26e751]:
+                      - figure [ref=f26e754]:
+                        - generic [ref=f26e755]:
+                          - img "hy3 released on 6 July" [ref=f26e756]
+                          - button "View larger image" [ref=f26e757] [cursor=pointer]
+                        - generic [ref=f26e763]:
+                          - paragraph [ref=f26e764]: Hy3 released on 6 July
+                          - text: Hy website
+                      - generic [ref=f26e765]:
+                        - paragraph [ref=f26e766]:
+                          - text: When Meta CEO
+                          - link "Mark Zuckerberg recently suggested" [ref=f26e767] [cursor=pointer]:
+                            - /url: https://www.bloomberg.com/news/articles/2026-07-09/meta-s-zuckerberg-says-exploring-ai-cloud-business-makes-sense
+                          - text: "AI companies face difficult tradeoffs between scaling computing infrastructure and expanding research talent, Silicon Valley's default assumption remained unchanged: the race is still about who builds the biggest model."
+                        - paragraph [ref=f26e768]: Tencent's latest release suggests China's largest technology companies may be running a different calculation entirely.
+                        - paragraph [ref=f26e769]:
+                          - text: Last week, Tencent officially launched
+                          - link "Hy3" [ref=f26e770] [cursor=pointer]:
+                            - /url: https://hy.tencent.com/research/hy3
+                          - text: ", the third generation of its flagship large language model. The specifications are competitive: a Mixture-of-Experts architecture with 295 billion total parameters, 21 billion activated parameters, and a 256K context window. What stands out is not the scale, but the positioning. Tencent is marketing Hy3 as a model optimized for real-world AI agents—coding assistants and enterprise productivity workflows—rather than benchmark supremacy."
+                        - paragraph [ref=f26e771]: That distinction reflects a broader shift across China's AI sector. As hardware constraints continue to shape domestic development, Chinese companies are increasingly prioritizing deployment efficiency and commercialization over raw model size. The question is whether this product-first strategy can close the capability gap with Western frontier models.
+                        - 'heading "Benchmark Reality: Strong on Agents" [level=2] [ref=f26e772]'
+                        - paragraph [ref=f26e773]:
+                          - text: Independent evaluations reveal a mixed picture. On agentic search and tool orchestration, Hy3 performs strongly—scoring 84.2 on BrowseComp and 79.1 on the public MCP-Atlas set, competitive with proprietary models like Claude Opus 4.8 and GPT-5.5, according to independent AI consultancy
+                          - link "Flowtivity" [ref=f26e774] [cursor=pointer]:
+                            - /url: https://www.flowtivity.ai/benchmarks/hy3
+                          - text: . Its hallucination rate of 5.4% is notably lower than Grok 4.5's 54% and competitive with frontier proprietary models.
+                        - paragraph [ref=f26e775]: "But the coding story is different. On SWE-bench Verified, Hy3 scores 78%—solid, but trailing GLM-5.2 (84.2%), Claude Opus 4.8, and GPT-5.5. The gap widens on more demanding coding benchmarks: Terminal-Bench 2.1 (71.7 vs. GLM-5.2's 81) and DeepSWE (28.0 vs. GLM-5.2's 46.2)."
+                        - paragraph [ref=f26e776]:
+                          - text: This makes sense architecturally. GLM-5.2 is a 744-billion-parameter MoE with roughly 40 billion active parameters—nearly double Hy3's activated compute per token. As one
+                          - link "independent analysis" [ref=f26e777] [cursor=pointer]:
+                            - /url: https://www.innfactory.de/blog/hy3-analysis
+                          - text: notes, "For the model size—only 21B active parameters—the results are remarkable".
+                        - heading "The Co-Design Gamble" [level=2] [ref=f26e778]
+                        - paragraph [ref=f26e779]: Tencent describes Hy3's development philosophy as "Co-Design"—an iterative process in which models and AI-native applications evolve together. Products including WorkBuddy, Yuanbao, ima, Marvis, and CodeBuddy function as live testing environments, with every workflow generating feedback to refine model capabilities.
+                        - paragraph [ref=f26e780]:
+                          - text: The company reports that WorkBuddy's internal task success rate
+                          - link "increased from 72% to 90%" [ref=f26e781] [cursor=pointer]:
+                            - /url: https://www.news.cn/tech/20260706/d611426ecba54475b2dd94920e4e3557/c.html
+                          - text: ", while average execution time fell by 34%. Yuanbao's hallucination rates in long-document and AI search scenarios dropped by more than half."
+                        - paragraph [ref=f26e782]:
+                          - text: "What can be verified is the model's pricing: at approximately"
+                          - link "$0.18 per million input tokens and $0.59 per million output tokens via Tencent Cloud" [ref=f26e783] [cursor=pointer]:
+                            - /url: https://cloud.tencent.com/pricing/hy3
+                          - text: . An FP8-quantized variant fits on a single 8x H200 node—under 300GB—making self-hosting viable for enterprises concerned about data sovereignty.
+                        - heading "The MoE Efficiency Play" [level=2] [ref=f26e784]
+                        - paragraph [ref=f26e785]:
+                          - text: Hy3's architecture choice is telling. As a Mixture-of-Experts model, it activates only a subset of parameters per token, offering 3-8x higher throughput per GPU at scale compared to dense models, according to
+                          - link "infrastructure analysis" [ref=f26e786] [cursor=pointer]:
+                            - /url: https://www.callmissed.com/moe-enterprise-ai
+                          - text: . This efficiency is critical in a market where access to advanced AI chips remains constrained.
+                        - paragraph [ref=f26e787]: But MoE architectures carry tradeoffs. Industry analysis points to "expert underutilization" as a persistent challenge, along with load balancing complexity that can make debugging difficult. At low utilization—typical for bursty enterprise workloads—dense models often prove more cost-effective and predictable.
+                        - paragraph [ref=f26e788]: Tencent's bet is that its massive software ecosystem will solve the utilization problem. WorkBuddy generates automation requests. Yuanbao captures conversational data. WeChat, gaming services, and productivity applications expose diverse interaction patterns. The company claims daily token consumption of Hy3 has increased twenty-fold since preview release, while users actively selecting Hy3 inside WorkBuddy grew six times.
+                        - paragraph [ref=f26e789]: "This creates a feedback loop: more users generate more complex workflows, which improve the model, which makes the agents more useful."
+                        - 'heading "The Global Context: Not Just China Asking Different Questions" [level=2] [ref=f26e790]'
+                        - paragraph [ref=f26e791]:
+                          - text: Tencent's strategy is not unique to China. In Silicon Valley, Anthropic has quietly overtaken OpenAI in enterprise API market share—
+                          - link "roughly 32% versus 25%" [ref=f26e792] [cursor=pointer]:
+                            - /url: https://www.valueaddvc.com/anthropic-openai-enterprise
+                          - text: in 2026—by focusing on coding reliability and long-context reasoning rather than model scale. Claude Code, Anthropic's terminal-native coding agent, has become a major growth driver, reportedly hitting $2.5 billion in annualized revenue.
+                        - paragraph [ref=f26e793]: The parallel is instructive. Both Tencent and Anthropic are betting that enterprise customers care more about workflow completion, reliability, and latency than marginal gains on academic benchmarks. Both are pursuing efficiency over scale.
+                        - heading "What This Means for Enterprise Software" [level=2] [ref=f26e794]
+                        - paragraph [ref=f26e795]: Hy3's release underscores a structural transformation in how AI is deployed. Office suites are evolving from document organizers into execution engines. WorkBuddy already supports automated script generation and workflow orchestration. As these products mature, the software shapes the intelligence behind it—not merely hosting AI, but actively training it.
+                        - paragraph [ref=f26e796]: This dynamic may become Tencent's strongest defensive moat. Unlike standalone model providers, Tencent can validate improvements against millions of real business tasks across its ecosystem before external developers ever access them.
+                        - heading "The Bottom Line" [level=2] [ref=f26e797]
+                        - paragraph [ref=f26e798]: Hy3 is more than a model upgrade. It is a test of whether China's product-integrated AI strategy can compensate for hardware constraints and benchmark gaps.
+                        - paragraph [ref=f26e799]: The early results are promising on agentic tasks and reliability. Tencent's ecosystem gives it a data flywheel that standalone providers cannot easily replicate. Whether that flywheel can close the capability gap—rather than merely making an efficient model more efficient—will determine whether Hy3 is a competitive alternative or simply a well-integrated domestic solution.
+                        - paragraph [ref=f26e800]:
+                          - emphasis [ref=f26e801]: This article was originally published on
+                          - link [ref=f26e802] [cursor=pointer]:
+                            - /url: https://www.forbes.com/sites/viviantoh/2026/07/13/tencents-hy3-bets-on-ai-agents-over-model-size/
+                            - emphasis [ref=f26e803]: Forbes.com
+                    - complementary [ref=f26e804]:
+                      - generic [ref=f26e805]:
+                        - generic [ref=f26e806]: Advertisement
+                        - list [ref=f26e813]:
+                          - listitem [ref=f26e814]:
+                            - link "About our ads" [ref=f26e815] [cursor=pointer]:
+                              - /url: https://legal.yahoo.com/us/en/yahoo/privacy/adinfo/index.html
+                    - button "View comments" [ref=f26e820] [cursor=pointer]:
+                      - generic [ref=f26e821]:
+                        - img "View comments" [ref=f26e822]
+                        - text: View comments
+              - generic [ref=f26e825]: Advertisement
+            - generic [ref=f26e879]:
+              - article [aria-hidden] [ref=f26e881]:
+                - figure [ref=f26e884]
+              - article [aria-hidden] [ref=f26e893]:
+                - figure [ref=f26e896]
+              - article [aria-hidden] [ref=f26e905]:
+                - figure [ref=f26e908]
+              - article [aria-hidden] [ref=f26e917]:
+                - figure [ref=f26e920]
+              - article [aria-hidden] [ref=f26e929]:
+                - figure [ref=f26e932]
+              - article [aria-hidden] [ref=f26e941]:
+                - figure [ref=f26e944]
+              - article [aria-hidden] [ref=f26e953]:
+                - figure [ref=f26e956]
+              - article [aria-hidden] [ref=f26e965]:
+                - figure [ref=f26e968]
+              - article [aria-hidden] [ref=f26e977]:
+                - figure [ref=f26e980]
+              - article [aria-hidden] [ref=f26e989]:
+                - figure [ref=f26e992]
+              - article [aria-hidden] [ref=f26e1001]:
+                - figure [ref=f26e1004]
+              - article [aria-hidden] [ref=f26e1013]:
+                - figure [ref=f26e1016]
+              - article [aria-hidden] [ref=f26e1025]:
+                - figure [ref=f26e1028]
+              - article [aria-hidden] [ref=f26e1037]:
+                - figure [ref=f26e1040]
+              - article [aria-hidden] [ref=f26e1049]:
+                - figure [ref=f26e1052]
+              - article [aria-hidden] [ref=f26e1061]:
+                - figure [ref=f26e1064]
+              - article [aria-hidden] [ref=f26e1073]:
+                - figure [ref=f26e1076]
+              - article [aria-hidden] [ref=f26e1085]:
+                - figure [ref=f26e1088]
+              - article [aria-hidden] [ref=f26e1097]:
+                - figure [ref=f26e1100]
+              - article [aria-hidden] [ref=f26e1109]:
+                - figure [ref=f26e1112]
+              - article [aria-hidden] [ref=f26e1121]:
+                - figure [ref=f26e1124]
+              - article [aria-hidden] [ref=f26e1133]:
+                - figure [ref=f26e1136]
+              - article [aria-hidden] [ref=f26e1145]:
+                - figure [ref=f26e1148]
+              - article [aria-hidden] [ref=f26e1157]:
+                - figure [ref=f26e1160]
+              - article [aria-hidden] [ref=f26e1169]:
+                - figure [ref=f26e1172]
+              - article [aria-hidden] [ref=f26e1181]:
+                - figure [ref=f26e1184]
+              - article [aria-hidden] [ref=f26e1193]:
+                - figure [ref=f26e1196]
+              - article [aria-hidden] [ref=f26e1205]:
+                - figure [ref=f26e1208]
+              - article [aria-hidden] [ref=f26e1217]:
+                - figure [ref=f26e1220]
+              - article [aria-hidden] [ref=f26e1229]:
+                - figure [ref=f26e1232]
+              - article [aria-hidden] [ref=f26e1241]:
+                - figure [ref=f26e1244]
+              - article [aria-hidden] [ref=f26e1253]:
+                - figure [ref=f26e1256]
+              - article [aria-hidden] [ref=f26e1265]:
+                - figure [ref=f26e1268]
+              - article [aria-hidden] [ref=f26e1277]:
+                - figure [ref=f26e1280]
+              - article [aria-hidden] [ref=f26e1289]:
+                - figure [ref=f26e1292]
+              - article [aria-hidden] [ref=f26e1301]:
+                - figure [ref=f26e1304]
+              - article [aria-hidden] [ref=f26e1313]:
+                - figure [ref=f26e1316]
+              - article [aria-hidden] [ref=f26e1325]:
+                - figure [ref=f26e1328]
+              - article [aria-hidden] [ref=f26e1337]:
+                - figure [ref=f26e1340]
+              - article [aria-hidden] [ref=f26e1349]:
+                - figure [ref=f26e1352]
+      - contentinfo [ref=f26e1360]:
+        - generic [ref=f26e1361]:
+          - link "Yahoo Tech" [ref=f26e1363] [cursor=pointer]:
+            - /url: https://tech.yahoo.com/
+          - generic [ref=f26e1370]:
+            - list [ref=f26e1371]:
+              - listitem [ref=f26e1372]:
+                - paragraph [ref=f26e1373]:
+                  - link "AI" [ref=f26e1374] [cursor=pointer]:
+                    - /url: https://tech.yahoo.com/ai/
+              - listitem [ref=f26e1375]:
+                - paragraph [ref=f26e1376]:
+                  - link "Audio" [ref=f26e1377] [cursor=pointer]:
+                    - /url: https://tech.yahoo.com/audio/
+              - listitem [ref=f26e1378]:
+                - paragraph [ref=f26e1379]:
+                  - link "Computing" [ref=f26e1380] [cursor=pointer]:
+                    - /url: https://tech.yahoo.com/computing/
+              - listitem [ref=f26e1381]:
+                - paragraph [ref=f26e1382]:
+                  - link "Gaming" [ref=f26e1383] [cursor=pointer]:
+                    - /url: https://tech.yahoo.com/gaming/
+              - listitem [ref=f26e1384]:
+                - paragraph [ref=f26e1385]:
+                  - link "Home Entertainment" [ref=f26e1386] [cursor=pointer]:
+                    - /url: https://tech.yahoo.com/home-entertainment/
+              - listitem [ref=f26e1387]:
+                - paragraph [ref=f26e1388]:
+                  - link "Phones" [ref=f26e1389] [cursor=pointer]:
+                    - /url: https://tech.yahoo.com/phones/
+              - listitem [ref=f26e1390]:
+                - paragraph [ref=f26e1391]:
+                  - link "Puzzle hints" [ref=f26e1392] [cursor=pointer]:
+                    - /url: https://tech.yahoo.com/puzzles/
+              - listitem [ref=f26e1393]:
+                - paragraph [ref=f26e1394]:
+                  - link "Science" [ref=f26e1395] [cursor=pointer]:
+                    - /url: https://tech.yahoo.com/science/
+              - listitem [ref=f26e1396]:
+                - paragraph [ref=f26e1397]:
+                  - link "Streaming" [ref=f26e1398] [cursor=pointer]:
+                    - /url: https://tech.yahoo.com/streaming/
+              - listitem [ref=f26e1399]:
+                - paragraph [ref=f26e1400]:
+                  - link "VPN" [ref=f26e1401] [cursor=pointer]:
+                    - /url: https://tech.yahoo.com/vpn/
+              - listitem [ref=f26e1402]:
+                - paragraph [ref=f26e1403]:
+                  - link "Wearables" [ref=f26e1404] [cursor=pointer]:
+                    - /url: https://tech.yahoo.com/wearables/
+              - listitem [ref=f26e1405]:
+                - paragraph [ref=f26e1406]:
+                  - link "Deals" [ref=f26e1407] [cursor=pointer]:
+                    - /url: https://tech.yahoo.com/deals/
+            - list [ref=f26e1408]:
+              - listitem [ref=f26e1409]:
+                - paragraph [ref=f26e1410]:
+                  - link "Advertise (opens in new tab)" [ref=f26e1411] [cursor=pointer]:
+                    - /url: https://www.yahooinc.com/yahoo-dsp
+                    - text: Advertise
+                    - generic [ref=f26e1412]: (opens in new tab)
+              - listitem [ref=f26e1413]:
+                - paragraph [ref=f26e1414]:
+                  - link "About our ads (opens in new tab)" [ref=f26e1415] [cursor=pointer]:
+                    - /url: https://legal.yahoo.com/us/en/yahoo/privacy/adinfo/index.html
+                    - text: About our ads
+                    - generic [ref=f26e1416]: (opens in new tab)
+              - listitem [ref=f26e1417]:
+                - paragraph [ref=f26e1418]:
+                  - link "Licensing (opens in new tab)" [ref=f26e1419] [cursor=pointer]:
+                    - /url: https://info.wrightsmedia.com/yahoo-licensing
+                    - text: Licensing
+                    - generic [ref=f26e1420]: (opens in new tab)
+              - listitem [ref=f26e1421]:
+                - paragraph [ref=f26e1422]:
+                  - link "Careers (opens in new tab)" [ref=f26e1423] [cursor=pointer]:
+                    - /url: https://www.yahooinc.com/careers/
+                    - text: Careers
+                    - generic [ref=f26e1424]: (opens in new tab)
+              - listitem [ref=f26e1425]:
+                - paragraph [ref=f26e1426]:
+                  - link "Help (opens in new tab)" [ref=f26e1427] [cursor=pointer]:
+                    - /url: https://help.yahoo.com/kb/account
+                    - text: Help
+                    - generic [ref=f26e1428]: (opens in new tab)
+              - listitem [ref=f26e1429]:
+                - paragraph [ref=f26e1430]:
+                  - link "Feedback (opens in new tab)" [ref=f26e1431] [cursor=pointer]:
+                    - /url: https://yahoo.uservoice.com/forums/341361-yahoo-home?browser=chrome&bucket=900,seamless&os=mac%20os%20x&partner=none&location=US&rid=1th8eptjsm8pq
+                    - text: Feedback
+                    - generic [ref=f26e1432]: (opens in new tab)
+              - listitem [ref=f26e1433]:
+                - paragraph [ref=f26e1434]:
+                  - link "Sitemap (opens in new tab)" [ref=f26e1435] [cursor=pointer]:
+                    - /url: https://tech.yahoo.com/sitemap/
+                    - text: Sitemap
+                    - generic [ref=f26e1436]: (opens in new tab)
+            - generic [ref=f26e1438]:
+              - heading "Follow us on" [level=2] [ref=f26e1439]
+              - list "Follow us on" [ref=f26e1440]:
+                - listitem [ref=f26e1441]:
+                  - link "Follow us on X (opens in new tab)" [ref=f26e1442] [cursor=pointer]:
+                    - /url: https://x.com/Yahoo
+                - listitem [ref=f26e1445]:
+                  - link "Follow us on Facebook (opens in new tab)" [ref=f26e1446] [cursor=pointer]:
+                    - /url: https://www.facebook.com/yahoo
+                - listitem [ref=f26e1449]:
+                  - link "Follow us on Instagram (opens in new tab)" [ref=f26e1450] [cursor=pointer]:
+                    - /url: https://www.instagram.com/yahoo/
+          - paragraph [ref=f26e1453]: © 2026 Yahoo. All rights reserved.
+  - button [aria-hidden] [ref=f26e1454] [cursor=pointer]

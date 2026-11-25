@@ -55,7 +55,7 @@ use smithay::utils::DeviceFd;
 
 use viewport_vulkan::{Device as VulkanDevice, VulkanRenderer};
 
-use crate::state::ViewportState;
+use crate::state::{live_surfaces, ViewportState};
 
 /// What `VIEWPORT_GPU` asked for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3031,7 +3031,7 @@ impl ViewportState {
         // frame had been presented exactly never, and fell back to its own
         // 60Hz clock — which measured as Blink painting a fifth as often as
         // WebKit and read as the engine being slow. It was this.
-        for surface in self.shell_client_surfaces() {
+        for surface in live_surfaces(self.shell_client_surfaces()) {
             smithay::desktop::utils::take_presentation_feedback_surface_tree(
                 &surface,
                 &mut feedback,
@@ -3056,7 +3056,7 @@ impl ViewportState {
         }
         // And the wallpaper. It is drawn as a surface tree, so unlike the shell
         // it has a real scan-out output recorded above and can be asked for it.
-        for surface in self.background_surfaces() {
+        for surface in live_surfaces(self.background_surfaces()) {
             smithay::desktop::utils::take_presentation_feedback_surface_tree(
                 &surface,
                 &mut feedback,
@@ -3123,7 +3123,7 @@ impl ViewportState {
         }
         // And the wallpaper, which allocates against a GPU like any other
         // client and was being told nothing about which one.
-        for surface in self.background_surfaces() {
+        for surface in live_surfaces(self.background_surfaces()) {
             smithay::desktop::utils::send_dmabuf_feedback_surface_tree(
                 &surface,
                 output,
@@ -3186,7 +3186,7 @@ impl ViewportState {
         // The shell, for the same reason its feedback is taken above: a
         // surface with no primary scanout output recorded is dropped from the
         // feedback entirely, so this has to happen or that does nothing.
-        for shell in self.shell_client_surfaces() {
+        for shell in live_surfaces(self.shell_client_surfaces()) {
             smithay::wayland::compositor::with_surface_tree_downward(
                 &shell,
                 (),
@@ -3208,7 +3208,7 @@ impl ViewportState {
         // of its own — in the space, in no layer map, so neither walk above
         // reaches it. A background terminal pacing on presentation was told
         // about no frame at all and stopped after the first.
-        for surface in self.background_surfaces() {
+        for surface in live_surfaces(self.background_surfaces()) {
             smithay::desktop::utils::with_surfaces_surface_tree(
                 &surface,
                 |surface, surface_states| {
@@ -4171,7 +4171,7 @@ impl ViewportState {
         // soon as a vblank has arrived recently — so on a running screen this
         // is the only invitation it ever gets. Without it the shell paints its
         // first frame and stops, and the desktop is a photograph.
-        for surface in self.shell_client_surfaces() {
+        for surface in live_surfaces(self.shell_client_surfaces()) {
             smithay::desktop::utils::send_frames_surface_tree(
                 &surface,
                 output,

@@ -4289,4 +4289,81 @@ mod tests {
             );
         }
     }
+
+    /// A copy of `source` without whole-line comments, so an invariant about
+    /// code cannot be satisfied by prose that quotes the code.
+    fn strip_line_comments(source: &str) -> String {
+        source
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The braced block that starts at the first `{` at or after `at`.
+    fn block_at(source: &str, at: usize) -> &str {
+        let open = at + source[at..].find('{').expect("an opening brace");
+        let mut depth = 0usize;
+        for (offset, ch) in source[open..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return &source[open..=open + offset];
+                    }
+                }
+                _ => {}
+            }
+        }
+        panic!("unbalanced braces at byte {at}");
+    }
+
+    /// `view.blur` is the message a window rule's `blur` becomes, and it changes
+    /// what a frame is made of: the background effect behind the surface
+    /// appears or goes with no client commit to carry the change. The arm
+    /// cannot be *run* in a unit test — `ViewportState` owns a `Display`, a
+    /// `LoopHandle` and a live `Space` — so its contract is pinned where it is
+    /// written: it stores the policy, and it marks a frame exactly when the
+    /// policy changed. The shell half of the same feature is
+    /// `tests/shell.test.js` ("a blur rule sends view.blur"); this is the
+    /// compositor half that test cannot reach.
+    ///
+    /// Both halves matter and a shell-only test passes either way. Store the
+    /// policy without the mark and the effect stays as it was until unrelated
+    /// damage redraws the window — a rule blur that does nothing on a still
+    /// desk. Mark unconditionally and every `view.blur` costs a frame: the
+    /// shell re-states this policy on every `view.props`, so a title change
+    /// would redraw a window that did not change.
+    #[test]
+    fn a_blur_rule_change_marks_a_frame_only_when_it_changes() {
+        let source = include_str!("apply.rs");
+        let source = source.split("#[cfg(test)]").next().unwrap_or(source);
+        let start = source
+            .find("Request::ViewBlur { id, blur } => {")
+            .expect("the ViewBlur arm in apply.rs");
+        let rest = &source[start..];
+        let end = rest
+            .find("\n        }\n")
+            .expect("the end of the ViewBlur arm");
+        let arm = strip_line_comments(&rest[..end]);
+
+        let guard = arm.find("if view.rule_blur != blur").expect(
+            "the arm must only act on a change: the shell re-states the policy on every view.props",
+        );
+        let changed = block_at(&arm, guard);
+        assert!(
+            changed.contains("view.rule_blur = blur;"),
+            "view.blur must store the rule's policy on the view"
+        );
+        assert!(
+            changed.contains("state.needs_render = true;"),
+            "a changed blur policy must mark a frame, or the effect is not drawn in or out"
+        );
+        assert_eq!(
+            arm.matches("state.needs_render = true;").count(),
+            1,
+            "the mark belongs to the change guard alone; anywhere else it is a frame no rule asked for"
+        );
+    }
 }

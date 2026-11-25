@@ -808,6 +808,15 @@
             # selection exists only while the client offering it is running,
             # so nothing in-process can stand in for one.
             wl-clipboard
+
+            # tests/view-ipc.test.sh's view.configured clamp needs a client
+            # that advertises a minimum size, and foot is the one the suite
+            # uses (6x13). Without it the check skips — and under CI the suite
+            # now counts a missing dependency as a failure rather than a
+            # green skip, so the package belongs here or the job goes red for
+            # a reason nobody reads. See scripts/integration.sh's
+            # VIEWPORT_STRICT_TESTS and the test's own note.
+            foot
         ];
 
         # The environment both need, extracted for the same reason: an ASan

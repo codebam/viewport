@@ -1,0 +1,296 @@
+- generic [active] [ref=f5e1]:
+  - generic [ref=f5e2]:
+    - link "Skip to main content" [ref=f5e3] [cursor=pointer]:
+      - /url: "#main-content"
+    - banner [ref=f5e4]:
+      - generic [ref=f5e6]:
+        - link "Meta" [ref=f5e7] [cursor=pointer]:
+          - /url: /
+        - navigation "Primary" [ref=f5e13]:
+          - list [ref=f5e14]:
+            - listitem [ref=f5e15]:
+              - button "AI Research" [ref=f5e16] [cursor=pointer]
+            - listitem [ref=f5e20]:
+              - link "AI Developers (opens in a new tab)" [ref=f5e21] [cursor=pointer]:
+                - /url: https://developer.meta.com/ai/?utm_source=ai_meta_site&utm_medium=web&utm_campaign=nav_AI-developers_07242026&utm_content=nav_AI-developers
+                - text: AI Developers
+        - button "Appearance, System" [ref=f5e22] [cursor=pointer]
+        - link "Try Muse (opens in a new tab)" [ref=f5e27] [cursor=pointer]:
+          - /url: https://applink.muse.ai/?pt=10684&pid=ai_meta_site&utm_source=ai_meta_site&utm_medium=web&utm_campaign=nav_try-muse_09082026&utm_content=nav_try-muse_09082026&ct=nav_try-muse_09082026&referrer=utm_source%3Dai_meta_site%26utm_medium%3Dweb%26utm_campaign%3Dnav_try-muse_09082026%26utm_content%3Dnav_try-muse_09082026
+          - text: Try Muse
+    - generic [ref=f5e28]:
+      - main [ref=f5e29]:
+        - article [ref=f5e32]:
+          - generic [ref=f5e33]:
+            - heading "Introducing Muse Code and Muse Spark 1.2" [level=1] [ref=f5e34]
+            - generic [ref=f5e35]:
+              - time [ref=f5e36]: August 5, 2026
+              - generic [ref=f5e37]:
+                - generic [aria-hidden] [ref=f5e38]: ·
+                - generic [ref=f5e39]: 4 minute read
+          - figure [ref=f5e44]:
+            - img "Muse Code and Muse Spark 1.2 launch artwork." [ref=f5e48]
+          - generic [ref=f5e50]:
+            - paragraph [ref=f5e51]: We're excited to release Muse Code (beta), a terminal coding agent powered by Muse Spark 1.2, our newest model. This marks our next step toward the frontier, with larger and much more capable models on the way.
+            - region [ref=f5e52]:
+              - heading "Install Muse Code on macOS or Linux:" [level=2] [ref=f5e53]
+              - generic [ref=f5e54]:
+                - code [ref=f5e56]: curl -fsSL https://dev.meta.ai/install.sh | bash
+                - button "Copy installation command" [ref=f5e57] [cursor=pointer]
+            - paragraph [ref=f5e65]: "Muse Code takes on complex software engineering tasks across large repositories: planning changes, writing code, and validating the results. It can coordinate multiple persistent subagents for each task, solving difficult problems faster, more accurately, and with less intervention."
+            - heading "Muse Code" [level=2] [ref=f5e66]
+            - heading "Async Background Agents" [level=3] [ref=f5e67]
+            - paragraph [ref=f5e68]: Muse Code operates with a simple agent loop plus a set of async background agents to enhance the main agent's capability. These specialized background agents remain active throughout each session, rather than being spawned for individual tasks, helping avoid redundant information gathering. They carry out next steps and choose when to communicate back to the main agent. Their persistence reduces latency and the need for steering on difficult, multi-step tasks.
+            - region "Muse Code development examples" [ref=f5e69]:
+              - tablist "Muse Code development examples" [ref=f5e72]:
+                - tab "Photon Sphere" [selected] [ref=f5e73] [cursor=pointer]
+                - tab "Embervault" [ref=f5e74] [cursor=pointer]
+                - tab "Avo Lawn" [ref=f5e75] [cursor=pointer]
+              - figure [ref=f5e76]:
+                - tabpanel "Photon Sphere" [ref=f5e77]:
+                  - region "Photon Sphere" [ref=f5e78]:
+                    - generic [ref=f5e80]:
+                      - iframe [aria-hidden] [ref=f5e81]:
+                        - generic [ref=f6e1]:
+                          - navigation:
+                            - generic [ref=f6e3]:
+                              - generic [ref=f6e4]: LAB · 01
+                              - link "Simulation" [ref=f6e5] [cursor=pointer]:
+                                - /url: "#hero"
+                              - link "Anatomy" [ref=f6e6] [cursor=pointer]:
+                                - /url: "#optics"
+                          - main [ref=f6e7]:
+                            - generic [ref=f6e8]:
+                              - generic [ref=f6e9]:
+                                - generic [ref=f6e10]: SCIENTIFIC PREVISUALIZATION
+                                - heading "Photon sphere light that orbits" [level=1] [ref=f6e11]:
+                                  - text: Photon sphere
+                                  - generic [ref=f6e12]: light that orbits
+                                - paragraph [ref=f6e13]: Each pixel traces a light ray — a “null geodesic” bent by gravity. You see the thin photon ring and the flat disk lensed above and below the shadow.
+                                - generic [ref=f6e14]:
+                                  - generic [ref=f6e15]:
+                                    - generic [ref=f6e16]: Metric
+                                    - generic [ref=f6e17]: Schwarzschild + spin Doppler
+                                  - generic [ref=f6e18]:
+                                    - generic [ref=f6e19]: Disk
+                                    - generic [ref=f6e20]: Thin KeplerianT ∝ r−3/4
+                                  - generic [ref=f6e21]:
+                                    - generic [ref=f6e22]: Shadow
+                                    - generic [ref=f6e23]: ~5.2 Rs lensed
+                              - generic [ref=f6e26]:
+                                - generic [ref=f6e27]:
+                                  - generic [ref=f6e28]:
+                                    - generic [ref=f6e29]:
+                                      - generic [ref=f6e30]: Mass
+                                      - generic [ref=f6e31]: "0.76"
+                                    - slider [ref=f6e32] [cursor=pointer]: "0.76"
+                                  - generic [ref=f6e33]:
+                                    - generic [ref=f6e34]:
+                                      - generic [ref=f6e35]: Spin
+                                      - generic [ref=f6e36]: "0.625"
+                                    - slider [ref=f6e37] [cursor=pointer]: "0.625"
+                                  - generic [ref=f6e38]:
+                                    - generic [ref=f6e39]:
+                                      - generic [ref=f6e40]: Temperature
+                                      - generic [ref=f6e41]: "1.23"
+                                    - slider [ref=f6e42] [cursor=pointer]: "1.23"
+                                  - generic [ref=f6e43]:
+                                    - generic [ref=f6e44]:
+                                      - generic [ref=f6e45]: Film
+                                      - generic [ref=f6e46]: "0.15"
+                                    - slider [ref=f6e47] [cursor=pointer]: "0.15"
+                                - generic [ref=f6e48]:
+                                  - generic [ref=f6e49]:
+                                    - generic [ref=f6e50]: Horizon r+
+                                    - generic [ref=f6e51]: "0.677"
+                                  - generic [ref=f6e52]:
+                                    - generic [ref=f6e53]: Photon ring
+                                    - generic [ref=f6e54]: "0.893"
+                                  - generic [ref=f6e55]:
+                                    - generic [ref=f6e56]: ISCO
+                                    - generic [ref=f6e57]: "1.401"
+                                  - generic [ref=f6e58]:
+                                    - generic [ref=f6e59]: Shadow diam
+                                    - generic [ref=f6e60]: "3.949"
+                            - generic [ref=f6e61]:
+                              - generic [ref=f6e62]:
+                                - heading "Anatomy of the lensed image" [level=2] [ref=f6e63]
+                                - paragraph [ref=f6e64]: Seen nearly edge-on (80°), the same flat disk appears below the shadow in front and arched above it behind — light bent by gravity. The side spinning toward you looks brighter and whiter.
+                                - generic [ref=f6e65]:
+                                  - generic [ref=f6e66]:
+                                    - generic [ref=f6e72]: Horizon
+                                    - heading "Shadow is not pure black" [level=3] [ref=f6e74]
+                                    - paragraph [ref=f6e75]: Faint warm glow inside, brightest along the lower-left edge where hot gas skims the horizon.
+                                  - generic [ref=f6e76]:
+                                    - generic [ref=f6e79]: Photon sphere
+                                    - heading "Razor photon ring" [level=3] [ref=f6e81]
+                                    - paragraph [ref=f6e82]: A razor-thin ring where light circles the hole before escaping — brightest where motion blueshifts it.
+                                  - generic [ref=f6e83]:
+                                    - generic [ref=f6e86]: Doppler
+                                    - heading "Relativistic beaming" [level=3] [ref=f6e88]
+                                    - paragraph [ref=f6e89]: Gas coming toward you is beamed and looks whiter; gas moving away looks dimmer and redder.
+                                  - generic [ref=f6e90]:
+                                    - generic [ref=f6e94]: Lensing
+                                    - heading "Lensed above and below" [level=3] [ref=f6e96]
+                                    - paragraph [ref=f6e97]: Front of the disk below the shadow; far side bent over the top; a second, lensed image tucked underneath.
+                                  - generic [ref=f6e98]:
+                                    - generic [ref=f6e101]: Frame drag
+                                    - heading "Frame-dragged shear" [level=3] [ref=f6e103]
+                                    - paragraph [ref=f6e104]: Spin drags space itself, shearing the disk into streaks.
+                              - generic [ref=f6e105]:
+                                - heading "Per fragment Schwarzschild null integration" [level=2] [ref=f6e106]
+                                - paragraph [ref=f6e107]: d2p dlambda2 = -3/2 h2 p / r5, Binet u'' = -u + 3/2 rs u2. Velocity-Verlet with angular sweep, bendC continuous via sub-Verlet.
+                                - generic [ref=f6e108]:
+                                  - generic [ref=f6e109]:
+                                    - generic [ref=f6e110]: h = cross(p,dir) h2 = dot(h,h)
+                                    - generic [ref=f6e111]: Conserved, b approx sqrt h2.
+                                  - generic [ref=f6e112]:
+                                    - generic [ref=f6e113]: dl = min(DLMAX, DPHI r2 / h, 0.35r)
+                                    - generic [ref=f6e114]: Constant angular step, dphi = dl h / r2.
+                                  - generic [ref=f6e115]:
+                                    - generic [ref=f6e116]: q = vec3(dRot·2.1, log r·12.5) d=norm(xz)
+                                    - generic [ref=f6e117]: Cylindrical embedding, periodic by construction, no atan seam.
+                                  - generic [ref=f6e118]:
+                                    - generic [ref=f6e119]: I = (3/r)^3.4 inner outer striate bright
+                                    - generic [ref=f6e120]: Thin-disk, tau, alpha, grazing guard.
+                                  - generic [ref=f6e121]:
+                                    - generic [ref=f6e122]: bendC = bend - dBend·(1-s) + 4x sub-Verlet
+                                    - generic [ref=f6e123]: Interpolate to event time, remove step quantization lines.
+                                  - generic [ref=f6e124]:
+                                    - generic [ref=f6e125]: glow = 0.196 0.158 0.104 * (0.042+0.098 rimG lobe)
+                                    - generic [ref=f6e126]: Shadow interior warm olive.
+                      - status "Loading demo" [ref=f5e82]
+            - heading "Runtime Design" [level=3] [ref=f5e85]
+            - paragraph [ref=f5e86]: "Muse Code uses a local event log in which every model call, tool run, approval, and edit is appended. This single source of truth makes the runtime replay-exact and restart-safe: after a crash, the agent can resume precisely where it stopped. That ability lets Muse Code take on long-running tasks without being derailed by failures."
+            - heading "Bundled Skills" [level=3] [ref=f5e87]
+            - paragraph [ref=f5e88]:
+              - text: Muse Code ships with several default skills.
+              - code [ref=f5e89]: /plan
+              - text: turns a task into an approval-gated plan,
+              - code [ref=f5e90]: /grill
+              - text: stress-tests that plan until it holds up, and
+              - code [ref=f5e91]: /goal
+              - text: works toward successful completion of the specified objective.
+            - figure [ref=f5e92]:
+              - generic [ref=f5e94]:
+                - generic "Muse Code rebuilds a luxury vacation rental booking page from a reference video and validates the finished site in a browser." [ref=f5e95]
+                - generic:
+                  - button "Play Muse Code rebuilds a luxury vacation rental booking page from a reference video and validates the finished site in a browser." [ref=f5e98] [cursor=pointer]
+                  - generic [ref=f5e102]:
+                    - button "Show captions for Muse Code rebuilds a luxury vacation rental booking page from a reference video and validates the finished site in a browser." [ref=f5e104] [cursor=pointer]
+                    - button "Mute Muse Code rebuilds a luxury vacation rental booking page from a reference video and validates the finished site in a browser." [ref=f5e110] [cursor=pointer]
+                  - generic [ref=f5e116]:
+                    - generic [ref=f5e117]:
+                      - generic [ref=f5e118]: Muse Code rebuilds a luxury vacation rental booking page from a reference video and validates the finished site in a browser. playback position
+                      - generic [ref=f5e119]: 0:00 of 0:00
+                      - generic [aria-hidden] [ref=f5e120]: 00:00 / 00:00
+                      - slider "Muse Code rebuilds a luxury vacation rental booking page from a reference video and validates the finished site in a browser. playback position" [disabled] [ref=f5e121]: "0"
+                    - button "Enter full screen for Muse Code rebuilds a luxury vacation rental booking page from a reference video and validates the finished site in a browser." [ref=f5e123] [cursor=pointer]
+              - paragraph [ref=f5e131]: The user inputs a fly-through video of a home into the terminal as an mp4 file. Muse Code interprets the video and produces a visually rich vacation home marketing and booking page.
+            - heading "Muse Spark 1.2" [level=2] [ref=f5e132]
+            - paragraph [ref=f5e133]: Muse Spark 1.2 is a coding-focused update to Muse Spark 1.1, with improvements in code generation, complex debugging, codebase understanding, and end-to-end developer workflows. In Muse Spark 1.2, we significantly scaled up training compute on coding tasks while expanding training environment diversity. The model also maintains its strength in other key areas like general agents.
+            - figure [ref=f5e134]:
+              - tablist "Muse Spark 1.2 evaluations" [ref=f5e136]:
+                - tab "Coding" [selected] [ref=f5e137] [cursor=pointer]
+                - tab "General Agents" [ref=f5e138] [cursor=pointer]
+              - tabpanel "Coding" [ref=f5e140]:
+                - group "Coding" [ref=f5e141]:
+                  - figure [ref=f5e142]:
+                    - img "Bar chart comparing Terminal-Bench 2.1 scores for Muse Spark 1.2 and other coding models." [ref=f5e146]
+                  - figure [ref=f5e147]:
+                    - img "Bar chart comparing DeepSWE 1.1 scores for Muse Spark 1.2 and other coding models." [ref=f5e151]
+                  - figure [ref=f5e152]:
+                    - img "Bar chart comparing Meta Internal Coding Bench scores for Muse Spark 1.2 and other coding models." [ref=f5e156]
+            - paragraph [ref=f5e157]:
+              - text: For more details about our evaluations, see
+              - link "our report" [ref=f5e158] [cursor=pointer]:
+                - /url: /static/muse-spark-1-2-methodology
+              - text: .
+            - heading "Co-Training With Muse Code" [level=3] [ref=f5e159]
+            - paragraph [ref=f5e160]: We co-trained Muse Spark 1.2 with Muse Code to ensure the model exhibits its best performance and coding usability when paired together. The training included rejection sampled harness trajectories and recipe optimizations for goals, compaction, and subagents, alongside the integration of the Muse Code toolset to maximize harness compatibility.
+            - heading "Long-Horizon" [level=3] [ref=f5e161]
+            - paragraph [ref=f5e162]: Muse Spark 1.2 was extensively trained on long-horizon coding tasks, including whole-repository generation, large end-to-end projects, and auto-research. It leverages planning to sequence work, goal conditioning to maintain direction, and context compaction to retain the knowledge needed to sustain progress.
+            - heading "Self-Improvement" [level=3] [ref=f5e163]
+            - paragraph [ref=f5e164]: We also used Muse Spark 1.1 to generate challenging coding environments and instruction-following templates. The model then graded candidate solutions on how well they satisfied those requirements, producing a scalable training dataset for Muse Spark 1.2. This self-improvement loop helped Muse Spark 1.2 follow complex instructions more precisely than its predecessor.
+            - 'heading "Case Study: Kernel Optimization" [level=2] [ref=f5e165]'
+            - paragraph [ref=f5e166]: We tested the model's ability to iteratively optimize GPU kernels over 1,000+ tool calls (up to 24 hours). Leveraging Muse Code's agentic coding environment, the model writes, compiles, profiles, and progressively improves kernel performance relative to a provided baseline implementation. We benchmarked on KDA and MLA kernels for NVIDIA Hopper GPUs. The agent continues to achieve substantial improvements over the provided baseline implementation.
+            - figure [ref=f5e167]:
+              - tablist "Kernel optimization charts" [ref=f5e169]:
+                - tab "KDA" [selected] [ref=f5e170] [cursor=pointer]
+                - tab "MLA" [ref=f5e171] [cursor=pointer]
+              - tabpanel "KDA" [ref=f5e173]:
+                - group "KDA" [ref=f5e174]:
+                  - figure [ref=f5e175]:
+                    - img "Chart comparing KDA kernel speedup against the baseline over cumulative tool calls for Muse Spark 1.2 and other models." [ref=f5e179]
+                - paragraph [ref=f5e180]: The baseline is the FLA Triton implementation of KDA. Models were prohibited from importing third-party kernel libraries such as FLA directly; instead, they had to apply specialized kernel-optimization knowledge to implement the algorithm in Triton, rather than wrap existing implementations. Muse Spark 1.2 paired a chunk-parallel preparation kernel with a sequential inter-chunk scan, combining standard fusion and tiling with KDA-specific optimizations such as re-centering the gated cumulative decay at the chunk midpoint.
+            - heading "Availability" [level=2] [ref=f5e181]
+            - paragraph [ref=f5e182]: Muse Spark 1.2 is available today in Muse Code and in Meta Model API with expanded global access. We have a lot on the horizon, including new harness features and more powerful models. We can’t wait to see what you build!
+            - link "Get started with Muse Code on the Meta developer site" [ref=f5e183] [cursor=pointer]:
+              - /url: https://dev.meta.ai
+              - text: Get started with Muse Code
+      - contentinfo [ref=f5e184]:
+        - generic [ref=f5e186]:
+          - generic [ref=f5e187]:
+            - navigation [ref=f5e188]:
+              - heading "Meta AI" [level=2] [ref=f5e189]
+              - list [ref=f5e190]:
+                - listitem [ref=f5e191]:
+                  - link "Assistant" [ref=f5e192] [cursor=pointer]:
+                    - /url: https://ai.meta.com/meta-ai/assistant/
+                - listitem [ref=f5e193]:
+                  - link "Media Generation" [ref=f5e194] [cursor=pointer]:
+                    - /url: https://ai.meta.com/meta-ai/media-generation/
+            - navigation [ref=f5e195]:
+              - heading "Developers" [level=2] [ref=f5e196]
+              - list [ref=f5e197]:
+                - listitem [ref=f5e198]:
+                  - link "Meta Model API" [ref=f5e199] [cursor=pointer]:
+                    - /url: https://developer.meta.com/ai/
+                - listitem [ref=f5e200]:
+                  - link "Muse Code" [ref=f5e201] [cursor=pointer]:
+                    - /url: https://developer.meta.com/ai/products/muse-code
+            - navigation [ref=f5e202]:
+              - heading "Models" [level=2] [ref=f5e203]
+              - list [ref=f5e204]:
+                - listitem [ref=f5e205]:
+                  - link "Muse Spark" [ref=f5e206] [cursor=pointer]:
+                    - /url: /blog/introducing-muse-spark-msl
+                - listitem [ref=f5e207]:
+                  - link "Muse Spark 1.1" [ref=f5e208] [cursor=pointer]:
+                    - /url: /blog/introducing-muse-spark-meta-model-api
+                - listitem [ref=f5e209]:
+                  - link "Muse Spark 1.2" [ref=f5e210] [cursor=pointer]:
+                    - /url: /blog/introducing-muse-code-and-muse-spark-1-2
+                - listitem [ref=f5e211]:
+                  - link "Muse Image" [ref=f5e212] [cursor=pointer]:
+                    - /url: /blog/introducing-next-generation-unified-media-generation-model
+          - list [ref=f5e213]:
+            - listitem [ref=f5e214]:
+              - link "Facebook" [ref=f5e215] [cursor=pointer]:
+                - /url: https://www.facebook.com/AIatMeta/
+            - listitem [ref=f5e220]:
+              - link "Threads" [ref=f5e221] [cursor=pointer]:
+                - /url: https://www.threads.com/@aiatmeta
+            - listitem [ref=f5e225]:
+              - link "X" [ref=f5e226] [cursor=pointer]:
+                - /url: https://x.com/aiatmeta
+            - listitem [ref=f5e230]:
+              - link "YouTube" [ref=f5e231] [cursor=pointer]:
+                - /url: https://www.youtube.com/@aiatmeta
+            - listitem [ref=f5e235]:
+              - link "GitHub" [ref=f5e236] [cursor=pointer]:
+                - /url: https://github.com/facebookresearch/
+          - navigation [ref=f5e242]:
+            - heading "Legal" [level=2] [ref=f5e243]
+            - list [ref=f5e244]:
+              - listitem [ref=f5e245]:
+                - link "Privacy Policy" [ref=f5e246] [cursor=pointer]:
+                  - /url: https://www.facebook.com/privacy/policy/?entry_point=data_policy_redirect&entry=0
+              - listitem [ref=f5e247]:
+                - link "Terms" [ref=f5e248] [cursor=pointer]:
+                  - /url: https://www.facebook.com/policies/
+              - listitem [ref=f5e249]:
+                - link "Cookies" [ref=f5e250] [cursor=pointer]:
+                  - /url: https://www.facebook.com/privacy/policies/cookies/?entry_point=cookie_policy_redirect&entry=0
+          - paragraph [ref=f5e251]: Meta © 2026
+  - alert [ref=f5e252]

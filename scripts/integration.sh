@@ -95,6 +95,18 @@ if [ -z "${XDG_RUNTIME_DIR:-}" ]; then
 fi
 
 failed=0
+# CI is not a workstation shell: `foot`, which the view.configured clamp in
+# view-ipc.test.sh needs, is in `workstationShell` while the CI job runs under
+# `nix develop .#rust`. A test that skips for a missing dependency therefore
+# reports a green build over a check nothing automated performs, so under CI a
+# missing dependency is a failure. The tests read `CI` themselves; exporting
+# the policy here keeps it in one place for every suite this script runs, and
+# `VIEWPORT_STRICT_TESTS=0` is the deliberate way out for a run that really
+# cannot have the package.
+case "${CI:-}" in
+""|0|false) ;;
+*) export VIEWPORT_STRICT_TESTS=1 ;;
+esac
 run() {
 	local name=$1
 	shift

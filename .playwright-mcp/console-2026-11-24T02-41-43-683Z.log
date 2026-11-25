@@ -1,0 +1,2 @@
+[    3196ms] [WARNING] Error with Permissions-Policy header: Unrecognized feature: 'ambient-light-sensor'. @ :0
+[    3461ms] [LOG] Lab ready seam fixed low {scale: 0.4, steps: 84, dphi: 0.19, dlMax: 5, upsHQ: 0} @ https://research.meta.ai/artifacts/introducing-muse-code-and-muse-spark-1-2/photon-sphere/v7/index.html:4469

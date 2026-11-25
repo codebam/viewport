@@ -1,0 +1,1155 @@
+- generic [ref=f11e3]:
+  - link "Skip to main content" [ref=f11e4] [cursor=pointer]:
+    - /url: "#main-content"
+  - generic [ref=f11e5]:
+    - generic [ref=f11e7]:
+      - generic [aria-hidden] [ref=f11e9]:
+        - generic [ref=f11e10]: "["
+        - generic [ref=f11e11]: "["
+        - generic [ref=f11e12]: "["
+        - generic [ref=f11e13]: "["
+        - generic [ref=f11e14]: "["
+        - generic [ref=f11e15]: "["
+        - generic [ref=f11e16]: "["
+        - generic [ref=f11e17]: "["
+        - generic [ref=f11e18]: "["
+        - generic [ref=f11e19]: "["
+        - generic [ref=f11e20]: "["
+        - generic [ref=f11e21]: "["
+        - generic [ref=f11e22]: "["
+        - generic [ref=f11e23]: "["
+        - generic [ref=f11e24]: "["
+        - generic [ref=f11e25]: "["
+        - generic [ref=f11e26]: "["
+        - generic [ref=f11e27]: "["
+        - generic [ref=f11e28]: "["
+        - generic [ref=f11e29]: "["
+        - generic [ref=f11e30]: "["
+        - generic [ref=f11e31]: "["
+        - generic [ref=f11e32]: "["
+        - generic [ref=f11e33]: "["
+        - generic [ref=f11e34]: "["
+        - generic [ref=f11e35]: "["
+        - generic [ref=f11e36]: "["
+        - generic [ref=f11e37]: "["
+        - generic [ref=f11e38]: "["
+        - generic [ref=f11e39]: "["
+        - generic [ref=f11e40]: "["
+        - generic [ref=f11e41]: "["
+        - generic [ref=f11e42]: "["
+        - generic [ref=f11e43]: "["
+        - generic [ref=f11e44]: "["
+        - generic [ref=f11e45]: "["
+        - generic [ref=f11e46]: "["
+        - generic [ref=f11e47]: "["
+        - generic [ref=f11e48]: "["
+        - generic [ref=f11e49]: "["
+        - generic [ref=f11e50]: "["
+        - generic [ref=f11e51]: "["
+        - generic [ref=f11e52]: "["
+        - generic [ref=f11e53]: "["
+        - generic [ref=f11e54]: "["
+        - generic [ref=f11e55]: "["
+        - generic [ref=f11e56]: "["
+        - generic [ref=f11e57]: "["
+        - generic [ref=f11e58]: "["
+        - generic [ref=f11e59]: "["
+        - generic [ref=f11e60]: "["
+        - generic [ref=f11e61]: "["
+        - generic [ref=f11e62]: "["
+        - generic [ref=f11e63]: "["
+        - generic [ref=f11e64]: "["
+        - generic [ref=f11e65]: "["
+        - generic [ref=f11e66]: "["
+        - generic [ref=f11e67]: "["
+        - generic [ref=f11e68]: "["
+        - generic [ref=f11e69]: "["
+      - generic [ref=f11e70]:
+        - generic [ref=f11e71]:
+          - generic [ref=f11e72]: L
+          - generic [ref=f11e73]: a
+          - generic [ref=f11e74]: u
+          - generic [ref=f11e75]: "n"
+          - generic [ref=f11e76]: c
+          - generic [ref=f11e77]: h
+          - generic [ref=f11e78]: i
+          - generic [ref=f11e79]: "n"
+          - generic [ref=f11e80]: g
+          - generic [ref=f11e82]: t
+          - generic [ref=f11e83]: h
+          - generic [ref=f11e84]: e
+        - link "o p e n - s o u r c e g a t e w a y" [ref=f11e86] [cursor=pointer]:
+          - /url: https://github.com/respanai/respan-gateway
+          - generic [ref=f11e87]: o
+          - generic [ref=f11e88]: p
+          - generic [ref=f11e89]: e
+          - generic [ref=f11e90]: "n"
+          - generic [ref=f11e91]: "-"
+          - generic [ref=f11e92]: s
+          - generic [ref=f11e93]: o
+          - generic [ref=f11e94]: u
+          - generic [ref=f11e95]: r
+          - generic [ref=f11e96]: c
+          - generic [ref=f11e97]: e
+          - generic [ref=f11e99]: g
+          - generic [ref=f11e100]: a
+          - generic [ref=f11e101]: t
+          - generic [ref=f11e102]: e
+          - generic [ref=f11e103]: w
+          - generic [ref=f11e104]: a
+          - generic [ref=f11e105]: "y"
+      - generic [aria-hidden] [ref=f11e107]:
+        - generic [ref=f11e108]: "]"
+        - generic [ref=f11e109]: "["
+        - generic [ref=f11e110]: "["
+        - generic [ref=f11e111]: "["
+        - generic [ref=f11e112]: "["
+        - generic [ref=f11e113]: "["
+        - generic [ref=f11e114]: "["
+        - generic [ref=f11e115]: "["
+        - generic [ref=f11e116]: "["
+        - generic [ref=f11e117]: "["
+        - generic [ref=f11e118]: "["
+        - generic [ref=f11e119]: "["
+        - generic [ref=f11e120]: "["
+        - generic [ref=f11e121]: "["
+        - generic [ref=f11e122]: "["
+        - generic [ref=f11e123]: "["
+        - generic [ref=f11e124]: "["
+        - generic [ref=f11e125]: "["
+        - generic [ref=f11e126]: "["
+        - generic [ref=f11e127]: "["
+        - generic [ref=f11e128]: "["
+        - generic [ref=f11e129]: "["
+        - generic [ref=f11e130]: "["
+        - generic [ref=f11e131]: "["
+        - generic [ref=f11e132]: "["
+        - generic [ref=f11e133]: "["
+        - generic [ref=f11e134]: "["
+        - generic [ref=f11e135]: "["
+        - generic [ref=f11e136]: "["
+        - generic [ref=f11e137]: "["
+        - generic [ref=f11e138]: "["
+        - generic [ref=f11e139]: "["
+        - generic [ref=f11e140]: "["
+        - generic [ref=f11e141]: "["
+        - generic [ref=f11e142]: "["
+        - generic [ref=f11e143]: "["
+        - generic [ref=f11e144]: "["
+        - generic [ref=f11e145]: "["
+        - generic [ref=f11e146]: "["
+        - generic [ref=f11e147]: "["
+        - generic [ref=f11e148]: "["
+        - generic [ref=f11e149]: "["
+        - generic [ref=f11e150]: "["
+        - generic [ref=f11e151]: "["
+        - generic [ref=f11e152]: "["
+        - generic [ref=f11e153]: "["
+        - generic [ref=f11e154]: "["
+        - generic [ref=f11e155]: "["
+        - generic [ref=f11e156]: "["
+        - generic [ref=f11e157]: "["
+        - generic [ref=f11e158]: "["
+        - generic [ref=f11e159]: "["
+        - generic [ref=f11e160]: "["
+        - generic [ref=f11e161]: "["
+        - generic [ref=f11e162]: "["
+        - generic [ref=f11e163]: "["
+        - generic [ref=f11e164]: "["
+        - generic [ref=f11e165]: "["
+        - generic [ref=f11e166]: "["
+        - generic [ref=f11e167]: "["
+    - banner [ref=f11e168]:
+      - generic [ref=f11e169]:
+        - link [ref=f11e171] [cursor=pointer]:
+          - /url: /
+        - navigation [ref=f11e182]:
+          - button "Product" [ref=f11e184] [cursor=pointer]
+          - button "Solutions" [ref=f11e186] [cursor=pointer]
+          - link "Models" [ref=f11e188] [cursor=pointer]:
+            - /url: https://platform.respan.ai/platform/models
+          - link "Docs" [ref=f11e190] [cursor=pointer]:
+            - /url: /docs/documentation/overview
+          - link "Pricing" [ref=f11e192] [cursor=pointer]:
+            - /url: /pricing
+          - link "Contact" [ref=f11e194] [cursor=pointer]:
+            - /url: /contact
+          - button "Resources" [ref=f11e196] [cursor=pointer]
+        - generic [ref=f11e197]:
+          - link "Respan Gateway on GitHub" [ref=f11e198] [cursor=pointer]:
+            - /url: https://github.com/respanai/respan-gateway
+          - generic [ref=f11e199]:
+            - link "Book a demo" [ref=f11e200] [cursor=pointer]:
+              - /url: /contact
+            - link "[ Dashboard ]" [ref=f11e202] [cursor=pointer]:
+              - /url: https://platform.respan.ai
+  - main [ref=f11e203]:
+    - generic [ref=f11e204]:
+      - generic [ref=f11e206]:
+        - generic [ref=f11e207]:
+          - generic [ref=f11e208]:
+            - navigation "Breadcrumb" [ref=f11e209]:
+              - link "Models" [ref=f11e210] [cursor=pointer]:
+                - /url: /models
+              - generic [aria-hidden] [ref=f11e211]: /
+              - link "StepFun" [ref=f11e212] [cursor=pointer]:
+                - /url: /models?provider=stepfun
+              - generic [aria-hidden] [ref=f11e213]: /
+              - generic [ref=f11e214]: step-5-preview
+            - heading "Step 5 Preview" [level=1] [ref=f11e215]
+            - paragraph [ref=f11e216]: Step 5 Preview is StepFun's flagship model for agentic work, built on a sparse Mixture-of-Experts architecture (27B active / 600B total parameters).
+            - generic [ref=f11e217]:
+              - generic [ref=f11e218]:
+                - term [ref=f11e219]: Input / output price
+                - definition [ref=f11e220]:
+                  - text: $1.00 / $2.70
+                  - generic [ref=f11e221]: per 1M
+              - generic [ref=f11e222]:
+                - term [ref=f11e223]: Context
+                - definition [ref=f11e224]:
+                  - text: 1M
+                  - generic [ref=f11e225]: tokens
+              - generic [ref=f11e226]:
+                - term [ref=f11e227]: Released
+                - definition [ref=f11e228]: Sep 20, 2026
+            - generic [ref=f11e229]:
+              - link "Try Respan for free" [ref=f11e230] [cursor=pointer]:
+                - /url: https://platform.respan.ai
+              - link "Book a demo" [ref=f11e231] [cursor=pointer]:
+                - /url: https://cal.com/team/respan/demo
+              - button "Compare" [ref=f11e233] [cursor=pointer]
+          - generic [ref=f11e238]:
+            - generic [ref=f11e239]:
+              - generic [ref=f11e240]: Agent setup
+              - combobox "Show the quickstart as" [ref=f11e244] [cursor=pointer]:
+                - generic: Agent
+              - combobox [aria-hidden] [ref=f11e245]
+            - generic [ref=f11e248]:
+              - paragraph [ref=f11e249]:
+                - generic [aria-hidden] [ref=f11e250]: "#"
+                - generic [ref=f11e251]: Paste into Claude Code, Cursor, or Codex
+              - paragraph [ref=f11e252]:
+                - generic [aria-hidden] [ref=f11e253]: ❯
+                - generic [ref=f11e254]:
+                  - text: "Help me set up the Respan gateway: fetch and follow"
+                  - link "https://www.respan.ai/docs/agent-setup.md" [ref=f11e255] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/agent-setup.md
+                    - generic [ref=f11e256]: https:/
+                    - generic [ref=f11e257]: /
+                    - generic [ref=f11e258]: www.respan.ai/
+                    - generic [ref=f11e259]: docs/
+                    - generic [ref=f11e260]: agent-setup.md
+                  - text: . Use model
+                  - generic [ref=f11e261]:
+                    - generic [ref=f11e262]: "\"stepfun/"
+                    - generic [ref=f11e263]: step-5-preview"
+                  - text: .
+            - generic [ref=f11e265]:
+              - button "Copy for agent" [ref=f11e266] [cursor=pointer]
+              - link "Read docs" [ref=f11e271] [cursor=pointer]:
+                - /url: https://www.respan.ai/docs/ai-gateway/quickstart
+        - generic [ref=f11e275]:
+          - navigation "Model sections" [ref=f11e277]:
+            - link "Providers" [ref=f11e278] [cursor=pointer]:
+              - /url: /models/step-5-preview#providers
+            - link "Pricing" [ref=f11e279] [cursor=pointer]:
+              - /url: /models/step-5-preview#pricing
+            - link "Throughput" [ref=f11e280] [cursor=pointer]:
+              - /url: /models/step-5-preview#throughput
+            - link "Benchmarks" [ref=f11e281] [cursor=pointer]:
+              - /url: /models/step-5-preview#benchmarks
+            - link "Apps" [ref=f11e282] [cursor=pointer]:
+              - /url: /models/step-5-preview#apps
+            - link "FAQ" [ref=f11e283] [cursor=pointer]:
+              - /url: /models/step-5-preview#faq
+          - generic [ref=f11e284]:
+            - region [ref=f11e285]:
+              - generic [ref=f11e287]:
+                - heading "Providers" [level=2] [ref=f11e288]
+                - paragraph [ref=f11e289]: 4 providers, cheapest first, OpenRouter last, priced per 1M tokens after gateway discounts.
+              - table [ref=f11e291]:
+                - rowgroup [ref=f11e292]:
+                  - row [ref=f11e293]:
+                    - columnheader "Provider" [ref=f11e294]
+                    - columnheader "Context" [ref=f11e295]
+                    - columnheader "Input" [ref=f11e296]
+                    - columnheader "Output" [ref=f11e297]
+                    - columnheader "Cache read" [ref=f11e298]
+                    - columnheader "Capabilities" [ref=f11e299]
+                - rowgroup [ref=f11e300]:
+                  - row [ref=f11e301]:
+                    - rowheader "EmpirioLabs empiriolabs/step-5-preview Copy model ID empiriolabs/step-5-preview" [ref=f11e302]:
+                      - generic [ref=f11e305]:
+                        - generic [ref=f11e306]: EmpirioLabs
+                        - generic [ref=f11e309]:
+                          - code [ref=f11e310]: empiriolabs/step-5-preview
+                          - button "Copy model ID empiriolabs/step-5-preview" [ref=f11e311] [cursor=pointer]
+                    - cell "1M" [ref=f11e315]
+                    - cell "$1.00/M" [ref=f11e316]
+                    - cell "$2.70/M" [ref=f11e317]
+                    - cell "$0.10/M" [ref=f11e318]
+                    - cell "Tool use, Reasoning. Hover for details." [ref=f11e319]
+                  - row [ref=f11e325]:
+                    - rowheader "Novita novita/step-5-preview Copy model ID novita/step-5-preview" [ref=f11e326]:
+                      - generic [ref=f11e329]:
+                        - generic [ref=f11e330]: Novita
+                        - generic [ref=f11e333]:
+                          - code [ref=f11e334]: novita/step-5-preview
+                          - button "Copy model ID novita/step-5-preview" [ref=f11e335] [cursor=pointer]
+                    - cell "1M" [ref=f11e339]
+                    - cell "$1.00/M" [ref=f11e340]
+                    - cell "$2.70/M" [ref=f11e341]
+                    - cell "$0.10/M" [ref=f11e342]
+                    - cell "Tool use, JSON mode, Reasoning. Hover for details." [ref=f11e343]
+                  - row [ref=f11e352]:
+                    - rowheader "StepFun stepfun/step-5-preview Copy model ID stepfun/step-5-preview" [ref=f11e353]:
+                      - generic [ref=f11e356]:
+                        - generic [ref=f11e357]: StepFun
+                        - generic [ref=f11e360]:
+                          - code [ref=f11e361]: stepfun/step-5-preview
+                          - button "Copy model ID stepfun/step-5-preview" [ref=f11e362] [cursor=pointer]
+                    - cell "1M" [ref=f11e366]
+                    - cell "$1.00/M" [ref=f11e367]
+                    - cell "$2.70/M" [ref=f11e368]
+                    - cell "$0.10/M" [ref=f11e369]
+                    - cell "—" [ref=f11e370]
+                  - row [ref=f11e371]:
+                    - rowheader "OpenRouter openrouter/step-5-preview Copy model ID openrouter/step-5-preview" [ref=f11e372]:
+                      - generic [ref=f11e375]:
+                        - generic [ref=f11e376]: OpenRouter
+                        - generic [ref=f11e379]:
+                          - code [ref=f11e380]: openrouter/step-5-preview
+                          - button "Copy model ID openrouter/step-5-preview" [ref=f11e381] [cursor=pointer]
+                    - cell "1M" [ref=f11e385]
+                    - cell "$1.00/M" [ref=f11e386]
+                    - cell "$2.70/M" [ref=f11e387]
+                    - cell "$0.10/M" [ref=f11e388]
+                    - cell "Tool use, JSON mode, Reasoning. Hover for details." [ref=f11e389]
+            - paragraph [ref=f11e398]:
+              - text: Is a provider down?
+              - link "OpenRouter status" [ref=f11e400] [cursor=pointer]:
+                - /url: /llm-status/openrouter
+          - region [ref=f11e401]:
+            - generic [ref=f11e403]:
+              - heading "Pricing" [level=2] [ref=f11e404]
+              - paragraph [ref=f11e405]: Averaged across 4 providers, in USD per 1M tokens after gateway discounts.
+            - generic [ref=f11e406]:
+              - generic [ref=f11e407]:
+                - term [ref=f11e408]: Average input
+                - definition [ref=f11e409]:
+                  - text: $1.00
+                  - generic [ref=f11e410]: per 1M
+              - generic [ref=f11e411]:
+                - term [ref=f11e412]: Average output
+                - definition [ref=f11e413]:
+                  - text: $2.70
+                  - generic [ref=f11e414]: per 1M
+              - generic [ref=f11e415]:
+                - term [ref=f11e416]: Average cache read
+                - definition [ref=f11e417]:
+                  - text: $0.10
+                  - generic [ref=f11e418]: per 1M
+            - generic [ref=f11e419]:
+              - generic [ref=f11e420]:
+                - generic [ref=f11e421]:
+                  - heading "Cost by volume" [level=3] [ref=f11e422]
+                  - paragraph [ref=f11e423]: Total cost from 0 to 1T tokens.
+                - tablist "Token type" [ref=f11e424]:
+                  - tab "Input" [selected] [ref=f11e425] [cursor=pointer]
+                  - tab "Output" [ref=f11e428] [cursor=pointer]
+              - figure "$1.00/M EmpirioLabs, Novita, StepFun, and OpenRouter" [ref=f11e430]:
+                - generic [ref=f11e431]:
+                  - generic [aria-hidden] [ref=f11e432]:
+                    - generic [ref=f11e433]: $0
+                    - generic [ref=f11e434]: $250K
+                    - generic [ref=f11e435]: $500K
+                    - generic [ref=f11e436]: $750K
+                    - generic [ref=f11e437]: $1M
+                  - generic [ref=f11e438]:
+                    - img "Input cost for 1T tokens is $1M on EmpirioLabs, Novita, StepFun, and OpenRouter." [ref=f11e439]
+                    - generic [aria-hidden] [ref=f11e447]:
+                      - generic [ref=f11e448]: "0"
+                      - generic [ref=f11e449]: 250B
+                      - generic [ref=f11e450]: 500B
+                      - generic [ref=f11e451]: 750B
+                      - generic [ref=f11e452]: 1T
+                - generic [ref=f11e454]:
+                  - generic [ref=f11e456]: $1.00/M
+                  - generic [ref=f11e457]: EmpirioLabs, Novita, StepFun, and OpenRouter
+          - region [ref=f11e458]:
+            - generic [ref=f11e460]:
+              - heading "Throughput and latency" [level=2] [ref=f11e461]
+              - paragraph [ref=f11e462]: 30-day averages from requests through the Respan gateway. Under each figure, every model on the gateway by its average, this one in blue.
+            - generic [ref=f11e464]:
+              - generic [ref=f11e465]:
+                - generic [ref=f11e466]:
+                  - generic [ref=f11e467]:
+                    - heading "Output speed" [level=3] [ref=f11e468]
+                    - generic [ref=f11e469]: Higher is better
+                  - paragraph [ref=f11e470]:
+                    - generic [ref=f11e471]: "35"
+                    - generic [ref=f11e472]: tokens/s
+                    - generic [ref=f11e473]: across providers
+                - figure "Faster than 53% of the other 579 models on the gateway" [ref=f11e474]:
+                  - generic [aria-hidden] [ref=f11e475]:
+                    - generic [ref=f11e515]: 35 tok/s avg
+                    - generic [ref=f11e516]: "10"
+                    - generic [ref=f11e517]: "100"
+                    - generic [ref=f11e518]: 1k
+              - generic [ref=f11e520]:
+                - generic [ref=f11e521]:
+                  - generic [ref=f11e522]:
+                    - heading "Response latency" [level=3] [ref=f11e523]
+                    - generic [ref=f11e524]: Lower is better
+                  - paragraph [ref=f11e525]:
+                    - generic [ref=f11e526]: "5.8"
+                    - generic [ref=f11e527]: s
+                    - generic [ref=f11e528]: across providers
+                - figure "Faster than 29% of the other 761 models on the gateway" [ref=f11e529]:
+                  - generic [aria-hidden] [ref=f11e530]:
+                    - generic [ref=f11e569]: 5.8 s avg
+                    - generic [ref=f11e570]: 1 s
+                    - generic [ref=f11e571]: 10 s
+                    - generic [ref=f11e572]: 100 s
+          - region [ref=f11e574]:
+            - generic [ref=f11e576]:
+              - heading "Benchmarks" [level=2] [ref=f11e577]
+              - paragraph [ref=f11e578]: The Respan Index plus 5 published scores from 2 sources, each linked to where it was published.
+            - generic [ref=f11e579]:
+              - generic [ref=f11e580]:
+                - generic [ref=f11e583]:
+                  - paragraph [ref=f11e584]:
+                    - generic [ref=f11e585]: "55.4"
+                    - generic [ref=f11e586]: / 100
+                  - heading [level=3] [ref=f11e587]:
+                    - text: Respan Index
+                    - link "#28 of 177" [ref=f11e589] [cursor=pointer]:
+                      - /url: /ai-gateway/leaderboard#respan-index
+                      - generic [ref=f11e590]: "#28"
+                      - text: of 177
+                - figure "177 ranked models. The shaded band is this model's 95% interval, 41.6 to 67.8. Claude Opus 4.8 and GPT-5.6 Terra fall inside it, so the gap is within the margin of error." [ref=f11e594]:
+                  - generic [aria-hidden] [ref=f11e595]:
+                    - generic [ref=f11e776]: Step 5 Preview
+                    - generic [ref=f11e777]: "0"
+                    - generic [ref=f11e778]: "25"
+                    - generic [ref=f11e779]: "50"
+                    - generic [ref=f11e780]: "75"
+                    - generic [ref=f11e781]: "100"
+              - 'figure "Step 5 Preview by category: Coding 45.4, Agents 56.2, Reasoning 64.0 (estimated), Knowledge & language 56.7 (estimated), Human preference 55.2" [ref=f11e783]':
+                - list [ref=f11e789]:
+                  - listitem [ref=f11e790]:
+                    - generic [ref=f11e791]:
+                      - generic [ref=f11e792]: "28"
+                      - generic [ref=f11e794]: Step 5 Preview
+                      - generic [ref=f11e795]: "55.4"
+                  - listitem [ref=f11e796]:
+                    - link "27 Claude Opus 4.8 55.6" [ref=f11e797] [cursor=pointer]:
+                      - /url: /models/claude-opus-4.8
+                      - generic [ref=f11e798]: "27"
+                      - generic [ref=f11e800]: Claude Opus 4.8
+                      - generic [ref=f11e801]: "55.6"
+                  - listitem [ref=f11e802]:
+                    - link "29 GPT-5.6 Terra 55.3" [ref=f11e803] [cursor=pointer]:
+                      - /url: /models/gpt-5.6-terra
+                      - generic [ref=f11e804]: "29"
+                      - generic [ref=f11e806]: GPT-5.6 Terra
+                      - generic [ref=f11e807]: "55.3"
+            - generic [ref=f11e809]:
+              - generic [ref=f11e810]:
+                - heading "Published scores" [level=3] [ref=f11e811]
+                - tablist "Benchmark category" [ref=f11e812]:
+                  - tab "Coding" [selected] [ref=f11e813] [cursor=pointer]
+                  - tab "Arena" [ref=f11e816] [cursor=pointer]
+              - tabpanel "Coding" [ref=f11e818]:
+                - table [ref=f11e819]:
+                  - rowgroup [ref=f11e820]:
+                    - row [ref=f11e821]:
+                      - columnheader "Benchmark" [ref=f11e822]
+                      - columnheader "Score" [ref=f11e823]
+                      - columnheader "Source" [ref=f11e824]
+                      - columnheader "Published" [ref=f11e825]
+                  - rowgroup [ref=f11e826]:
+                    - row [ref=f11e827]:
+                      - rowheader [ref=f11e828]:
+                        - link "Terminal-Bench 4.0" [ref=f11e829] [cursor=pointer]:
+                          - /url: /models/benchmarks/terminal-bench-4-0-vals-ai
+                      - cell "31.8%" [ref=f11e830]
+                      - cell [ref=f11e831]:
+                        - link "Vals AI" [ref=f11e832] [cursor=pointer]:
+                          - /url: https://www.vals.ai/benchmarks/terminal-bench-4
+                      - cell "Oct 5, 2026" [ref=f11e833]
+            - link "How the Respan Index works" [ref=f11e835] [cursor=pointer]:
+              - /url: /ai-gateway/leaderboard#methodology
+          - paragraph [ref=f11e839]:
+            - text: "Compare Step 5 Preview:"
+            - link "Step 5 Preview vs Muse Spark 1.3" [ref=f11e841] [cursor=pointer]:
+              - /url: /models/compare/muse-spark-1-3-vs-step-5-preview
+            - generic [ref=f11e842]:
+              - text: ","
+              - link "Step 5 Preview vs Step 3.5 Flash" [ref=f11e843] [cursor=pointer]:
+                - /url: /models/compare/step-3-5-flash-vs-step-5-preview
+          - region [ref=f11e844]:
+            - generic [ref=f11e845]:
+              - generic [ref=f11e846]:
+                - heading "Apps" [level=2] [ref=f11e847]
+                - paragraph [ref=f11e848]: Use Step 5 Preview in the tools you already run. Each guide points the app at the Respan gateway.
+              - tablist "App type" [ref=f11e849]:
+                - tab "Coding agents" [selected] [ref=f11e850] [cursor=pointer]
+                - tab "Frameworks" [ref=f11e853] [cursor=pointer]
+                - tab "SDKs" [ref=f11e855] [cursor=pointer]
+            - tabpanel "Coding agents" [ref=f11e857]:
+              - list [ref=f11e858]:
+                - listitem [ref=f11e859]:
+                  - link "Set up Claude Code with the Respan gateway" [ref=f11e860] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/gateway/claude-code
+                    - generic [ref=f11e863]:
+                      - generic [ref=f11e864]: Claude Code
+                      - generic [ref=f11e865]: Anthropic's coding agent for the terminal
+                    - generic [aria-hidden]:
+                      - generic: View guide
+                - listitem [ref=f11e866]:
+                  - link "Set up OpenCode with the Respan gateway" [ref=f11e867] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/gateway/open-code
+                    - generic [ref=f11e870]:
+                      - generic [ref=f11e871]: OpenCode
+                      - generic [ref=f11e872]: Open-source terminal coding agent
+                    - generic [aria-hidden]:
+                      - generic: View guide
+                - listitem [ref=f11e873]:
+                  - link "Set up Kilo Code with the Respan gateway" [ref=f11e874] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/gateway/kilo-code
+                    - generic [ref=f11e877]:
+                      - generic [ref=f11e878]: Kilo Code
+                      - generic [ref=f11e879]: Open-source coding agent for your editor
+                    - generic [aria-hidden]:
+                      - generic: View guide
+                - listitem [ref=f11e880]:
+                  - link "Set up Pi with the Respan gateway" [ref=f11e881] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/gateway/pi
+                    - generic [ref=f11e884]:
+                      - generic [ref=f11e885]: Pi
+                      - generic [ref=f11e886]: Minimal terminal coding agent
+                    - generic [aria-hidden]:
+                      - generic: View guide
+                - listitem [ref=f11e887]:
+                  - link "Set up Codex CLI with the Respan gateway" [ref=f11e888] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/gateway/codex-cli
+                    - generic [ref=f11e891]:
+                      - generic [ref=f11e892]: Codex CLI
+                      - generic [ref=f11e893]: OpenAI's coding agent for the terminal
+                    - generic [aria-hidden]:
+                      - generic: View guide
+                - listitem [ref=f11e894]:
+                  - link "Set up Cursor with the Respan gateway" [ref=f11e895] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/gateway/cursor
+                    - generic [ref=f11e898]:
+                      - generic [ref=f11e899]: Cursor
+                      - generic [ref=f11e900]: AI code editor
+                    - generic [aria-hidden]:
+                      - generic: View guide
+            - paragraph [ref=f11e901]:
+              - text: Setup guides for more apps are in the
+              - link "integration docs" [ref=f11e902] [cursor=pointer]:
+                - /url: https://www.respan.ai/docs/integrations/overview
+              - text: .
+          - region [ref=f11e903]:
+            - generic [ref=f11e905]:
+              - heading "Step 5 Preview FAQ" [level=2] [ref=f11e906]
+              - paragraph [ref=f11e907]: Short answers, built from the data on this page.
+            - generic [ref=f11e909]:
+              - heading [level=3] [ref=f11e911]:
+                - button "What is Step 5 Preview?" [ref=f11e912] [cursor=pointer]
+              - heading [level=3] [ref=f11e917]:
+                - button "How much does Step 5 Preview cost?" [ref=f11e918] [cursor=pointer]
+              - heading [level=3] [ref=f11e923]:
+                - button "Which providers serve Step 5 Preview on Respan?" [ref=f11e924] [cursor=pointer]
+              - heading [level=3] [ref=f11e929]:
+                - button "What is Step 5 Preview's context window?" [ref=f11e930] [cursor=pointer]
+              - heading [level=3] [ref=f11e935]:
+                - button "How do I use Step 5 Preview with the Respan gateway?" [ref=f11e936] [cursor=pointer]
+              - heading [level=3] [ref=f11e941]:
+                - button "Where does Step 5 Preview rank on the Respan Index?" [ref=f11e942] [cursor=pointer]
+              - heading [level=3] [ref=f11e947]:
+                - button "How does Step 5 Preview score on benchmarks?" [ref=f11e948] [cursor=pointer]
+      - generic [ref=f11e952]:
+        - generic [ref=f11e953]:
+          - generic [ref=f11e954]:
+            - heading "Certified where it counts." [level=2] [ref=f11e955]
+            - paragraph [ref=f11e956]: Built to meet the security and privacy standards that enterprise and healthcare teams require.
+          - generic [ref=f11e957]:
+            - generic [ref=f11e958]:
+              - paragraph [ref=f11e968]: ISO 27001
+              - paragraph [ref=f11e969]: The internationally recognized standard for information security management.
+            - generic [ref=f11e970]:
+              - paragraph [ref=f11e982]: SOC 2
+              - paragraph [ref=f11e983]: Secure, compliant management of your data across all of our systems.
+            - generic [ref=f11e984]:
+              - paragraph [ref=f11e1111]: GDPR
+              - paragraph [ref=f11e1112]: Operated under GDPR, the world's strictest standard for data privacy.
+            - generic [ref=f11e1113]:
+              - paragraph [ref=f11e1126]: HIPAA
+              - paragraph [ref=f11e1127]: HIPAA compliant, with a BAA available for healthcare teams.
+        - generic [ref=f11e1129]:
+          - generic [ref=f11e1130]:
+            - heading "Works with your entire stack" [level=2] [ref=f11e1131]
+            - paragraph [ref=f11e1132]: Use Respan with your favorite frameworks and tools.
+          - generic [ref=f11e1135]:
+            - generic "Respan" [ref=f11e1136]
+            - generic [ref=f11e1143]:
+              - generic [ref=f11e1145]:
+                - generic [aria-hidden] [ref=f11e1146]:
+                  - link [aria-hidden] [ref=f11e1147] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+                  - link [aria-hidden] [ref=f11e1149] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+                  - link [aria-hidden] [ref=f11e1151] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+                  - link [aria-hidden] [ref=f11e1153] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/vercel-ai-sdk
+                - generic [ref=f11e1155]:
+                  - link "View Anthropic integration docs" [ref=f11e1156] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+                    - img "Anthropic" [ref=f11e1157]
+                  - link "View AI21 Labs integration docs" [ref=f11e1158] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+                    - img "AI21 Labs" [ref=f11e1159]
+                  - link "View xAI integration docs" [ref=f11e1160] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+                    - img "xAI" [ref=f11e1161]
+                  - link "View Vercel AI SDK integration docs" [ref=f11e1162] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/vercel-ai-sdk
+                    - img "Vercel AI SDK" [ref=f11e1163]
+                - generic [aria-hidden] [ref=f11e1164]:
+                  - link [aria-hidden] [ref=f11e1165] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+                  - link [aria-hidden] [ref=f11e1167] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+                  - link [aria-hidden] [ref=f11e1169] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+                  - link [aria-hidden] [ref=f11e1171] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/vercel-ai-sdk
+              - generic [ref=f11e1174]:
+                - generic [aria-hidden] [ref=f11e1175]:
+                  - link [aria-hidden] [ref=f11e1176] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/langchain
+                  - link [aria-hidden] [ref=f11e1178] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+                  - link [aria-hidden] [ref=f11e1180] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/assemblyai
+                  - link [aria-hidden] [ref=f11e1182] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/cursor
+                - generic [ref=f11e1184]:
+                  - link "View LangChain integration docs" [ref=f11e1185] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/langchain
+                    - img "LangChain" [ref=f11e1186]
+                  - link "View OpenRouter integration docs" [ref=f11e1187] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+                    - img "OpenRouter" [ref=f11e1188]
+                  - link "View AssemblyAI integration docs" [ref=f11e1189] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/assemblyai
+                    - img "AssemblyAI" [ref=f11e1190]
+                  - link "View Cursor integration docs" [ref=f11e1191] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/cursor
+                    - img "Cursor" [ref=f11e1192]
+                - generic [aria-hidden] [ref=f11e1193]:
+                  - link [aria-hidden] [ref=f11e1194] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/langchain
+                  - link [aria-hidden] [ref=f11e1196] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+                  - link [aria-hidden] [ref=f11e1198] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/assemblyai
+                  - link [aria-hidden] [ref=f11e1200] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/cursor
+              - generic [ref=f11e1203]:
+                - generic [aria-hidden] [ref=f11e1204]:
+                  - link [aria-hidden] [ref=f11e1205] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/litellm
+                  - link [aria-hidden] [ref=f11e1207] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+                  - link [aria-hidden] [ref=f11e1209] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+                  - link [aria-hidden] [ref=f11e1211] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/mem0
+                - generic [ref=f11e1213]:
+                  - link "View LiteLLM integration docs" [ref=f11e1214] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/litellm
+                    - img "LiteLLM" [ref=f11e1215]
+                  - link "View Groq integration docs" [ref=f11e1216] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+                    - img "Groq" [ref=f11e1217]
+                  - link "View Baseten integration docs" [ref=f11e1218] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+                    - img "Baseten" [ref=f11e1219]
+                  - link "View Mem0 integration docs" [ref=f11e1220] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/mem0
+                    - img "Mem0" [ref=f11e1221]
+                - generic [aria-hidden] [ref=f11e1222]:
+                  - link [aria-hidden] [ref=f11e1223] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/litellm
+                  - link [aria-hidden] [ref=f11e1225] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+                  - link [aria-hidden] [ref=f11e1227] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+                  - link [aria-hidden] [ref=f11e1229] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/mem0
+              - generic [ref=f11e1232]:
+                - generic [aria-hidden] [ref=f11e1233]:
+                  - link [aria-hidden] [ref=f11e1234] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+                  - link [aria-hidden] [ref=f11e1236] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/cognee
+                  - link [aria-hidden] [ref=f11e1238] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/llama-index
+                  - link [aria-hidden] [ref=f11e1240] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+                - generic [ref=f11e1242]:
+                  - link "View Cohere integration docs" [ref=f11e1243] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+                    - img "Cohere" [ref=f11e1244]
+                  - link "View Cognee integration docs" [ref=f11e1245] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/cognee
+                    - img "Cognee" [ref=f11e1246]
+                  - link "View LlamaIndex integration docs" [ref=f11e1247] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/llama-index
+                    - img "LlamaIndex" [ref=f11e1248]
+                  - link "View Fireworks integration docs" [ref=f11e1249] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+                    - img "Fireworks" [ref=f11e1250]
+                - generic [aria-hidden] [ref=f11e1251]:
+                  - link [aria-hidden] [ref=f11e1252] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+                  - link [aria-hidden] [ref=f11e1254] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/cognee
+                  - link [aria-hidden] [ref=f11e1256] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/llama-index
+                  - link [aria-hidden] [ref=f11e1258] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+              - generic [ref=f11e1261]:
+                - generic [aria-hidden] [ref=f11e1262]:
+                  - link [aria-hidden] [ref=f11e1263] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+                  - link [aria-hidden] [ref=f11e1265] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/linkup
+                  - link [aria-hidden] [ref=f11e1267] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/haystack
+                  - link [aria-hidden] [ref=f11e1269] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+                - generic [ref=f11e1271]:
+                  - link "View DeepSeek integration docs" [ref=f11e1272] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+                    - img "DeepSeek" [ref=f11e1273]
+                  - link "View Linkup integration docs" [ref=f11e1274] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/linkup
+                    - img "Linkup" [ref=f11e1275]
+                  - link "View Haystack integration docs" [ref=f11e1276] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/haystack
+                    - img "Haystack" [ref=f11e1277]
+                  - link "View Together AI integration docs" [ref=f11e1278] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+                    - img "Together AI" [ref=f11e1279]
+                - generic [aria-hidden] [ref=f11e1280]:
+                  - link [aria-hidden] [ref=f11e1281] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+                  - link [aria-hidden] [ref=f11e1283] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/linkup
+                  - link [aria-hidden] [ref=f11e1285] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/haystack
+                  - link [aria-hidden] [ref=f11e1287] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+              - generic [ref=f11e1290]:
+                - generic [aria-hidden] [ref=f11e1291]:
+                  - link [aria-hidden] [ref=f11e1292] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+                  - link [aria-hidden] [ref=f11e1294] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+                  - link [aria-hidden] [ref=f11e1296] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/posthog
+                  - link [aria-hidden] [ref=f11e1298] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/ruby-llm
+                - generic [ref=f11e1300]:
+                  - link "View Perplexity integration docs" [ref=f11e1301] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+                    - img "Perplexity" [ref=f11e1302]
+                  - link "View Inference.net integration docs" [ref=f11e1303] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+                    - img "Inference.net" [ref=f11e1304]
+                  - link "View PostHog integration docs" [ref=f11e1305] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/posthog
+                    - img "PostHog" [ref=f11e1306]
+                  - link "View RubyLLM integration docs" [ref=f11e1307] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/ruby-llm
+                    - img "RubyLLM" [ref=f11e1308]
+                - generic [aria-hidden] [ref=f11e1309]:
+                  - link [aria-hidden] [ref=f11e1310] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+                  - link [aria-hidden] [ref=f11e1312] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+                  - link [aria-hidden] [ref=f11e1314] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/posthog
+                  - link [aria-hidden] [ref=f11e1316] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/ruby-llm
+              - generic [ref=f11e1319]:
+                - generic [aria-hidden] [ref=f11e1320]:
+                  - link [aria-hidden] [ref=f11e1321] [cursor=pointer]:
+                    - /url: https://platform.respan.ai
+                  - link [aria-hidden] [ref=f11e1323] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/mastra
+                  - link [aria-hidden] [ref=f11e1325] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+                  - link [aria-hidden] [ref=f11e1327] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+                - generic [ref=f11e1329]:
+                  - link "View Slack integration docs" [ref=f11e1330] [cursor=pointer]:
+                    - /url: https://platform.respan.ai
+                    - img "Slack" [ref=f11e1331]
+                  - link "View Mastra integration docs" [ref=f11e1332] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/mastra
+                    - img "Mastra" [ref=f11e1333]
+                  - link "View Azure OpenAI integration docs" [ref=f11e1334] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+                    - img "Azure OpenAI" [ref=f11e1335]
+                  - link "View Mistral integration docs" [ref=f11e1336] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+                    - img "Mistral" [ref=f11e1337]
+                - generic [aria-hidden] [ref=f11e1338]:
+                  - link [aria-hidden] [ref=f11e1339] [cursor=pointer]:
+                    - /url: https://platform.respan.ai
+                  - link [aria-hidden] [ref=f11e1341] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/mastra
+                  - link [aria-hidden] [ref=f11e1343] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+                  - link [aria-hidden] [ref=f11e1345] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+              - generic [ref=f11e1348]:
+                - generic [aria-hidden] [ref=f11e1349]:
+                  - link [aria-hidden] [ref=f11e1350] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+                  - link [aria-hidden] [ref=f11e1352] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+                  - link [aria-hidden] [ref=f11e1354] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/hyperspell
+                  - link [aria-hidden] [ref=f11e1356] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/baml
+                - generic [ref=f11e1358]:
+                  - link "View AWS Bedrock integration docs" [ref=f11e1359] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+                    - img "AWS Bedrock" [ref=f11e1360]
+                  - link "View Moonshot integration docs" [ref=f11e1361] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+                    - img "Moonshot" [ref=f11e1362]
+                  - link "View Hyperspell integration docs" [ref=f11e1363] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/hyperspell
+                    - img "Hyperspell" [ref=f11e1364]
+                  - link "View BAML integration docs" [ref=f11e1365] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/baml
+                    - img "BAML" [ref=f11e1366]
+                - generic [aria-hidden] [ref=f11e1367]:
+                  - link [aria-hidden] [ref=f11e1368] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+                  - link [aria-hidden] [ref=f11e1370] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+                  - link [aria-hidden] [ref=f11e1372] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/hyperspell
+                  - link [aria-hidden] [ref=f11e1374] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/baml
+              - generic [ref=f11e1377]:
+                - generic [aria-hidden] [ref=f11e1378]:
+                  - link [aria-hidden] [ref=f11e1379] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/moda
+                  - link [aria-hidden] [ref=f11e1381] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/instructor
+                  - link [aria-hidden] [ref=f11e1383] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+                  - link [aria-hidden] [ref=f11e1385] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+                - generic [ref=f11e1387]:
+                  - link "View Moda integration docs" [ref=f11e1388] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/moda
+                    - img "Moda" [ref=f11e1389]
+                  - link "View Instructor integration docs" [ref=f11e1390] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/instructor
+                    - img "Instructor" [ref=f11e1391]
+                  - link "View Google Gemini integration docs" [ref=f11e1392] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+                    - img "Google Gemini" [ref=f11e1393]
+                  - link "View Parasail integration docs" [ref=f11e1394] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+                    - img "Parasail" [ref=f11e1395]
+                - generic [aria-hidden] [ref=f11e1396]:
+                  - link [aria-hidden] [ref=f11e1397] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/moda
+                  - link [aria-hidden] [ref=f11e1399] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/instructor
+                  - link [aria-hidden] [ref=f11e1401] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+                  - link [aria-hidden] [ref=f11e1403] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+              - generic [ref=f11e1406]:
+                - generic [aria-hidden] [ref=f11e1407]:
+                  - link [aria-hidden] [ref=f11e1408] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+                  - link [aria-hidden] [ref=f11e1410] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/zapier
+                  - link [aria-hidden] [ref=f11e1412] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/agno
+                  - link [aria-hidden] [ref=f11e1414] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+                - generic [ref=f11e1416]:
+                  - link "View Reducto integration docs" [ref=f11e1417] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+                    - img "Reducto" [ref=f11e1418]
+                  - link "View Zapier integration docs" [ref=f11e1419] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/zapier
+                    - img "Zapier" [ref=f11e1420]
+                  - link "View Agno integration docs" [ref=f11e1421] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/agno
+                    - img "Agno" [ref=f11e1422]
+                  - link "View Nebius integration docs" [ref=f11e1423] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+                    - img "Nebius" [ref=f11e1424]
+                - generic [aria-hidden] [ref=f11e1425]:
+                  - link [aria-hidden] [ref=f11e1426] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+                  - link [aria-hidden] [ref=f11e1428] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/zapier
+                  - link [aria-hidden] [ref=f11e1430] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/agno
+                  - link [aria-hidden] [ref=f11e1432] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+              - generic [ref=f11e1435]:
+                - generic [aria-hidden] [ref=f11e1436]:
+                  - link [aria-hidden] [ref=f11e1437] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+                  - link [aria-hidden] [ref=f11e1439] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+                  - link [aria-hidden] [ref=f11e1441] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+                  - link [aria-hidden] [ref=f11e1443] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/superagent
+                - generic [ref=f11e1445]:
+                  - link "View OpenAI integration docs" [ref=f11e1446] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+                    - img "OpenAI" [ref=f11e1447]
+                  - link "View Novita AI integration docs" [ref=f11e1448] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+                    - img "Novita AI" [ref=f11e1449]
+                  - link "View Replicate integration docs" [ref=f11e1450] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+                    - img "Replicate" [ref=f11e1451]
+                  - link "View Superagent integration docs" [ref=f11e1452] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/superagent
+                    - img "Superagent" [ref=f11e1453]
+                - generic [aria-hidden] [ref=f11e1454]:
+                  - link [aria-hidden] [ref=f11e1455] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+                  - link [aria-hidden] [ref=f11e1457] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+                  - link [aria-hidden] [ref=f11e1459] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+                  - link [aria-hidden] [ref=f11e1461] [cursor=pointer]:
+                    - /url: https://www.respan.ai/docs/integrations/superagent
+        - generic [ref=f11e1464]:
+          - heading "Built for AI agents. Break less. Ship more." [level=2] [ref=f11e1465]
+          - generic [ref=f11e1466]:
+            - link "[ Start for free ]" [ref=f11e1467] [cursor=pointer]:
+              - /url: https://platform.respan.ai
+            - link "Get a demo" [ref=f11e1468] [cursor=pointer]:
+              - /url: https://cal.com/team/respan/demo
+  - contentinfo [ref=f11e1469]:
+    - generic [ref=f11e1471]:
+      - generic [ref=f11e1472]:
+        - generic [ref=f11e1474]:
+          - generic [ref=f11e1475]:
+            - link [ref=f11e1476] [cursor=pointer]:
+              - /url: https://platform.respan.ai
+            - paragraph [ref=f11e1487]: The fastest AI gateway. Every call traced.
+          - generic [ref=f11e1488]:
+            - link "YouTube" [ref=f11e1489] [cursor=pointer]:
+              - /url: https://www.youtube.com/@RespanAI
+            - link "X" [ref=f11e1492] [cursor=pointer]:
+              - /url: https://x.com/RespanAI
+            - link "LinkedIn" [ref=f11e1495] [cursor=pointer]:
+              - /url: https://www.linkedin.com/company/respan-ai
+            - link "Discord" [ref=f11e1498] [cursor=pointer]:
+              - /url: https://discord.com/invite/KEanfAafQQ
+            - link "GitHub" [ref=f11e1501] [cursor=pointer]:
+              - /url: https://github.com/respanai
+          - generic [ref=f11e1534]: All systems operational
+        - generic [ref=f11e1537]:
+          - generic [ref=f11e1538]:
+            - generic [ref=f11e1539]:
+              - generic [ref=f11e1540]: Workflows
+              - generic [ref=f11e1542]:
+                - link "Trace" [ref=f11e1543] [cursor=pointer]:
+                  - /url: https://www.respan.ai/docs/documentation/features/tracing/quickstart
+                - link "Evaluate" [ref=f11e1545] [cursor=pointer]:
+                  - /url: https://www.respan.ai/docs/documentation/features/pulse/behaviors
+                - link "Optimize" [ref=f11e1547] [cursor=pointer]:
+                  - /url: https://www.respan.ai/docs/documentation/features/prompt-management/advanced
+                - link "Deploy" [ref=f11e1549] [cursor=pointer]:
+                  - /url: https://www.respan.ai/docs/documentation/features/gateway/gateway-quickstart
+                - link "Monitor" [ref=f11e1551] [cursor=pointer]:
+                  - /url: https://www.respan.ai/docs/documentation/features/monitoring/metrics
+            - generic [ref=f11e1553]:
+              - generic [ref=f11e1554]: Features
+              - generic [ref=f11e1556]:
+                - link "Gateway" [ref=f11e1557] [cursor=pointer]:
+                  - /url: /ai-gateway
+                - link "Observability" [ref=f11e1559] [cursor=pointer]:
+                  - /url: /ai-observability
+                - link "Evaluations" [ref=f11e1561] [cursor=pointer]:
+                  - /url: /ai-evals
+            - generic [ref=f11e1563]:
+              - generic [ref=f11e1564]: Solutions
+              - generic [ref=f11e1566]:
+                - link "Enterprise" [ref=f11e1567] [cursor=pointer]:
+                  - /url: /enterprise
+                - link "Startups" [ref=f11e1569] [cursor=pointer]:
+                  - /url: /startups
+          - generic [ref=f11e1572]:
+            - generic [ref=f11e1573]: Integrations
+            - generic [ref=f11e1575]:
+              - link "Python SDK" [ref=f11e1576] [cursor=pointer]:
+                - /url: https://www.respan.ai/docs/documentation/features/tracing/quickstart
+              - link "JS/TS SDK" [ref=f11e1578] [cursor=pointer]:
+                - /url: https://www.respan.ai/docs/documentation/features/tracing/quickstart
+              - link "OpenAI SDK" [ref=f11e1580] [cursor=pointer]:
+                - /url: https://www.respan.ai/docs/integrations/openai-sdk
+              - link "OpenAI Agents SDK" [ref=f11e1582] [cursor=pointer]:
+                - /url: https://www.respan.ai/docs/integrations/openai-agents-sdk
+              - link "Vercel AI SDK" [ref=f11e1584] [cursor=pointer]:
+                - /url: https://www.respan.ai/docs/integrations/vercel-ai-sdk
+              - link "Mastra" [ref=f11e1586] [cursor=pointer]:
+                - /url: https://www.respan.ai/docs/integrations/mastra
+              - link "LangChain" [ref=f11e1588] [cursor=pointer]:
+                - /url: https://www.respan.ai/docs/integrations/langchain
+              - link "LlamaIndex" [ref=f11e1590] [cursor=pointer]:
+                - /url: https://www.respan.ai/docs/integrations/llama-index
+              - link "Google GenAI" [ref=f11e1592] [cursor=pointer]:
+                - /url: https://www.respan.ai/docs/integrations/google-genai
+              - link "Mem0" [ref=f11e1594] [cursor=pointer]:
+                - /url: https://www.respan.ai/docs/integrations/mem0
+              - link "Cognee" [ref=f11e1596] [cursor=pointer]:
+                - /url: https://www.respan.ai/docs/integrations/cognee
+              - link "AssemblyAI" [ref=f11e1598] [cursor=pointer]:
+                - /url: https://www.respan.ai/docs/integrations/assemblyai
+              - link "Linkup" [ref=f11e1600] [cursor=pointer]:
+                - /url: https://www.respan.ai/docs/integrations/linkup
+              - link "PostHog" [ref=f11e1602] [cursor=pointer]:
+                - /url: https://www.respan.ai/docs/integrations/posthog
+          - generic [ref=f11e1605]:
+            - generic [ref=f11e1606]: Providers
+            - generic [ref=f11e1608]:
+              - link "OpenAI" [ref=f11e1609] [cursor=pointer]:
+                - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+              - link "Anthropic" [ref=f11e1611] [cursor=pointer]:
+                - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+              - link "OpenRouter" [ref=f11e1613] [cursor=pointer]:
+                - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+              - link "Groq" [ref=f11e1615] [cursor=pointer]:
+                - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+              - link "Fireworks" [ref=f11e1617] [cursor=pointer]:
+                - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+              - link "Together AI" [ref=f11e1619] [cursor=pointer]:
+                - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+              - link "Perplexity" [ref=f11e1621] [cursor=pointer]:
+                - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+              - link "Azure OpenAI" [ref=f11e1623] [cursor=pointer]:
+                - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+              - link "AWS Bedrock" [ref=f11e1625] [cursor=pointer]:
+                - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+              - link "Google Vertex AI" [ref=f11e1627] [cursor=pointer]:
+                - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+              - link "Google Gemini" [ref=f11e1629] [cursor=pointer]:
+                - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+              - link "Nebius AI" [ref=f11e1631] [cursor=pointer]:
+                - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+              - link "Novita AI" [ref=f11e1633] [cursor=pointer]:
+                - /url: https://www.respan.ai/docs/ai-gateway/models/overview#providers
+          - generic [ref=f11e1635]:
+            - generic [ref=f11e1636]:
+              - generic [ref=f11e1637]: Security
+              - generic [ref=f11e1639]:
+                - link "Trust center" [ref=f11e1640] [cursor=pointer]:
+                  - /url: https://trustcenter.respan.ai/
+                - link "SOC II" [ref=f11e1642] [cursor=pointer]:
+                  - /url: https://trustcenter.respan.ai/
+                - link "HIPAA" [ref=f11e1644] [cursor=pointer]:
+                  - /url: https://trustcenter.respan.ai/
+                - link "GDPR" [ref=f11e1646] [cursor=pointer]:
+                  - /url: https://trustcenter.respan.ai/
+                - link "Architecture" [ref=f11e1648] [cursor=pointer]:
+                  - /url: https://trustcenter.respan.ai/
+            - generic [ref=f11e1650]:
+              - generic [ref=f11e1651]: Legal
+              - generic [ref=f11e1653]:
+                - link "Terms of use" [ref=f11e1654] [cursor=pointer]:
+                  - /url: /legal/terms-of-use
+                - link "Privacy policy" [ref=f11e1656] [cursor=pointer]:
+                  - /url: /legal/privacy-policy
+                - link "Cookie policy" [ref=f11e1658] [cursor=pointer]:
+                  - /url: /legal/cookie-policy
+                - link "BAA" [ref=f11e1660] [cursor=pointer]:
+                  - /url: mailto:team@respan.ai
+                - link "DPA" [ref=f11e1662] [cursor=pointer]:
+                  - /url: mailto:team@respan.ai
+          - generic [ref=f11e1664]:
+            - generic [ref=f11e1665]:
+              - generic [ref=f11e1666]: Resources
+              - generic [ref=f11e1668]:
+                - link "Blog" [ref=f11e1669] [cursor=pointer]:
+                  - /url: /blog
+                - link "Changelog" [ref=f11e1671] [cursor=pointer]:
+                  - /url: https://www.respan.ai/docs/changelog/changelog
+                - link "Community" [ref=f11e1673] [cursor=pointer]:
+                  - /url: https://discord.com/invite/KEanfAafQQ
+                - link "Docs" [ref=f11e1675] [cursor=pointer]:
+                  - /url: /docs/documentation/overview
+                - link "FAQ" [ref=f11e1677] [cursor=pointer]:
+                  - /url: /faq
+                - link "LLM leaderboard" [ref=f11e1679] [cursor=pointer]:
+                  - /url: /ai-gateway/leaderboard
+                - link "LLM benchmarks" [ref=f11e1681] [cursor=pointer]:
+                  - /url: /models/benchmarks
+                - link "Compare models" [ref=f11e1683] [cursor=pointer]:
+                  - /url: /models/compare
+                - link "LLM status" [ref=f11e1685] [cursor=pointer]:
+                  - /url: /llm-status
+                - link "Claude status" [ref=f11e1687] [cursor=pointer]:
+                  - /url: /llm-status/anthropic
+                - link "ChatGPT status" [ref=f11e1689] [cursor=pointer]:
+                  - /url: /llm-status/openai
+                - link "Gemini status" [ref=f11e1691] [cursor=pointer]:
+                  - /url: /llm-status/google
+                - link "Market map" [ref=f11e1693] [cursor=pointer]:
+                  - /url: /market-map
+                - link "Pricing" [ref=f11e1695] [cursor=pointer]:
+                  - /url: /pricing
+                - link "Status" [ref=f11e1697] [cursor=pointer]:
+                  - /url: https://status.respan.ai
+            - generic [ref=f11e1699]:
+              - generic [ref=f11e1700]: Company
+              - generic [ref=f11e1702]:
+                - link "About" [ref=f11e1703] [cursor=pointer]:
+                  - /url: /about
+                - link "Brand" [ref=f11e1705] [cursor=pointer]:
+                  - /url: /brand
+                - link "Careers" [ref=f11e1707] [cursor=pointer]:
+                  - /url: /careers
+                - link "Contact" [ref=f11e1709] [cursor=pointer]:
+                  - /url: /contact
+                - link "Customers" [ref=f11e1711] [cursor=pointer]:
+                  - /url: /blog/customer
+                - link "YC" [ref=f11e1713] [cursor=pointer]:
+                  - /url: https://www.ycombinator.com/companies/respan
+      - generic [ref=f11e1715]:
+        - generic [ref=f11e1716]:
+          - generic [ref=f11e1717]: Get an AI summary of Respan
+          - generic [ref=f11e1718]:
+            - link "ChatGPT" [ref=f11e1719] [cursor=pointer]:
+              - /url: https://chatgpt.com/?q=As%20a%20potential%20Respan%20(https%3A%2F%2Fwww.respan.ai)%20customer%2C%20I%20want%20to%20clearly%20understand%20what%20I%20get%20when%20I%20use%20Respan%20and%20how%20it%20fits%20into%20my%20AI%20development%20workflow.%20Respan%20was%20previously%20known%20as%20Keywords%20AI.%20Explain%20the%20experience%20step%20by%20step%3A%20what%20I%20can%20build%2C%20what%20I%20control%2C%20what%20Respan%20handles%20for%20me%2C%20and%20how%20things%20evolve%20over%20time.%20Describe%20what%20I%20see%20in%20the%20dashboard%2C%20how%20observability%20works%2C%20how%20evaluations%20are%20managed%2C%20and%20what%20outputs%20I%20end%20up%20with%20(traces%2C%20logs%2C%20metrics%2C%20evaluations%2C%20prompt%20versions%2C%20etc.).%20Clarify%20the%20key%20features%20and%20systems%20involved-observability%2C%20evaluations%2C%20prompt%20optimization%2C%20AI%20gateway%2C%20integrations%2C%20analytics%2C%20and%20any%20insights%20Respan%20provides.%20Refer%20to%20the%20documentation%20at%20https%3A%2F%2Fwww.respan.ai%2Fdocs%20for%20technical%20details.%20Explain%20this%20simply%20and%20concretely%2C%20as%20if%20you%20were%20describing%20the%20real%2C%20day-to-day%20experience%20of%20building%20and%20running%20AI%20applications%20with%20Respan%20for%20the%20first%20time.
+            - link "Perplexity" [ref=f11e1722] [cursor=pointer]:
+              - /url: https://www.perplexity.ai/search?q=As%20a%20potential%20Respan%20(https%3A%2F%2Fwww.respan.ai)%20customer%2C%20I%20want%20to%20clearly%20understand%20what%20I%20get%20when%20I%20use%20Respan%20and%20how%20it%20fits%20into%20my%20AI%20development%20workflow.%20Respan%20was%20previously%20known%20as%20Keywords%20AI.%20Explain%20the%20experience%20step%20by%20step%3A%20what%20I%20can%20build%2C%20what%20I%20control%2C%20what%20Respan%20handles%20for%20me%2C%20and%20how%20things%20evolve%20over%20time.%20Describe%20what%20I%20see%20in%20the%20dashboard%2C%20how%20observability%20works%2C%20how%20evaluations%20are%20managed%2C%20and%20what%20outputs%20I%20end%20up%20with%20(traces%2C%20logs%2C%20metrics%2C%20evaluations%2C%20prompt%20versions%2C%20etc.).%20Clarify%20the%20key%20features%20and%20systems%20involved-observability%2C%20evaluations%2C%20prompt%20optimization%2C%20AI%20gateway%2C%20integrations%2C%20analytics%2C%20and%20any%20insights%20Respan%20provides.%20Refer%20to%20the%20documentation%20at%20https%3A%2F%2Fwww.respan.ai%2Fdocs%20for%20technical%20details.%20Explain%20this%20simply%20and%20concretely%2C%20as%20if%20you%20were%20describing%20the%20real%2C%20day-to-day%20experience%20of%20building%20and%20running%20AI%20applications%20with%20Respan%20for%20the%20first%20time.
+            - link "Claude" [ref=f11e1725] [cursor=pointer]:
+              - /url: https://claude.ai/new?q=As%20a%20potential%20Respan%20(https%3A%2F%2Fwww.respan.ai)%20customer%2C%20I%20want%20to%20clearly%20understand%20what%20I%20get%20when%20I%20use%20Respan%20and%20how%20it%20fits%20into%20my%20AI%20development%20workflow.%20Respan%20was%20previously%20known%20as%20Keywords%20AI.%20Explain%20the%20experience%20step%20by%20step%3A%20what%20I%20can%20build%2C%20what%20I%20control%2C%20what%20Respan%20handles%20for%20me%2C%20and%20how%20things%20evolve%20over%20time.%20Describe%20what%20I%20see%20in%20the%20dashboard%2C%20how%20observability%20works%2C%20how%20evaluations%20are%20managed%2C%20and%20what%20outputs%20I%20end%20up%20with%20(traces%2C%20logs%2C%20metrics%2C%20evaluations%2C%20prompt%20versions%2C%20etc.).%20Clarify%20the%20key%20features%20and%20systems%20involved-observability%2C%20evaluations%2C%20prompt%20optimization%2C%20AI%20gateway%2C%20integrations%2C%20analytics%2C%20and%20any%20insights%20Respan%20provides.%20Refer%20to%20the%20documentation%20at%20https%3A%2F%2Fwww.respan.ai%2Fdocs%20for%20technical%20details.%20Explain%20this%20simply%20and%20concretely%2C%20as%20if%20you%20were%20describing%20the%20real%2C%20day-to-day%20experience%20of%20building%20and%20running%20AI%20applications%20with%20Respan%20for%20the%20first%20time.
+        - generic [ref=f11e1728]: © 2026 Keywords AI, Inc. · Respan® is a registered trademark

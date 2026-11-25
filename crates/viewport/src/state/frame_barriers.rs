@@ -13,7 +13,11 @@
 /// Smithay exactly as a dead lock surface does. The per-frame and per-vblank
 /// passes filter here instead of trusting the bookkeeping. See
 /// `live_lock_walk_tests`, which holds every walk to it.
-fn live_surfaces(surfaces: Vec<WlSurface>) -> impl Iterator<Item = WlSurface> {
+///
+/// The backends' presentation-feedback, dmabuf-feedback and frame-callback
+/// passes go through it too, for the same reason and with the same
+/// requirement; `every_client_surface_walk_keeps_the_live_ones` names them.
+pub(crate) fn live_surfaces(surfaces: Vec<WlSurface>) -> impl Iterator<Item = WlSurface> {
     surfaces
         .into_iter()
         .filter(smithay::utils::IsAlive::alive)
@@ -841,11 +845,23 @@ mod live_lock_walk_tests {
     /// that is bookkeeping rather than the direct check above: every walk
     /// over one of these lists keeps only the live ones too, through
     /// `live_surfaces`.
+    ///
+    /// That includes the backends, which walk the same lists for a different
+    /// reason: presentation feedback, dmabuf feedback, scanout recording and
+    /// frame callbacks are per-frame passes in `udev.rs` and `winit.rs` too.
+    /// Naming only the state files left eight raw walks in those two — a
+    /// destroyed shell or wallpaper surface reached a feedback or
+    /// frame-callback walk in the backend, which panics in Smithay the same
+    /// way it does anywhere else. The list is per-file rather than "wherever
+    /// a surface list is walked" because the accessors are defined in
+    /// `shell_client.rs` and `background.rs`, and a definition is not a walk.
     #[test]
     fn every_client_surface_walk_keeps_the_live_ones() {
         for (name, whole) in [
             ("state/frame_barriers.rs", include_str!("frame_barriers.rs")),
             ("state/frame_clock.rs", include_str!("frame_clock.rs")),
+            ("udev.rs", include_str!("../udev.rs")),
+            ("winit.rs", include_str!("../winit.rs")),
         ] {
             let source = whole.split("#[cfg(test)]").next().unwrap_or(whole);
             for (at, line) in source.lines().enumerate() {

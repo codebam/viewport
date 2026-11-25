@@ -1,0 +1,134 @@
+- main [ref=f13e3]:
+  - navigation [ref=f13e4]:
+    - generic [ref=f13e6]:
+      - link "StepFun home" [ref=f13e7] [cursor=pointer]:
+        - /url: /
+        - img "StepFun" [ref=f13e8]
+      - generic [ref=f13e9]:
+        - button "Models" [ref=f13e11] [cursor=pointer]
+        - link "API Platform" [ref=f13e13] [cursor=pointer]:
+          - /url: https://platform.stepfun.ai/?utm_source=step-website&utm_medium=referral&utm_content=en
+        - link "AI Studio" [ref=f13e14] [cursor=pointer]:
+          - /url: https://studio.stepfun.ai/?utm_source=step-website&utm_medium=referral&utm_content=en
+        - button "About" [ref=f13e16] [cursor=pointer]
+  - generic [ref=f13e18]:
+    - link "返回新闻动态" [ref=f13e21] [cursor=pointer]:
+      - /url: /news
+    - article [ref=f13e25]:
+      - paragraph [ref=f13e26]: 2026年9月20日
+      - heading "阶跃发布旗舰模型 Step 5 Preview：向前一步，智能效率的新一代“帕累托前沿”" [level=1] [ref=f13e27]
+      - generic [ref=f13e28]:
+        - paragraph [ref=f13e29]: 帕累托前沿，描述的是多个目标之间所能达到的最佳平衡：在这条边界上，想进一步改善一个维度，通常就必须牺牲另一个。对 AI 模型而言，能力、效率与成本之间也存在这样的取舍。推进帕累托前沿，并不是让取舍消失，而是通过新的模型设计，将这条边界继续向外推——
+        - paragraph [ref=f13e30]:
+          - strong [ref=f13e31]: 阶跃新一代旗舰模型 Step 5 Preview，为此而来！
+        - paragraph [ref=f13e33]:
+          - text: 这是一款面向真实世界 Agentic 任务的旗舰基座模型。我们认为，随着 Agent 从“回答问题”走向“完成任务”，日常工作主力模型的标准也在发生变化：
+          - strong [ref=f13e34]: 不再只是单项能力足够强，而是要在能力、成本、效率和场景覆盖之间实现更好平衡
+          - text: 。Step 5 Preview 正是围绕这种平衡而设计。
+        - paragraph [ref=f13e35]:
+          - text: 它采用稀疏 MoE 架构，总参数量
+          - strong [ref=f13e36]: 600B
+          - text: 、激活参数仅
+          - strong [ref=f13e37]: 27B
+          - text: ，支持
+          - strong [ref=f13e38]: 100 万 Token
+          - text: 上下文窗口，原生支持文本与视觉输入，在 AI 编程、软件工程、专业知识工作、金融等场景表现突出。
+        - paragraph [ref=f13e39]:
+          - text: 在全球权威的 Artificial Analysis Intelligence Index 中，Step 5 Preview 取得
+          - strong [ref=f13e40]: "44"
+          - text: 分，
+          - strong [ref=f13e41]: 位居全球开源模型前三
+          - text: 。与此同时，Step 5 Preview 单任务成本仅为 Claude Opus 5 的 1/8。这意味着，Step 5 Preview 在同样成本下获得更强智能，也让同等能力能以更低成本投入实际工作——进一步推动 AI 模型的帕累托前沿。
+        - paragraph [ref=f13e42]: 在公开和内部评估中，Step 5 Preview 在复杂的软件工程任务（包括长程规划任务）、专业知识工作和金融领域等基准测试中展现出较为均衡的综合能力，并在 Agents' Last Exam 的 CLI 子集 ALE-CLI、金融投资研究评测 FrontierFinance，以及跨领域深度研究评测 DRACO 上仅次于 GPT-6 Astra 或 Claude Opus 5，领先其他参评开源模型。
+        - blockquote [ref=f13e43]:
+          - paragraph [ref=f13e44]: GDPval-AA v2 采用 Artificial Analysis 截至 2026 年 9 月 19 日公布的最新结果。DeepSWE v1.1 使用SWE-agentharness 进行评测，参数设置为 temperature=1.0 和 top_p=0.95。
+        - paragraph [ref=f13e45]:
+          - strong [ref=f13e46]: 今天起，Step 5 Preview 全量开放
+          - text: ，我们由衷希望它能成为你在 Agent 任务中的日常主力模型。此外，Step 5 Preview 依旧是一款
+          - strong [ref=f13e47]: 开源模型
+          - text: ，我们将在10 月 15 日释放模型权重，欢迎大家持续关注。
+        - list [ref=f13e48]:
+          - listitem [ref=f13e49]:
+            - text: Model Blog：
+            - link "https://www.stepfun.com/step-5-preview" [ref=f13e50] [cursor=pointer]:
+              - /url: https://www.stepfun.com/step-5-preview
+          - listitem [ref=f13e51]:
+            - text: 国内开放平台 API 接入：
+            - link "https://platform.stepfun.com/" [ref=f13e52] [cursor=pointer]:
+              - /url: https://platform.stepfun.com/
+          - listitem [ref=f13e53]:
+            - text: 国外开放平台 API 接入：
+            - link "https://platform.stepfun.ai/" [ref=f13e54] [cursor=pointer]:
+              - /url: https://platform.stepfun.ai/
+          - listitem [ref=f13e55]: Studio平台在线体验：studio.stepfun.com
+    - generic [ref=f13e57]:
+      - generic [ref=f13e58]:
+        - generic [ref=f13e59]:
+          - generic [ref=f13e60]:
+            - generic [ref=f13e61]:
+              - img "StepFun" [ref=f13e62]
+              - paragraph [ref=f13e63]: Scale up for everyone
+            - link "Support" [ref=f13e64] [cursor=pointer]:
+              - /url: https://platform.stepfun.ai/ticket?utm_source=step-website&utm_medium=referral&utm_content=en&utm_campaign=footer-support
+          - generic [ref=f13e65]:
+            - link "StepFun community" [ref=f13e66] [cursor=pointer]:
+              - /url: https://discord.gg/F4EAbdDzRu
+            - link "StepFun LinkedIn" [ref=f13e67] [cursor=pointer]:
+              - /url: https://www.linkedin.com/company/stepfun-ai
+            - link "StepFun X" [ref=f13e68] [cursor=pointer]:
+              - /url: https://x.com/StepFun_ai
+        - navigation "Footer navigation" [ref=f13e69]:
+          - generic [ref=f13e70]:
+            - heading "Models" [level=3] [ref=f13e71]
+            - generic [ref=f13e72]:
+              - generic [ref=f13e73]: Frontier Intelligence
+              - generic [ref=f13e74]:
+                - link "Step 5 Preview" [ref=f13e75] [cursor=pointer]:
+                  - /url: /step-5-preview
+                - link "Step 3.7 Flash" [ref=f13e76] [cursor=pointer]:
+                  - /url: /step-3.7-flash
+                - link "Step 3.5 Flash" [ref=f13e77] [cursor=pointer]:
+                  - /url: /step-3.5-flash
+            - generic [ref=f13e78]:
+              - generic [ref=f13e79]: Voice Interaction
+              - generic [ref=f13e80]:
+                - link "StepAudio 3 Realtime" [ref=f13e81] [cursor=pointer]:
+                  - /url: https://platform.stepfun.ai/docs/en/guides/models/stepaudio-3-realtime?utm_source=step-website&utm_medium=referral&utm_content=en&utm_campaign=footer-voice-docs
+                - link "StepAudio 3 TTS" [ref=f13e82] [cursor=pointer]:
+                  - /url: https://platform.stepfun.ai/docs/en/guides/models/stepaudio-3-tts?utm_source=step-website&utm_medium=referral&utm_content=en&utm_campaign=footer-voice-docs
+                - link "StepAudio 3 Gen" [ref=f13e83] [cursor=pointer]:
+                  - /url: https://platform.stepfun.ai/docs/en/guides/models/stepaudio-3-gen?utm_source=step-website&utm_medium=referral&utm_content=en&utm_campaign=footer-voice-docs
+                - link "StepAudio 3 Music" [ref=f13e84] [cursor=pointer]:
+                  - /url: https://platform.stepfun.ai/docs/en/guides/models/stepaudio-3-music?utm_source=step-website&utm_medium=referral&utm_content=en&utm_campaign=footer-voice-docs
+                - link "StepAudio 3 ASR" [ref=f13e85] [cursor=pointer]:
+                  - /url: https://platform.stepfun.ai/docs/en/guides/models/stepaudio-3-asr?utm_source=step-website&utm_medium=referral&utm_content=en&utm_campaign=footer-voice-docs
+          - generic [ref=f13e86]:
+            - heading "Products" [level=3] [ref=f13e87]
+            - generic [ref=f13e88]:
+              - link "Step Code" [ref=f13e89] [cursor=pointer]:
+                - /url: https://platform.stepfun.ai/step-code?utm_source=step-website&utm_medium=referral&utm_content=en&utm_campaign=footer-step-code
+              - link "AI Studio" [ref=f13e90] [cursor=pointer]:
+                - /url: https://studio.stepfun.ai/?utm_source=step-website&utm_medium=referral&utm_content=en&utm_campaign=footer-studio
+              - link "API Platform" [ref=f13e91] [cursor=pointer]:
+                - /url: https://platform.stepfun.ai/?utm_source=step-website&utm_medium=referral&utm_content=en&utm_campaign=footer-platform
+          - generic [ref=f13e92]:
+            - heading "Developers" [level=3] [ref=f13e93]
+            - generic [ref=f13e94]:
+              - link "Documentation" [ref=f13e95] [cursor=pointer]:
+                - /url: https://platform.stepfun.ai/docs/en/guides/basic-concepts?utm_source=step-website&utm_medium=referral&utm_content=en&utm_campaign=footer-docs
+              - link "Builder Program" [ref=f13e96] [cursor=pointer]:
+                - /url: https://platform.stepfun.ai/builder-program?utm_source=step-website&utm_medium=referral&utm_content=en&utm_campaign=footer-builder-program
+              - link "Developer Community" [ref=f13e97] [cursor=pointer]:
+                - /url: https://platform.stepfun.ai/developer-community?utm_source=step-website&utm_medium=referral&utm_content=en&utm_campaign=footer-developer-community
+          - generic [ref=f13e98]:
+            - heading "About" [level=3] [ref=f13e99]
+            - link "Company" [ref=f13e101] [cursor=pointer]:
+              - /url: /about
+      - generic [ref=f13e102]:
+        - generic [ref=f13e103]: "Model: Step Large Model"
+        - generic [ref=f13e104]: "Shanghai Public Network Security: 31010402333581"
+        - generic [ref=f13e105]: "Record: Shanghai-JieYue-20231106"
+        - link "Shanghai ICP No. 2023019222-3" [ref=f13e106] [cursor=pointer]:
+          - /url: https://beian.miit.gov.cn
+        - generic [ref=f13e107]: Copyright © 2023 StepFun Intelligence Co., Ltd.
+        - generic [ref=f13e108]: "Address: Floor 30, No. 701 Yunjin Road, Xuhui District, Shanghai"

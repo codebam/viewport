@@ -1,0 +1,22 @@
+- generic [active] [ref=f14e1]:
+  - main [ref=f14e2]:
+    - generic [ref=f14e3]:
+      - generic [ref=f14e4]:
+        - img "Icon for www.marktechpost.com" [ref=f14e5]
+        - heading "www.marktechpost.com" [level=1] [ref=f14e6]
+      - heading "Performing security verification" [level=2] [ref=f14e7]
+      - paragraph [ref=f14e8]: This website uses a security service to protect against malicious bots. This page is displayed while the website verifies you are not a bot.
+  - contentinfo [ref=f14e13]:
+    - generic [ref=f14e15]:
+      - generic [ref=f14e17]:
+        - text: "Ray ID:"
+        - code [ref=f14e18]: a5f5106daf8605be
+      - generic [ref=f14e19]:
+        - generic [ref=f14e20]:
+          - text: Performance and Security by
+          - link "Cloudflare, opens in a new tab" [ref=f14e21] [cursor=pointer]:
+            - /url: https://www.cloudflare.com?utm_source=challenge&utm_campaign=m
+            - text: Cloudflare
+        - link "Privacy, opens in a new tab" [ref=f14e23] [cursor=pointer]:
+          - /url: https://www.cloudflare.com/privacypolicy/
+          - text: Privacy
