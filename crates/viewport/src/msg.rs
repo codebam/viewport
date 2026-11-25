@@ -119,12 +119,14 @@ const STRING_FIELDS: &[&str] = &[
     // An AI provider name, which is a word and must not be read as anything
     // else a word could parse as.
     "provider",
-    // The keyboard block's xkb names, the lock command, the per-device
-    // input's device key and libinput enums, and the notification sound
-    // hints — all words, or in the sound file's case a path.
+    // The keyboard block's xkb names — `options` is not among them, because
+    // the wallpaper extension's options are a document: it lives in
+    // `config.keyboard`'s own `strings`, the per-type table a name collision
+    // has to use. The lock command, the per-device input's device key and
+    // libinput enums, and the notification sound hints follow — all words,
+    // or in the sound file's case a path.
     "layout",
     "variant",
-    "options",
     "model",
     "lock_command",
     "device",
@@ -808,7 +810,14 @@ const TYPES: &[Type] = &[
         // rule setters keep `rules` out of the global table for the same
         // reason the other way: theirs is a document, and the tray's `id`
         // needed this same mechanism for the same shape of clash.
-        strings: &["rules"],
+        //
+        // `options` is here for the same clash from the other side: the
+        // wallpaper extension's `config.wallpaper_options --options` carries
+        // a JSON document, so `options` cannot sit in the global string
+        // table — while xkb's own are comma-separated words a keymap is
+        // written against, `ctrl:swapcaps`, which read as JSON would come
+        // apart on the colon.
+        strings: &["options", "rules"],
         hint: "[--layout NAME --variant NAME --options OPTS --rules NAME --model NAME --repeat_rate N --repeat_delay N]   (set the seat's keymap; each is optional)",
     },
     Type {
@@ -1966,6 +1975,40 @@ mod tests {
         assert_eq!(
             value(&["-t", "config.opacity", "--active", "0.9"]),
             serde_json::json!({"type": "config.opacity", "active": 0.9})
+        );
+        // The wallpaper extension's options are a document, not a word: the
+        // typed CLI has to keep the object an object rather than quoting it
+        // into a string, which is the one name `config.keyboard`'s xkb
+        // `options` shares with it and the reason that row carries its own
+        // string override.
+        assert_eq!(
+            value(&[
+                "-t",
+                "config.wallpaper_options",
+                "--options",
+                r#"{"duration":30}"#,
+            ]),
+            serde_json::json!({
+                "type": "config.wallpaper_options",
+                "options": {"duration": 30},
+            })
+        );
+        // And the xkb spelling keeps its commas-and-colons text, where a
+        // JSON read would have come apart on the colon.
+        assert_eq!(
+            value(&[
+                "-t",
+                "config.keyboard",
+                "--options",
+                "ctrl:swapcaps",
+                "--rules",
+                "evdev",
+            ]),
+            serde_json::json!({
+                "type": "config.keyboard",
+                "options": "ctrl:swapcaps",
+                "rules": "evdev",
+            })
         );
         // The late arrivals ride the same rule: the field lists have to
         // know a field before the typed CLI can send it, which is how the

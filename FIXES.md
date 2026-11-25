@@ -703,3 +703,19 @@ code that landed after the first. Base `4b75e40c`.
   `tests/crash_probes.rs`, which drove the panic at
   `render_frame.rs:701` before the fix and pins the frame build
   surviving it after.
+
+- [x] **73. The typed CLI quotes the wallpaper extension's options into a
+  string.** `crates/viewport/src/msg.rs`: the global `STRING_FIELDS` table
+  carried `options` for the keyboard block's xkb spelling, and the name
+  collision meant `viewport msg -t config.wallpaper_options --options
+  '{"duration":30}'` sent the object as the *text* `'{"duration":30}'` —
+  while the request field is typed `serde_json::Value`, `docs/ipc.md`'s row
+  says "as JSON", and the socket test
+  `config_wallpaper_options_carries_the_object_through` pins the object
+  shape. The extension — the only reader of the value — was handed a
+  document it cannot parse, from the one path the settings panel's
+  write-back has from a terminal. Fixed by moving the xkb `options` into
+  `config.keyboard`'s own per-type `strings` — the same mechanism the
+  tray's `id` and the rule setters' `rules` already use for exactly this
+  shape of clash — pinned by both spellings in
+  `config_shell_setters_build_their_fields`.

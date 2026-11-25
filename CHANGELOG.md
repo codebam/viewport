@@ -42,6 +42,14 @@ to summarise rather than to duplicate.
 
 ### Fixed
 
+- `viewport msg -t config.wallpaper_options --options` sends the object.
+  The global string-field table carried `options` for the keyboard block's
+  xkb spelling, so the wallpaper extension's options were quoted into a
+  string on the way out — a document the extension cannot parse, from the
+  one path the settings panel's write-back has from a terminal. The xkb
+  `options` keep their comma-and-colon text through the per-type override
+  the tray's `id` already uses.
+
 - A shell overlay or screencast rectangle at the wire's coordinate floor no
   longer kills the frame build. `shell.overlay` and `screencast.rect`
   arrived as bare `i32`s with no bound anywhere: the frame build subtracts
