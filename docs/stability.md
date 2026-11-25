@@ -160,9 +160,10 @@ same promise:
   `servoshell`. Packaged, built by CI or the commit hook, and soaked on
   real hardware. The full promise above applies.
 - **Experimental** — `cef` and the embedded `servo`. `cef` is packaged
-  but its crate sits outside the workspace (CI checks its dependencies,
-  not its build); its shared-bridge adapter is unit-tested, the engine
-  paths are not. `servo` is built by hand and has not been measured.
+  and the excluded-crates CI job builds its crate (it sits outside the
+  workspace) and runs its unit tests, which cover the shared-bridge
+  adapter; its engine paths are not exercised. `servo` is built by hand
+  and has not been measured.
   Either may change engine-specific behaviour in any release; a change
   of tier is announced in the CHANGELOG.
 
