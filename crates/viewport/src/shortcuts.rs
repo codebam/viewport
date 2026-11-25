@@ -308,6 +308,11 @@ impl Store {
         let Some(known) = self.granted.get(app_id) else {
             return false;
         };
+        // A removed shortcut is a different agreement too. Checking only the
+        // requested entries would treat every subset of an old grant as covered.
+        if known.len() != shortcuts.len() {
+            return false;
+        }
         shortcuts
             .iter()
             .all(|shortcut| known.get(&shortcut.id) == Some(&shortcut.chord))
@@ -318,10 +323,14 @@ impl Store {
         if app_id.is_empty() {
             return;
         }
-        let known = self.granted.entry(app_id.to_owned()).or_default();
-        for shortcut in shortcuts {
-            known.insert(shortcut.id.clone(), shortcut.chord.clone());
-        }
+        // BindShortcuts describes what the application wants now. Replace the
+        // remembered set rather than merging it, so a shortcut the person saw
+        // removed is not silently granted again from an older consent later.
+        let known = shortcuts
+            .iter()
+            .map(|shortcut| (shortcut.id.clone(), shortcut.chord.clone()))
+            .collect();
+        self.granted.insert(app_id.to_owned(), known);
         self.save();
     }
 
@@ -805,6 +814,33 @@ mod tests {
             "discord",
             &[granted("talk", "Mod4+grave"), granted("mute", "Mod4+m")]
         ));
+    }
+
+    /// A smaller request is a different agreement, not a subset of the old
+    /// one. Otherwise dropping a shortcut would skip the dialogue, and adding
+    /// it back later would silently reuse consent gathered for the larger set.
+    #[test]
+    fn a_removed_shortcut_is_a_new_question() {
+        let mut store = Store::default();
+        store.remember(
+            "discord",
+            &[granted("talk", "Mod4+grave"), granted("mute", "Mod4+m")],
+        );
+        assert!(!store.covers("discord", &[granted("talk", "Mod4+grave")]));
+    }
+
+    /// Approving a smaller list replaces what is remembered; merging it would
+    /// leave the removed shortcut covered when the application asks again.
+    #[test]
+    fn approving_a_smaller_list_forgets_the_removed_grant() {
+        let mut store = Store::default();
+        store.remember(
+            "discord",
+            &[granted("talk", "Mod4+grave"), granted("mute", "Mod4+m")],
+        );
+        store.remember("discord", &[granted("talk", "Mod4+grave")]);
+        assert!(store.covers("discord", &[granted("talk", "Mod4+grave")]));
+        assert!(!store.covers("discord", &[granted("mute", "Mod4+m")]));
     }
 
     /// An application the frontend could not name is never written down: one
