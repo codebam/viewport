@@ -663,6 +663,12 @@ impl ViewportState {
         // the old one has to go with it, or the log claims a shell that is
         // talking and painting while the screen shows neither.
         self.shell_frames = 0;
+        // And the mark the rate is measured from. `report_shell_rate` pairs
+        // the count with it — the difference from the last tick — so a mark
+        // still holding the old page's count makes the first window of the
+        // new one a subtraction from a number that no longer exists: a 0-fps
+        // second, printed against a ring that was just cleared.
+        self.shell_rate_mark = None;
         // The arrival instants too: the next frame is the first of a new
         // series, not one that arrived after a pause in this one. The restart
         // took wall clock, and it is in the line above rather than in the

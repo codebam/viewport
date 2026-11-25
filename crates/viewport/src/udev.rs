@@ -492,6 +492,18 @@ impl Gpu {
         }
     }
 
+    /// Whether this renderer has the colour pipeline an HDR output needs.
+    ///
+    /// Vulkan does; GLES's `ColourSettings` is deliberately two empty
+    /// functions, so a display programmed into BT.2020/PQ there is lit with
+    /// an SDR image reinterpreted as PQ — washed out — while every client is
+    /// told the output is HDR. The connector can say it takes HDR and the
+    /// renderer still cannot deliver it, so this is the answer the capability
+    /// and the setter ask, not the connector's.
+    pub fn colour_managed(&self) -> bool {
+        matches!(self, Gpu::Vulkan(_))
+    }
+
     /// The formats a client may hand over, whichever renderer this is.
     pub fn dmabuf_formats(&self) -> smithay::backend::allocator::format::FormatSet {
         use smithay::backend::renderer::ImportDma as _;

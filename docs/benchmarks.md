@@ -412,14 +412,19 @@ number explains on its own.
 **What this measures now, and how.** The compositor stamps the arrival instant
 of every shell frame while `VIEWPORT_SHELL_RATE=1` (or debug logging) is on —
 the gate is the same early return as before, so a desktop nobody is measuring
-pays nothing for this — and once a second it reports the gaps between
-consecutive frames instead of only the count. A *hitch* is a gap over twice the
-panel's refresh period and never under 50 ms: two frames missed is what a person
-notices, and the floor keeps a slow panel from being all hitches. A *stall* is a
-gap over 250 ms, which is the desktop visibly freezing rather than dropping
-frames. Each second reports its frame count, the p50, p95 and worst gap, and how
-many gaps were hitches and how many stalls, so the steady 26 and the 26 that
-stops for 200 ms once a second are two different rows rather than one number.
+pays nothing for this — and, with `VIEWPORT_SHELL_RATE=1` set, once a second it
+reports the gaps between consecutive frames instead of only the count. Debug
+logging alone prints the `frames/s` line and stops before the window is read,
+so a DEBUG-only log carries the count and none of the statistics below; a
+second info line a second in every debug session is the noise the variable
+exists to gate. `scripts/bench-shell.py` sets it, and reads the gaps from the
+lines that carry it. A *hitch* is a gap over twice the panel's refresh period
+and never under 50 ms: two frames missed is what a person notices, and the
+floor keeps a slow panel from being all hitches. A *stall* is a gap over
+250 ms, which is the desktop visibly freezing rather than dropping frames.
+Each second reports its frame count, the p50, p95 and worst gap, and how many
+gaps were hitches and how many stalls, so the steady 26 and the 26 that stops
+for 200 ms once a second are two different rows rather than one number.
 
 The gap columns are read per second and are never averaged into a single
 figure, because a stall is exactly the second whose rate collapses: filtering
