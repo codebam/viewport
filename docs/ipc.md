@@ -354,11 +354,13 @@ s.sendall(json.dumps(
 ).encode() + b"\n")
 ```
 
-A member that is present but of the wrong type is treated as absent, so it
-takes the documented default rather than reaching the handler as a zero or a
-null. An unknown message type, or one whose `type` is missing or not a string,
-is answered with an `error` — to the socket client that sent it, or to the page
-when it came from there.
+A member of the wrong type refuses the whole message: serde cannot apply
+part of a body, so nothing in it reaches a handler and the `error` names the
+type and says which member did not fit — `view.focus: invalid type: string
+"seven", expected u32`. Absence is the only thing that takes a documented
+default. An unknown message type, or one whose `type` is missing or not a
+string, is answered with an `error` — to the socket client that sent it, or to
+the page when it came from there.
 
 `output.configure` checks what it can before it commits: a scale of zero or
 less is refused, the last output left on cannot be turned off, and a mode is

@@ -43,9 +43,10 @@ The tolerance rules are part of the contract, not implementation detail:
 - An unknown request type is refused with an `error` event reported
   against the type itself — a client can detect a compositor older than
   its vocabulary without guessing.
-- A member present with the wrong type is treated as absent and takes the
-  documented default. Absent optional fields mean what `docs/ipc.md` says
-  they mean; serde defaults here are protocol, not convenience.
+- A member present with the wrong type refuses the whole message, with an
+  `error` naming the type and the member; it is not treated as absent and no
+  part of the message is applied. Absent optional fields take the documented
+  default — serde defaults here are protocol, not convenience.
 - Unknown fields are ignored by the compositor. A shell forwarding events
   ignores unknown types. Both directions tolerate a peer one release
   ahead.
@@ -57,7 +58,8 @@ written against. The additive rules above are the mechanism that makes
 that work — a handshake would itself be a protocol change, and the
 question is revisited only at a major version, if ever. The C-client
 tests (`a_request_added_after_the_c_build_is_still_a_known_type`) pin the
-tolerance so it cannot quietly regress.
+tolerance so it cannot quietly regress, and
+`view_capture_requires_an_explicit_boolean` pins the wrong-type refusal.
 
 The trust classes — the read-only queries any same-user client may ask
 (`view.query`, `clipboard.query`, `notification.list`, `output.query`),
