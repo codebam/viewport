@@ -155,6 +155,7 @@ function closeSettings() {
      seconds of inconvenience against a screen nobody can read. */
   settingsConfirming = false;
   settingsSaved = null;
+  settingsSaveError = null;
   settingsEl.replaceChildren();
   settingsEl.hidden = true;
   setOverlay('settings', null);
@@ -203,6 +204,16 @@ function settingsChanged() {
 /* The compositor wrote the settings down, and said where. */
 function settingsWasSaved(path) {
   settingsSaved = typeof path === 'string' ? path : '';
+  settingsSaveError = null;
+  if (settingsOpen) renderSettings();
+}
+
+/* The compositor refused to write them down. Its `error` carries the reason,
+ * and this is where that reason belongs: the line along the bottom of the
+ * panel, which until now could only say where a successful save went. */
+function settingsSaveFailed(message) {
+  settingsSaveError = typeof message === 'string' && message !== ''
+    ? message : 'The compositor could not write the settings.';
   if (settingsOpen) renderSettings();
 }
 
@@ -291,6 +302,7 @@ function settingsHeader() {
        Save twice should look like two saves, and a message that never changes
        is one nobody can tell arrived. */
     settingsSaved = null;
+    settingsSaveError = null;
     send({ type: 'config.save' });
     renderSettings();
   });
@@ -305,11 +317,16 @@ function settingsHeader() {
 function settingsFooter() {
   const footer = document.createElement('div');
   footer.className = 'settings-hint';
-  footer.textContent = settingsSaved === null
-    ? 'Changes apply now. Save keeps them across a restart.'
-    : (settingsSaved === ''
-      ? 'Saved.'
-      : `Saved to ${settingsSaved}`);
+  if (settingsSaveError !== null) {
+    footer.classList.add('settings-hint-error');
+    footer.textContent = `Not saved: ${settingsSaveError}`;
+  } else {
+    footer.textContent = settingsSaved === null
+      ? 'Changes apply now. Save keeps them across a restart.'
+      : (settingsSaved === ''
+        ? 'Saved.'
+        : `Saved to ${settingsSaved}`);
+  }
   return footer;
 }
 

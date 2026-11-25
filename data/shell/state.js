@@ -278,6 +278,11 @@ let settingsOpen = false;
 let settingsRestoreId = null;
 let settingsConfirming = false;
 let settingsSaved = null;
+/* Why the last `config.save` did not happen, in the compositor's words, or
+ * null when it has not been refused. Kept apart from settingsSaved so a
+ * refusal cannot be drawn as the standing "not saved yet" hint — somebody
+ * reading that walks away believing the settings are on disk. */
+let settingsSaveError = null;
 /* The last `config` event, whole.
  *
  * Every other consumer of that message pulls out the one field it cares about

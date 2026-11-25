@@ -8155,6 +8155,32 @@ if (mode === 'scrolling') {
     dialog().querySelector('.settings-hint').textContent ===
       'Saved to /home/me/.config/viewport/settings.json');
 
+  /* A save the compositor refused. It answers with an `error` whose context is
+     `config.save`, and drawing that as the standing "not saved yet" hint is
+     how somebody walks away believing their settings are on disk and finds
+     them reverted at the next start. */
+  click(dialog().querySelector('.settings-save'));
+  emit({ type: 'error', context: 'config.save',
+    message: 'settings.json: Read-only file system' });
+  const failed = dialog().querySelector('.settings-hint');
+  check('a refused save is drawn in the compositor\'s own words',
+    failed?.textContent.includes('Read-only file system'));
+  check('and is not the standing not-saved-yet hint',
+    !failed?.textContent.includes('Save keeps them across a restart'));
+  check('and is marked as a failure rather than as a hint',
+    failed?.classList.contains('settings-hint-error'));
+
+  /* The next attempt clears it before any answer has arrived, so pressing
+     Save twice looks like two attempts rather than one lingering error. */
+  click(dialog().querySelector('.settings-save'));
+  check('trying again takes the failure off the line',
+    !dialog().querySelector('.settings-hint').textContent
+      .includes('Read-only file system'));
+  emit({ type: 'config.saved', path: '/home/me/.config/viewport/settings.json' });
+  check('and a save that works replaces it with where they went',
+    dialog().querySelector('.settings-hint').textContent ===
+      'Saved to /home/me/.config/viewport/settings.json');
+
   /* And a config message from anywhere — an editor saving the config file,
      another client on the socket — redraws the switches under the hand. */
   emit({ type: 'config', layout: mode, rules: HARNESS_RULES,

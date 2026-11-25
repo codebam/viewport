@@ -1757,6 +1757,10 @@ function dispatchViewport(message) {
 
     case 'error':
       console.error(`viewport: ${message.context}: ${message.message}`);
+      /* A refused save is not a console line: the settings panel asked for it
+         and is where somebody is looking for the answer. Other errors stay in
+         the log, as they have no surface of their own. */
+      if (message.context === 'config.save') settingsSaveFailed(message.message);
       break;
   }
 }
