@@ -282,6 +282,28 @@
           JSON
         '';
 
+        # The CEF line the crate pins, read from its manifest, and the guard
+        # that refuses an evaluation where it differs from the engine's.
+        #
+        # The rule is argued in the archive.json comment above; this is the
+        # only place that can enforce it. The archive name is a patch-skew
+        # tolerance, so a crate bumped onto 152 still builds against the 151
+        # library — 151.3.16 is "not newer" than 152 — and then has its
+        # `CEF_API_VERSION_LAST` refused by `api_hash` at run time, where no
+        # gate can see it. Comparing the major line is exactly the API version
+        # that gets declared, so a mismatch fails evaluation, and the message
+        # names both halves to move.
+        cefCrateLine =
+          let
+            lines = pkgs.lib.splitString "\n"
+              (builtins.readFile ./crates/viewport-shell-cef/Cargo.toml);
+            cef = builtins.head (builtins.filter
+              (line: pkgs.lib.hasPrefix "cef = " line) lines);
+          in builtins.head (builtins.tail (pkgs.lib.splitString "\"" cef));
+        cefLineMatches = crateVersion: engineVersion:
+          pkgs.lib.versions.major crateVersion
+          == pkgs.lib.versions.major engineVersion;
+
         # The shell process for the cef backend.
         #
         # Its own derivation because the crate is outside the workspace — it
@@ -298,7 +320,11 @@
         # the dep cache holds. A layer would only ever pay for itself on
         # machines that rebuild this derivation, which is to say whenever
         # the CEF archive changes, which is whenever it is built at all.
-        viewport-shell-cef = craneLib.buildPackage ({
+        viewport-shell-cef =
+          assert pkgs.lib.assertMsg
+            (cefLineMatches cefCrateLine pkgs.cef-binary.version)
+            "viewport-shell-cef pins cef ${cefCrateLine}, but nixpkgs' cef-binary is ${pkgs.cef-binary.version}: the crate's CEF_API_VERSION_LAST (its major line times 100) would be refused at run time. Move the crate and the engine together.";
+          craneLib.buildPackage ({
           pname = "viewport-shell-cef";
           version = "0.11.0";
 
@@ -344,7 +370,15 @@
 
           buildInputs = with pkgs; [ nss nspr at-spi2-atk cups libdrm libxkbcommon mesa ];
 
-          doCheck = false;
+          # The seven unit tests in this crate's `tests` module need no engine
+          # and no display: they exercise `bookkeeping_event` and
+          # `DocumentGuard` only, which is plain bookkeeping over JSON. Nothing
+          # else in the tree runs them — the root workspace excludes this crate
+          # — and they link against `libcef` rather than starting it, so the
+          # sandbox that built the package above can run them. The dev-shell
+          # rationale for `doCheck = false` (see the compositor below) does
+          # not apply: there is no `cargoArtifacts` layer here to cache.
+          doCheck = true;
 
           # The build script copies the engine and its resources next to the
           # binary, which for a nix build is the target directory rather than
@@ -979,12 +1013,15 @@
             echo "  cargo test --workspace                # the Rust rewrite"
             echo "  VIEWPORT_REQUIRE_GPU=1 cargo test -p viewport-web   # dma-buf, for real"
 
-            # The checks moved into .githooks when CI was disabled, and they
-            # are off until git is told where the hooks live. Nothing else can
-            # say so: a hook that is not installed does not run, so it cannot
-            # complain about not running, and the first sign is a commit that
-            # would not have passed. This shell is the one place every
-            # contributor already goes through.
+            # The gate on a commit is `.githooks/pre-commit`; the gate on a
+            # push is the workflow in .github/workflows/ci.yml. `nix flake
+            # check` is neither — this flake has no `checks` attribute, so it
+            # would only build the packages. The hook is off until git is told
+            # where the hooks live, and nothing else can say so: a hook that
+            # is not installed does not run, so it cannot complain about not
+            # running, and the first sign is a commit that would not have
+            # passed. This shell is the one place every contributor already
+            # goes through.
             if [ -d .git ] && [ "$(git config --get core.hooksPath || true)" != ".githooks" ]; then
               echo
               echo "  ! the pre-commit checks are not installed. To enable them:"

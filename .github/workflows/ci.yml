@@ -220,16 +220,23 @@ jobs:
   # locks and their own dependencies, so nothing else in this workflow sees
   # them either; this job does.
   #
-  # The first step is a ratchet. The CEF lock is clean under the root policy
-  # and gets no ignore. The Servo lock carries known findings, every one
-  # ignored explicitly in the Servo check and only there: a finding outside
-  # the list fails the job even while the known ones are being worked around.
+  # The dependency checks are the first two steps. The CEF lock is clean under
+  # the root policy and gets no ignore. The Servo lock carries known findings,
+  # every one ignored explicitly in the Servo check and only there: a finding
+  # outside the list fails the job even while the known ones are being worked
+  # around.
   # RUSTSEC-2026-0258 is the h2 0.4.15 the lock pins; the rest are crates in
   # the pinned Servo 0.6.0 tree that RustSec has marked unmaintained with no
   # safe upgrade. The second step runs the whole root policy so source and
   # license drift there is visible too.
+  #
+  # The CEF crate is also built here, which the policy checks above never do.
+  # It cannot come from the root workspace — it is excluded, it has its own
+  # lock, and it needs `CEF_PATH` — so without this step no gate compiles it
+  # at all. Its check phase runs the crate's unit tests; both phases stayed
+  # off CI's radar because they look like dependency policy.
   excluded-crates:
-    name: Excluded crate dependencies
+    name: Excluded crates
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -309,6 +316,19 @@ jobs:
             done
             exit "$status"
           '
+
+      # The crate's own build, which nothing else in this workflow does.
+      #
+      # `cargo deny` above reads this crate's lock; it never compiles the
+      # crate. `nix build` does, against the flattened `cef-binary`
+      # distribution, and its check phase runs the crate's seven unit tests —
+      # they exercise the bookkeeping adapter only, so they need neither an
+      # engine nor a display, which is what makes them runnable in the
+      # sandbox. The package also installs the engine beside the binary and
+      # wraps the launcher, which the `cargo` steps of the `rust` job cannot
+      # see.
+      - name: Build the CEF shell
+        run: nix build --print-build-logs .#viewport-shell-cef
 
   # The same suite under AddressSanitizer.
   #
