@@ -1215,17 +1215,32 @@ mod tests {
 
     /// A scratch directory of this test's own, for the paths below to sit in.
     fn scratch() -> PathBuf {
-        // Kept short: unix socket paths are capped at 107 bytes, and a long
-        // TMPDIR (nix develop's) plus the staging directory's suffix used to
-        // push `viewport-trust.sock` one or two bytes past it, depending on
-        // how many digits the thread id happened to have.
-        let dir = std::env::temp_dir().join(format!(
+        // Unix socket paths are capped at 107 bytes. `nix develop` sets TMPDIR
+        // to a `nix-shell.*` directory, and the pre-commit hook invokes it from
+        // another dev shell; inheriting that nested root leaves too little room
+        // for the staging suffix and `viewport-trust.sock`. These tests exercise
+        // socket behaviour, not temporary-directory selection, so use a fixed
+        // short root rather than an environment variable that can lose the test.
+        let dir = PathBuf::from("/tmp").join(format!(
             "v-ipc-{}-{:?}",
             std::process::id(),
             std::thread::current().id()
         ));
         std::fs::create_dir_all(&dir).expect("a scratch directory");
         dir
+    }
+
+    /// The pre-commit hook runs `nix develop` inside another dev shell. A
+    /// scratch path must still leave room for the private staging directory and
+    /// the longest socket name under that nested `nix-shell.*` TMPDIR.
+    #[test]
+    fn a_scratch_socket_name_fits_in_nested_nix_develop_shells() {
+        let dir = scratch();
+        let staging = staging_dir(&dir).expect("a staging directory");
+        let socket = staging.join("viewport-trust.sock");
+        let listener = UnixListener::bind(&socket).expect("a scratch socket path fits");
+        drop(listener);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The whole point: from the instant the socket exists at the name
