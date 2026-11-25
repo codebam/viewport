@@ -282,6 +282,28 @@
           JSON
         '';
 
+        # The CEF line the crate pins, read from its manifest, and the guard
+        # that refuses an evaluation where it differs from the engine's.
+        #
+        # The rule is argued in the archive.json comment above; this is the
+        # only place that can enforce it. The archive name is a patch-skew
+        # tolerance, so a crate bumped onto 152 still builds against the 151
+        # library — 151.3.16 is "not newer" than 152 — and then has its
+        # `CEF_API_VERSION_LAST` refused by `api_hash` at run time, where no
+        # gate can see it. Comparing the major line is exactly the API version
+        # that gets declared, so a mismatch fails evaluation, and the message
+        # names both halves to move.
+        cefCrateLine =
+          let
+            lines = pkgs.lib.splitString "\n"
+              (builtins.readFile ./crates/viewport-shell-cef/Cargo.toml);
+            cef = builtins.head (builtins.filter
+              (line: pkgs.lib.hasPrefix "cef = " line) lines);
+          in builtins.head (builtins.tail (pkgs.lib.splitString "\"" cef));
+        cefLineMatches = crateVersion: engineVersion:
+          pkgs.lib.versions.major crateVersion
+          == pkgs.lib.versions.major engineVersion;
+
         # The shell process for the cef backend.
         #
         # Its own derivation because the crate is outside the workspace — it
@@ -298,7 +320,11 @@
         # the dep cache holds. A layer would only ever pay for itself on
         # machines that rebuild this derivation, which is to say whenever
         # the CEF archive changes, which is whenever it is built at all.
-        viewport-shell-cef = craneLib.buildPackage ({
+        viewport-shell-cef =
+          assert pkgs.lib.assertMsg
+            (cefLineMatches cefCrateLine pkgs.cef-binary.version)
+            "viewport-shell-cef pins cef ${cefCrateLine}, but nixpkgs' cef-binary is ${pkgs.cef-binary.version}: the crate's CEF_API_VERSION_LAST (its major line times 100) would be refused at run time. Move the crate and the engine together.";
+          craneLib.buildPackage ({
           pname = "viewport-shell-cef";
           version = "0.11.0";
 
