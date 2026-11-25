@@ -411,6 +411,14 @@ fn run() -> Result<()> {
             Err(e) => tracing::warn!("{e}; ignoring the saved settings"),
         }
     }
+    // What an absent `lid` key means, worked out once, here: lock when a
+    // locker is configured, otherwise blank (`power::LidAction`). It cannot
+    // live in `apply_config`, because that is also the reload path and a
+    // reload must leave a `config.lid` set at runtime alone — deriving the
+    // default there would undo it on the next edit to any other line.
+    state.apply_lid(crate::power::LidAction::default_for(
+        config.idle.lock_command.is_some(),
+    ));
     state.apply_config(config);
     // Num Lock on at startup if the config asks — once, after the configured
     // keymap is on the seat, and never again on a reload. See

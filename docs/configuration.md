@@ -313,7 +313,9 @@ viewport msg -t config.lid --action lock
 Changing a deadline re-arms the timers, so a desk that has been quiet for an
 hour gets a full new period rather than locking on the next tick, and nothing
 is woken — a blanked desk stays blanked. An unknown lid action is refused
-whole rather than ignored.
+whole rather than ignored. A reload that names no `lid` leaves the runtime
+policy alone the same way: it is the next start that drops back to what the
+file says, not the next edit.
 
 `idle.lock_delay` is how long the outputs stand black after any lock is
 asked for, before it actually locks — seconds, opt-in only: absent or zero

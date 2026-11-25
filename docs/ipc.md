@@ -306,6 +306,16 @@ request —
 `shell.command` is a shell verb (focus, workspaces, layout model), not
 arbitrary execution.
 
+While the session is locked, `apply` also refuses what would *act* rather than
+read: `shell.exec`, synthetic input, `bind.add`, `ai.login`,
+`launcher.launch`, `quit`, `view.close`, `output.configure`, the tray actions
+and `notification.action`, plus the four requests that move the keyboard.
+Reads, the session's own lock lifecycle (`session.lock`, `session.lock.drawn`,
+`session.unlock`) and the panel setters are still answered, so a lock screen
+can draw itself and offer its own bar. The allow list and the reason for each
+family live beside the gate in `apply.rs`, and a test walks every `Request`
+variant so a new one is classified before it can inherit the hole.
+
 The compositor does trust a reconnection of its own binary: that is how
 `viewport msg` works without a token. The check is the executable path, so any
 same-user process that can run the compositor binary has the same trust. It is
