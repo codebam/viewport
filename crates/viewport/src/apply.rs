@@ -2426,6 +2426,8 @@ fn config_save(state: &mut ViewportState) {
         // start. The empty string is the config file's "no wallpaper".
         wallpaper: Some(state.config.wallpaper.clone().unwrap_or_default()),
         wallpaper_mode: state.config.wallpaper_mode.clone(),
+        wallpaper_options: state.config.wallpaper_options.clone(),
+        game_mode: Some(state.config.game_mode),
         gaps: state.config.gaps.clone(),
         border: state.config.border.clone(),
         cursor: state.config.cursor.clone(),

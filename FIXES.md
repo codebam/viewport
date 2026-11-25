@@ -580,3 +580,24 @@ and the JavaScript shell suites under `tests/`.
   minimizes a placed window and asserts it stays minimized, then pins that
   `view.focus` still restores, then minimizes a second window before anything
   places it and asserts the rescue leaves it alone.
+
+## Second audit pass (2026-11-24)
+
+Every defect the second audit pass (`docs/audit-2026-11-24.md`) found in the
+code that landed after the first. Base `4b75e40c`.
+
+- [x] **66. `config.save` drops five settings the runtime tier announces.**
+  `crates/viewport/src/settings.rs`: the overlay had no field at all for
+  `game_mode` (what the `config.game_mode` setter, the bind and the panel's
+  toggle move) or for `wallpaper_options` (the write-back path the
+  wallpaper-extension section of the settings panel uses), so `config_save`
+  (`crates/viewport/src/apply.rs`) could not write either; and
+  `settings::apply` copied the saved overlay's `border` and `idle` blocks
+  with only the fields those blocks carried the day it was written,
+  dropping `border.animated`, `idle.dim_after` and `idle.dim_floor` from a
+  file it had just deserialised — the same dropped-copy disease the motion
+  tree had. A save followed by a restart reverted all five to whatever the
+  hand-written file said, silently. Fixed by carrying the two absent keys
+  through the overlay and copying all five on the merge; covered by
+  `every_late_arriving_field_survives_the_overlay` and the round-trip
+  assertions in `a_saved_overlay_reads_back_whole_through_apply`.

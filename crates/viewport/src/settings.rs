@@ -88,6 +88,18 @@ pub struct Overlay {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wallpaper_mode: Option<String>,
 
+    /// The selected wallpaper extension's options, as `wallpaper_options` in
+    /// the config file: the object the settings panel wrote back through
+    /// `config.wallpaper_options`, carried whole. Absent means "leave what
+    /// the file said", like every other key here.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wallpaper_options: Option<serde_json::Value>,
+
+    /// Game mode, as `game_mode` in the config file. Carried so a save keeps
+    /// the state the bind or the panel left the desk in.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub game_mode: Option<bool>,
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gaps: Option<viewport_ipc::event::Gaps>,
 
@@ -488,6 +500,12 @@ pub fn apply(into: &mut crate::config::File, overlay: &Overlay) {
     if let Some(value) = overlay.wallpaper_mode.as_ref() {
         into.wallpaper_mode = Some(value.clone());
     }
+    if let Some(value) = overlay.wallpaper_options.as_ref() {
+        into.wallpaper_options = Some(value.clone());
+    }
+    if let Some(value) = overlay.game_mode {
+        into.game_mode = Some(value);
+    }
     if let Some(gaps) = overlay.gaps.as_ref() {
         if let Some(value) = gaps.inner {
             into.gaps.inner = Some(value);
@@ -508,6 +526,9 @@ pub fn apply(into: &mut crate::config::File, overlay: &Overlay) {
         }
         if let Some(value) = border.smart {
             into.border.smart = Some(value);
+        }
+        if let Some(value) = border.animated {
+            into.border.animated = Some(value);
         }
     }
     if let Some(cursor) = overlay.cursor.as_ref() {
@@ -677,6 +698,12 @@ pub fn apply(into: &mut crate::config::File, overlay: &Overlay) {
         }
         if let Some(value) = idle.lock_command.as_ref() {
             into.idle.lock_command = Some(value.clone());
+        }
+        if let Some(value) = idle.dim_after {
+            into.idle.dim_after = Some(value);
+        }
+        if let Some(value) = idle.dim_floor {
+            into.idle.dim_floor = Some(value);
         }
     }
     if let Some(value) = overlay.lid.as_ref() {
@@ -856,6 +883,8 @@ mod tests {
             dark_mode: Some(false),
             wallpaper: Some("file:///pic/wall.png".to_owned()),
             wallpaper_mode: Some("tile".to_owned()),
+            wallpaper_options: Some(serde_json::json!({"angle": 45})),
+            game_mode: Some(true),
             gaps: Some(viewport_ipc::event::Gaps {
                 inner: Some(12),
                 outer: Some(4),
@@ -865,7 +894,7 @@ mod tests {
                 radius: Some(10),
                 width: Some(3),
                 smart: Some(false),
-                animated: None,
+                animated: Some(true),
             }),
             cursor: Some(viewport_ipc::event::Cursor {
                 hide_after_ms: Some(0),
@@ -968,8 +997,8 @@ mod tests {
                 blank_after: Some(300),
                 lock_delay: Some(10),
                 lock_command: Some("swaylock".to_owned()),
-                dim_after: None,
-                dim_floor: None,
+                dim_after: Some(120),
+                dim_floor: Some(0.25),
             }),
             lid: Some("lock".to_owned()),
             keyboard: Some(viewport_ipc::event::Keyboard {
@@ -1419,6 +1448,27 @@ mod tests {
         assert_eq!(into.group.group_on_movetoworkspace, Some(true));
     }
 
+    /// The fields that arrived after the overlay's shape was settled ride the
+    /// same rule: a panel that set them and saved must not lose them to the
+    /// loader on the way back. `border.animated`, the idle dim pair, game mode
+    /// and the selected wallpaper extension's options were all written by
+    /// `config.save` and then dropped by `apply` on the read-back — the same
+    /// disease the motion test above pinned, found by the 2026-11-24 audit.
+    #[test]
+    fn every_late_arriving_field_survives_the_overlay() {
+        let mut into = crate::config::File::default();
+        apply(&mut into, &full());
+
+        assert_eq!(into.border.animated, Some(true));
+        assert_eq!(into.idle.dim_after, Some(120));
+        assert_eq!(into.idle.dim_floor, Some(0.25));
+        assert_eq!(into.game_mode, Some(true));
+        assert_eq!(
+            into.wallpaper_options.as_ref().and_then(|o| o.get("angle")),
+            Some(&serde_json::json!(45))
+        );
+    }
+
     /// And the round trip the panel depends on: a full overlay written out
     /// and read back through `apply` keeps those fields too, which is where
     /// the dropped copy actually bit — `every_key_written_is_a_key_the_
@@ -1438,5 +1488,15 @@ mod tests {
             .expect("windows survive the save and the apply");
         assert_eq!(windows.style.as_deref(), Some("popin"));
         assert_eq!(into.group.drag_into_group, Some(false));
+
+        // The late arrivals round-trip through the same save and read-back.
+        assert_eq!(into.border.animated, Some(true));
+        assert_eq!(into.idle.dim_after, Some(120));
+        assert_eq!(into.idle.dim_floor, Some(0.25));
+        assert_eq!(into.game_mode, Some(true));
+        assert_eq!(
+            into.wallpaper_options.as_ref().and_then(|o| o.get("angle")),
+            Some(&serde_json::json!(45))
+        );
     }
 }

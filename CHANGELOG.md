@@ -12,6 +12,18 @@ to summarise rather than to duplicate.
 ## [Unreleased]
 
 ### Fixed
+- `config.save` keeps the settings the newest keys carry. The settings
+  overlay had no field at all for `game_mode` or for the selected wallpaper
+  extension's `wallpaper_options` — the write-back path the panel uses for
+  both — and `settings::apply` read the saved overlay's `border` and `idle`
+  blocks but copied only the fields they carried the day it was written,
+  dropping `border.animated`, `idle.dim_after` and `idle.dim_floor` on the
+  merge. A panel that set any of the five and pressed Save wrote them out
+  and then lost them at the next start, which is the opposite of what the
+  saved tier is documented to do ("it holds whatever the runtime tier was
+  last asked for"). All five round-trip now, pinned by the same
+  field-survival tests that caught the motion tree's copy of this.
+
 - A hostile or corrupt ICC profile cannot poison or wedge the display
   transform. The matrix path answered a NaN input channel with a NaN output
   channel — which samples as a black pixel, not a colour — because
