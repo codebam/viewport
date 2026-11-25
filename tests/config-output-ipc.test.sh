@@ -267,13 +267,15 @@ check "and the active output is unchanged by the refusal" yes \
 	"$(layout_now | grep -o '"active":[^,}]*' | grep -c 'true' | grep -q '^1$' && echo yes || echo no)"
 
 # --- output.hdr: headless can only refuse ------------------------------------
-# HDR needs the drm backend and a capable head; the headless output is
-# neither, so both the unknown-head and the known-head cases are refusals.
-# The refusal text is the assertion (it is what distinguishes the two).
+# HDR needs a renderer with a colour pipeline, the drm backend and a capable
+# head; the headless output is none of the three. The renderer is checked
+# first because it is the conversion itself — GLES's ColourSettings is two
+# empty functions — so that is the reason a headless build is given, and the
+# refusal text is the assertion (it is what distinguishes the two refusals).
 check "output.hdr on an unknown output is refused" yes \
 	"$(err -t output.hdr --name NOPE-1 --enabled true | grep -q "^1 .*output.hdr: no such output" && echo yes || echo no)"
-check "output.hdr on the headless output names the drm backend" yes \
-	"$(err -t output.hdr --name HEADLESS-1 --enabled true | grep -q "HDR needs the drm backend" && echo yes || echo no)"
+check "output.hdr on the headless output names the renderer" yes \
+	"$(err -t output.hdr --name HEADLESS-1 --enabled true | grep -q "no colour pipeline" && echo yes || echo no)"
 check "output.test_remove on an unknown output is refused" yes \
 	"$(err -t output.test_remove --name NOPE-1 | grep -q "^1 .*output.test_remove" && echo yes || echo no)"
 if [ -n "$SECOND" ]; then

@@ -114,7 +114,7 @@ acceptance plus liveness rather than an error.
 | `shell.overlay` | `xwayland-capture-overlay` (hit-test) | — (same path as `screencast.rect`, which is covered) | pass (existing) |
 | `workspace.list` | `xkcd workspace.test.sh` (`workspace.test.sh`) | — | pass (existing) |
 | `output.configure` | `control_socket` (mirror, scale, revert) | — | pass (existing) |
-| `output.hdr` | `msg_cli` (unknown output) | `config-output-ipc` (unknown + headless `HDR needs the drm backend`). Success needs the drm backend + capable head, so headless can only refuse. | pass (error paths) |
+| `output.hdr` | `msg_cli` (unknown output) | `config-output-ipc` (unknown output, and the headless renderer refusal). Success needs a colour-managed renderer, the drm backend and a capable head, so headless can only refuse — and the renderer is the first reason. | pass (error paths) |
 | `output.confirm` | `control_socket` | — | pass (existing) |
 | `output.revert` | `control_socket` | — | pass (existing) |
 | `output.active` | — | `config-output-ipc` (active flags; unknown refused) | pass |
