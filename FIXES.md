@@ -620,3 +620,22 @@ code that landed after the first. Base `4b75e40c`.
   covered by `a_relative_layout_extension_is_resolved_on_the_socket_too`
   (`crates/viewport/tests/control_socket.rs`), which sends a relative path
   and asserts the announced `config` event carries `file://…/wave.js`.
+
+- [x] **68. The `vcgt` calibration ramp was gated behind the colour pipeline
+  it is documented not to need.**
+  `crates/viewport/src/state/outputs.rs` (`load_output_icc`): the
+  `if !self.cm_enabled` early return sat *above* the `crate::icc::vcgt`
+  parse, so with `render:cm_enabled` false the `outputs.<name>.icc` key
+  loaded nothing at all — no transform, and none of the calibration the
+  key is documented to apply on exactly those terms. Three contracts say
+  the ramp is independent of the pipeline: the `icc` key's own doc
+  ("which is the one part of ICC support that does not need a
+  colour-management engine: it is a table, not a transform"),
+  `docs/configuration.md` ("its calibration ramp still is, because that
+  is a KMS gamma ramp rather than part of the pipeline") — and the
+  comment inside the gate itself, which described the ramp as applying
+  while the code returned above it. Fixed by reading and storing the ramp
+  before the gate, and programming it on the gate's own exit; the wiring
+  is pinned by `the_calibration_ramp_is_read_before_the_pipeline_gate`,
+  the source-order test style the modeset promise in the same file
+  already uses.

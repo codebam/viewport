@@ -12,6 +12,17 @@ to summarise rather than to duplicate.
 ## [Unreleased]
 
 ### Fixed
+- A profile's `vcgt` calibration applies with the colour pipeline off. The
+  `outputs.<name>.icc` key reads two things, and only one of them belongs to
+  the pipeline — but the gate that skips the transform when
+  `render:cm_enabled` is false returned before the calibration ramp was
+  read, so turning the pipeline off silently took the monitor's calibration
+  away too, with a log line that said only the transform was skipped. The
+  ramp is a KMS gamma ramp, the one part of ICC support that does not need
+  a colour-management engine; it is now read and programmed whichever state
+  the pipeline is in, exactly as `docs/configuration.md` records and as the
+  gate's own comment always claimed.
+
 - `config.layout_extensions` over the socket stores the resolved URL, not
   the message's own value. The arm already ran the same resolver the config
   file uses — the one that refuses a remote URL — but only for its error:

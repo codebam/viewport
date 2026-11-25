@@ -1003,18 +1003,39 @@ impl ViewportState {
                 return;
             }
         };
-        // The transform the screen needs, as opposed to the calibration ramp
-        // above: a matrix-and-curve or LUT profile says how the display
-        // renders, and the renderer samples the baked cube. Reading it here
-        // means a profile that cannot be understood is said out loud at load
+        // The calibration ramp first, whatever the pipeline's state: it is a
+        // KMS gamma ramp, not part of the colour pipeline — the one part of
+        // ICC support that does not need a colour-management engine, as the
+        // `icc` key's own doc states and as `docs/configuration.md` records
+        // ("its calibration ramp still is, because that is a KMS gamma ramp
+        // rather than part of the pipeline"). Reading it here also means a
+        // profile that cannot be understood is still said out loud at load
         // time rather than on the frame somebody's colours come out wrong.
+        match crate::icc::vcgt(&bytes) {
+            Some(ramp) => {
+                tracing::info!(
+                    "{name}: {} ICC calibration entries from {path}",
+                    ramp.red.len()
+                );
+                self.gamma_vcgt.insert(name.to_owned(), ramp);
+            }
+            None => {
+                tracing::warn!("{name}: {path} has no usable vcgt tag; no calibration applied");
+                self.gamma_vcgt.remove(name);
+            }
+        }
         if !self.cm_enabled {
-            // The pipeline is off: the calibration ramp above still applies —
-            // it is a KMS gamma ramp, not part of the pipeline — but the cube
-            // it is applied on is not, so the transform is not read.
+            // The pipeline is off: the calibration ramp above has just been
+            // applied — it is a KMS gamma ramp, not part of the pipeline —
+            // but the cube it is composed with is not, so the transform is
+            // not read.
             tracing::debug!("{name}: colour management is off; the profile's transform is not used");
+            self.apply_effective_gamma(&output);
             return;
         }
+        // The transform the screen needs, as opposed to the calibration ramp
+        // above: a matrix-and-curve or LUT profile says how the display
+        // renders, and the renderer samples the baked cube.
         match crate::icc::DisplayTransform::for_profile(&bytes) {
             Some(transform) => {
                 let grey = transform.map([0.5, 0.5, 0.5]);
@@ -1043,19 +1064,6 @@ impl ViewportState {
                      matrix-and-curve nor a readable LUT; only its calibration is used"
                 );
                 self.icc_cubes.remove(name);
-            }
-        }
-        match crate::icc::vcgt(&bytes) {
-            Some(ramp) => {
-                tracing::info!(
-                    "{name}: {} ICC calibration entries from {path}",
-                    ramp.red.len()
-                );
-                self.gamma_vcgt.insert(name.to_owned(), ramp);
-            }
-            None => {
-                tracing::warn!("{name}: {path} has no usable vcgt tag; no calibration applied");
-                self.gamma_vcgt.remove(name);
             }
         }
         self.apply_effective_gamma(&output);
@@ -1154,6 +1162,45 @@ mod output_mode_tests {
         assert!(
             body.contains("gamma_state.output_gone(name)"),
             "output_removed must drop the head's gamma control"
+        );
+    }
+
+    /// The calibration ramp is not part of the colour pipeline: it is a KMS
+    /// gamma ramp, and the `icc` key's own contract says it applies "whether
+    /// the pipeline is on or off" (`docs/configuration.md`: "its calibration
+    /// ramp still is, because that is a KMS gamma ramp rather than part of
+    /// the pipeline"). The gate that skips the transform when colour
+    /// management is off must therefore sit *below* the vcgt read — the
+    /// order this asserts, because neither a profile load nor a
+    /// `ViewportState` can be built in a unit test.
+    #[test]
+    fn the_calibration_ramp_is_read_before_the_pipeline_gate() {
+        let source = include_str!("outputs.rs");
+        let source = source.split("#[cfg(test)]").next().unwrap_or(source);
+        let start = source
+            .find("pub fn load_output_icc(")
+            .expect("load_output_icc in outputs.rs");
+        let body = &source[start..];
+        let vcgt = body
+            .find("crate::icc::vcgt(&bytes)")
+            .expect("a vcgt read in load_output_icc");
+        let gate = body
+            .find("if !self.cm_enabled")
+            .expect("the colour-pipeline gate in load_output_icc");
+        assert!(
+            vcgt < gate,
+            "the vcgt read sits behind the colour-pipeline gate, so a profile \
+             loaded with the pipeline off applies no calibration"
+        );
+        // And the gate's own exit programmes the ramp it just stored, so
+        // leaving early does not leave the calibration dormant.
+        let gated = &body[gate..];
+        let transform = gated
+            .find("match crate::icc::DisplayTransform")
+            .expect("the transform read after the gate");
+        assert!(
+            gated[..transform].contains("self.apply_effective_gamma(&output)"),
+            "leaving the gate early must still programme the freshly stored ramp"
         );
     }
 }
