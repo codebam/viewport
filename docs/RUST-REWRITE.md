@@ -733,6 +733,14 @@ its story stays because the shape of the failure is worth knowing.
   being visible without waiting for a repaint, which is what the line
   never proved on its own.
 
+  **It has not had its hardware run yet.** The gate cannot start a DRM
+  session, so what stands behind the paragraph above is a code review and
+  four unit tests over a synthetic device — the ioctl half is untested.
+  Read it as what the code commits, not as what a desk showed: the check
+  is the EINVAL absent from the exit log, the getty back without a
+  repaint, and a night-light tint that does not survive the quit.
+  `docs/stability.md` carries it with the paths still waiting on a panel.
+
 - `Failed to destroy old mode property blob: No such file or directory`, once
   per output during a modeset. Harmless *in the shape we see it*, for a reason
   worth writing down: the device is created with its connectors disabled, so the

@@ -191,7 +191,11 @@ written down where they live: the multi-GPU copy has not run on two cards
 DRM lease is untested against a headset, and the auto-HDR transition
 paths — fixed in 0.10.0 to re-evaluate on every path that moves their
 inputs — await a hardware verification pass, since CI has no HDR screen;
-`docs/protocols.md` carries the procedure.
+`docs/protocols.md` carries the procedure. The fork's atomic exit restore
+(`docs/RUST-REWRITE.md` § Known rough edges) is the same kind of claim and
+has had the same treatment so far: a code review and unit tests over a
+synthetic device, with the ioctl half — the blob copies, the mode
+re-creation, the commit itself — waiting on a panel.
 
 ## Changing this document
 
