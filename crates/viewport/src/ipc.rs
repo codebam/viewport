@@ -264,10 +264,28 @@ impl Ipc {
     /// `$XDG_RUNTIME_DIR/viewport-<display>.sock`, falling back to `/tmp` and
     /// then to the pid, exactly as `src/ipc.c:1660` does.
     pub fn default_path(display: Option<&str>) -> PathBuf {
-        let dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_owned());
+        Self::default_path_from(
+            std::env::var_os("XDG_RUNTIME_DIR").as_deref(),
+            display,
+            std::process::id(),
+        )
+    }
+
+    /// One explicit runtime directory, so empty-environment handling is
+    /// testable without changing the process's environment.
+    fn default_path_from(
+        runtime: Option<&std::ffi::OsStr>,
+        display: Option<&str>,
+        pid: u32,
+    ) -> PathBuf {
+        let dir = PathBuf::from(
+            runtime
+                .filter(|dir| !dir.is_empty())
+                .unwrap_or_else(|| std::ffi::OsStr::new("/tmp")),
+        );
         match display {
-            Some(display) => PathBuf::from(format!("{dir}/viewport-{display}.sock")),
-            None => PathBuf::from(format!("{dir}/viewport-{}.sock", std::process::id())),
+            Some(display) => dir.join(format!("viewport-{display}.sock")),
+            None => dir.join(format!("viewport-{pid}.sock")),
         }
     }
 
@@ -1212,6 +1230,19 @@ impl ViewportState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_empty_runtime_directory_uses_the_tmp_socket_fallback() {
+        let empty = std::ffi::OsStr::new("");
+        assert_eq!(
+            Ipc::default_path_from(Some(empty), None, 42),
+            PathBuf::from("/tmp/viewport-42.sock")
+        );
+        assert_eq!(
+            Ipc::default_path_from(None, Some("wayland-1"), 42),
+            PathBuf::from("/tmp/viewport-wayland-1.sock")
+        );
+    }
 
     /// A scratch directory of this test's own, for the paths below to sit in.
     fn scratch() -> PathBuf {
