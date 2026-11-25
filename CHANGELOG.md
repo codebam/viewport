@@ -11,6 +11,24 @@ to summarise rather than to duplicate.
 
 ## [Unreleased]
 
+### Fixed
+- A hostile or corrupt ICC profile cannot poison or wedge the display
+  transform. The matrix path answered a NaN input channel with a NaN output
+  channel — which samples as a black pixel, not a colour — because
+  `f64::clamp` passes NaN through; the matrix branch now clamps the way the
+  LUT paths already clamped. An MPE pipeline whose chain of CLUT stages runs
+  past four is refused with the rule that refused it: a CLUT whose output
+  range the incoming PCS never reaches puts every vertex of the bake on the
+  bounded out-of-gamut fallback, and a few hundred such stages out of the
+  256 the position table allows was minutes of solving out of a file
+  kilobytes long. That fallback no longer runs its seven closed-form cell
+  solves for a target outside the range every node covers — they cannot hit
+  their tolerance there — which roughly halves what an honest narrow-gamut
+  display costs to bake. Every rule is held to its contract by a
+  hostile-profile harness in the crate's own test suite: `for_profile`
+  either refuses quickly or bakes a cube whose entries, and whose answers
+  for out-of-range and NaN inputs, are finite and in [0, 1].
+
 ## [0.11.0] - 2026-11-24
 
 ### Added

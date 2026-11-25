@@ -469,9 +469,11 @@ impl DisplayTransform {
                 let device = mul_vec(from_pcs, &pcs);
                 let mut out = [0.0; 3];
                 for (channel, value) in out.iter_mut().enumerate() {
-                    *value = decode[channel]
-                        .invert(device[channel].clamp(0.0, 1.0))
-                        .clamp(0.0, 1.0);
+                    // `finite_clamp`, not `clamp`: f64::clamp passes NaN
+                    // through — a NaN channel in is a NaN channel out,
+                    // which samples as a black pixel. The LUT paths below
+                    // already clamp this way at their stage boundaries.
+                    *value = finite_clamp(decode[channel].invert(finite_clamp(device[channel])));
                 }
                 out
             }
@@ -855,6 +857,15 @@ const CLUT_ENTRY_CAP: usize = 1 << 21;
 /// them — a real curve has one to three segments; these bound a corrupt count.
 const SEGMENT_CAP: usize = 1024;
 const SEGMENT_SAMPLE_CAP: usize = 1 << 16;
+
+/// The most CLUT-bearing stages one MPE pipeline may carry. A real display
+/// profile has one; the position-table format would allow a chain of 256,
+/// and in an inverted (`D2B`) chain every stage multiplies the bake: a CLUT
+/// whose output range the incoming PCS never reaches puts every vertex on
+/// the bounded bisection fallback, and a few hundred such stages is minutes
+/// of solving out of a file kilobytes long. Four is two to four times the
+/// wildest pipeline a profiler writes.
+const PIPELINE_CLUT_CAP: usize = 4;
 
 /// The sentinels LittleCMS uses for the open ends of a segmented curve's
 /// domain. They are finite float32 values, not infinities, and the sampled
@@ -1479,6 +1490,13 @@ struct InvertedClut {
     origin: [f64; 3],
     inv_global_jacobian: Mat3,
     coarse_seeds: Vec<([f64; 3], [f64; 3])>,
+    /// The per-channel range the CLUT's nodes cover. A target outside it
+    /// has no exact preimage anywhere in the grid — the closed-form cell
+    /// solves cannot hit their tolerance — so their seven cells of matrix
+    /// inversions are skipped on the out-of-gamut path, which is the path
+    /// every narrow-gamut display takes for the colours it cannot show.
+    output_min: [f64; 3],
+    output_max: [f64; 3],
 }
 
 impl InvertedClut {
@@ -1571,11 +1589,22 @@ impl InvertedClut {
             }
         }
         let origin = clut.eval([0.0, 0.0, 0.0]);
+        let mut output_min = [f64::INFINITY; 3];
+        let mut output_max = [f64::NEG_INFINITY; 3];
+        let (nodes, _) = clut.table.as_chunks::<3>();
+        for node in nodes {
+            for channel in 0..3 {
+                output_min[channel] = output_min[channel].min(node[channel]);
+                output_max[channel] = output_max[channel].max(node[channel]);
+            }
+        }
         Ok(Self {
             clut,
             origin,
             inv_global_jacobian,
             coarse_seeds,
+            output_min,
+            output_max,
         })
     }
 
@@ -1664,34 +1693,43 @@ impl InvertedClut {
         }
 
         // If Newton stalled on a crease between tetrahedra, check the current
-        // cell and its six face-adjacent neighbors in closed form.
-        let center = cell_of(x);
-        for (dx, dy, dz) in [
-            (0, 0, 0),
-            (-1, 0, 0),
-            (1, 0, 0),
-            (0, -1, 0),
-            (0, 1, 0),
-            (0, 0, -1),
-            (0, 0, 1),
-        ] {
-            let (ix, iy, iz) = (
-                center[0] as isize + dx,
-                center[1] as isize + dy,
-                center[2] as isize + dz,
-            );
-            if ix >= 0
-                && (ix as usize) < self.clut.grid[0] - 1
-                && iy >= 0
-                && (iy as usize) < self.clut.grid[1] - 1
-                && iz >= 0
-                && (iz as usize) < self.clut.grid[2] - 1
-            {
-                if let Some(exact) = self
-                    .clut
-                    .try_solve_cell([ix as usize, iy as usize, iz as usize], target)
+        // cell and its six face-adjacent neighbors in closed form — unless
+        // the target is outside the range every node covers, where no cell
+        // solve can hit its tolerance and the bisection below is the whole
+        // answer.
+        let target_in_range = (0..3).all(|channel| {
+            target[channel] >= self.output_min[channel] - 1e-6
+                && target[channel] <= self.output_max[channel] + 1e-6
+        });
+        if target_in_range {
+            let center = cell_of(x);
+            for (dx, dy, dz) in [
+                (0, 0, 0),
+                (-1, 0, 0),
+                (1, 0, 0),
+                (0, -1, 0),
+                (0, 1, 0),
+                (0, 0, -1),
+                (0, 0, 1),
+            ] {
+                let (ix, iy, iz) = (
+                    center[0] as isize + dx,
+                    center[1] as isize + dy,
+                    center[2] as isize + dz,
+                );
+                if ix >= 0
+                    && (ix as usize) < self.clut.grid[0] - 1
+                    && iy >= 0
+                    && (iy as usize) < self.clut.grid[1] - 1
+                    && iz >= 0
+                    && (iz as usize) < self.clut.grid[2] - 1
                 {
-                    return exact;
+                    if let Some(exact) = self
+                        .clut
+                        .try_solve_cell([ix as usize, iy as usize, iz as usize], target)
+                    {
+                        return exact;
+                    }
                 }
             }
         }
@@ -2213,6 +2251,7 @@ fn parse_mpe(data: &[u8], pcs: Pcs) -> Option<LutPipeline> {
         return None;
     }
     let mut stages = Vec::new();
+    let mut clut_stages = 0usize;
     for i in 0..count {
         let entry = table_at + i * 8;
         let offset = be_u32(&data[entry..entry + 4]) as usize;
@@ -2225,7 +2264,13 @@ fn parse_mpe(data: &[u8], pcs: Pcs) -> Option<LutPipeline> {
         match &element[0..4] {
             b"cvst" => stages.push(Stage::Curves(parse_mpe_curves(element)?)),
             b"matf" => stages.push(parse_mpe_matrix(element)?),
-            b"clut" => stages.push(Stage::Clut(parse_mpe_clut(element)?)),
+            b"clut" => {
+                clut_stages += 1;
+                if clut_stages > PIPELINE_CLUT_CAP {
+                    return None;
+                }
+                stages.push(Stage::Clut(parse_mpe_clut(element)?));
+            }
             b"bACS" | b"eACS" => {}
             _ => return None,
         }
