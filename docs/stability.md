@@ -192,10 +192,15 @@ DRM lease is untested against a headset, and the auto-HDR transition
 paths — fixed in 0.10.0 to re-evaluate on every path that moves their
 inputs — await a hardware verification pass, since CI has no HDR screen;
 `docs/protocols.md` carries the procedure. The fork's atomic exit restore
-(`docs/RUST-REWRITE.md` § Known rough edges) is the same kind of claim and
-has had the same treatment so far: a code review and unit tests over a
-synthetic device, with the ioctl half — the blob copies, the mode
-re-creation, the commit itself — waiting on a panel.
+(`docs/RUST-REWRITE.md` § Known rough edges) had the same kind of claim
+until a Steam Deck run on 2026-11-25 supplied the missing half: the
+restore ran from the compositor's own teardown, the kernel accepted its
+commit (no `EINVAL`), and a 3000 K night-light LUT was live at quit. What
+that run found first is worth keeping in mind for the next claim of this
+kind: the restore had only ever been reachable from the DRM device's
+`Drop`, which a real exit does not reach, so the unit tests were green
+over a path no session took. The one thing a machine cannot assert is the
+console's colour on the returning VT; that is a person's check.
 
 ## Changing this document
 

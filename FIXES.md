@@ -913,3 +913,22 @@ code that landed after the first. Base `4b75e40c`.
   `live_surfaces`, and the guard test names both backend files so the next
   one cannot be added raw. `crates/viewport/src/udev.rs`,
   `crates/viewport/src/winit.rs`, `crates/viewport/src/state/frame_barriers.rs`.
+
+- [x] **91. The exit restore never ran on the way out.** The fork's restore
+  lived only in `Drop for AtomicDrmDevice`, and a real exit does not reach
+  that `Drop`: the device sits behind an `Arc` that a detached thread or a
+  stored handle can keep alive past the compositor's teardown, so the
+  process left through `_exit` with the device still active and nothing
+  restored. Measured on a Steam Deck with an instrumented build — state
+  dropped, event loop dropped, device still `active = true`, no restore
+  line — and the *old* build produced no `EINVAL` in the same run either,
+  because its commit was never attempted: the fifth patch had the right
+  commit and the wrong trigger. The fork now exposes
+  `DrmDevice::restore_previous_state` (`&self`; everything it reads is
+  immutable, `f20aafb0` on `atomic-exit-restore`), and `run()` calls it
+  after stopping the shells and before the state goes; the active flag
+  makes the eventual `Drop` a no-op. Verified on the Deck with
+  `scripts/restore-proof.sh`: the restore line is logged, the commit is
+  accepted (no `EINVAL`), and a 3000 K night-light LUT held live at quit
+  goes with it. The console's colour on the returning VT is the visual
+  half a person confirms.

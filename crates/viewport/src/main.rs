@@ -1407,6 +1407,11 @@ fn run() -> Result<()> {
     // took the display away under a running engine, and the shell died of it.
     // See `ViewportState::stop_client_shells`.
     state.stop_client_shells();
+    // And the screens go back to whoever had them. This is done here rather
+    // than left to the device's `Drop`, which is not guaranteed to run: the
+    // device can still be referenced when the process exits, and then nothing
+    // restores the console (measured on the Deck — see the method's comment).
+    state.restore_drm_state();
     Ok(())
 }
 

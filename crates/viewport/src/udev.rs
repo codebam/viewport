@@ -4371,6 +4371,28 @@ fn non_desktop(device: &DrmDevice, connector: connector::Handle) -> bool {
     false
 }
 
+impl ViewportState {
+    /// Put each card back the way it was found, now.
+    ///
+    /// The restore belongs to the DRM device, whose `Drop` still does it — but
+    /// `Drop` is not guaranteed to run before this process exits. The device
+    /// is behind an `Arc` that the teardown does not own alone: a detached
+    /// thread or a handle another object kept can outlive the state and the
+    /// event loop, and the process then leaves through `_exit` with no restore
+    /// at all. Measured on a Steam Deck: both dropped, the device still
+    /// active, the restore never logged. The session ending is exactly the
+    /// moment it has to happen, so this runs it while the device is still
+    /// ours; the device's own flag makes the eventual `Drop` a no-op.
+    pub fn restore_drm_state(&mut self) {
+        let Some(udev) = self.udev.as_mut() else {
+            return;
+        };
+        for device in &mut udev.devices {
+            device.manager.device_mut().restore_previous_state();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

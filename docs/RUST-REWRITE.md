@@ -733,6 +733,29 @@ its story stays because the shape of the failure is worth knowing.
   being visible without waiting for a repaint, which is what the line
   never proved on its own.
 
+- For a while after that patch the restore *ran* in the unit tests and
+  never in a session. It lived only in `Drop for AtomicDrmDevice`, and a
+  real exit does not reach that `Drop`: the device is behind an `Arc`, a
+  detached thread or a stored handle can keep it alive past the
+  compositor's teardown, and the process then leaves through `_exit` with
+  the device still active and nothing restored. An instrumented run on a
+  Steam Deck showed it: the state dropped, the event loop dropped, the
+  device still reported `active = true`, and no restore line was logged —
+  and the old build produced no `EINVAL` either, because its commit was
+  never attempted. So the fifth patch had the right commit and the wrong
+  trigger.
+
+  The fork now exposes the restore as `DrmDevice::restore_previous_state`
+  (same body, `&self` because everything it reads is immutable), and the
+  compositor calls it from its own teardown — after the shells are
+  stopped, before the state goes, while the device is still ours. The
+  device's active flag is cleared by that call, so the eventual `Drop`
+  does not commit it twice. Verified on the Deck with the `restore-proof`
+  harness: the restore line is logged, the commit is accepted, and a
+  3000 K night-light LUT held live at quit goes with it. The half a
+  machine cannot say is the one to look at: the console on the VT that
+  comes back is its normal colour, not orange.
+
   **It has not had its hardware run yet.** The gate cannot start a DRM
   session, so what stands behind the paragraph above is a code review and
   four unit tests over a synthetic device — the ioctl half is untested.

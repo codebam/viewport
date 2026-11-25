@@ -42,6 +42,13 @@ to summarise rather than to duplicate.
 
 ### Fixed
 
+- The screens are put back the way they were found on every exit. The
+  restore was only ever run by the DRM device's `Drop`, which a real exit
+  does not reach — the device can outlive the compositor's teardown — so
+  the commit that lights the console again was never attempted, and the
+  gamma LUT a session left behind stayed. It is now run explicitly before
+  the session ends; on a Steam Deck the restore ran and the kernel
+  accepted it with a night-light LUT live at quit.
 - The lock screen follows the outputs: a monitor unplugged, moved or
   reconfigured while the session is locked re-draws the panes, so the
   password box cannot be stranded on a screen nobody can see.
