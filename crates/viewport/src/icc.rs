@@ -4615,6 +4615,1108 @@ mod lut_tests {
         }
     }
 
+    // -----------------------------------------------------------------------
+    // The hostile-profile harness
+    // -----------------------------------------------------------------------
+    //
+    // Everything above checks well-formed profiles against reference values;
+    // nothing has tried to break one. The tests below do exactly that, from
+    // three directions: truncation at every boundary a reader could trip on,
+    // a tag directory that lies about what it points at, and bit-level
+    // mutations of the same fixtures the cross-checks build. The contract
+    // every case is held to is one sentence: `for_profile` either refuses —
+    // quickly, without panicking — or returns a transform whose cube, and
+    // whose answer for out-of-range and NaN inputs, is finite and in [0, 1].
+    // A profile that cannot be read is refused; a profile that can be read
+    // cannot poison the cube.
+
+    mod fuzz_tests {
+        use super::*;
+        use std::panic::catch_unwind;
+        use std::time::{Duration, Instant};
+
+        /// The wall-clock ceiling for one profile, debug build. The honest
+        /// worst case is the 33³ inverted bake at roughly 75 ms and the
+        /// legal hostile worst is a chain of four CLUTs whose outputs no
+        /// incoming PCS value reaches, at roughly 3.5 s — every vertex of
+        /// that chain takes the bounded out-of-gamut fallback, and a fifth
+        /// CLUT is a refusal rather than a longer bake. A profile past this
+        /// ceiling is a wedge, whatever its bytes said.
+        const CASE_BUDGET: Duration = Duration::from_millis(5_000);
+
+        /// A deterministic xorshift64* sequence: no dependency to pull, and
+        /// a failure replays from its seed.
+        struct Rng(u64);
+
+        impl Rng {
+            fn new(seed: u64) -> Self {
+                // Zero would repeat forever; any other seed does not.
+                Self(seed.max(1))
+            }
+
+            fn next_u64(&mut self) -> u64 {
+                let mut x = self.0;
+                x ^= x >> 12;
+                x ^= x << 25;
+                x ^= x >> 27;
+                self.0 = x;
+                x.wrapping_mul(0x2545_F491_4F6C_DD1D)
+            }
+
+            fn byte(&mut self) -> u8 {
+                self.next_u64() as u8
+            }
+
+            /// Uniform enough for flipping bytes: modulo bias is not a
+            /// coverage problem at these sizes.
+            fn below(&mut self, bound: usize) -> usize {
+                (self.next_u64() % bound as u64) as usize
+            }
+        }
+
+        /// The message inside a caught panic payload, for the failure line.
+        fn panic_text(panic: &(dyn std::any::Any + Send)) -> String {
+            if let Some(text) = panic.downcast_ref::<&str>() {
+                (*text).to_owned()
+            } else if let Some(text) = panic.downcast_ref::<String>() {
+                text.clone()
+            } else {
+                "an unknown panic payload".to_owned()
+            }
+        }
+
+        /// The contract on what `for_profile` hands back: the cube it baked
+        /// and its answer for out-of-range and NaN inputs, all finite and
+        /// in [0, 1]. Panics — failing the test — otherwise.
+        fn assert_in_contract(
+            parsed: Result<Option<DisplayTransform>, Box<dyn std::any::Any + Send>>,
+        ) -> Option<DisplayTransform> {
+            let transform = match parsed {
+                Ok(transform) => transform,
+                Err(panic) => panic!("for_profile panicked: {}", panic_text(&*panic)),
+            };
+            let transform = transform?;
+            // The bake is the map over every vertex of the cube, so the
+            // cube's entries carry the first half of the contract.
+            for entry in transform.lut() {
+                for channel in entry {
+                    let value = f64::from(*channel);
+                    assert!(
+                        value.is_finite() && (0.0..=1.0).contains(&value),
+                        "cube entry {entry:?} is out of contract"
+                    );
+                }
+            }
+            // The second half: hostile inputs. Out-of-range, infinite and
+            // NaN channels are what a half-written upload or a racing client
+            // can hand `map`; the answer has to be a colour either way.
+            for input in [
+                [0.5, 0.5, 0.5],
+                [-0.25, 1.75, 0.5],
+                [f64::NEG_INFINITY, f64::INFINITY, 0.0],
+                [f64::NAN, 0.5, 0.5],
+                [f64::NAN; 3],
+            ] {
+                let out = transform.map(input);
+                for channel in out {
+                    assert!(
+                        channel.is_finite() && (0.0..=1.0).contains(&channel),
+                        "map({input:?}) = {out:?} is out of contract"
+                    );
+                }
+            }
+            Some(transform)
+        }
+
+        /// One hostile profile against the whole contract, budget included.
+        fn assert_contract(bytes: &[u8]) -> Option<DisplayTransform> {
+            let started = Instant::now();
+            let parsed = catch_unwind(|| DisplayTransform::for_profile(bytes));
+            let elapsed = started.elapsed();
+            assert!(
+                elapsed < CASE_BUDGET,
+                "one hostile profile took {elapsed:?}, past the {CASE_BUDGET:?} budget"
+            );
+            assert_in_contract(parsed)
+        }
+
+        /// A matrix-shaper profile with the given curve, the smallest honest
+        /// matrix fixture: it parses, and mutating it exercises the path a
+        /// display profile actually arrives by.
+        fn matrix_profile(curve: &[u8]) -> Vec<u8> {
+            let column =
+                |index: usize| [SRGB_D50[0][index], SRGB_D50[1][index], SRGB_D50[2][index]];
+            profile_with_tags(&[
+                (b"rXYZ", xyz_tag(column(0))),
+                (b"gXYZ", xyz_tag(column(1))),
+                (b"bXYZ", xyz_tag(column(2))),
+                (b"rTRC", curve.to_vec()),
+                (b"gTRC", curve.to_vec()),
+                (b"bTRC", curve.to_vec()),
+            ])
+        }
+
+        /// One small, honest profile of every flavour the reader takes: a
+        /// matrix-shaper, the 8-bit and 16-bit tables and the `mBA `/MPE
+        /// elements, each in both the forward (`B2A`) and the inverted
+        /// (`A2B`) direction. Grid-2 CLUTs and two-entry tables keep one
+        /// bake down to a few milliseconds, so the sweeps below can afford
+        /// thousands of cases.
+        fn honest_small_profiles() -> Vec<(&'static str, Vec<u8>)> {
+            let two = [identity_table(2), identity_table(2), identity_table(2)];
+            let clut = |grid: usize| clut_nodes(grid, |xyz| xyz);
+            let lut16 = |grid: usize| lut16_tag(&IDENTITY, &two, grid, &clut(grid), &two);
+            // `mft1` carries no entry counts: its tables are 256 entries
+            // whether the writer meant them or not.
+            let lut8 = |grid: usize| {
+                lut8_tag(
+                    &IDENTITY,
+                    &identity_tables(),
+                    grid,
+                    &clut(grid),
+                    &identity_tables(),
+                )
+            };
+            let b2a = |sig: &[u8; 4], tag: Vec<u8>| profile_with_tags(&[(sig, tag)]);
+            let a2b =
+                |sig: &[u8; 4], tag: Vec<u8>| profile_with_pcs_and_tags(b"XYZ ", &[(sig, tag)]);
+            let lab_a2b =
+                |sig: &[u8; 4], tag: Vec<u8>| profile_with_pcs_and_tags(b"Lab ", &[(sig, tag)]);
+            vec![
+                ("matrix-shaper", matrix_profile(&curv_gamma(2.2))),
+                ("mft1 B2A", b2a(b"B2A1", lut8(2))),
+                ("mft2 B2A", b2a(b"B2A1", lut16(2))),
+                (
+                    "mBA B2A",
+                    profile_with_pcs_and_tags(
+                        b"Lab ",
+                        &[(
+                            b"B2A1",
+                            mba_tag(
+                                Some(identity_curve_set()),
+                                None,
+                                None,
+                                Some(mba_clut_bytes([2, 2, 2], &clut(2))),
+                                Some(gamma_curve_set(1.0 / 2.2)),
+                            ),
+                        )],
+                    ),
+                ),
+                (
+                    "mpet B2D",
+                    profile_with_pcs_and_tags(
+                        b"Lab ",
+                        &[(
+                            b"B2D1",
+                            mpe_tag(&[
+                                cvst_formula_set(0, &[1.0, 1.0, 0.0, 0.0]),
+                                clut_element([2, 2, 2], &clut(2)),
+                                cvst_formula_set(0, &[1.0 / 2.2, 1.0, 0.0, 0.0]),
+                            ]),
+                        )],
+                    ),
+                ),
+                ("mft1 A2B", a2b(b"A2B1", lut8(2))),
+                ("mft2 A2B", a2b(b"A2B1", lut16(2))),
+                (
+                    "mAB A2B",
+                    lab_a2b(
+                        b"A2B1",
+                        mab_tag(
+                            Some(identity_curve_set()),
+                            None,
+                            None,
+                            Some(mba_clut_bytes([2, 2, 2], &clut(2))),
+                            Some(identity_curve_set()),
+                        ),
+                    ),
+                ),
+                (
+                    "mpet D2B",
+                    profile_with_pcs_and_tags(
+                        b"Lab ",
+                        &[(
+                            b"D2B1",
+                            mpe_tag(&[
+                                cvst_formula_set(0, &[1.0, 1.0, 0.0, 0.0]),
+                                // The normalize matrix raw Lab meets first,
+                                // the way a real D2B carries it — without it
+                                // the CLUT is indexed at fifty times its
+                                // range and every vertex takes the
+                                // out-of-gamut fallback.
+                                matf_element(
+                                    &[
+                                        [1.0 / 100.0, 0.0, 0.0],
+                                        [0.0, 1.0 / 255.0, 0.0],
+                                        [0.0, 0.0, 1.0 / 255.0],
+                                    ],
+                                    &[0.0, 128.0 / 255.0, 128.0 / 255.0],
+                                ),
+                                clut_element([2, 2, 2], &clut(2)),
+                                cvst_formula_set(0, &[1.0, 1.0, 0.0, 0.0]),
+                            ]),
+                        )],
+                    ),
+                ),
+            ]
+        }
+
+        /// Rewrite a directory entry of `signature` in a profile built by
+        /// [`profile_with_tags`] — the `occurrence`th one, counting from
+        /// zero — so its offset and size become the given pair, whatever
+        /// the pair says about the file.
+        fn point_tag_at(
+            profile: &mut [u8],
+            signature: &[u8; 4],
+            occurrence: usize,
+            offset: u32,
+            size: u32,
+        ) {
+            let count = be_u32(&profile[128..132]) as usize;
+            let mut seen = 0usize;
+            for at in (132..132 + count * 12).step_by(12) {
+                if &profile[at..at + 4] == signature {
+                    if seen == occurrence {
+                        profile[at + 4..at + 8].copy_from_slice(&offset.to_be_bytes());
+                        profile[at + 8..at + 12].copy_from_slice(&size.to_be_bytes());
+                        return;
+                    }
+                    seen += 1;
+                }
+            }
+            panic!("no {occurrence}th {signature:?} in the directory to move");
+        }
+
+        /// Where a tag's data starts, for surgery that keeps a slice honest.
+        fn find_tag_offset(profile: &[u8], signature: &[u8; 4]) -> u32 {
+            let count = be_u32(&profile[128..132]) as usize;
+            for at in (132..132 + count * 12).step_by(12) {
+                if &profile[at..at + 4] == signature {
+                    return u32::from_be_bytes([
+                        profile[at + 4],
+                        profile[at + 5],
+                        profile[at + 6],
+                        profile[at + 7],
+                    ]);
+                }
+            }
+            panic!("no {signature:?} in the directory");
+        }
+
+        /// Whether the directory carries `signature` at all.
+        fn has_tag(profile: &[u8], signature: &[u8; 4]) -> bool {
+            let count = be_u32(&profile[128..132]) as usize;
+            (132..132 + count * 12)
+                .step_by(12)
+                .any(|at| &profile[at..at + 4] == signature)
+        }
+
+        /// Truncation at every boundary a reader could trip on: the whole
+        /// header and directory byte by byte, and — on the real fixtures,
+        /// whose tags run to the end of the file — the middle of the CLUT
+        /// nodes, where a short read is invisible unless the reader counts.
+        #[test]
+        fn truncated_profiles_are_refused_or_stay_in_contract() {
+            let mut cuts = 0usize;
+            for (name, bytes) in honest_small_profiles() {
+                for len in 0..bytes.len() {
+                    assert_contract(&bytes[..len]);
+                    cuts += 1;
+                }
+                // The untruncated profile is the control: it must parse.
+                assert!(
+                    assert_contract(&bytes).is_some(),
+                    "the honest {name} fixture must parse whole"
+                );
+            }
+            // The cross-check fixtures are an order of magnitude bigger;
+            // walk the last thirty kilobytes of each — the CLUT's nodes —
+            // a node row at a time, where a hostile truncation hides: a
+            // slice that no longer fits the file must be a refusal, not a
+            // read past the end.
+            for bytes in [
+                lut16_lab_b2a_profile(),
+                mba_lab_b2a_profile(),
+                lut16_lab_a2b_profile(),
+                mab_lab_a2b_profile(),
+                mpe_lab_d2b_profile(),
+            ] {
+                let one_entry = bytes.len() - 132 - 12; // one tag, one entry
+                let clut_start = bytes.len() - 17 * 17 * 17 * 3 * 2;
+                for at in (clut_start..bytes.len()).step_by(17 * 3 * 2) {
+                    assert_contract(&bytes[..at]);
+                    assert_contract(&bytes[..at + 1]);
+                    cuts += 2;
+                }
+                assert!(
+                    assert_contract(&bytes[..one_entry]).is_none(),
+                    "a directory without its tag is not a transform"
+                );
+            }
+            println!("truncation: {cuts} cuts");
+        }
+
+        /// A tag directory that lies: offsets past the end of the file, an
+        /// offset and size whose sum overflows, a zero size, tags that
+        /// overlap, duplicate entries, and a count the directory cannot
+        /// hold. A lie is either named and refused, or — when the slice it
+        /// describes happens to be honest — read like any other profile;
+        /// what no lie may do is half-read a transform.
+        #[test]
+        fn a_lying_tag_directory_is_refused_or_stays_in_contract() {
+            let two = [identity_table(2), identity_table(2), identity_table(2)];
+            let clut = clut_nodes(2, |xyz| xyz);
+            let mut lies = 0usize;
+            for (name, bytes) in honest_small_profiles() {
+                // Offsets and sizes that point outside the file, at the
+                // header, into the directory, or nowhere at all.
+                let len = bytes.len() as u32;
+                for (offset, size) in [
+                    (u32::MAX, 1),
+                    (0xFFFF_FFF0, 0x20),
+                    (len - 5, 10),
+                    (len.saturating_sub(4), 4),
+                    (132, 20),
+                    (0, 132),
+                    (len / 2, len),
+                    (u32::MAX, u32::MAX),
+                    (16, 4),
+                ] {
+                    for signature in [b"rXYZ", b"rTRC", b"B2A1", b"A2B1", b"D2B1"] {
+                        let mut lying = bytes.clone();
+                        if has_tag(&lying, signature) {
+                            point_tag_at(&mut lying, signature, 0, offset, size);
+                            assert_contract(&lying);
+                            lies += 1;
+                        }
+                    }
+                }
+                // A count the directory cannot hold is a corrupt profile,
+                // not a large one; a count of zero is a profile without
+                // tags, which is a refusal by another rule.
+                let honest_count = be_u32(&bytes[128..132]);
+                for count in [0u32, 1, 0xFFFF, 0x7FFF_FFFF, u32::MAX] {
+                    let mut lying = bytes.clone();
+                    lying[128..132].copy_from_slice(&count.to_be_bytes());
+                    let accepted = assert_contract(&lying);
+                    if count != honest_count {
+                        assert!(
+                            accepted.is_none(),
+                            "{name} with a lying count of {count} must be refused"
+                        );
+                    }
+                    lies += 1;
+                }
+                // A zero size is not a tag.
+                for signature in [b"rXYZ", b"B2A1", b"A2B1"] {
+                    let mut lying = bytes.clone();
+                    if has_tag(&lying, signature) {
+                        let offset = find_tag_offset(&lying, signature);
+                        point_tag_at(&mut lying, signature, 0, offset, 0);
+                        assert!(
+                            assert_contract(&lying).is_none(),
+                            "{name}: a zero-size tag must be refused"
+                        );
+                        lies += 1;
+                    }
+                }
+            }
+            // Duplicates: the first entry wins. A valid tag first and a
+            // lying one second still reads; a lying one first is a refusal
+            // that must not fall back to the second.
+            let honest = lut16_tag(&IDENTITY, &two, 2, &clut, &two);
+            let honest_two =
+                profile_with_tags(&[(b"B2A1", honest.clone()), (b"B2A1", honest.clone())]);
+            let offset = find_tag_offset(&honest_two, b"B2A1");
+            let with_two = |first: u32, second: u32| {
+                let mut profile = honest_two.clone();
+                point_tag_at(&mut profile, b"B2A1", 0, first, honest.len() as u32);
+                point_tag_at(&mut profile, b"B2A1", 1, second, honest.len() as u32);
+                profile
+            };
+            assert!(
+                assert_contract(&with_two(offset, u32::MAX)).is_some(),
+                "a valid tag before a lying duplicate still reads"
+            );
+            assert!(
+                assert_contract(&with_two(u32::MAX, offset)).is_none(),
+                "a lying first duplicate must not fall back to the second"
+            );
+            // Overlapping tags: two signatures describing the same slice.
+            let mut overlapping =
+                profile_with_tags(&[(b"B2A1", honest.clone()), (b"A2B1", honest.clone())]);
+            point_tag_at(&mut overlapping, b"A2B1", 0, offset, honest.len() as u32);
+            assert_contract(&overlapping);
+            lies += 4;
+            println!("lying directory: {lies} cases");
+        }
+
+        /// Consistent-looking headers with absurd payloads: CLUT grids too
+        /// big to allocate, entry and element counts that disagree with the
+        /// bytes behind them, curves at the one-entry and maximum sizes,
+        /// and matrices a hair from singular. Each is a named refusal, or —
+        /// when the payload is honest, just strange — an in-contract
+        /// transform; none may panic or bake its way out of [0, 1].
+        #[test]
+        fn absurd_payloads_are_refused_or_stay_in_contract() {
+            let two = [identity_table(2), identity_table(2), identity_table(2)];
+            let clut = |grid: usize| clut_nodes(grid, |xyz| xyz);
+            let mut cases = 0usize;
+
+            // CLUT grids: a byte wider than the entry cap, the maximum a
+            // grid byte can say, the impossible single point, and a grid
+            // whose nodes are not there.
+            for grid in [2u8, 88, 89, 255] {
+                let tag = lut16_tag(&IDENTITY, &two, usize::from(grid), &clut(2), &two);
+                let accepted = assert_contract(&profile_with_tags(&[(b"B2A1", tag)]));
+                if grid > 88 {
+                    assert!(accepted.is_none(), "a grid of {grid} must be refused");
+                }
+                cases += 1;
+            }
+            // The largest grid the entry cap takes with its payload really
+            // there: 88³ nodes is four megabytes of honest profile, and it
+            // is a colour like any other.
+            let full = lut16_tag(&IDENTITY, &two, 88, &clut(88), &two);
+            assert!(
+                assert_contract(&profile_with_tags(&[(b"B2A1", full)])).is_some(),
+                "a complete 88^3 grid is the cap, not past it"
+            );
+            cases += 1;
+            let mut grid_one = lut16_tag(&IDENTITY, &two, 1, &[], &two);
+            grid_one[10] = 1;
+            assert!(
+                assert_contract(&profile_with_tags(&[(b"B2A1", grid_one)])).is_none(),
+                "a grid of one point is not a CLUT"
+            );
+            cases += 1;
+            // A grid of two with no nodes behind it is a refusal; a grid of
+            // zero is the honest way to say "no CLUT", and the curves and
+            // matrix it leaves are a transform like any other.
+            let no_nodes = lut16_tag(&IDENTITY, &two, 2, &[], &two);
+            assert!(
+                assert_contract(&profile_with_tags(&[(b"B2A1", no_nodes.clone())])).is_none(),
+                "a grid of two with no nodes must be refused"
+            );
+            let mut no_clut = no_nodes;
+            no_clut[10] = 0;
+            assert!(
+                assert_contract(&profile_with_tags(&[(b"B2A1", no_clut)])).is_some(),
+                "a table profile without a CLUT is still a transform"
+            );
+            cases += 2;
+
+            // The same grids through the `mBA ` CLUT element, where the
+            // precision byte is one more thing to lie about.
+            for grid in [89u8, 255] {
+                for precision in [0u8, 1, 2, 3] {
+                    let mut bytes = mba_clut_bytes([grid, grid, grid], &clut(2));
+                    bytes[16] = precision;
+                    bytes.truncate(20);
+                    let tag = mba_tag(None, None, None, Some(bytes), None);
+                    assert!(
+                        assert_contract(&profile_with_tags(&[(b"B2A1", tag)])).is_none(),
+                        "grid {grid}, precision {precision} must be refused"
+                    );
+                    cases += 1;
+                }
+            }
+
+            // Entry counts: the one-entry table (a corrupt table, not a
+            // gamma — that spelling belongs to `curv`), the zero table
+            // (absent, by extension), the maximum `mft2` allows, one past
+            // it, and the maximum with no payload behind it.
+            let one = [identity_table(1), identity_table(1), identity_table(1)];
+            let big = [
+                identity_table(0x7FFF),
+                identity_table(0x7FFF),
+                identity_table(0x7FFF),
+            ];
+            for (input, output) in [
+                (&one[..], &two[..]),
+                (&two[..], &one[..]),
+                (&big[..], &two[..]),
+                (&two[..], &big[..]),
+            ] {
+                let input: &[Vec<f64>; 3] = (*input).try_into().unwrap();
+                let output: &[Vec<f64>; 3] = (*output).try_into().unwrap();
+                let mut tag = lut16_tag(&IDENTITY, input, 2, &clut(2), output);
+                let accepted = assert_contract(&profile_with_tags(&[(b"B2A1", tag.clone())]));
+                if input.len() == 1 || output.len() == 1 {
+                    assert!(accepted.is_none(), "one-entry tables must be refused");
+                }
+                cases += 1;
+                // The maximum entry count with the payload missing behind
+                // it — a count only the big variants can afford to lose.
+                if input[0].len() == 0x7FFF {
+                    tag.truncate(tag.len() - 0x7FFF * 2);
+                    assert!(
+                        assert_contract(&profile_with_tags(&[(b"B2A1", tag)])).is_none(),
+                        "a 0x7FFF-entry table with no payload must be refused"
+                    );
+                    cases += 1;
+                }
+            }
+            let over = [
+                identity_table(0x8000),
+                identity_table(0x8000),
+                identity_table(0x8000),
+            ];
+            let over: &[Vec<f64>; 3] = &over;
+            let tag = lut16_tag(&IDENTITY, over, 2, &clut(2), &two);
+            assert!(
+                assert_contract(&profile_with_tags(&[(b"B2A1", tag)])).is_none(),
+                "an entry count past 0x7FFF must be refused"
+            );
+            cases += 1;
+
+            // Curves at the extremes: the identity (a zero-count `curv`),
+            // a one-entry gamma of zero, a negative and a huge gamma, a
+            // `curv` count past anyone's payload, and every `para` kind
+            // with parameters from the ends of the fixed-point range.
+            // Each rides both the LUT path (as `mBA ` A curves) and the
+            // matrix path (as TRCs), the two readers a curve can meet.
+            let curv = |count: u32, entries: &[u16]| {
+                let mut data = b"curv\0\0\0\0".to_vec();
+                data.extend_from_slice(&count.to_be_bytes());
+                for entry in entries {
+                    data.extend_from_slice(&entry.to_be_bytes());
+                }
+                data
+            };
+            let primaries = |curve: &[u8]| {
+                profile_with_tags(&[
+                    (b"rXYZ", xyz_tag([0.436, 0.222, 0.014])),
+                    (b"gXYZ", xyz_tag([0.385, 0.717, 0.097])),
+                    (b"bXYZ", xyz_tag([0.143, 0.061, 0.714])),
+                    (b"rTRC", curve.to_vec()),
+                    (b"gTRC", curve.to_vec()),
+                    (b"bTRC", curve.to_vec()),
+                ])
+            };
+            for data in [
+                curv(0, &[]),
+                curv(1, &[0]),
+                curv(1, &[0x8000]),
+                curv(1, &[0xFFFF]),
+                curv(0xFFFF_FFFF, &[0, 0]),
+                curv(0xFFFF, &[]),
+                curv(2, &[0, 0xFFFF]),
+                curv(3, &[0, 20_000, 10_000]),
+            ] {
+                let set = curves_blob(&[data.clone(), data.clone(), data.clone()]);
+                let tag = mba_tag(
+                    Some(identity_curve_set()),
+                    None,
+                    None,
+                    Some(mba_clut_bytes([2, 2, 2], &clut(2))),
+                    Some(set),
+                );
+                assert_contract(&profile_with_pcs_and_tags(b"Lab ", &[(b"B2A1", tag)]));
+                cases += 1;
+                assert_contract(&primaries(&data));
+                cases += 1;
+            }
+            for kind in 0u16..5 {
+                for value in [i32::MIN, -65_536, 0, 65_536, i32::MAX] {
+                    let mut data = b"para\0\0\0\0".to_vec();
+                    data.extend_from_slice(&kind.to_be_bytes());
+                    data.extend_from_slice(&0u16.to_be_bytes());
+                    for _ in 0..7 {
+                        data.extend_from_slice(&value.to_be_bytes());
+                    }
+                    assert_contract(&primaries(&data));
+                    cases += 1;
+                }
+            }
+
+            // Matrix stages a hair from singular, exactly singular, and
+            // scaled to the ends of the fixed-point range — through the
+            // fixed-point `mAB ` element an inverted pipeline inverts, the
+            // `mft` inline matrix the forward one reads, and the float
+            // `matf`, where a hair from singular survives quantization.
+            let near_fixed = [
+                [1.0, 0.0, 0.0],
+                [1.0 + 4.0 / 65_536.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0],
+            ];
+            let near_float = [[1.0, 0.0, 0.0], [1.0 + 1e-7, 0.0, 0.0], [0.0, 0.0, 1.0]];
+            for matrix in [
+                near_fixed,
+                [[1.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+                [[32_768.0, -32_768.0, 32_768.0]; 3],
+                [[1e-4, 0.0, 0.0], [0.0, 1e-4, 0.0], [0.0, 0.0, 1e-4]],
+            ] {
+                let tag = mab_tag(
+                    Some(identity_curve_set()),
+                    Some(matrix_element_bytes(&matrix, &[0.0; 3])),
+                    None,
+                    None,
+                    None,
+                );
+                assert_contract(&profile_with_pcs_and_tags(b"XYZ ", &[(b"A2B1", tag)]));
+                cases += 1;
+                let inline = lut16_tag(&matrix, &two, 2, &clut(2), &two);
+                assert_contract(&profile_with_tags(&[(b"B2A1", inline)]));
+                cases += 1;
+            }
+            let near = matf_element(&near_float, &[0.0; 3]);
+            assert_contract(&profile_with_pcs_and_tags(
+                b"Lab ",
+                &[(b"D2B1", mpe_tag(&[near]))],
+            ));
+            cases += 1;
+
+            // `mpet`: element counts the position table cannot hold,
+            // offsets into the position table itself, elements with no
+            // size, unknown signatures, and a count of zero.
+            let identity_element = cvst_formula_set(0, &[1.0, 1.0, 0.0, 0.0]);
+            let clut_element = clut_element([2, 2, 2], &clut(2));
+            let honest = mpe_tag(&[identity_element.clone(), clut_element.clone()]);
+            let mut lying = honest.clone();
+            lying[12..16].copy_from_slice(&0xFFFF_FFFFu32.to_be_bytes());
+            assert!(
+                assert_contract(&profile_with_tags(&[(b"B2D1", lying.clone())])).is_none(),
+                "an element count past the payload must be refused"
+            );
+            cases += 1;
+            for offset in [0u32, 4, 8, 12, 15] {
+                let mut into_table = honest.clone();
+                // The first element's offset, aimed back at the table.
+                into_table[16..20].copy_from_slice(&offset.to_be_bytes());
+                assert!(
+                    assert_contract(&profile_with_tags(&[(b"B2D1", into_table.clone())])).is_none(),
+                    "an element offset inside the position table must be refused"
+                );
+                cases += 1;
+            }
+            let mut zero_size = honest.clone();
+            zero_size[16 + 4..16 + 8].copy_from_slice(&0u32.to_be_bytes());
+            assert!(
+                assert_contract(&profile_with_tags(&[(b"B2D1", zero_size)])).is_none(),
+                "a zero-size element must be refused"
+            );
+            cases += 1;
+            let mut unknown_element = identity_element.clone();
+            unknown_element[0..4].copy_from_slice(b"xxxx");
+            let unknown = mpe_tag(&[unknown_element, clut_element.clone()]);
+            assert!(
+                assert_contract(&profile_with_tags(&[(b"B2D1", unknown)])).is_none(),
+                "an unknown element signature must be refused"
+            );
+            let mut zero = honest.clone();
+            zero[12..16].copy_from_slice(&0u32.to_be_bytes());
+            assert!(
+                assert_contract(&profile_with_tags(&[(b"B2D1", zero)])).is_none(),
+                "an empty position table is not a pipeline"
+            );
+            cases += 3;
+
+            // A pipeline of many curve stages is legal by the letter and
+            // its cost is a constant, not its size; a chain of CLUTs is
+            // where an inverted bake multiplies, so five is a refusal.
+            for count in [8usize, 64, 128] {
+                let elements: Vec<Vec<u8>> = (0..count).map(|_| identity_element.clone()).collect();
+                let tag = mpe_tag(&elements);
+                let accepted = assert_contract(&profile_with_tags(&[(b"B2D1", tag)]));
+                assert!(
+                    accepted.is_some(),
+                    "a pipeline of {count} small honest curve stages is still a profile"
+                );
+                cases += 1;
+            }
+            for (count, cluts) in [(8usize, 4usize), (64, 32), (256, 128)] {
+                let elements: Vec<Vec<u8>> = (0..count)
+                    .map(|i| {
+                        if i % 2 == 0 {
+                            identity_element.clone()
+                        } else {
+                            clut_element.clone()
+                        }
+                    })
+                    .collect();
+                let tag = mpe_tag(&elements);
+                let accepted = assert_contract(&profile_with_tags(&[(b"B2D1", tag)]));
+                if cluts > PIPELINE_CLUT_CAP {
+                    assert!(
+                        accepted.is_none(),
+                        "a pipeline of {count} stages carries more CLUTs than the cap allows"
+                    );
+                } else {
+                    assert!(
+                        accepted.is_some(),
+                        "a pipeline of {cluts} CLUTs is at the cap, not past it"
+                    );
+                }
+                cases += 1;
+            }
+
+            // A segmented curve at the segment cap, and one whose sampled
+            // pieces overflow the sample cap: a small file either way, and
+            // the reader must not trust either count.
+            let mut many_breaks = b"curf\0\0\0\0".to_vec();
+            many_breaks.extend_from_slice(&(SEGMENT_CAP as u16).to_be_bytes());
+            many_breaks.extend_from_slice(&0u16.to_be_bytes());
+            for i in 0..SEGMENT_CAP - 1 {
+                many_breaks.extend_from_slice(&(i as f32).to_be_bytes());
+            }
+            for _ in 0..SEGMENT_CAP {
+                many_breaks.extend_from_slice(b"parf\0\0\0\0");
+                many_breaks.extend_from_slice(&0u16.to_be_bytes());
+                many_breaks.extend_from_slice(&0u16.to_be_bytes());
+                for param in [1.0f32, 1.0, 0.0, 0.0] {
+                    many_breaks.extend_from_slice(&param.to_be_bytes());
+                }
+            }
+            assert_contract(&profile_with_tags(&[(
+                b"B2D1",
+                mpe_tag(&[
+                    cvst_element(&[many_breaks.clone(), many_breaks.clone(), many_breaks]),
+                    clut_element.clone(),
+                ]),
+            )]));
+            cases += 1;
+            let mut huge_samples = b"curf\0\0\0\0".to_vec();
+            huge_samples.extend_from_slice(&1u16.to_be_bytes());
+            huge_samples.extend_from_slice(&0u16.to_be_bytes());
+            huge_samples.extend_from_slice(b"samf\0\0\0\0");
+            huge_samples.extend_from_slice(&u32::MAX.to_be_bytes());
+            assert!(
+                assert_contract(&profile_with_tags(&[(
+                    b"B2D1",
+                    mpe_tag(&[cvst_element(&[
+                        huge_samples.clone(),
+                        huge_samples.clone(),
+                        huge_samples,
+                    ])]),
+                )]))
+                .is_none(),
+                "a sampled piece with no samples behind it must be refused"
+            );
+            cases += 1;
+
+            println!("absurd payloads: {cases} cases");
+        }
+
+        /// One mutation of `bytes`: a bit flip, a set or cleared byte, a
+        /// byte swap, a duplicated run, a reversed run, a zeroed run, or an
+        /// endian swap at a word boundary — the ways a profile corrupts in
+        /// the wild and the ways a hostile one is written.
+        fn mutate(rng: &mut Rng, bytes: &[u8]) -> Vec<u8> {
+            let mut out = bytes.to_vec();
+            match rng.below(7) {
+                0 => {
+                    let at = rng.below(out.len());
+                    out[at] ^= 1 << rng.below(8);
+                }
+                1 => {
+                    let at = rng.below(out.len());
+                    out[at] = rng.byte();
+                }
+                2 => {
+                    let at = rng.below(out.len());
+                    out[at] = if rng.below(2) == 0 { 0x00 } else { 0xFF };
+                }
+                3 => {
+                    let a = rng.below(out.len());
+                    let b = rng.below(out.len());
+                    out.swap(a, b);
+                }
+                4 => {
+                    // Duplicate a run, growing the file the way a writer
+                    // that repeats a node does.
+                    let start = rng.below(out.len());
+                    let len = (rng.below(16) + 1).min(out.len() - start);
+                    let run = out[start..start + len].to_vec();
+                    let at = rng.below(out.len());
+                    out.splice(at..at, run);
+                }
+                5 => {
+                    let start = rng.below(out.len());
+                    let len = (rng.below(16) + 1).min(out.len() - start);
+                    out[start..start + len].reverse();
+                }
+                _ => {
+                    let start = rng.below(out.len() - 3);
+                    let len = (rng.below(32) + 1).min(out.len() - start);
+                    for byte in &mut out[start..start + len] {
+                        *byte = 0;
+                    }
+                }
+            }
+            out
+        }
+
+        /// Mutations of the honest fixtures: whatever a flipped bit or a
+        /// duplicated node does to a profile, the reader either refuses it
+        /// or bakes a cube in contract. Two hundred and fifty mutants per
+        /// fixture, from a fixed seed: a failure replays.
+        #[test]
+        fn mutated_fixtures_are_refused_or_stay_in_contract() {
+            let mut rng = Rng::new(0x1CC_F17F_2026);
+            let mut cases = 0usize;
+            let mut accepted = 0usize;
+            for (name, bytes) in honest_small_profiles() {
+                // The inverted flavours solve at bake time, so a mutant of
+                // one costs an order of magnitude more than a mutant of a
+                // forward flavour; the counts keep the sweep seconds-scale
+                // while every flavour still meets hundreds of mutations.
+                let mutants = if name.contains("A2B") || name.contains("D2B") {
+                    15
+                } else {
+                    40
+                };
+                for index in 0..mutants {
+                    let mutant = mutate(&mut rng, &bytes);
+                    let started = Instant::now();
+                    let parsed = catch_unwind(|| DisplayTransform::for_profile(&mutant));
+                    let elapsed = started.elapsed();
+                    assert!(
+                        elapsed < CASE_BUDGET,
+                        "{name} mutant #{index} baked for {elapsed:?}, past the budget"
+                    );
+                    if assert_in_contract(parsed).is_some() {
+                        accepted += 1;
+                    }
+                    cases += 1;
+                }
+                // The unmutated control again: the mutations above must
+                // have been measured against a profile that parses.
+                assert!(
+                    assert_contract(&bytes).is_some(),
+                    "the honest {name} fixture must parse whole"
+                );
+            }
+            println!("mutations: {cases} cases, {accepted} still parsed");
+        }
+
+        /// A CLUT degenerate in the middle, not the whole: one flat cell
+        /// among valid ones, one folded cell among valid ones, and one
+        /// flat cell in a real-sized 17³ grid where the solve has to work
+        /// around it thousands of times over. The folded cell is a refusal
+        /// — the pipeline must name it, not guess around it — and the flat
+        /// one is underdetermined, so the answer just has to be in
+        /// contract.
+        #[test]
+        fn a_clut_degenerate_in_the_middle_is_refused_or_bounded() {
+            let two = [identity_table(2), identity_table(2), identity_table(2)];
+            // Where one node of a grid lives in the f64 node array
+            // `clut_nodes` builds: first channel slowest, three outputs.
+            let node = |grid: usize, at: [usize; 3], channel: usize| {
+                ((at[0] * grid + at[1]) * grid + at[2]) * 3 + channel
+            };
+            // One flat cell in a 9³ identity CLUT: every corner of the cell
+            // at (3, 3, 3) says [0.4, 0.4, 0.4].
+            let mut flat = clut_nodes(9, |xyz| xyz);
+            for i in [3usize, 4] {
+                for j in [3usize, 4] {
+                    for k in [3usize, 4] {
+                        for channel in 0..3 {
+                            flat[node(9, [i, j, k], channel)] = 0.4;
+                        }
+                    }
+                }
+            }
+            let tag = lut16_tag(&IDENTITY, &two, 9, &flat, &two);
+            assert!(
+                assert_contract(&profile_with_tags(&[(b"A2B1", tag)])).is_some(),
+                "one flat cell among valid ones is invertible enough to take"
+            );
+
+            // One folded cell in the same grid: the whole x-face of the
+            // cell is reversed, so the first axis runs backwards inside it
+            // — a fold no honest profiler writes.
+            let mut folded = clut_nodes(9, |xyz| xyz);
+            for j in [3usize, 4] {
+                for k in [3usize, 4] {
+                    for channel in 0..3 {
+                        folded.swap(node(9, [3, j, k], channel), node(9, [4, j, k], channel));
+                    }
+                }
+            }
+            let tag = lut16_tag(&IDENTITY, &two, 9, &folded, &two);
+            assert!(
+                assert_contract(&profile_with_tags(&[(b"A2B1", tag)])).is_none(),
+                "a folded cell is a named refusal, not a guess"
+            );
+
+            // A flat slab at 17³, the size a real profiler ships, valued to
+            // match the field around it — flat, not folded: a slab stuck in
+            // at a value the field has already passed would fold the
+            // boundary cells, and the orientation check refuses that the
+            // same way it refused the folded cell above. The solve meets
+            // this flat region thousands of times and has to stay bounded
+            // every one of them.
+            let mut flat17 = clut_nodes(17, |device| {
+                [
+                    device[0].powf(2.2),
+                    device[1].powf(2.2),
+                    device[2].powf(2.2),
+                ]
+            });
+            let slab = (8.0 / 16.0f64).powf(2.2);
+            for i in 0..17 * 3 {
+                flat17[node(17, [8, 8, 8], 0) + i] = slab;
+            }
+            let tag = lut16_tag(&IDENTITY, &two, 17, &flat17, &two);
+            assert!(
+                assert_contract(&profile_with_pcs_and_tags(b"XYZ ", &[(b"A2B1", tag)])).is_some(),
+                "a flat slab in an honest 17³ is still a profile"
+            );
+            // The same slab at a value the field has passed — 0.4 where
+            // the field says 0.2 — folds at its boundary, which is a
+            // refusal.
+            let mut folded17 = flat17;
+            for i in 0..17 * 3 {
+                folded17[node(17, [8, 8, 8], 0) + i] = 0.4;
+            }
+            let tag = lut16_tag(&IDENTITY, &two, 17, &folded17, &two);
+            assert!(
+                assert_contract(&profile_with_pcs_and_tags(b"XYZ ", &[(b"A2B1", tag)])).is_none(),
+                "a slab that folds the boundary cells is a named refusal"
+            );
+
+            // A CLUT whose outputs no incoming PCS value ever reaches: the
+            // parse-time checks all pass — the table is finite, oriented
+            // and spans every axis — and every vertex of the bake takes
+            // the bounded out-of-gamut fallback instead. That fallback is
+            // the most expensive thing a single stage can do (about 0.9 s
+            // for the whole cube in debug), it is also what an honest
+            // narrow-gamut display does with the colours it cannot show,
+            // and the cap on CLUT stages is what keeps a hostile chain of
+            // such tables from multiplying it.
+            let unreachable = clut_element(
+                [2, 2, 2],
+                &clut_nodes(2, |xyz| [xyz[0] + 1.5, xyz[1] + 1.5, xyz[2] + 1.5]),
+            );
+            let identity = cvst_formula_set(0, &[1.0, 1.0, 0.0, 0.0]);
+            let tag = mpe_tag(&[identity.clone(), unreachable, identity]);
+            assert!(
+                assert_contract(&profile_with_pcs_and_tags(b"Lab ", &[(b"D2B1", tag)])).is_some(),
+                "a CLUT out of the PCS's reach is a profile, clamped"
+            );
+            println!("degenerate cells: 6 cases");
+        }
+
+        /// `map` is the renderer's entry point, and the cube is not the
+        /// only thing that goes through it: anything can arrive, and NaN
+        /// channels out are black pixels, not colours. Every flavour of
+        /// profile must agree.
+        #[test]
+        fn nan_and_extreme_inputs_map_to_finite_values_for_every_flavour() {
+            for (name, bytes) in honest_small_profiles() {
+                let transform = assert_contract(&bytes).expect("the honest fixture parses");
+                for input in [
+                    [f64::NAN; 3],
+                    [f64::NAN, 0.0, 1.0],
+                    [0.0, f64::NAN, 0.5],
+                    [f64::INFINITY; 3],
+                    [f64::NEG_INFINITY, 0.5, f64::INFINITY],
+                    [-7.0, 8.0, 0.5],
+                ] {
+                    let out = transform.map(input);
+                    for channel in out {
+                        assert!(
+                            channel.is_finite() && (0.0..=1.0).contains(&channel),
+                            "{name}: map({input:?}) = {out:?}"
+                        );
+                    }
+                }
+            }
+        }
+
+        /// believed: a 33³ forward (`B2A`) profile and a 33³ inverted
+        /// (`A2B`) one, both the same displays the cross-check fixtures
+        /// describe, then the hostile constants the harness states — the
+        /// out-of-gamut fallback once and at the four-stage cap. Run with
+        /// `cargo test --release -- --ignored --nocapture bake` and read
+        /// the lines it prints; debug numbers come from the same test
+        /// without `--release`.
+        #[test]
+        #[ignore]
+        fn dump_bake_times() {
+            let encode = gamma_table(256, 2.2);
+            let output = [encode.clone(), encode.clone(), encode];
+            let forward = lut16_tag(
+                &IDENTITY,
+                &identity_tables(),
+                33,
+                &clut_nodes(33, pcs_to_linear),
+                &output,
+            );
+            let started = Instant::now();
+            DisplayTransform::for_profile(&profile_with_tags(&[(b"B2A1", forward)]))
+                .expect("the forward profile parses");
+            println!("33^3 forward bake: {:?}", started.elapsed());
+
+            let inverted = mab_tag(
+                Some(identity_curve_set()),
+                None,
+                None,
+                Some(mba_clut_bytes(
+                    [33, 33, 33],
+                    &clut_nodes(33, |linear| {
+                        let xyz = pcs_from_linear(linear);
+                        [
+                            xyz[0] * XYZ_PCS_SCALE,
+                            xyz[1] * XYZ_PCS_SCALE,
+                            xyz[2] * XYZ_PCS_SCALE,
+                        ]
+                    }),
+                )),
+                Some(gamma_curve_set(2.2)),
+            );
+            let started = Instant::now();
+            DisplayTransform::for_profile(&profile_with_pcs_and_tags(
+                b"XYZ ",
+                &[(b"A2B1", inverted)],
+            ))
+            .expect("the inverted profile parses");
+            println!("33^3 inverted bake: {:?}", started.elapsed());
+
+            // The hostile constants the harness states: the out-of-gamut
+            // fallback a narrow-gamut display or a lying CLUT puts every
+            // vertex on, once and at the four-stage cap.
+            let unreachable = |shift: f64| {
+                clut_element(
+                    [2, 2, 2],
+                    &clut_nodes(2, move |xyz| {
+                        [xyz[0] + shift, xyz[1] + shift, xyz[2] + shift]
+                    }),
+                )
+            };
+            let identity = cvst_formula_set(0, &[1.0, 1.0, 0.0, 0.0]);
+            let single = mpe_tag(&[identity.clone(), unreachable(1.5), identity.clone()]);
+            let started = Instant::now();
+            DisplayTransform::for_profile(&profile_with_pcs_and_tags(
+                b"Lab ",
+                &[(b"D2B1", single)],
+            ))
+            .expect("the unreachable-CLUT profile parses");
+            println!(
+                "one unreachable CLUT (fallback constant): {:?}",
+                started.elapsed()
+            );
+            let chain = mpe_tag(&[
+                identity.clone(),
+                unreachable(1.5),
+                identity.clone(),
+                unreachable(1.5),
+                identity.clone(),
+                unreachable(1.5),
+                identity.clone(),
+                unreachable(1.5),
+            ]);
+            let started = Instant::now();
+            DisplayTransform::for_profile(&profile_with_pcs_and_tags(b"Lab ", &[(b"D2B1", chain)]))
+                .expect("the four-stage chain parses");
+            println!(
+                "four unreachable CLUTs (legal hostile worst): {:?}",
+                started.elapsed()
+            );
+        }
+    }
+
     /// The ΔE00 helper matches published reference pairs from Sharma, Wu and
     /// Dalal (2005).
     #[test]
