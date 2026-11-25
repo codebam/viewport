@@ -753,8 +753,9 @@ its story stays because the shape of the failure is worth knowing.
   does not commit it twice. Verified on the Deck with the `restore-proof`
   harness: the restore line is logged, the commit is accepted, and a
   3000 K night-light LUT held live at quit goes with it. The half a
-  machine cannot say is the one to look at: the console on the VT that
-  comes back is its normal colour, not orange.
+  machine cannot say was then checked on the Deck's own panel: the console
+  on the VT that came back was its normal colour, with the tint still held
+  by the client when the session ended — not orange.
 
   **It has not had its hardware run yet.** The gate cannot start a DRM
   session, so what stands behind the paragraph above is a code review and

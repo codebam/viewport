@@ -199,8 +199,10 @@ commit (no `EINVAL`), and a 3000 K night-light LUT was live at quit. What
 that run found first is worth keeping in mind for the next claim of this
 kind: the restore had only ever been reachable from the DRM device's
 `Drop`, which a real exit does not reach, so the unit tests were green
-over a path no session took. The one thing a machine cannot assert is the
-console's colour on the returning VT; that is a person's check.
+over a path no session took. The one thing a machine could not assert was the
+console's colour on the returning VT; that check was made on the Deck's own
+panel on the same run (2026-11-25) and it was its normal colour, so both
+halves of the claim are now covered.
 
 ## Changing this document
 
