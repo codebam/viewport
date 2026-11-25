@@ -135,10 +135,15 @@ impl Clipboard {
     /// worth a log line: a screenshot tool puts one on the clipboard every
     /// time it runs.
     pub fn text_mime(offered: &[String]) -> Option<String> {
-        TEXT_MIMES
-            .iter()
-            .find(|wanted| offered.iter().any(|mime| mime.eq_ignore_ascii_case(wanted)))
-            .map(|mime| (*mime).to_owned())
+        TEXT_MIMES.iter().find_map(|wanted| {
+            offered
+                .iter()
+                .find(|mime| mime.eq_ignore_ascii_case(wanted))
+                // MIME names are case-insensitive, but the Wayland receive
+                // request carries a string the source offered. Return that
+                // exact spelling rather than our canonical equivalent.
+                .cloned()
+        })
     }
 
     /// Start reading a selection somebody just made.
@@ -473,6 +478,11 @@ mod tests {
         assert_eq!(
             Clipboard::text_mime(&mimes(&["UTF8_STRING"])),
             Some("UTF8_STRING".to_owned())
+        );
+        assert_eq!(
+            Clipboard::text_mime(&mimes(&["TEXT/PLAIN;CHARSET=UTF-8"])),
+            Some("TEXT/PLAIN;CHARSET=UTF-8".to_owned()),
+            "the request must use the spelling the source offered"
         );
         assert_eq!(Clipboard::text_mime(&mimes(&["image/png"])), None);
         assert_eq!(Clipboard::text_mime(&[]), None);
