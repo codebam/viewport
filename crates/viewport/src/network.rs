@@ -767,11 +767,14 @@ fn new_connection<'a>(
 /// The one a picker acts on is `enterprise`, which is the only answer that
 /// means a passphrase is the wrong question.
 pub fn security_of(flags: u32, wpa: u32, rsn: u32) -> &'static str {
-    if rsn & KEY_MGMT_SAE != 0 {
-        return "wpa3";
-    }
+    // Enterprise comes first: a transition radio can advertise 802.1X and SAE
+    // together, and 802.1X is the answer that means a passphrase is the wrong
+    // question rather than merely a different authentication method.
     if (wpa | rsn) & KEY_MGMT_802_1X != 0 {
         return "enterprise";
+    }
+    if rsn & KEY_MGMT_SAE != 0 {
+        return "wpa3";
     }
     if rsn & KEY_MGMT_PSK != 0 {
         return "wpa2";
@@ -835,6 +838,11 @@ mod tests {
             security_of(AP_PRIVACY, 0, KEY_MGMT_802_1X | KEY_MGMT_PSK),
             "enterprise",
             "a passphrase is the wrong question here and the picker must know"
+        );
+        assert_eq!(
+            security_of(AP_PRIVACY, KEY_MGMT_802_1X, KEY_MGMT_SAE | KEY_MGMT_802_1X),
+            "enterprise",
+            "enterprise still wins when a transition radio also offers SAE"
         );
     }
 
