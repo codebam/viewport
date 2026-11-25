@@ -684,3 +684,22 @@ code that landed after the first. Base `4b75e40c`.
   by the unplug case in the custom-widget block of
   `tests/shell.test.js`, which also pins that the surviving monitor's
   widget is untouched.
+
+- [x] **72. A shell overlay rectangle at the wire's floor killed the frame
+  build.** `crates/viewport/src/apply.rs` (`ShellOverlay`/`ScreencastRect`):
+  the rectangle the shell floats above the windows arrived as bare `i32`s
+  with no bound anywhere — `saturating_add` kept the page-origin
+  translation from overflowing, but the frame build then subtracts the
+  output's own origin from the rectangle's in raw `i32`
+  (`state/render_frame.rs`'s overlay translation), so a rectangle at
+  `i32::MIN` against a monitor at a positive origin — the ordinary
+  side-by-side layout, reached by any shell that miscounts a
+  notification's position — was a subtraction that panicked in a debug
+  build and wrapped in a release one, taking every later frame build with
+  it. Both arms now keep their rectangles inside the same ±2^20 bound
+  `output.configure` already keeps every monitor inside, by the same
+  `layout_rect_ok`; a rectangle outside it is dropped exactly as a
+  zero-sized one already was. Proven over the wire by
+  `tests/crash_probes.rs`, which drove the panic at
+  `render_frame.rs:701` before the fix and pins the frame build
+  surviving it after.

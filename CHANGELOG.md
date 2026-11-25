@@ -41,6 +41,18 @@ to summarise rather than to duplicate.
   to quote.
 
 ### Fixed
+
+- A shell overlay or screencast rectangle at the wire's coordinate floor no
+  longer kills the frame build. `shell.overlay` and `screencast.rect`
+  arrived as bare `i32`s with no bound anywhere: the frame build subtracts
+  the output's origin from the rectangle's in raw `i32`, so a rectangle at
+  `i32::MIN` on a monitor at a positive origin — any shell that miscounts
+  a notification's position — panicked in a debug build and wrapped in a
+  release one, and with the wrap the overlay was drawn and hit-tested
+  against a nonsense local rectangle. Both requests now keep their
+  rectangles inside the same accepted layout monitors are bounded to, and
+  a rectangle outside it is dropped the way a zero-sized one always was.
+
 - Unplugging a monitor runs `destroy` for the custom widgets mounted on its
   bar. The removal loop already stopped the film, cleared the wallpaper
   extension and closed the calendar on the way out — and then removed the

@@ -378,19 +378,26 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             // The older, single-rectangle form of `shell.overlay`. A zero size
             // is the shell saying there is nothing above the windows now.
             let origin = state.dispatch_origin;
-            let rects = if width > 0 && height > 0 {
-                {
-                    vec![smithay::utils::Rectangle::new(
-                        // Saturating, as every translation of a wire
-                        // coordinate below: serde accepts up to i32::MAX, an
-                        // origin for a second monitor is real pixels, and
-                        // the sum of the two overflowing is a window on the
-                        // wrong screen — the very fault the origin exists to
-                        // prevent — or a panic, depending on the build.
-                        (x.saturating_add(origin.x), y.saturating_add(origin.y)).into(),
-                        (width, height).into(),
-                    )]
-                }
+            // Saturating, as every translation of a wire coordinate below:
+            // serde accepts up to i32::MAX, an origin for a second monitor
+            // is real pixels, and the sum of the two overflowing is a window
+            // on the wrong screen — the very fault the origin exists to
+            // prevent — or a panic, depending on the build.
+            let (x, y) = (x.saturating_add(origin.x), y.saturating_add(origin.y));
+            // And bounded, as every rectangle the layout keeps is: the frame
+            // build subtracts the output's origin from this one in `i32`
+            // (`render_frame`'s overlay translation), and a rectangle the
+            // wire allows at `i32::MIN` against a monitor at a positive
+            // origin is a subtraction that panics in a debug build and wraps
+            // in a release one. `output.configure` already keeps every
+            // monitor inside this bound, so the same bound on what floats
+            // above them makes the arithmetic safe by construction rather
+            // than by hoping the shell never miscounts.
+            let rects = if crate::output_management::layout_rect_ok(x, y, width, height) {
+                vec![smithay::utils::Rectangle::new(
+                    (x, y).into(),
+                    (width, height).into(),
+                )]
             } else {
                 Default::default()
             };
@@ -409,7 +416,21 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             let origin = state.dispatch_origin;
             let placed: Vec<_> = rects
                 .into_iter()
-                .filter(|rect| rect.width > 0 && rect.height > 0)
+                // Bounded here, for the same reason `screencast.rect` above
+                // is: the frame build subtracts the output's origin from
+                // each of these in `i32`, and the wire allows coordinates
+                // that turn that subtraction into an overflow. A rectangle
+                // outside the accepted layout is dropped exactly as a
+                // zero-sized one is — there is no part of it anywhere the
+                // compositor could draw or hit-test it.
+                .filter(|rect| {
+                    crate::output_management::layout_rect_ok(
+                        rect.x.saturating_add(origin.x),
+                        rect.y.saturating_add(origin.y),
+                        rect.width,
+                        rect.height,
+                    )
+                })
                 .map(|rect| {
                     (
                         smithay::utils::Rectangle::new(
