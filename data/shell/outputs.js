@@ -38,6 +38,22 @@ function startingWorkspace(name) {
   return lowestFreeWorkspace();
 }
 
+/* The workspace a newly created output record starts on.
+ *
+ * A record does not survive a DPMS wake: the compositor announces the output
+ * gone (`output.layout` without it) and then back with the same name, so the
+ * map entry is the only thing left of the screen that was there. If that
+ * workspace has since been taken by another monitor it belongs there now, and
+ * a fresh starting workspace is the right answer; a name never seen before
+ * comes here with nothing remembered and gets one too. */
+function workspaceForOutput(name) {
+  const remembered = rememberedOutputWorkspaces.get(name);
+  if (remembered !== undefined && hostOfWorkspace(remembered) === null) {
+    return remembered;
+  }
+  return startingWorkspace(name);
+}
+
 /* Tracked explicitly rather than derived from focus: switching to an empty
  * workspace focuses nothing, and inferring it would act on the wrong monitor. */
 function activeOutputName() {
@@ -153,7 +169,7 @@ function syncOutputs(list) {
       if (typeof applyStoredWallpaperExtension === 'function') {
         applyStoredWallpaperExtension(output);
       }
-      output.workspace = startingWorkspace(info.name);
+      output.workspace = workspaceForOutput(info.name);
       if (activeOutput === null) activeOutput = info.name;
     }
 
@@ -240,6 +256,9 @@ function syncOutputs(list) {
        name. */
     closeCalendarOff(output);
     output.el.remove();
+    /* Remembered before the record and its workspace field are dropped: the
+       name comes back on the next wake and with it the desk that was here. */
+    rememberedOutputWorkspaces.set(name, output.workspace);
     outputs.delete(name);
     if (statusOsdOutput === name) {
       clearTimeout(statusOsdTimer);

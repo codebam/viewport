@@ -61,6 +61,11 @@ let lockInputEl = null;
 /* The clock elements, one per output, so the tick can write them without
    rebuilding the screen on every tick. */
 let lockClockEls = [];
+/* What `renderLockScreen` built its panes from: the output names, their
+   rectangles and which one is being looked at. Compared on every
+   `output.layout`, so a layout that changed nothing does not take the caret
+   out of the box — see refreshLockScreenForLayout. */
+let lockLayoutKey = null;
 
 /* Whether the lock screen is up. Read by bar.js's tick and by commands.js. */
 function lockIsUp() {
@@ -103,6 +108,7 @@ function applySessionUnlock() {
   lockBusy = false;
   lockInputEl = null;
   lockClockEls = [];
+  lockLayoutKey = null;
   lockEl.replaceChildren();
   lockEl.hidden = true;
   document.documentElement?.classList?.remove('locked');
@@ -184,6 +190,40 @@ function lockDateText() {
   });
 }
 
+/* The whole of what a pane's placement is built from: every output's name and
+ * rectangle, and which output the box goes on. Sorted because the compositor's
+ * output order is not a property of the layout. */
+function lockLayoutKeyNow() {
+  const parts = [];
+  for (const [name, output] of [...outputs.entries()]
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
+    const rect = output.rect;
+    parts.push(rect
+      ? `${name}:${rect.x},${rect.y},${rect.width},${rect.height}`
+      : name);
+  }
+  return `${activeOutputName() ?? ''}|${parts.join(';')}`;
+}
+
+/* The output layout moved while the session is locked.
+ *
+ * A lock screen is rendered once per lock, from the outputs as they stand at
+ * that moment, and nothing re-sends the lock when a monitor comes or goes —
+ * Rust re-announces it only from a session query, and a monitor on a
+ * DisplayPort connector drops and reconnects on every wake. So the panes have
+ * to follow `output.layout` here, or the password box ends up off every
+ * visible output and the only way back in is another VT.
+ *
+ * The layout key makes this a redraw only when the placement actually
+ * changed: every layer surface arriving or leaving announces the layout too,
+ * and rebuilding the form on each of those would take the caret out of a
+ * half-typed password for no reason. */
+function refreshLockScreenForLayout() {
+  if (!lockIsUp()) return;
+  if (lockLayoutKeyNow() === lockLayoutKey) return;
+  renderLockScreen();
+}
+
 /* Called from bar.js's one boundary-scheduled tick so an idle machine has one
  * timer rather than two — see the note on `renderClocks` there, and the rule
  * in shell.md that nothing here repeats for ever. It is minute-precision by
@@ -212,6 +252,7 @@ function renderLockClocks() {
  * is what makes each screen say what has happened. */
 function renderLockScreen() {
   if (!lockIsUp()) return;
+  lockLayoutKey = lockLayoutKeyNow();
   lockEl.replaceChildren();
   lockEl.hidden = false;
   lockInputEl = null;

@@ -776,6 +776,27 @@ if (sessionTest) {
     globalThis.__shell.workspacePolicyForTest.layout(5) === 'matrix'
       && globalThis.__shell.workspacePolicyForTest.tiling(5) === 'grid');
 
+  /* A monitor drops and reconnects — every DPMS wake on a DisplayPort
+     connector, and the docs say so — so the same output name comes back with
+     no record behind it. The workspace it was showing must come back with it,
+     or the desk resets to the starting workspace and the next save writes
+     that reset into the file, making the loss permanent. Rust announces the
+     layout alone either way; there is no session message to lean on. */
+  emit({ type: 'output.layout', outputs: [
+    { name: 'DP-4', x: 0, y: 0, width: 1920, height: 1080,
+      usable_x: 0, usable_y: 30, usable_width: 1920, usable_height: 1050,
+      scale: 1, transform: 'normal', modes: [], enabled: true },
+  ] });
+  emit({ type: 'output.layout', outputs: [
+    { name: 'DP-1', x: 0, y: 0, width: 1920, height: 1080,
+      usable_x: 0, usable_y: 30, usable_width: 1920, usable_height: 1050,
+      scale: 1, transform: 'normal', modes: [], enabled: true },
+  ] });
+  check('a monitor that drops and reconnects comes back on its own workspace',
+    globalThis.__shell.outputs.get('DP-1')?.workspace === 5);
+  check('rather than the starting workspace a new monitor is given',
+    globalThis.__shell.outputs.get('DP-1')?.workspace !== 1);
+
   /* Applications come back in an order that has nothing to do with the
      layout — the browser last, as it usually is. */
   const open = (id, app, extra = {}) => emit({ type: 'view.added', id, title: app,
@@ -6604,6 +6625,13 @@ if (mode === 'scrolling') {
      side, an output the page does not cover is drawn black rather than left
      showing the desktop, so a pane is the only thing that says what happened
      on it. */
+  /* Say which screen is being looked at before the layout moves, so the box
+     has a decided home for the checks below. */
+  emit({ type: 'shell.command', command: 'output.focus', args: ['DP-1'] });
+  /* Something is already in the box, so a redraw can be caught losing it. */
+  field().value = 'half-typed';
+  (field().listeners.input ?? []).forEach((fn) => fn({ target: field() }));
+
   emit({ type: 'output.layout', outputs: [
     { name: 'DP-1', x: 0, y: 0, width: 2560, height: 1440,
       usable_x: 0, usable_y: 30, usable_width: 2560, usable_height: 1410,
@@ -6612,14 +6640,54 @@ if (mode === 'scrolling') {
       usable_x: 2560, usable_y: 30, usable_width: 2560, usable_height: 1410,
       scale: 1, transform: 'normal', modes: [], enabled: true },
   ] });
-  emit({ type: 'shell.command', command: 'output.focus', args: ['DP-1'] });
-  emit({ type: 'session.lock', generation: 7, can_authenticate: true });
+  /* No second `session.lock`: the layout moved, and the lock screen has to
+     follow it on its own. Rust only re-sends the lock from a session query,
+     and a monitor coming or going announces `output.layout` alone. */
   check('every monitor gets a pane', lockEl.children.length === 2);
   check('and each one is docked to its own corner of the layout',
     lockEl.children[1].style.left === '2560px');
   const boxes = lockEl.children.filter((el) => !!el.querySelector('lock-input'));
   check('but only one password box, on the screen being looked at',
     boxes.length === 1);
+  check('and what was already typed survives the redraw',
+    field()?.value === 'half-typed');
+
+  /* Put the box on the second monitor, so that the pane it is in can be the
+     one that goes away. Focus moves first; the next layout announcement is
+     what redraws the panes onto the screen being looked at. */
+  emit({ type: 'shell.command', command: 'output.focus', args: ['DP-2'] });
+  emit({ type: 'output.layout', outputs: [
+    { name: 'DP-1', x: 0, y: 0, width: 2560, height: 1440,
+      usable_x: 0, usable_y: 30, usable_width: 2560, usable_height: 1410,
+      scale: 1, transform: 'normal', modes: [], enabled: true },
+    { name: 'DP-2', x: 2560, y: 0, width: 2560, height: 1440,
+      usable_x: 2560, usable_y: 30, usable_width: 2560, usable_height: 1410,
+      scale: 1, transform: 'normal', modes: [], enabled: true },
+  ] });
+  check('the box follows the screen being looked at',
+    !!lockEl.children[1]?.querySelector('lock-input')
+      && !lockEl.children[0]?.querySelector('lock-input'));
+
+  /* The pane the box is in goes away while the session is locked. A locked
+     screen whose only password box is off every visible output is a session
+     with no way in but another VT — the compositor only re-sends the lock in
+     answer to a session query, and an unplug announces nothing else. */
+  emit({ type: 'output.layout', outputs: [
+    { name: 'DP-1', x: 100, y: 50, width: 2560, height: 1440,
+      usable_x: 100, usable_y: 80, usable_width: 2560, usable_height: 1410,
+      scale: 1, transform: 'normal', modes: [], enabled: true },
+  ] });
+  check('a monitor going away while locked re-draws the lock screen',
+    lockEl.children.length === 1);
+  check('and the password box lands on a monitor that is still there',
+    !!field());
+  check('in that monitor\'s own corner of the layout',
+    pane()?.style.left === '100px' && pane()?.style.top === '50px'
+      && pane()?.style.width === '2560px' && pane()?.style.height === '1440px');
+  check('still holding what was typed',
+    field()?.value === 'half-typed');
+  check('and still showing the last refusal',
+    messageEl()?.textContent === 'Sorry, try again.');
 
   /* A machine whose PAM could not be loaded still locks. It says so rather
      than silently swallowing every password, because the alternative is
@@ -7301,6 +7369,52 @@ if (mode === 'scrolling') {
     wallpaper_extension: '' });
   check('an empty config selection clears it',
     hasApi && !desk.classList.contains('wallpaper-probe'));
+
+  /* Back to the default desktop for everything after this. */
+  emit({ type: 'config', layout: mode, rules: HARNESS_RULES });
+}
+
+/* --- an unchanged selection does not restart the wallpaper --------------
+ *
+ * Every `output.layout` sends `view.query`, whose reply carries `config` — and
+ * Rust broadcasts the layout from every layer-shell change, so an unrelated
+ * panel arriving or leaving produces a config that changed nothing. The
+ * wallpaper extension was cleared and applied again on each of those, which
+ * restarts whatever the scene is doing (a drift, a video, a shader) for no
+ * reason anybody asked for. The selection is keyed by extension and resolved
+ * options, so a new one still goes through the clear-then-apply bargain.
+ * --------------------------------------------------------------------- */
+
+{
+  const sh = globalThis.__shell;
+  const reg = sh.registerWallpaper;
+  const out = sh.outputs.get('DP-1');
+  const hasApi = typeof reg === 'function' && !!out;
+  const seen = { applies: 0, clears: 0 };
+  if (hasApi) {
+    reg('steadyprobe', {
+      apply() { seen.applies++; },
+      clear() { seen.clears++; },
+    });
+  }
+  const select = (extension, options) => emit({ type: 'config', layout: mode,
+    rules: HARNESS_RULES, wallpaper_extension: extension,
+    wallpaper_options: options });
+
+  select('steadyprobe', { tag: 'a' });
+  check('a selection applies its wallpaper once', hasApi && seen.applies === 1);
+
+  select('steadyprobe', { tag: 'a' });
+  check('the same selection arriving again is not applied a second time',
+    hasApi && seen.applies === 1 && seen.clears === 0);
+
+  select('steadyprobe', { tag: 'b' });
+  check('changed options clear the old one and apply the new',
+    hasApi && seen.applies === 2 && seen.clears === 1);
+
+  select('probe', {});
+  check('a different extension clears it and applies its replacement',
+    hasApi && seen.applies === 2 && seen.clears === 2);
 
   /* Back to the default desktop for everything after this. */
   emit({ type: 'config', layout: mode, rules: HARNESS_RULES });
@@ -8041,6 +8155,32 @@ if (mode === 'scrolling') {
     dialog().querySelector('.settings-hint').textContent ===
       'Saved to /home/me/.config/viewport/settings.json');
 
+  /* A save the compositor refused. It answers with an `error` whose context is
+     `config.save`, and drawing that as the standing "not saved yet" hint is
+     how somebody walks away believing their settings are on disk and finds
+     them reverted at the next start. */
+  click(dialog().querySelector('.settings-save'));
+  emit({ type: 'error', context: 'config.save',
+    message: 'settings.json: Read-only file system' });
+  const failed = dialog().querySelector('.settings-hint');
+  check('a refused save is drawn in the compositor\'s own words',
+    failed?.textContent.includes('Read-only file system'));
+  check('and is not the standing not-saved-yet hint',
+    !failed?.textContent.includes('Save keeps them across a restart'));
+  check('and is marked as a failure rather than as a hint',
+    failed?.classList.contains('settings-hint-error'));
+
+  /* The next attempt clears it before any answer has arrived, so pressing
+     Save twice looks like two attempts rather than one lingering error. */
+  click(dialog().querySelector('.settings-save'));
+  check('trying again takes the failure off the line',
+    !dialog().querySelector('.settings-hint').textContent
+      .includes('Read-only file system'));
+  emit({ type: 'config.saved', path: '/home/me/.config/viewport/settings.json' });
+  check('and a save that works replaces it with where they went',
+    dialog().querySelector('.settings-hint').textContent ===
+      'Saved to /home/me/.config/viewport/settings.json');
+
   /* And a config message from anywhere — an editor saving the config file,
      another client on the socket — redraws the switches under the hand. */
   emit({ type: 'config', layout: mode, rules: HARNESS_RULES,
@@ -8420,6 +8560,48 @@ if (mode === 'scrolling') {
     check('Escape takes the power menu down without doing anything',
       globalThis.__shell.powerEl.hidden === true &&
       !sent.slice(before).some((m) => m.type === 'power.action'));
+
+    /* Quitting with an arrangement change still inside the one-second save
+       debounce. Nothing flushes it at quit, so the last second of arrangement
+       is lost: a window closed in it comes back as an unclaimed slot, one
+       opened comes back unplaced. */
+    emit({ type: 'view.added', id: 7901, title: 'quitprobe',
+      app_id: 'quitprobe', output: 'DP-1', min_width: 0, min_height: 0,
+      floating: true, width: 300, height: 200 });
+    emit({ type: 'view.focused', id: 7901 });
+    emit({ type: 'shell.command', command: 'window.move', args: ['right'] });
+    const quitRect = globalThis.__shell.floatingForTest(7901);
+
+    before = sent.length;
+    emit({ type: 'shell.command', command: 'power', args: [] });
+    key(dialog(), 'End');
+    key(dialog(), 'Enter');
+    const afterQuit = sent.slice(before);
+    const savedAt = afterQuit.findIndex((m) => m.type === 'session.save');
+    const quitAt = afterQuit.findIndex((m) => m.type === 'quit');
+    let savedSlots = [];
+    try {
+      savedSlots = JSON.parse(afterQuit[savedAt]?.state ?? '{}').floating ?? [];
+    } catch (_) { savedSlots = []; }
+    const savedSlot = savedSlots.find((slot) => slot.app === 'quitprobe');
+    check('quitting sends the pending arrangement before it goes',
+      savedAt >= 0 && quitAt >= 0 && savedAt < quitAt);
+    check('with the rect the window was just moved to',
+      savedSlot?.x === quitRect?.x && savedSlot?.y === quitRect?.y);
+    check('and only that one change is written',
+      afterQuit.filter((m) => m.type === 'session.save').length === 1);
+
+    /* A page going away is the same loss, so it takes the same path. */
+    emit({ type: 'view.added', id: 7902, title: 'pagehideprobe',
+      app_id: 'pagehideprobe', output: 'DP-1', min_width: 0,
+      min_height: 0, floating: true, width: 300, height: 200 });
+    before = sent.length;
+    for (const fn of windowListeners.pagehide ?? []) fn({ type: 'pagehide' });
+    check('and the page going away flushes it too',
+      sent.slice(before).some((m) => m.type === 'session.save'));
+
+    emit({ type: 'view.removed', id: 7901 });
+    emit({ type: 'view.removed', id: 7902 });
   }
 
   /* --- the notification centre --- */
@@ -8650,6 +8832,14 @@ if (mode === 'scrolling') {
     title: app, app_id: app, output: 'DP-1', min_width: 0, min_height: 0,
     floating: false, width: 800, height: 600, ...extra });
   const workspaceOf = globalThis.__shell.workspaceOfForTest;
+
+  /* These are about what the matchers do, not about which workspace the desk
+     was left on by the blocks above — and an unmatched window goes wherever
+     that is. Start the block on the workspace the harness began on. */
+  const desk = globalThis.__shell.outputs.get('DP-1');
+  if (desk && desk.workspace !== 1) {
+    emit({ type: 'shell.command', command: 'workspace.switch', args: ['1'] });
+  }
 
   emit({ type: 'config', layout: mode, rules: [
     { match: { class: 'xclass' }, workspace: 7 },

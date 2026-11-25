@@ -1045,6 +1045,10 @@ html.behind .desktop {
   font-size: .75rem;
 }
 
+/* A save the compositor refused, in its own words. Not the muted hint: this
+   is the one line on the panel that says the settings are not on disk. */
+.settings-hint-error { color: var(--urgent); }
+
 /* The notification centre — what was notified, after the popups have gone.
  *
  * The same box-and-dialog shape as the clipboard picker above, and positioned

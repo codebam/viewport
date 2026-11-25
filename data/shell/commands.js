@@ -966,6 +966,33 @@ let wallpaperSelection = { extension: null, options: null, outputs: new Map() };
 function applyOutputWallpaperExtension(output, name, options) {
   const root = output.el;
   if (!root) return;
+  const wanted = typeof name === 'string' && name.trim() !== '' ? name.trim() : null;
+  /* What is in force on this output, for the guard below: the extension, the
+     descriptor it resolved to, and the options as text. A descriptor identity
+     is part of it because an extension script that registers after the config
+     was applied has to be mounted then, which is a change of descriptor even
+     though the selection is the same. */
+  const descriptor = wanted === null ? null : wallpaperRegistry.get(wanted) ?? null;
+  let optionsKey = null;
+  try {
+    optionsKey = JSON.stringify(options ?? {});
+  } catch (error) {
+    /* Not serialisable is not the same as equal: leave it unkeyed so the
+       apply goes ahead rather than skipping a selection nobody can compare. */
+    optionsKey = null;
+  }
+  const applied = output.wallpaperExtension;
+  if (applied && applied.name === wanted
+      && applied.descriptor === descriptor && applied.optionsKey === optionsKey
+      && optionsKey !== null) {
+    /* The same selection is already in force. Re-running clear and apply
+       would restart a scene's drift, its video or its shader — and every
+       layer-shell change announces the layout, whose view.query answer is a
+       config that usually changed nothing. The film and the desktop classes
+       are already in the state this call would put them in. */
+    return;
+  }
+  output.wallpaperExtension = { name: wanted, descriptor, optionsKey };
   const prev = activeWallpaperExtensions.get(output.name);
   if (prev !== undefined) {
     const desc = wallpaperRegistry.get(prev);
@@ -976,9 +1003,7 @@ function applyOutputWallpaperExtension(output, name, options) {
     }
     activeWallpaperExtensions.delete(output.name);
   }
-  const wanted = typeof name === 'string' && name.trim() !== '' ? name.trim() : null;
   if (wanted !== null) {
-    const descriptor = wallpaperRegistry.get(wanted);
     if (!descriptor) {
       /* A name nothing registered draws nothing rather than aborting: the
        * shell's own gradient shows, the same fallback a missing layout strikes. */
@@ -1056,6 +1081,7 @@ function clearOutputWallpaperExtension(output) {
     console.error(`wallpaper extension: ${error?.message ?? error}`);
   }
   activeWallpaperExtensions.delete(output.name);
+  output.wallpaperExtension = undefined;
 }
 
 /* The OLED drive-budget guard: "off", "warn" (default) or "refuse". When a
@@ -1450,6 +1476,14 @@ function dispatchViewport(message) {
 
     case 'output.layout':
       syncOutputs(message.outputs);
+      /* A lock screen is built from the outputs that exist when it goes up,
+         and nothing re-sends the lock when one comes or goes: Rust
+         re-announces it only from a session query, while a monitor unplugged,
+         a mode applied or a layer surface arriving announces this and nothing
+         else. Without the redraw the password box can be stranded on a screen
+         nobody can see. It is keyed, so a layout that changed nothing leaves
+         the caret where it is. */
+      refreshLockScreenForLayout();
       if (initialConfigReady) send({ type: 'view.query' });
       /* The panel's Displays section is drawn from these, so a monitor
          unplugged — or a mode that has just been applied — redraws it. */
@@ -1723,6 +1757,10 @@ function dispatchViewport(message) {
 
     case 'error':
       console.error(`viewport: ${message.context}: ${message.message}`);
+      /* A refused save is not a console line: the settings panel asked for it
+         and is where somebody is looking for the answer. Other errors stay in
+         the log, as they have no surface of their own. */
+      if (message.context === 'config.save') settingsSaveFailed(message.message);
       break;
   }
 }
@@ -1773,6 +1811,11 @@ window.addEventListener('viewport', (event) => {
 });
 
 window.addEventListener('resize', relayoutAll);
+
+/* The page is going away — a reload, or the compositor taking the window down.
+ * This is the last moment the pending arrangement can be written; the debounce
+ * has not fired and will never fire, because timers do not run after this. */
+window.addEventListener('pagehide', flushSessionSave);
 
 /* The desktop is not a web page, whatever it is made of.
  *
