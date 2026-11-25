@@ -272,14 +272,26 @@ impl DocumentGuard {
 
     /// Fold one DevTools message in. True when it was frame bookkeeping.
     ///
-    /// The frame tree or a navigation just arrived. The URL is now known,
-    /// but the gate does not open on bookkeeping: a committed navigation is
-    /// not a loaded document, and the queue waits for its load event.
+    /// The frame tree or a main-frame navigation just arrived. The URL is now
+    /// known, but the gate does not open on bookkeeping: a committed navigation
+    /// is not a loaded document, and the queue waits for its load event.
     pub fn note(&mut self, message: &Value) -> bool {
+        // FrameGuard recognises subframe bookkeeping too, but a subframe does
+        // not replace the shell document. Treating its navigation as the main
+        // document's would close an open gate until a main-document load event
+        // that the subframe will never cause, stranding queued shell events.
+        let frame_tree = message.pointer("/result/frameTree/frame").is_some();
+        let main_navigation = message.get("method").and_then(Value::as_str)
+            == Some("Page.frameNavigated")
+            && message
+                .pointer("/params/frame")
+                .is_none_or(|frame| frame.get("parentId").is_none_or(Value::is_null));
         if !self.guard.note(message) {
             return false;
         }
-        self.gate.frame_navigated(self.guard.main_url.as_deref());
+        if frame_tree || main_navigation {
+            self.gate.frame_navigated(self.guard.main_url.as_deref());
+        }
         // Context bookkeeping rides the same note — a cleared or replaced
         // execution context is the old document going away, which is what
         // the gate exists to hold events back from.
@@ -504,12 +516,13 @@ mod tests {
         assert!(doc.load_event_fired());
     }
 
-    /// A subframe navigation is not a navigation of the shell document: the
-    /// main URL, its origin answer and its context are left alone, and the
-    /// gate is not opened by it — the load half still waits for the main
-    /// document's own load event.
+    /// Subframe bookkeeping is not a navigation of the shell document: the
+    /// main URL, its origin answer, its context and an already-open load gate
+    /// are all left alone. Closing the main gate here would strand queued
+    /// events until a main-document load event that this navigation will never
+    /// cause.
     #[test]
-    fn a_subframe_navigation_leaves_the_main_document_alone() {
+    fn subframe_bookkeeping_leaves_the_loaded_main_document_alone() {
         let mut doc = DocumentGuard::default();
         doc.note(&json!({
             "method": "Page.frameNavigated",
@@ -522,7 +535,7 @@ mod tests {
                 "auxData": {"isDefault": true, "frameId": "main"},
             }},
         }));
-        assert!(!doc.gate.ready(), "not loaded yet");
+        assert!(doc.load_event_fired(), "the main document is loaded");
 
         assert!(doc.note(&json!({
             "method": "Page.frameNavigated",
@@ -538,7 +551,24 @@ mod tests {
         );
         assert!(doc.guard.url_allows());
         assert!(doc.guard.context_allows(Some(1)));
-        assert!(!doc.gate.ready(), "a subframe's bookkeeping is not a load");
+        assert!(
+            doc.gate.ready(),
+            "a subframe navigation does not replace the loaded shell document"
+        );
+
+        assert!(doc.note(&json!({
+            "method": "Runtime.executionContextCreated",
+            "params": {"context": {
+                "id": 2,
+                "auxData": {"isDefault": true, "frameId": "sub"},
+            }},
+        })));
+        assert!(doc.guard.context_allows(Some(1)));
+        assert!(!doc.guard.context_allows(Some(2)));
+        assert!(
+            doc.gate.ready(),
+            "a subframe context does not replace the loaded shell document"
+        );
     }
 
     /// Before any bookkeeping names a URL, waiting events are allowed at the
