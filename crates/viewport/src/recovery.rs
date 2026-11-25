@@ -796,10 +796,12 @@ impl ViewportState {
         // and a card that comes back while an fd still pins its old minor
         // comes back on a *different* node. Carrying the old global over would
         // leave a headset client opening a minor that no longer exists. The
-        // old one goes with the old device a few lines below, which withdraws
-        // it — a client holding it is talking about hardware that has gone,
-        // and `drm_lease_state` in `handlers/mod.rs` is what catches the
-        // requests still in flight.
+        // old one goes with the old device a few lines below — its `Drop`
+        // ends the leases and finishes the lease-device *objects* its clients
+        // hold, but the global itself stays advertised until the card's slot
+        // is replaced by the one built below: a fresh bind against the stale
+        // global reaches `drm_lease_state` in `handlers/mod.rs`, which answers
+        // it from the empty fallback and refuses what it cannot hand out.
         let lease_state = crate::udev::lease_state_for(&self.display_handle, &card);
         let Some(udev) = self.udev.as_mut() else {
             return false;

@@ -41,6 +41,43 @@ to summarise rather than to duplicate.
   to quote.
 
 ### Fixed
+
+- A client that floods `zwlr_screencopy_v1` with copies, or
+  `ext-image-copy-capture` with frames, can no longer make the compositor
+  serve the whole backlog of offscreen composites and framebuffer readbacks
+  in one pass. Each queue is bounded, and an entry past the bound is told
+  `failed` rather than held.
+
+- A layout clip with a negative width, or a frame rectangle at the wire's
+  coordinate floor, no longer kills the frame build. The clip was honoured
+  down to negative dimensions and the renderer builds its rectangle with a
+  size that is only ever non-negative — a panic in a debug build, a
+  far-edge-below-origin rectangle in a release one — and the frame
+  rectangle was never bounded anywhere before the redaction bounds
+  subtracted the output's origin from it in raw `i32`. A negative clip now
+  means what the documented empty one means ("none of this window"), and a
+  frame outside the accepted layout is dropped the way a clip that cannot
+  meet its window already was, so the window is still placed.
+
+- `viewport msg -t config.wallpaper_options --options` sends the object.
+  The global string-field table carried `options` for the keyboard block's
+  xkb spelling, so the wallpaper extension's options were quoted into a
+  string on the way out — a document the extension cannot parse, from the
+  one path the settings panel's write-back has from a terminal. The xkb
+  `options` keep their comma-and-colon text through the per-type override
+  the tray's `id` already uses.
+
+- A shell overlay or screencast rectangle at the wire's coordinate floor no
+  longer kills the frame build. `shell.overlay` and `screencast.rect`
+  arrived as bare `i32`s with no bound anywhere: the frame build subtracts
+  the output's origin from the rectangle's in raw `i32`, so a rectangle at
+  `i32::MIN` on a monitor at a positive origin — any shell that miscounts
+  a notification's position — panicked in a debug build and wrapped in a
+  release one, and with the wrap the overlay was drawn and hit-tested
+  against a nonsense local rectangle. Both requests now keep their
+  rectangles inside the same accepted layout monitors are bounded to, and
+  a rectangle outside it is dropped the way a zero-sized one always was.
+
 - Unplugging a monitor runs `destroy` for the custom widgets mounted on its
   bar. The removal loop already stopped the film, cleared the wallpaper
   extension and closed the calendar on the way out — and then removed the

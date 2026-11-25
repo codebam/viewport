@@ -26,6 +26,26 @@ use smithay::wayland::selection::{SelectionHandler, SelectionTarget};
 
 use crate::state::ViewportState;
 
+/// How many screencopy requests one output will hold before refusing more.
+///
+/// A queued copy is not a packet: it is served by compositing the output
+/// offscreen and reading the pixels back, once per entry, in the frame pass.
+/// The protocol has no flow control, so one client can ask for thousands in a
+/// single flush — a screenshot program, or a client that is merely broken —
+/// and the main loop then spends the next minutes of readbacks servicing a
+/// backlog nobody will look at, with input and every other client waiting.
+/// This is the same bound the tree already puts on clipboard readers and
+/// screenshot encoders; a copy past it is told `failed` at once, which is the
+/// protocol's own answer for a copy that will not be served.
+const MAX_PENDING_COPIES_PER_OUTPUT: usize = 8;
+
+/// The same bound for `ext-image-copy-capture` frames, across every session.
+///
+/// The door is different and the cost is the same: each frame composites and
+/// reads back on the frame pass. Sessions are already capped by their own
+/// protocol object count; a backlog is not.
+const MAX_PENDING_CAPTURE_FRAMES: usize = 8;
+
 impl SeatHandler for ViewportState {
     // Not `WlSurface`: an X11 window has to be focused through the X server as
     // well, and smithay only does that for a focus that *is* an `X11Surface`.
@@ -285,6 +305,22 @@ impl crate::screencopy::ScreencopyHandler for ViewportState {
         buffer: &smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer,
         with_damage: bool,
     ) -> Result<(), String> {
+        // Bounded before queued, not after: the bound is about how much work
+        // one output's next frame may be made to do. A copy past it is
+        // answered now — `failed`, the protocol's word for a copy that will
+        // not be served — rather than held until a frame nobody asked for.
+        let queued = self
+            .pending_copies
+            .iter()
+            .filter(|copy| copy.output == state.output)
+            .count();
+        if queued >= MAX_PENDING_COPIES_PER_OUTPUT {
+            tracing::debug!(
+                "screencopy: {queued} copies already queued for this output; refusing another"
+            );
+            frame.failed();
+            return Ok(());
+        }
         self.pending_copies.push(crate::state::PendingCopy {
             frame: frame.clone(),
             buffer: buffer.clone(),
@@ -667,6 +703,21 @@ impl smithay::wayland::image_copy_capture::ImageCopyCaptureHandler for ViewportS
             );
             return;
         };
+        // The same bound as `queue_copy`'s, for the same reason: every held
+        // frame is an offscreen composite and a readback in the frame pass.
+        // `Unknown` is the protocol's general failure; a frame refused for
+        // backlog was not served and cannot claim `Stopped`, which says the
+        // source went away.
+        if self.pending_capture_frames.len() >= MAX_PENDING_CAPTURE_FRAMES {
+            tracing::debug!(
+                "image capture: {} frames already queued; refusing another",
+                self.pending_capture_frames.len()
+            );
+            frame.fail(
+                smithay::reexports::wayland_protocols::ext::image_copy_capture::v1::server::ext_image_copy_capture_frame_v1::FailureReason::Unknown,
+            );
+            return;
+        }
         self.pending_capture_frames.push((target, frame));
         // An idle desktop draws nothing, and a screenshot of an idle desktop
         // is the ordinary case.

@@ -684,3 +684,79 @@ code that landed after the first. Base `4b75e40c`.
   by the unplug case in the custom-widget block of
   `tests/shell.test.js`, which also pins that the surviving monitor's
   widget is untouched.
+
+- [x] **72. A shell overlay rectangle at the wire's floor killed the frame
+  build.** `crates/viewport/src/apply.rs` (`ShellOverlay`/`ScreencastRect`):
+  the rectangle the shell floats above the windows arrived as bare `i32`s
+  with no bound anywhere — `saturating_add` kept the page-origin
+  translation from overflowing, but the frame build then subtracts the
+  output's own origin from the rectangle's in raw `i32`
+  (`state/render_frame.rs`'s overlay translation), so a rectangle at
+  `i32::MIN` against a monitor at a positive origin — the ordinary
+  side-by-side layout, reached by any shell that miscounts a
+  notification's position — was a subtraction that panicked in a debug
+  build and wrapped in a release one, taking every later frame build with
+  it. Both arms now keep their rectangles inside the same ±2^20 bound
+  `output.configure` already keeps every monitor inside, by the same
+  `layout_rect_ok`; a rectangle outside it is dropped exactly as a
+  zero-sized one already was. Proven over the wire by
+  `tests/crash_probes.rs`, which drove the panic at
+  `render_frame.rs:701` before the fix and pins the frame build
+  surviving it after.
+
+- [x] **73. The typed CLI quotes the wallpaper extension's options into a
+  string.** `crates/viewport/src/msg.rs`: the global `STRING_FIELDS` table
+  carried `options` for the keyboard block's xkb spelling, and the name
+  collision meant `viewport msg -t config.wallpaper_options --options
+  '{"duration":30}'` sent the object as the *text* `'{"duration":30}'` —
+  while the request field is typed `serde_json::Value`, `docs/ipc.md`'s row
+  says "as JSON", and the socket test
+  `config_wallpaper_options_carries_the_object_through` pins the object
+  shape. The extension — the only reader of the value — was handed a
+  document it cannot parse, from the one path the settings panel's
+  write-back has from a terminal. Fixed by moving the xkb `options` into
+  `config.keyboard`'s own per-type `strings` — the same mechanism the
+  tray's `id` and the rule setters' `rules` already use for exactly this
+  shape of clash — pinned by both spellings in
+  `config_shell_setters_build_their_fields`.
+
+- [x] **74. A layout clip with a negative width, or a frame rectangle at the
+  wire's floor, killed the frame build.** `crates/viewport/src/apply.rs`
+  (`view.layout`) and `crates/viewport/src/state/render_frame.rs`: the
+  clip was honoured exactly as sent down to *negative* dimensions, and
+  the renderer builds the clip's rectangle with a `Size` that is only
+  ever non-negative — so `view.layout` with
+  `"clip":{"width":-5,"height":100}` panicked the frame build in a debug
+  build (reproduced over the wire at smithay's `Size::new` assert) and
+  built a rectangle whose far edge was below its origin in a release
+  one. The frame rectangle fared no better: never bounded anywhere, its
+  coordinates reached the redaction bounds' raw `i32` subtraction of the
+  output's origin, so a frame at `i32::MIN` on a monitor at a positive
+  origin panicked there (reproduced at `render_frame.rs:422`). A
+  negative clip now means exactly what the documented empty one means —
+  "none of this window" — and is clamped to it on the way in
+  (`usable_clip`); a frame outside the accepted layout is dropped with a
+  word, the same way a clip that cannot meet its window already was, so
+  the window is still placed. Both pinned by the clip-and-frame case in
+  `tests/crash_probes.rs` and by
+  `a_negative_crop_is_the_empty_one_rather_than_a_poisoned_rectangle`.
+
+- [x] **75. Every copy a client queued was served in one pass, with no
+  cap.** `crates/viewport/src/handlers/mod.rs` (`queue_copy`) pushed every
+  `zwlr_screencopy_v1` copy onto `pending_copies` with no bound, and the
+  service pass in `state/capture.rs` took every entry for the output and
+  composited it offscreen and read it back, one after another. One client
+  may ask for thousands in a single flush — the protocol has no flow
+  control — and the main loop then spends frame after frame on a backlog
+  nobody will look at while input and every other client wait behind it: a
+  session that has stopped answering without having crashed. The
+  `ext-image-copy-capture` door (`pending_capture_frames`) had the same
+  shape and the same cost per entry. Each queue now holds at most eight
+  entries — per output for copies, across sessions for frames — and an
+  entry past the bound is told `failed`, the protocol's own word for a copy
+  that will not be served, rather than held. Proven by
+  `a_flood_of_queued_copies_is_refused_not_served` in
+  `tests/crash_probes.rs`: thirty-two copies of one buffer in one flush are
+  refused past the bound, the session survives, and an ordinary capture is
+  still served; with the bound removed the same probe serves all
+  thirty-two.

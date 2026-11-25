@@ -378,19 +378,26 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             // The older, single-rectangle form of `shell.overlay`. A zero size
             // is the shell saying there is nothing above the windows now.
             let origin = state.dispatch_origin;
-            let rects = if width > 0 && height > 0 {
-                {
-                    vec![smithay::utils::Rectangle::new(
-                        // Saturating, as every translation of a wire
-                        // coordinate below: serde accepts up to i32::MAX, an
-                        // origin for a second monitor is real pixels, and
-                        // the sum of the two overflowing is a window on the
-                        // wrong screen — the very fault the origin exists to
-                        // prevent — or a panic, depending on the build.
-                        (x.saturating_add(origin.x), y.saturating_add(origin.y)).into(),
-                        (width, height).into(),
-                    )]
-                }
+            // Saturating, as every translation of a wire coordinate below:
+            // serde accepts up to i32::MAX, an origin for a second monitor
+            // is real pixels, and the sum of the two overflowing is a window
+            // on the wrong screen — the very fault the origin exists to
+            // prevent — or a panic, depending on the build.
+            let (x, y) = (x.saturating_add(origin.x), y.saturating_add(origin.y));
+            // And bounded, as every rectangle the layout keeps is: the frame
+            // build subtracts the output's origin from this one in `i32`
+            // (`render_frame`'s overlay translation), and a rectangle the
+            // wire allows at `i32::MIN` against a monitor at a positive
+            // origin is a subtraction that panics in a debug build and wraps
+            // in a release one. `output.configure` already keeps every
+            // monitor inside this bound, so the same bound on what floats
+            // above them makes the arithmetic safe by construction rather
+            // than by hoping the shell never miscounts.
+            let rects = if crate::output_management::layout_rect_ok(x, y, width, height) {
+                vec![smithay::utils::Rectangle::new(
+                    (x, y).into(),
+                    (width, height).into(),
+                )]
             } else {
                 Default::default()
             };
@@ -409,7 +416,21 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             let origin = state.dispatch_origin;
             let placed: Vec<_> = rects
                 .into_iter()
-                .filter(|rect| rect.width > 0 && rect.height > 0)
+                // Bounded here, for the same reason `screencast.rect` above
+                // is: the frame build subtracts the output's origin from
+                // each of these in `i32`, and the wire allows coordinates
+                // that turn that subtraction into an overflow. A rectangle
+                // outside the accepted layout is dropped exactly as a
+                // zero-sized one is — there is no part of it anywhere the
+                // compositor could draw or hit-test it.
+                .filter(|rect| {
+                    crate::output_management::layout_rect_ok(
+                        rect.x.saturating_add(origin.x),
+                        rect.y.saturating_add(origin.y),
+                        rect.width,
+                        rect.height,
+                    )
+                })
                 .map(|rect| {
                     (
                         smithay::utils::Rectangle::new(
@@ -2650,10 +2671,22 @@ fn usable_clip(
     warn: bool,
 ) -> Option<viewport_ipc::geometry::Box> {
     let clip = clip?;
-    // Empty in either direction: the shell means "none of this window". Honoured
-    // exactly as sent, which is the whole point of a crop.
+    // Empty in either direction: the shell means "none of this window".
+    // Honoured exactly as sent, which is the whole point of a crop — but
+    // only down to empty: a *negative* dimension means the same thing and
+    // is clamped here, because the rectangle the renderer builds from the
+    // clip carries a size that is only ever non-negative, and a hostile or
+    // merely buggy `view.layout` must not turn one into a debug-build panic
+    // or, in a release build, a rectangle whose far edge is below its
+    // origin. The zero it becomes is the documented spelling of the same
+    // "none of this window", so nothing downstream has to know the
+    // difference.
     if clip.width <= 0 || clip.height <= 0 {
-        return Some(clip);
+        return Some(viewport_ipc::geometry::Box {
+            width: clip.width.max(0),
+            height: clip.height.max(0),
+            ..clip
+        });
     }
     let right = clip.x.saturating_add(clip.width);
     let bottom = clip.y.saturating_add(clip.height);
@@ -2788,8 +2821,33 @@ fn view_layout(state: &mut ViewportState, mut layout: viewport_ipc::request::Vie
     view.scale = resolved.scale;
     view.clip = resolved.clip;
     // Absent means there is nothing of this window's frame that has to be
-    // drawn above anything, which is every tiled window.
-    view.frame = layout.frame;
+    // drawn above anything, which is every tiled window. Bounded, because
+    // the frame build subtracts the output's origin from it in raw `i32`
+    // (the redaction bounds, beside the border sides that are widened
+    // already): the same reason the overlay rectangles are bounded, and a
+    // frame at the wire's floor against a monitor at a positive origin is
+    // a subtraction that panics in a debug build. A frame outside the
+    // accepted layout is dropped with a word rather than refusing the
+    // layout — the window is still placed, and the next layout the shell
+    // sends carries a fresh frame — exactly as a clip that cannot meet its
+    // window is.
+    let frame = layout.frame.filter(|frame| {
+        let ok =
+            crate::output_management::layout_rect_ok(frame.x, frame.y, frame.width, frame.height);
+        if !ok {
+            tracing::warn!(
+                "view {}: the shell named a frame rectangle outside the \
+                 accepted layout ({}x{} at {:+}{:+}); drawing the window without it",
+                layout.id,
+                frame.width,
+                frame.height,
+                frame.x,
+                frame.y
+            );
+        }
+        ok
+    });
+    view.frame = frame;
     view.floating = layout.floating;
     // Smart radius: the shell drew this one square, so the compositor must not
     // cut a corner off the client that the frame around it no longer has.
@@ -3614,6 +3672,45 @@ mod tests {
         let half = viewport_ipc::geometry::Box::new(-150, 0, 300, 200);
         assert_eq!(super::usable_clip(1, Some(half), window, true), Some(half));
         assert_eq!(super::usable_clip(1, None, window, true), None);
+    }
+
+    #[test]
+    fn a_negative_crop_is_the_empty_one_rather_than_a_poisoned_rectangle() {
+        let window = viewport_ipc::geometry::Box::new(10, 20, 300, 200);
+        // A negative dimension means what the empty one does — "none of
+        // this window" — and is clamped to it on the way in, because the
+        // rectangle the renderer builds from the clip carries a size that
+        // is only ever non-negative. Before the clamp these reached that
+        // construction as-is: a debug build panicked in it and a release
+        // one drew from a rectangle whose far edge was below its origin.
+        assert_eq!(
+            super::usable_clip(
+                1,
+                Some(viewport_ipc::geometry::Box::new(10, 20, -5, 200)),
+                window,
+                true
+            ),
+            Some(viewport_ipc::geometry::Box::new(10, 20, 0, 200))
+        );
+        assert_eq!(
+            super::usable_clip(
+                1,
+                Some(viewport_ipc::geometry::Box::new(10, 20, 300, -1)),
+                window,
+                true
+            ),
+            Some(viewport_ipc::geometry::Box::new(10, 20, 300, 0))
+        );
+        // Both directions at once, for the compositor that miscounted twice.
+        assert_eq!(
+            super::usable_clip(
+                1,
+                Some(viewport_ipc::geometry::Box::new(10, 20, -5, -1)),
+                window,
+                true
+            ),
+            Some(viewport_ipc::geometry::Box::new(10, 20, 0, 0))
+        );
     }
 
     #[test]
