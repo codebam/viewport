@@ -583,9 +583,9 @@ const TYPES: &[Type] = &[
     },
     Type {
         name: "config.border",
-        fields: &["radius", "width", "smart"],
+        fields: &["radius", "width", "smart", "animated"],
         strings: &[],
-        hint: "[--radius N --width N --smart BOOL]   (set the window border; each is optional)",
+        hint: "[--radius N --width N --smart BOOL --animated BOOL]   (set the window border; each is optional)",
     },
     Type {
         name: "config.wallpaper",
@@ -774,9 +774,16 @@ const TYPES: &[Type] = &[
     },
     Type {
         name: "config.idle",
-        fields: &["lock_after", "blank_after", "lock_delay", "lock_command"],
+        fields: &[
+            "lock_after",
+            "blank_after",
+            "lock_delay",
+            "lock_command",
+            "dim_after",
+            "dim_floor",
+        ],
         strings: &[],
-        hint: "[--lock_after SECONDS --blank_after SECONDS --lock_delay SECONDS --lock_command COMMAND]   (set when the session locks and the outputs go dark; each is optional)",
+        hint: "[--lock_after SECONDS --blank_after SECONDS --lock_delay SECONDS --lock_command COMMAND --dim_after SECONDS --dim_floor FRACTION]   (set when the session locks, when the outputs go dark and when the panel starts to dim; each is optional)",
     },
     Type {
         name: "config.lid",
@@ -1959,6 +1966,29 @@ mod tests {
         assert_eq!(
             value(&["-t", "config.opacity", "--active", "0.9"]),
             serde_json::json!({"type": "config.opacity", "active": 0.9})
+        );
+        // The late arrivals ride the same rule: the field lists have to
+        // know a field before the typed CLI can send it, which is how the
+        // idle dim pair and the border's drift switch were unreachable from
+        // here while `--raw` could send them.
+        assert_eq!(
+            value(&["-t", "config.border", "--animated", "true",]),
+            serde_json::json!({"type": "config.border", "animated": true})
+        );
+        assert_eq!(
+            value(&[
+                "-t",
+                "config.idle",
+                "--dim_after",
+                "120",
+                "--dim_floor",
+                "0.25",
+            ]),
+            serde_json::json!({
+                "type": "config.idle",
+                "dim_after": 120,
+                "dim_floor": 0.25,
+            })
         );
     }
 

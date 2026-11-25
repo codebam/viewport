@@ -12,6 +12,16 @@ to summarise rather than to duplicate.
 ## [Unreleased]
 
 ### Fixed
+- `viewport msg` can send `config.border --animated` and the idle dim pair.
+  The compositor's setters have handled `border.animated`, `idle.dim_after`
+  and `idle.dim_floor` since they landed, and `docs/configuration.md` says
+  both dim keys "ride the runtime `config.idle` setter" — but the typed
+  CLI's field lists and `docs/ipc.md`'s rows were never taught them, so
+  `-t config.idle --dim_after 120` was refused with "has no field" before
+  anything was sent, and only `--raw` could reach the arms. The rows are
+  written in the table's own voice now, and the builder tests pin the
+  three fields so the drift cannot come back silently.
+
 - A profile load redraws what the profile changes. The `vcgt` half of a
   profile is a CRTC ramp and shows the moment it is programmed; the baked
   cube reaches the screen only through a frame — and nothing in the load

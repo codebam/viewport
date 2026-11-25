@@ -652,3 +652,19 @@ code that landed after the first. Base `4b75e40c`.
   pixels on screen the same way. Fixed by marking `needs_render` when the
   cube map changes, both directions; pinned by
   `a_cube_change_marks_a_frame` beside the source-order tests above.
+
+- [x] **70. The typed CLI cannot send three fields the setters accept.**
+  `crates/viewport/src/msg.rs`: the `config.border` row listed only
+  `radius`, `width` and `smart`, and `config.idle` only `lock_after`,
+  `blank_after`, `lock_delay` and `lock_command` — so
+  `viewport msg -t config.border --animated true` and
+  `viewport msg -t config.idle --dim_after 120 --dim_floor 0.25` were
+  refused with "has no field" before anything was sent, while the
+  compositor's arms have handled all three since they landed
+  (`apply.rs`'s `ConfigBorder`/`ConfigIdle`) and `--raw` could send them.
+  The same drift in `docs/ipc.md`'s rows: the request-table commit that
+  documented `config.game_mode` and `config.wallpaper_options` checked
+  the *types* against `Request`, but no test ties a row's *fields* to the
+  variant, which is how the drift stayed silent — the FIXES #56 story one
+  level down. Fixed in both places, pinned by the examples in
+  `config_shell_setters_build_their_fields`.
