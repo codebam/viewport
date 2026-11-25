@@ -280,6 +280,182 @@ fn declared_types() -> Vec<String> {
     names
 }
 
+/// The serde fields of one struct, read off the source.
+///
+/// `#[serde(flatten)]` splices the flattened struct's fields in: its own name
+/// never reaches the wire, `ViewLayout`'s `box_` is the one here.
+#[cfg(test)]
+fn struct_field_names(sources: &[&str], name: &str) -> Vec<String> {
+    let header = format!("pub struct {name} {{");
+    for source in sources {
+        let mut lines = source.lines();
+        while let Some(line) = lines.next() {
+            if line.trim() != header {
+                continue;
+            }
+            let mut fields = Vec::new();
+            let mut flatten = false;
+            for line in lines.by_ref() {
+                let line = line.trim();
+                if line == "}" {
+                    break;
+                }
+                if line == "#[serde(flatten)]" {
+                    flatten = true;
+                    continue;
+                }
+                if line.is_empty() || line.starts_with("///") || line.starts_with("#[") {
+                    continue;
+                }
+                let Some(rest) = line.strip_prefix("pub ") else {
+                    continue;
+                };
+                let Some((field, ty)) = rest.split_once(':') else {
+                    continue;
+                };
+                let ty = ty.trim().trim_end_matches(',');
+                if flatten {
+                    fields.extend(struct_field_names(sources, ty));
+                    flatten = false;
+                } else {
+                    fields.push(field.trim().to_owned());
+                }
+            }
+            return fields;
+        }
+    }
+    Vec::new()
+}
+
+/// Every variant of one internally-tagged enum, with the serde fields it
+/// deserialises.
+///
+/// `struct_sources` are searched for the struct behind a newtype variant and
+/// for a flattened field; `event.rs` keeps its payloads beside the enum,
+/// `request.rs` needs `geometry.rs` for `PartialBox`.
+#[cfg(test)]
+fn enum_variant_fields(
+    source: &str,
+    enum_name: &str,
+    struct_sources: &[&str],
+) -> Vec<(String, Vec<String>)> {
+    let header = format!("pub enum {enum_name} {{");
+    let mut variants = Vec::new();
+    let mut lines = source.lines().peekable();
+    let mut inside = false;
+    while let Some(line) = lines.next() {
+        let line = line.trim();
+        if !inside {
+            inside = line == header;
+            continue;
+        }
+        if line == "}" {
+            break;
+        }
+        let Some(rest) = line.strip_prefix("#[serde(rename = \"") else {
+            continue;
+        };
+        let Some(name) = rest.split('"').next() else {
+            continue;
+        };
+        // The declaration follows the doc comment and attributes.
+        let mut decl = String::new();
+        for next in lines.by_ref() {
+            let next = next.trim();
+            if next.is_empty()
+                || next.starts_with("///")
+                || next.starts_with("//")
+                || next.starts_with("#[")
+            {
+                continue;
+            }
+            decl = next.to_owned();
+            break;
+        }
+        let fields = declaration_field_names(&decl, struct_sources, &mut lines);
+        variants.push((name.to_owned(), fields));
+    }
+    variants
+}
+
+/// The fields of one variant declaration, consuming its body when it is
+/// written across lines.
+#[cfg(test)]
+fn declaration_field_names<'a>(
+    decl: &str,
+    struct_sources: &[&str],
+    lines: &mut impl Iterator<Item = &'a str>,
+) -> Vec<String> {
+    let Some(open) = decl.find(['{', '(', ',']) else {
+        return Vec::new();
+    };
+    let rest = &decl[open..];
+    if let Some(inner) = rest.strip_prefix('(') {
+        let name = inner.split(')').next().unwrap_or_default().trim();
+        let name = name
+            .strip_prefix("Box<")
+            .and_then(|name| name.strip_suffix('>'))
+            .unwrap_or(name);
+        return struct_field_names(struct_sources, name);
+    }
+    if rest.starts_with(',') {
+        return Vec::new();
+    }
+    let mut text = rest.trim_start_matches('{').to_owned();
+    let mut done = false;
+    if let Some(end) = text.find('}') {
+        text.truncate(end);
+        done = true;
+    }
+    let mut fields = Vec::new();
+    let mut flatten = false;
+    loop {
+        // An attribute is a whole line: splitting one on its own commas would
+        // read the `::` in `Option::is_none` as a field boundary.
+        let whole = text.trim();
+        if whole == "#[serde(flatten)]" {
+            flatten = true;
+        } else if !(whole.starts_with("///") || whole.starts_with("//") || whole.starts_with("#["))
+        {
+            for part in text.split(',') {
+                let part = part.trim();
+                if part.is_empty() || part.starts_with("///") || part.starts_with("//") {
+                    continue;
+                }
+                if part == "#[serde(flatten)]" {
+                    flatten = true;
+                    continue;
+                }
+                if part.starts_with("#[") {
+                    continue;
+                }
+                let Some((field, ty)) = part.split_once(':') else {
+                    continue;
+                };
+                let ty = ty.trim();
+                if flatten {
+                    fields.extend(struct_field_names(struct_sources, ty));
+                    flatten = false;
+                } else {
+                    fields.push(field.trim().to_owned());
+                }
+            }
+        }
+        if done {
+            break;
+        }
+        let Some(next) = lines.next() else {
+            break;
+        };
+        let next = next.trim();
+        if next == "}" || next == "}," {
+            break;
+        }
+        text = next.to_owned();
+    }
+    fields
+}
+
 /// Serialise one message to the shell.
 pub fn to_string(event: &Event) -> Result<String, serde_json::Error> {
     serde_json::to_string(event)
@@ -442,5 +618,108 @@ mod tests {
                 square: false,
             })
         );
+    }
+
+    /// The `| message | payload |` rows of `docs/ipc.md`, keyed by the message
+    /// name in the first cell. Prose and the small key tables inside a section
+    /// come out with whatever their first cell says, which no message is
+    /// named, so they are never looked up.
+    ///
+    /// A name can have a row in each direction — `session.lock` is one — so
+    /// each key keeps its rows and a variant is only checked against them.
+    fn documented_rows(doc: &str) -> std::collections::BTreeMap<String, Vec<String>> {
+        let mut rows: std::collections::BTreeMap<String, Vec<String>> =
+            std::collections::BTreeMap::new();
+        for line in doc.lines() {
+            let Some(rest) = line.trim().strip_prefix("| `") else {
+                continue;
+            };
+            let Some((name, rest)) = rest.split_once('`') else {
+                continue;
+            };
+            let Some(payload) = rest.trim_start().strip_prefix('|') else {
+                continue;
+            };
+            let payload = payload.strip_suffix('|').unwrap_or(payload);
+            rows.entry(name.to_owned())
+                .or_default()
+                .push(payload.trim().to_owned());
+        }
+        rows
+    }
+
+    /// Whether `row` names `field` as a word, rather than as part of a longer
+    /// one. The table writes every name in backticks, so the neighbours are
+    /// punctuation, but this keeps `id` from matching the `id` inside `app_id`.
+    fn mentions(row: &str, field: &str) -> bool {
+        row.match_indices(field).any(|(at, _)| {
+            let before = row[..at].chars().next_back();
+            let after = row[at + field.len()..].chars().next();
+            let boundary = |c: Option<char>| c.is_none_or(|c| !c.is_alphanumeric() && c != '_');
+            boundary(before) && boundary(after)
+        })
+    }
+
+    /// Rows that describe a message in prose rather than listing its members.
+    ///
+    /// `config` names the members the shell draws and leaves the rest of the
+    /// settings to `docs/configuration.md`; every other row is a field list.
+    /// Without this the test would demand a second copy of the config
+    /// reference inside the message table.
+    const SUMMARY_ROWS: &[&str] = &["config"];
+
+    /// The one place an alternative shell can learn what a message carries is
+    /// `docs/ipc.md`, so a member added to `Event` or `Request` and not named
+    /// there is a member nobody outside this repository can use. This reads
+    /// both enums' serde fields and both tables, and treats a row that does not
+    /// exist yet as unwritten rather than wrong.
+    #[test]
+    fn every_documented_message_names_the_fields_it_sends() {
+        let doc = include_str!("../../../docs/ipc.md");
+        let rows = documented_rows(doc);
+        let mut checked = 0;
+        let mut missing = Vec::new();
+        for (source, enum_name, structs) in [
+            (
+                include_str!("event.rs"),
+                "Event",
+                vec![include_str!("event.rs")],
+            ),
+            (
+                include_str!("request.rs"),
+                "Request",
+                vec![include_str!("request.rs"), include_str!("geometry.rs")],
+            ),
+        ] {
+            for (message, fields) in enum_variant_fields(source, enum_name, &structs) {
+                if SUMMARY_ROWS.contains(&message.as_str()) {
+                    continue;
+                }
+                let Some(rows) = rows.get(&message) else {
+                    continue;
+                };
+                checked += 1;
+                if rows
+                    .iter()
+                    .any(|row| fields.iter().all(|field| mentions(row, field)))
+                {
+                    continue;
+                }
+                let before = missing.len();
+                for field in fields {
+                    if !rows.iter().any(|row| mentions(row, &field)) {
+                        missing.push(format!("{message}: {field}"));
+                    }
+                }
+                if missing.len() == before {
+                    missing.push(format!("{message}: no single row names them all"));
+                }
+            }
+        }
+        assert!(
+            checked >= 100,
+            "the tables were not read properly: {checked} rows checked"
+        );
+        assert!(missing.is_empty(), "rows do not name: {missing:?}");
     }
 }
