@@ -128,6 +128,25 @@ if ! kill -0 "$HOLD_PID" 2>/dev/null; then
 	status=1
 fi
 
+# Alive is not enough: the refusal must not clear the accepted locker's
+# surfaces out of the render map. Locked output captures are deliberately
+# redacted, so the surface's next frame callback is the outside observation.
+frames=$(grep -c '^frame-done' "$WORK/hold.log" 2>/dev/null || true)
+presented=
+for _ in $(seq 100); do
+	if [ "$(grep -c '^frame-done' "$WORK/hold.log" 2>/dev/null || true)" -gt "$frames" ]; then
+		presented=yes
+		break
+	fi
+	sleep 0.1
+done
+if [ -n "$presented" ]; then
+	echo "ok   the first locker keeps reaching the render pass after the refusal"
+else
+	echo "FAIL the refused locker removed the first lock screen from rendering"
+	status=1
+fi
+
 # And the half that must keep working: the locker dies, so the next one in is
 # allowed to take the session over. Without this the refusal above would be a
 # session nobody can ever unlock.

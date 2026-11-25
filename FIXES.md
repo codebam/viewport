@@ -957,3 +957,13 @@ code that landed after the first. Base `4b75e40c`.
   that also covers an already-refused lock, whose `done` gate skips Viewport's
   callback entirely. The accepted-lock path is pinned by `already-committed` in
   `tests/lock-lifecycle.test.sh`.
+
+- [x] **94. The headless frame timer never presented lock surfaces.**
+  `headless.rs` sent frame callbacks to windows, the shell and wallpaper but
+  not to `lock_surfaces`, the fourth collection the DRM and nested backends
+  walk. A headless lock client therefore waited forever after its first buffer,
+  and a refused or superseded surface could not be distinguished from the
+  accepted one by presentation. The timer now sends callbacks through
+  `live_lock_surfaces()` on every virtual output. Pinned by the accepted,
+  refused and stale-surface frame-callback assertions in
+  `tests/lock-lifecycle.test.sh` and the strengthened `lock-takeover` test.

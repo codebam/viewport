@@ -42,6 +42,9 @@ to summarise rather than to duplicate.
 
 ### Fixed
 
+- Headless lock clients receive frame callbacks on every virtual output, so a
+  locker no longer stalls after its first buffer waiting for presentation that
+  the frame timer never offered it.
 - `ext_session_lock_v1.get_lock_surface` now refuses a surface that committed a
   buffer before being given the lock role with `already_constructed`, instead
   of granting the role after pending buffer state had been cleared.

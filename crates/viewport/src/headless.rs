@@ -211,6 +211,19 @@ pub fn ensure_subsystem(state: &mut ViewportState) -> anyhow::Result<()> {
                         |_, _| Some(output.clone()),
                     );
                 }
+                // A lock surface is in neither the desktop space nor the
+                // shell lists. Skipping it here stranded a headless locker
+                // after its first buffer, and left the lifecycle suite with
+                // no presentation observation at all.
+                for lock in state.live_lock_surfaces() {
+                    smithay::desktop::utils::send_frames_surface_tree(
+                        lock.wl_surface(),
+                        output,
+                        now,
+                        Some(Duration::ZERO),
+                        |_, _| Some(output.clone()),
+                    );
+                }
             }
             state.space.refresh();
             state.popups.cleanup();
