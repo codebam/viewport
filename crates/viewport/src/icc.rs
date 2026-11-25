@@ -4652,7 +4652,7 @@ mod lut_tests {
         /// ceiling still fails one pathological case on an arbitrarily slow
         /// runner instead of hanging the job.
         const CASE_BUDGET_FLOOR: Duration = Duration::from_secs(5);
-        const CASE_BUDGET_FACTOR: u32 = 100;
+        const CASE_BUDGET_FACTOR: u32 = 200;
         const CASE_BUDGET_CEILING: Duration = Duration::from_secs(120);
 
         /// The budget for one hostile case: `CASE_BUDGET_FACTOR` reference
@@ -4668,9 +4668,9 @@ mod lut_tests {
         /// ceiling, and the boundaries between the branches are inclusive.
         #[test]
         fn the_case_budget_tracks_the_reference_bake_between_floor_and_ceiling() {
-            // 100 x 1 ms is only 100 ms, so the floor wins.
+            // 200 x 1 ms is only 200 ms, so the floor wins.
             assert_eq!(case_budget(Duration::from_millis(1)), CASE_BUDGET_FLOOR);
-            // Exactly a hundredth of the floor: 100 x 50 ms is the floor.
+            // Exactly a two-hundredth of the floor: 200 x 25 ms is the floor.
             assert_eq!(
                 case_budget(CASE_BUDGET_FLOOR / CASE_BUDGET_FACTOR),
                 CASE_BUDGET_FLOOR
@@ -4678,14 +4678,14 @@ mod lut_tests {
             // A slow machine: the budget tracks the bake, not a constant.
             assert_eq!(
                 case_budget(Duration::from_millis(100)),
-                Duration::from_secs(10)
+                Duration::from_secs(20)
             );
             // One tick above that boundary scales with it.
             assert_eq!(
                 case_budget(CASE_BUDGET_FLOOR / CASE_BUDGET_FACTOR + Duration::from_nanos(1)),
                 CASE_BUDGET_FLOOR + Duration::from_nanos(1) * CASE_BUDGET_FACTOR
             );
-            // A very slow machine: 100 x 1.2 s is the ceiling.
+            // A very slow machine: 200 x 600 ms is the ceiling.
             assert_eq!(
                 case_budget(CASE_BUDGET_CEILING / CASE_BUDGET_FACTOR),
                 CASE_BUDGET_CEILING
