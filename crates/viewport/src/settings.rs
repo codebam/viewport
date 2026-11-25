@@ -1499,4 +1499,37 @@ mod tests {
             Some(&serde_json::json!(45))
         );
     }
+
+    /// `docs/ipc.md`'s "What is written" is the one user-facing statement of
+    /// what survives a restart, and the overlay's two newest keys —
+    /// `wallpaper_options` and `game_mode`, both of which can be set and saved
+    /// through the runtime setters — were not in it. A reader was told the
+    /// newest settings were lost. This compares the list with the top-level
+    /// keys a full save actually serialises, so the next key added to the
+    /// overlay fails here rather than in the doc's silence.
+    #[test]
+    fn the_documented_saved_keys_are_the_ones_a_save_writes() {
+        let doc = include_str!("../../../docs/ipc.md");
+        let (list, _) = doc
+            .split_once("What is written:")
+            .and_then(|(_, rest)| rest.split_once("`outputs` entry"))
+            .expect("the What is written list");
+        let mut listed: Vec<&str> = list.split('`').skip(1).step_by(2).collect();
+        // The list ends at the `outputs` entry; monitors are the one key whose
+        // contents are not a fixed list, so it is named in prose and added
+        // back here.
+        listed.push("outputs");
+        listed.sort_unstable();
+
+        let written = serde_json::to_value(full()).expect("the overlay serialises");
+        let mut keys: Vec<&str> = written
+            .as_object()
+            .expect("an overlay is an object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+
+        assert_eq!(keys, listed, "a save and the documented list differ");
+    }
 }

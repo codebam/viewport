@@ -423,7 +423,8 @@ overlay exists: it is hand-written JSONC and no round trip through a JSON
 parser keeps its comments or its formatting. Delete `settings.json`, or a line
 out of it, to put the config file back in charge of that key.
 
-What is written: `dark_mode`, `wallpaper`, `wallpaper_mode`, `gaps`, `border`,
+What is written: `dark_mode`, `wallpaper`, `wallpaper_mode`,
+`wallpaper_options`, `game_mode`, `gaps`, `border`,
 `cursor`, `motion`, `group`, `clock`, `bar`, `bar_blur`, `bar_widgets`,
 `bar_items`, `logo`, `tutorial`, `tiling_mode`, `layout`, `layout_extensions`,
 `focus_crosses_outputs`, `osk`, `tray`, `clipboard_history`, `icon_theme`,
