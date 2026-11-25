@@ -668,3 +668,19 @@ code that landed after the first. Base `4b75e40c`.
   variant, which is how the drift stayed silent — the FIXES #56 story one
   level down. Fixed in both places, pinned by the examples in
   `config_shell_setters_build_their_fields`.
+
+- [x] **71. Unplugging a monitor orphaned the widgets mounted on its bar.**
+  `data/shell/outputs.js` (the removal loop): the loop stops the film,
+  clears the wallpaper extension, closes the calendar, drops the OSD,
+  rehomes the notifications and forgets the overlays — and then removed
+  the output element with every custom widget still mounted in its bar,
+  so no widget's `destroy` ever ran on the one removal path that never
+  revisits the element. A widget that did what the contract advises in
+  `mount` ("a timer, an observer, a live subscription" is what destroy
+  is documented to undo) kept all of it after the monitor went, and a
+  replug mounted a fresh instance beside whatever was left running.
+  Fixed by walking the output's widget slots through `clearCustomWidget`
+  before the element goes, beside the wallpaper twin it matches; covered
+  by the unplug case in the custom-widget block of
+  `tests/shell.test.js`, which also pins that the surviving monitor's
+  widget is untouched.

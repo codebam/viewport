@@ -7125,7 +7125,31 @@ if (mode === 'scrolling') {
     hasApi && ((out.widgetsEls ?? [])[0]?.textContent ?? '') === '');
   check('and logs the failure', hasApi && logged);
 
-  /* Back to the default bar for everything after this. */
+  /* A monitor that goes away takes the widgets mounted on its bar with it:
+     destroy runs for each, as it already does for the wallpaper extension,
+     the film and the calendar in the same removal loop. A widget's own
+     timers and listeners are the widget's to stop, and unplug is the one
+     removal path that never re-visits the element to run them. */
+  const outs = (names) => emit({ type: 'output.layout', outputs: names.map(
+    (name, at) => ({ name, x: at * 1920, y: 0, width: 1920, height: 1080,
+      usable_x: at * 1920, usable_y: 30, usable_width: 1920,
+      usable_height: 1050, scale: 1, transform: 'normal', modes: [],
+      enabled: true })) });
+  outs(['DP-1', 'DP-3']);
+  emit({ type: 'config', layout: mode, rules: HARNESS_RULES,
+    bar_widgets: [{ type: 'custom', name: 'probe' }] });
+  const mountsBeforeUnplug = seen.mounts;
+  const destroysBeforeUnplug = seen.destroys;
+  outs(['DP-1']);
+  check('unplugging a monitor destroys the widget mounted on its bar',
+    hasApi && seen.destroys === destroysBeforeUnplug + 1
+      && seen.mounts === mountsBeforeUnplug);
+  check('and the monitor that stayed keeps its widget mounted',
+    hasApi && (sh.outputs.get('DP-1')?.widgetsEls ?? [])[0]?._custom?.descriptor
+      === sh.widgetRegistry.get('probe'));
+
+  /* Back to the default bar and the one monitor everything after this
+     expects. */
   emit({ type: 'config', layout: mode, rules: HARNESS_RULES });
 }
 

@@ -12,6 +12,16 @@ to summarise rather than to duplicate.
 ## [Unreleased]
 
 ### Fixed
+- Unplugging a monitor runs `destroy` for the custom widgets mounted on its
+  bar. The removal loop already stopped the film, cleared the wallpaper
+  extension and closed the calendar on the way out — and then removed the
+  output element with every widget still mounted in it, the one removal
+  path that never revisits the element to run the hook. A widget that did
+  what the contract advises in `mount` (a timer, an observer, a live
+  subscription — the things `destroy` exists to undo) kept all of it after
+  the monitor went, and a replug mounted a fresh instance beside whatever
+  the old one left running.
+
 - `viewport msg` can send `config.border --animated` and the idle dim pair.
   The compositor's setters have handled `border.animated`, `idle.dim_after`
   and `idle.dim_floor` since they landed, and `docs/configuration.md` says

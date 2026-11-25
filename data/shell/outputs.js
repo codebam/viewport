@@ -218,6 +218,19 @@ function syncOutputs(list) {
     if (typeof clearOutputWallpaperExtension === 'function') {
       clearOutputWallpaperExtension(output);
     }
+    /* And so does every custom widget mounted on its bar. The element is
+       about to be removed, and destroy is the only hook a widget gets to
+       stop what mount started — a timer, an observer, a live subscription,
+       the contract's own words. The wallpaper extension, the film and the
+       calendar in this same loop are each cleared for exactly this reason;
+       without this, an unplugged monitor leaves every widget it carried
+       running whatever mount left behind, and a replug mounts a fresh
+       instance beside it. `widgetsEls` is the bar's widget-slot list, which
+       covers the bar_widgets placement and the custom entries of a
+       bar_items override alike. */
+    if (typeof clearCustomWidget === 'function') {
+      for (const el of output.widgetsEls ?? []) clearCustomWidget(el);
+    }
     /* A calendar hanging off this output's clock has to come down with it.
        closeCalendarOff is otherwise only reached from the per-output relayout
        in geometry.js, and that never visits an output this loop has dropped:
