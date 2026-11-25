@@ -2456,6 +2456,12 @@ mod tests {
         assert!(unknown.is_empty(), "not a Request type: {unknown:?}");
     }
 
+    /// `viewport-ipc`'s request and geometry sources, read at compile time so
+    /// the table above can be checked against the types without depending on
+    /// the crate's files being there when the test runs.
+    const REQUEST_SOURCE: &str = include_str!("../../viewport-ipc/src/request.rs");
+    const GEOMETRY_SOURCE: &str = include_str!("../../viewport-ipc/src/geometry.rs");
+
     /// Every `#[serde(rename = "...")]` on a `viewport_ipc::Request` variant,
     /// read off the enum's source the way `viewport_ipc`'s own tests do.
     fn request_type_names() -> Vec<&'static str> {
@@ -2478,6 +2484,271 @@ mod tests {
             }
         }
         names
+    }
+
+    /// One serde field of a message, with the type it is declared as.
+    struct Declared {
+        name: String,
+        /// The type as written — `Option<serde_json::Value>`, `PartialBox`, …
+        /// Only [`JSON_BLOB_FIELDS`] reads it.
+        ty: String,
+    }
+
+    /// The serde fields of one struct declaration, with the type of each.
+    ///
+    /// `#[serde(flatten)]` is the one attribute that changes the wire shape:
+    /// the flattened field's own name never appears in a message, its fields
+    /// do, so they are spliced in where it is named. `ViewLayout` reaches
+    /// `PartialBox` that way, which is why `x` and `width` are fields of
+    /// `view.layout` in the table above.
+    fn struct_fields(sources: &[&str], name: &str) -> Vec<Declared> {
+        let header = format!("pub struct {name} {{");
+        for source in sources {
+            let mut lines = source.lines();
+            while let Some(line) = lines.next() {
+                if line.trim() != header {
+                    continue;
+                }
+                let mut fields = Vec::new();
+                let mut flatten = false;
+                for line in lines.by_ref() {
+                    let line = line.trim();
+                    if line == "}" {
+                        break;
+                    }
+                    if line == "#[serde(flatten)]" {
+                        flatten = true;
+                        continue;
+                    }
+                    if line.is_empty() || line.starts_with("///") || line.starts_with("#[") {
+                        continue;
+                    }
+                    let Some(rest) = line.strip_prefix("pub ") else {
+                        continue;
+                    };
+                    let Some((field, ty)) = rest.split_once(':') else {
+                        continue;
+                    };
+                    let ty = ty.trim().trim_end_matches(',').to_owned();
+                    if flatten {
+                        fields.extend(struct_fields(sources, &ty));
+                        flatten = false;
+                    } else {
+                        fields.push(Declared {
+                            name: field.trim().to_owned(),
+                            ty,
+                        });
+                    }
+                }
+                return fields;
+            }
+        }
+        Vec::new()
+    }
+
+    /// Every variant of `Request`, with the serde fields it deserialises.
+    ///
+    /// The declaration forms are the three serde allows for an internally
+    /// tagged enum: an inline struct, a newtype around a named struct, and a
+    /// unit variant. The fields are read off the source rather than from a list
+    /// kept beside it, so a field added to a variant is seen here even when
+    /// nobody remembers this table.
+    fn request_variant_fields() -> Vec<(&'static str, Vec<Declared>)> {
+        let sources = [REQUEST_SOURCE, GEOMETRY_SOURCE];
+        let mut variants = Vec::new();
+        let mut lines = REQUEST_SOURCE.lines().peekable();
+        let mut inside = false;
+        while let Some(line) = lines.next() {
+            let line = line.trim();
+            if !inside {
+                inside = line == "pub enum Request {";
+                continue;
+            }
+            if line == "}" {
+                break;
+            }
+            let Some(rest) = line.strip_prefix("#[serde(rename = \"") else {
+                continue;
+            };
+            let Some(name) = rest.split('"').next() else {
+                continue;
+            };
+            // The declaration follows the doc comment and attributes.
+            let mut decl = String::new();
+            for next in lines.by_ref() {
+                let next = next.trim();
+                if next.is_empty()
+                    || next.starts_with("///")
+                    || next.starts_with("//")
+                    || next.starts_with("#[")
+                {
+                    continue;
+                }
+                decl = next.to_owned();
+                break;
+            }
+            let fields = variant_fields(&decl, &sources, &mut lines);
+            variants.push((name, fields));
+        }
+        variants
+    }
+
+    /// The fields of one variant declaration, consuming its body when it is
+    /// written across lines.
+    fn variant_fields(
+        decl: &str,
+        sources: &[&str],
+        lines: &mut impl Iterator<Item = &'static str>,
+    ) -> Vec<Declared> {
+        let Some(open) = decl.find(['{', '(', ',']) else {
+            return Vec::new();
+        };
+        let rest = &decl[open..];
+        if let Some(inner) = rest.strip_prefix('(') {
+            let name = inner.split(')').next().unwrap_or_default().trim();
+            return struct_fields(sources, name);
+        }
+        if rest.starts_with(',') {
+            return Vec::new();
+        }
+        // An inline struct, on this line or the next few.
+        let mut text = rest.trim_start_matches('{').to_owned();
+        let mut done = false;
+        if let Some(end) = text.find('}') {
+            text.truncate(end);
+            done = true;
+        }
+        let mut fields = Vec::new();
+        let mut flatten = false;
+        loop {
+            // An attribute is a whole line and must not be split on its own
+            // commas: `skip_serializing_if = "Option::is_none"` has a `::` in
+            // it that a field split would take for a name and a type.
+            let whole = text.trim();
+            if whole == "#[serde(flatten)]" {
+                flatten = true;
+            } else if !(whole.starts_with("///")
+                || whole.starts_with("//")
+                || whole.starts_with("#["))
+            {
+                for part in text.split(',') {
+                    let part = part.trim();
+                    if part.is_empty() || part.starts_with("///") || part.starts_with("//") {
+                        continue;
+                    }
+                    if part == "#[serde(flatten)]" {
+                        flatten = true;
+                        continue;
+                    }
+                    if part.starts_with("#[") {
+                        continue;
+                    }
+                    let Some((field, ty)) = part.split_once(':') else {
+                        continue;
+                    };
+                    let ty = ty.trim().to_owned();
+                    if flatten {
+                        fields.extend(struct_fields(sources, &ty));
+                        flatten = false;
+                    } else {
+                        fields.push(Declared {
+                            name: field.trim().to_owned(),
+                            ty,
+                        });
+                    }
+                }
+            }
+            if done {
+                break;
+            }
+            let Some(next) = lines.next() else {
+                break;
+            };
+            let next = next.trim();
+            if next == "}" || next == "}," {
+                break;
+            }
+            text = next.to_owned();
+        }
+        fields
+    }
+
+    #[test]
+    fn every_offered_field_is_a_field_of_its_request_variant() {
+        // A field added to a `Request` variant that this table does not name is
+        // refused by `-t` with "has no field", while `--raw` sends it: silent
+        // to the CLI and user-visible as a message that cannot be typed.
+        // FIXES #56 and #70 were that, three audits apart, so each row is now
+        // pinned to the serde fields of the variant it names.
+        //
+        // A nested object is written `parent.*` (matching `--mode.width`); the
+        // leaves belong to the nested type, and the parent is what the table
+        // must carry. `#[serde(flatten)]` is expanded, which is where
+        // `view.layout`'s x/y/width/height come from.
+        let variants = request_variant_fields();
+        assert_eq!(
+            variants.len(),
+            TYPES.len(),
+            "the walk did not see every variant"
+        );
+        for entry in TYPES {
+            let Some((_, declared)) = variants.iter().find(|(name, _)| *name == entry.name) else {
+                panic!(
+                    "{} is offered by -t but is not a Request variant",
+                    entry.name
+                );
+            };
+            let mut offered: Vec<&str> = entry
+                .fields
+                .iter()
+                .map(|field| field.strip_suffix(".*").unwrap_or(field))
+                .collect();
+            let mut accepted: Vec<&str> =
+                declared.iter().map(|field| field.name.as_str()).collect();
+            offered.sort_unstable();
+            accepted.sort_unstable();
+            assert_eq!(
+                offered, accepted,
+                "{}: the row and the variant have drifted apart",
+                entry.name
+            );
+        }
+    }
+
+    /// Fields typed as a JSON document rather than as a struct with serde
+    /// field names. Their contents are the value's own spelling — a widget, a
+    /// rule set, the theme — so the walk above stops at the name; this list is
+    /// what says doing so was deliberate. It is checked both ways, so a
+    /// `Value` field added without the list, or an entry that stopped being
+    /// one, fails here.
+    const JSON_BLOB_FIELDS: &[(&str, &str)] = &[
+        ("config.bar_items", "items"),
+        ("config.bar_widgets", "widgets"),
+        ("config.layer_rules", "rules"),
+        ("config.rules", "value"),
+        ("config.theme", "value"),
+        ("config.wallpaper_options", "options"),
+        ("config.workspaces", "rules"),
+    ];
+
+    #[test]
+    fn the_json_documents_are_a_known_list() {
+        let variants = request_variant_fields();
+        let mut found: Vec<(String, String)> = Vec::new();
+        for (variant, fields) in &variants {
+            for field in fields {
+                if field.ty.contains("serde_json::Value") {
+                    found.push(((*variant).to_owned(), field.name.clone()));
+                }
+            }
+        }
+        found.sort_unstable();
+        let mut listed: Vec<(String, String)> = JSON_BLOB_FIELDS
+            .iter()
+            .map(|(variant, field)| ((*variant).to_owned(), (*field).to_owned()))
+            .collect();
+        listed.sort_unstable();
+        assert_eq!(found, listed);
     }
 
     #[test]
