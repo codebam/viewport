@@ -966,6 +966,33 @@ let wallpaperSelection = { extension: null, options: null, outputs: new Map() };
 function applyOutputWallpaperExtension(output, name, options) {
   const root = output.el;
   if (!root) return;
+  const wanted = typeof name === 'string' && name.trim() !== '' ? name.trim() : null;
+  /* What is in force on this output, for the guard below: the extension, the
+     descriptor it resolved to, and the options as text. A descriptor identity
+     is part of it because an extension script that registers after the config
+     was applied has to be mounted then, which is a change of descriptor even
+     though the selection is the same. */
+  const descriptor = wanted === null ? null : wallpaperRegistry.get(wanted) ?? null;
+  let optionsKey = null;
+  try {
+    optionsKey = JSON.stringify(options ?? {});
+  } catch (error) {
+    /* Not serialisable is not the same as equal: leave it unkeyed so the
+       apply goes ahead rather than skipping a selection nobody can compare. */
+    optionsKey = null;
+  }
+  const applied = output.wallpaperExtension;
+  if (applied && applied.name === wanted
+      && applied.descriptor === descriptor && applied.optionsKey === optionsKey
+      && optionsKey !== null) {
+    /* The same selection is already in force. Re-running clear and apply
+       would restart a scene's drift, its video or its shader — and every
+       layer-shell change announces the layout, whose view.query answer is a
+       config that usually changed nothing. The film and the desktop classes
+       are already in the state this call would put them in. */
+    return;
+  }
+  output.wallpaperExtension = { name: wanted, descriptor, optionsKey };
   const prev = activeWallpaperExtensions.get(output.name);
   if (prev !== undefined) {
     const desc = wallpaperRegistry.get(prev);
@@ -976,9 +1003,7 @@ function applyOutputWallpaperExtension(output, name, options) {
     }
     activeWallpaperExtensions.delete(output.name);
   }
-  const wanted = typeof name === 'string' && name.trim() !== '' ? name.trim() : null;
   if (wanted !== null) {
-    const descriptor = wallpaperRegistry.get(wanted);
     if (!descriptor) {
       /* A name nothing registered draws nothing rather than aborting: the
        * shell's own gradient shows, the same fallback a missing layout strikes. */
@@ -1056,6 +1081,7 @@ function clearOutputWallpaperExtension(output) {
     console.error(`wallpaper extension: ${error?.message ?? error}`);
   }
   activeWallpaperExtensions.delete(output.name);
+  output.wallpaperExtension = undefined;
 }
 
 /* The OLED drive-budget guard: "off", "warn" (default) or "refuse". When a

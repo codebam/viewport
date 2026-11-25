@@ -7374,6 +7374,52 @@ if (mode === 'scrolling') {
   emit({ type: 'config', layout: mode, rules: HARNESS_RULES });
 }
 
+/* --- an unchanged selection does not restart the wallpaper --------------
+ *
+ * Every `output.layout` sends `view.query`, whose reply carries `config` — and
+ * Rust broadcasts the layout from every layer-shell change, so an unrelated
+ * panel arriving or leaving produces a config that changed nothing. The
+ * wallpaper extension was cleared and applied again on each of those, which
+ * restarts whatever the scene is doing (a drift, a video, a shader) for no
+ * reason anybody asked for. The selection is keyed by extension and resolved
+ * options, so a new one still goes through the clear-then-apply bargain.
+ * --------------------------------------------------------------------- */
+
+{
+  const sh = globalThis.__shell;
+  const reg = sh.registerWallpaper;
+  const out = sh.outputs.get('DP-1');
+  const hasApi = typeof reg === 'function' && !!out;
+  const seen = { applies: 0, clears: 0 };
+  if (hasApi) {
+    reg('steadyprobe', {
+      apply() { seen.applies++; },
+      clear() { seen.clears++; },
+    });
+  }
+  const select = (extension, options) => emit({ type: 'config', layout: mode,
+    rules: HARNESS_RULES, wallpaper_extension: extension,
+    wallpaper_options: options });
+
+  select('steadyprobe', { tag: 'a' });
+  check('a selection applies its wallpaper once', hasApi && seen.applies === 1);
+
+  select('steadyprobe', { tag: 'a' });
+  check('the same selection arriving again is not applied a second time',
+    hasApi && seen.applies === 1 && seen.clears === 0);
+
+  select('steadyprobe', { tag: 'b' });
+  check('changed options clear the old one and apply the new',
+    hasApi && seen.applies === 2 && seen.clears === 1);
+
+  select('probe', {});
+  check('a different extension clears it and applies its replacement',
+    hasApi && seen.applies === 2 && seen.clears === 2);
+
+  /* Back to the default desktop for everything after this. */
+  emit({ type: 'config', layout: mode, rules: HARNESS_RULES });
+}
+
 /* --- OLED panel-drive measurement and the guard -------------------------
  *
  * measureImageData and oledBudgetViolations are pure: synthetic pixels in,
