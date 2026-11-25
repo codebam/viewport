@@ -719,3 +719,24 @@ code that landed after the first. Base `4b75e40c`.
   tray's `id` and the rule setters' `rules` already use for exactly this
   shape of clash — pinned by both spellings in
   `config_shell_setters_build_their_fields`.
+
+- [x] **74. A layout clip with a negative width, or a frame rectangle at the
+  wire's floor, killed the frame build.** `crates/viewport/src/apply.rs`
+  (`view.layout`) and `crates/viewport/src/state/render_frame.rs`: the
+  clip was honoured exactly as sent down to *negative* dimensions, and
+  the renderer builds the clip's rectangle with a `Size` that is only
+  ever non-negative — so `view.layout` with
+  `"clip":{"width":-5,"height":100}` panicked the frame build in a debug
+  build (reproduced over the wire at smithay's `Size::new` assert) and
+  built a rectangle whose far edge was below its origin in a release
+  one. The frame rectangle fared no better: never bounded anywhere, its
+  coordinates reached the redaction bounds' raw `i32` subtraction of the
+  output's origin, so a frame at `i32::MIN` on a monitor at a positive
+  origin panicked there (reproduced at `render_frame.rs:422`). A
+  negative clip now means exactly what the documented empty one means —
+  "none of this window" — and is clamped to it on the way in
+  (`usable_clip`); a frame outside the accepted layout is dropped with a
+  word, the same way a clip that cannot meet its window already was, so
+  the window is still placed. Both pinned by the clip-and-frame case in
+  `tests/crash_probes.rs` and by
+  `a_negative_crop_is_the_empty_one_rather_than_a_poisoned_rectangle`.

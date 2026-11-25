@@ -42,6 +42,17 @@ to summarise rather than to duplicate.
 
 ### Fixed
 
+- A layout clip with a negative width, or a frame rectangle at the wire's
+  coordinate floor, no longer kills the frame build. The clip was honoured
+  down to negative dimensions and the renderer builds its rectangle with a
+  size that is only ever non-negative — a panic in a debug build, a
+  far-edge-below-origin rectangle in a release one — and the frame
+  rectangle was never bounded anywhere before the redaction bounds
+  subtracted the output's origin from it in raw `i32`. A negative clip now
+  means what the documented empty one means ("none of this window"), and a
+  frame outside the accepted layout is dropped the way a clip that cannot
+  meet its window already was, so the window is still placed.
+
 - `viewport msg -t config.wallpaper_options --options` sends the object.
   The global string-field table carried `options` for the keyboard block's
   xkb spelling, so the wallpaper extension's options were quoted into a

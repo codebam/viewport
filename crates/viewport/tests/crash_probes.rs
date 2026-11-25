@@ -876,3 +876,265 @@ fn an_overlay_rect_at_the_wire_floor_cannot_kill_the_frame_build() {
         compositor.log()
     );
 }
+
+#[test]
+fn a_window_layout_at_the_wire_floor_cannot_kill_the_hit_test() {
+    let mut compositor = Compositor::start("layout-floor");
+    let mut ipc = compositor.connect();
+
+    // A window with a geometry whose origin is not the surface's — the
+    // client-side-decoration shape, a shadow drawn outside the window —
+    // because the hit test subtracts that origin from wherever the shell
+    // laid the window out, in raw `i32`.
+    let (connection, mut queue, mut probe) = connect(&compositor);
+    let qh = queue.handle();
+    let surface = probe
+        .compositor
+        .as_ref()
+        .expect("wl_compositor")
+        .create_surface(&qh, ());
+    let xdg = probe
+        .wm_base
+        .as_ref()
+        .expect("xdg_wm_base")
+        .get_xdg_surface(&surface, &qh, ());
+    let toplevel = xdg.get_toplevel(&qh, ());
+    toplevel.set_app_id("hit-floor".to_owned());
+    toplevel.set_title("hit-floor".to_owned());
+    surface.commit();
+    assert!(
+        pump_until(
+            &connection,
+            &mut queue,
+            &mut probe,
+            Duration::from_secs(10),
+            |probe| { probe.configured.contains_key(&xdg.id()) }
+        ),
+        "the window was never configured:\n{}",
+        compositor.log()
+    );
+    // The geometry a client with shadows outside its window reports, set
+    // the way a real one sets it: after the configure, applied on commit.
+    xdg.set_window_geometry(50, 50, 300, 200);
+    let (buffer, _fd) = shm_buffer(probe.shm.as_ref().expect("wl_shm"), 400, 250, 400 * 4, &qh);
+    surface.attach(Some(&buffer), 0, 0);
+    surface.commit();
+    assert!(queue.roundtrip(&mut probe).is_ok());
+
+    // The view the shell was told about, which is the id a layout names.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut id = None;
+    while id.is_none() && Instant::now() < deadline {
+        for message in ipc.drain(Duration::from_millis(200)) {
+            if message["type"] == "view.added" && message["app_id"] == "hit-floor" {
+                id = message["id"].as_u64();
+            }
+        }
+    }
+    let id = id.unwrap_or_else(|| panic!("no view.added for hit-floor:\n{}", compositor.log()));
+
+    // The layout itself: a window the shell placed as far below the layout
+    // as the wire allows. Nothing refuses it, and every later pointer move
+    // walks it.
+    ipc.send(&format!(
+        r#"{{"type":"view.layout","id":{id},"x":-2147483648,"y":0,"width":300,"height":200}}"#
+    ));
+    let _ = ipc.drain(Duration::from_secs(1));
+
+    // A pointer move is what runs the hit test, and the hit test walks
+    // every window — `location - window.geometry().loc`, in raw `i32`. The
+    // compositor must survive it: a layout the shell miscounted is a window
+    // in the wrong place, not a session gone.
+    ipc.send(r#"{"type":"input.pointer","x":100,"y":100}"#);
+    let _ = ipc.drain(Duration::from_secs(1));
+    eprintln!(
+        "LOG: {:#?}",
+        compositor
+            .log()
+            .lines()
+            .filter(|l| l.contains("placed at")
+                || l.contains("panic")
+                || l.contains("ipc: from")
+                || l.contains("refus"))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        still_running(&mut compositor),
+        "the hit test died on a window laid out at the wire floor:\n{}",
+        compositor.log()
+    );
+
+    // And an ordinary layout afterwards puts the window back where the
+    // shell can see it.
+    ipc.send(&format!(
+        r#"{{"type":"view.layout","id":{id},"x":100,"y":100,"width":300,"height":200}}"#
+    ));
+    let _ = ipc.drain(Duration::from_secs(1));
+    ipc.send(r#"{"type":"input.pointer","x":200,"y":200}"#);
+    let _ = ipc.drain(Duration::from_secs(1));
+    assert!(
+        still_running(&mut compositor),
+        "an ordinary layout after the hostile one took the session:\n{}",
+        compositor.log()
+    );
+    buffer.destroy();
+    toplevel.destroy();
+    xdg.destroy();
+    surface.destroy();
+    let _ = queue.roundtrip(&mut probe);
+}
+
+/// One capture asked for, served, and answered — the whole exchange, so a
+/// probe can say "and the frame build survived" with the copy that drives
+/// it actually made.
+fn capture_to_completion(
+    connection: &Connection,
+    queue: &mut EventQueue<Probe>,
+    probe: &mut Probe,
+) -> bool {
+    let qh = queue.handle();
+    probe.captures.clear();
+    let frame = probe.capture_output(&qh);
+    if !pump_until(connection, queue, probe, Duration::from_secs(10), |probe| {
+        probe.captures.get(&frame.id()).is_some_and(|c| c.answered)
+    }) {
+        return false;
+    }
+    let capture = probe
+        .captures
+        .get(&frame.id())
+        .cloned()
+        .expect("the capture was registered");
+    let (buffer, _fd) = shm_buffer(
+        probe.shm.as_ref().expect("wl_shm"),
+        capture.width,
+        capture.height,
+        capture.stride,
+        &qh,
+    );
+    frame.copy(&buffer);
+    let done = pump_until(connection, queue, probe, Duration::from_secs(10), |probe| {
+        probe
+            .captures
+            .get(&frame.id())
+            .is_some_and(|c| c.ready || c.failed)
+    });
+    buffer.destroy();
+    frame.destroy();
+    done
+}
+
+#[test]
+fn a_layout_clip_and_frame_at_the_wire_floor_cannot_kill_the_frame_build() {
+    let mut compositor = Compositor::start("clip-frame-floor");
+    // Before the window maps, so the `view.added` it announces is heard
+    // rather than missed by a connection that arrives after it.
+    let mut ipc = compositor.connect();
+
+    // A monitor at a positive origin, the ordinary side-by-side layout: the
+    // frame build subtracts it from the frame rectangle's coordinates in
+    // raw `i32`, which is where a frame at the wire's floor lands.
+    ipc.send(r#"{"type":"output.configure","name":"HEADLESS-1","x":100,"y":0}"#);
+    let _ = ipc.drain(Duration::from_secs(2));
+
+    // A window to lay out: mapped and announced, so the shell's messages
+    // name a view that exists.
+    let (connection, mut queue, mut probe) = connect(&compositor);
+    let qh = queue.handle();
+    let surface = probe
+        .compositor
+        .as_ref()
+        .expect("wl_compositor")
+        .create_surface(&qh, ());
+    let xdg = probe
+        .wm_base
+        .as_ref()
+        .expect("xdg_wm_base")
+        .get_xdg_surface(&surface, &qh, ());
+    let toplevel = xdg.get_toplevel(&qh, ());
+    toplevel.set_app_id("clip-floor".to_owned());
+    toplevel.set_title("clip-floor".to_owned());
+    surface.commit();
+    assert!(
+        pump_until(
+            &connection,
+            &mut queue,
+            &mut probe,
+            Duration::from_secs(10),
+            |probe| { probe.configured.contains_key(&xdg.id()) }
+        ),
+        "the window was never configured:\n{}",
+        compositor.log()
+    );
+    let (buffer, _fd) = shm_buffer(probe.shm.as_ref().expect("wl_shm"), 200, 100, 800, &qh);
+    surface.attach(Some(&buffer), 0, 0);
+    surface.commit();
+    assert!(queue.roundtrip(&mut probe).is_ok());
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut id = None;
+    while id.is_none() && Instant::now() < deadline {
+        for message in ipc.drain(Duration::from_millis(200)) {
+            if message["type"] == "view.added" && message["app_id"] == "clip-floor" {
+                id = message["id"].as_u64();
+            }
+        }
+    }
+    let id = id.unwrap_or_else(|| panic!("no view.added for clip-floor:\n{}", compositor.log()));
+
+    // The capture-disallowed case is the one whose frame rectangle reaches
+    // the frame build's redaction path.
+    ipc.send(&format!(
+        r#"{{"type":"view.capture","id":{id},"capture":false}}"#
+    ));
+
+    // A frame rectangle at the wire's floor, on the same window: the frame
+    // build subtracts the output's origin from it in raw `i32`, inside the
+    // redaction bounds.
+    ipc.send(&format!(
+        r#"{{"type":"view.layout","id":{id},"x":100,"y":100,"width":200,"height":100,"frame":{{"x":-2147483648,"y":100,"width":10,"height":10}}}}"#
+    ));
+    assert!(
+        capture_to_completion(&connection, &mut queue, &mut probe),
+        "the capture never completed with a hostile frame in place:\n{}",
+        compositor.log()
+    );
+    assert!(
+        still_running(&mut compositor),
+        "the frame build died on a frame rectangle at the wire floor:\n{}",
+        compositor.log()
+    );
+
+    // A clip whose width is *negative*: not the documented "none of this
+    // window" — that is zero — but the same intent spelled hostile, and the
+    // rectangle the renderer builds from it must still be a legal one.
+    ipc.send(&format!(
+        r#"{{"type":"view.layout","id":{id},"x":100,"y":100,"width":200,"height":100,"clip":{{"x":100,"y":100,"width":-5,"height":100}}}}"#
+    ));
+    assert!(
+        capture_to_completion(&connection, &mut queue, &mut probe),
+        "the capture never completed with a negative clip in place:\n{}",
+        compositor.log()
+    );
+    assert!(
+        still_running(&mut compositor),
+        "the frame build died on a clip with a negative width:\n{}",
+        compositor.log()
+    );
+
+    // And an ordinary clip and frame afterwards still crop and border.
+    ipc.send(&format!(
+        r#"{{"type":"view.layout","id":{id},"x":100,"y":100,"width":200,"height":100,"clip":{{"x":100,"y":100,"width":100,"height":100}},"frame":{{"x":90,"y":90,"width":220,"height":120}}}}"#
+    ));
+    assert!(
+        capture_to_completion(&connection, &mut queue, &mut probe),
+        "an ordinary layout after the hostile ones never completed:\n{}",
+        compositor.log()
+    );
+    assert!(still_running(&mut compositor));
+    buffer.destroy();
+    toplevel.destroy();
+    xdg.destroy();
+    surface.destroy();
+    let _ = queue.roundtrip(&mut probe);
+}
