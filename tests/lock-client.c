@@ -805,12 +805,9 @@ int main(int argc, char *argv[])
 		}
 		wl_surface_attach(surface, buffer, 0, 0);
 		if (strcmp(mode, "already-committed") == 0) {
+			/* No roundtrip: role construction in the same batch is the
+			 * ordering that used to lose the committed buffer. */
 			wl_surface_commit(surface);
-			/* Let this commit become visible before constructing the role. The
-			 * same-batch form is a separate pinned Smithay finding. */
-			if (sync_display(&state) < 0) {
-				return 1;
-			}
 		}
 		ext_session_lock_v1_get_lock_surface(state.lock, surface,
 			state.outputs[0]);

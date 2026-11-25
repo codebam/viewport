@@ -13,7 +13,9 @@
 // only way out is another locker taking over. Unlocking on a crash would make
 // killing the locker the way past it.
 
+use smithay::reexports::wayland_protocols::ext::session_lock::v1::server::ext_session_lock_v1::Error as SessionLockError;
 use smithay::reexports::wayland_server::protocol::wl_output::WlOutput;
+use smithay::reexports::wayland_server::Resource as _;
 use smithay::utils::SERIAL_COUNTER;
 use smithay::wayland::session_lock::{
     LockSurface, SessionLockHandler, SessionLockManagerState, SessionLocker,
@@ -186,6 +188,18 @@ impl SessionLockHandler for ViewportState {
     }
 
     fn new_surface(&mut self, surface: LockSurface, output: WlOutput) {
+        // Smithay checks pending and current buffer state before calling us,
+        // but a commit on a surface with no role yet can leave both empty by
+        // this point. The pre-commit marker is the missing third fact: this
+        // surface already constructed itself, so the lock role must refuse it.
+        if super::compositor::surface_has_committed_buffer(surface.wl_surface()) {
+            surface.ext_session_lock().post_error(
+                SessionLockError::AlreadyConstructed,
+                "Surface has committed a buffer.",
+            );
+            return;
+        }
+
         // Only the accepted lock's surfaces are ours. Smithay calls this for
         // every lock object a client made, including a locker that lost the
         // race to take the session; its surface replacing the accepted one

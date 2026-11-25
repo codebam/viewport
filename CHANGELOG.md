@@ -42,6 +42,9 @@ to summarise rather than to duplicate.
 
 ### Fixed
 
+- `ext_session_lock_v1.get_lock_surface` now refuses a surface that committed a
+  buffer before being given the lock role with `already_constructed`, instead
+  of granting the role after pending buffer state had been cleared.
 - A locker superseded because it never drew now receives
   `ext_session_lock_v1.finished`, both when another locker takes over and when
   the built-in lock does, instead of waiting forever on a session it no longer

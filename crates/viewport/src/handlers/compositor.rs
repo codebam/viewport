@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::hash::Hash;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use smithay::backend::renderer::utils::{on_commit_buffer_handler, with_renderer_surface_state};
 use smithay::reexports::wayland_server::protocol::{wl_buffer, wl_surface::WlSurface};
@@ -18,6 +19,24 @@ use viewport_ipc::Event;
 use crate::state::{ClientState, ViewportState};
 
 use super::xdg_shell;
+
+/// A buffer commit seen by the pre-commit hook, before pending state is cleared.
+///
+/// Smithay's session-lock constructor checks pending and current buffer state,
+/// but a commit on a surface with no role yet can leave both empty when the role
+/// request arrives. Remembering the commit here lets that constructor enforce
+/// `already_constructed` without changing the pinned Smithay source.
+#[derive(Default)]
+struct CommittedBuffer(AtomicBool);
+
+pub(crate) fn surface_has_committed_buffer(surface: &WlSurface) -> bool {
+    with_states(surface, |states| {
+        states
+            .data_map
+            .get::<CommittedBuffer>()
+            .is_some_and(|committed| committed.0.load(Ordering::Acquire))
+    })
+}
 
 impl CompositorHandler for ViewportState {
     fn compositor_state(&mut self) -> &mut CompositorState {
@@ -47,9 +66,26 @@ impl CompositorHandler for ViewportState {
     /// client that does not use the protocol falls back to the dmabuf's own
     /// fence, which is the implicit path this never had either.
     fn new_surface(&mut self, surface: &WlSurface) {
+        with_states(surface, |states| {
+            states
+                .data_map
+                .insert_if_missing_threadsafe(CommittedBuffer::default);
+        });
         add_pre_commit_hook::<Self, _>(surface, move |state, _dh, surface| {
             let mut acquire = None;
             let dmabuf = with_states(surface, |states| {
+                let mut attributes = states.cached_state.get::<SurfaceAttributes>();
+                if matches!(
+                    attributes.pending().buffer.as_ref(),
+                    Some(BufferAssignment::NewBuffer(_))
+                ) {
+                    states
+                        .data_map
+                        .get::<CommittedBuffer>()
+                        .expect("the surface's construction marker")
+                        .0
+                        .store(true, Ordering::Release);
+                }
                 acquire.clone_from(
                     &states
                         .cached_state
@@ -57,13 +93,7 @@ impl CompositorHandler for ViewportState {
                         .pending()
                         .acquire_point,
                 );
-                match states
-                    .cached_state
-                    .get::<SurfaceAttributes>()
-                    .pending()
-                    .buffer
-                    .as_ref()
-                {
+                match attributes.pending().buffer.as_ref() {
                     Some(BufferAssignment::NewBuffer(buffer)) => {
                         smithay::wayland::dmabuf::get_dmabuf(buffer).cloned().ok()
                     }

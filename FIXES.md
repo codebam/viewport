@@ -944,3 +944,16 @@ code that landed after the first. Base `4b75e40c`.
   still answers its later `unlock_and_destroy` with `invalid_unlock`. Pinned by
   the no-surface, empty-surface, stale-draw, stale-unlock and built-in takeover
   cases in `tests/lock-lifecycle.test.sh`.
+
+- [x] **93. A committed buffer did not count as `already_constructed`.**
+  Smithay's `src/wayland/session_lock/lock.rs:70-76` checks only the pending
+  and current buffer assignments. On a surface with no role yet, a just-committed
+  buffer can have left pending without reaching current, so `get_lock_surface`
+  was granted even after a roundtrip. Viewport's existing pre-commit hook now
+  records that a buffer commit happened and `handlers/session_lock.rs` answers
+  `already_constructed` before adopting the surface. The upstream patch should
+  set the same per-surface construction bit in `wl_surface.commit`
+  (`src/wayland/compositor/handlers.rs:270-283`) and test it at the lock.rs site;
+  that also covers an already-refused lock, whose `done` gate skips Viewport's
+  callback entirely. The accepted-lock path is pinned by `already-committed` in
+  `tests/lock-lifecycle.test.sh`.
