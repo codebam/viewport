@@ -637,7 +637,10 @@ fn art_url(url: &str) -> String {
         // reach the page is an image element that cannot load.
         return String::new();
     };
-    let path = std::path::Path::new(path);
+    // `mpris:artUrl` is a URI, so a space arrives as `%20`; the filesystem
+    // wants the decoded path. Keep `+` literal, as a URL path requires.
+    let path = crate::config::percent_decode(path);
+    let path = std::path::Path::new(&path);
     if in_pseudo_filesystem(path) {
         tracing::debug!("cover art from {} refused", path.display());
         return String::new();
@@ -706,7 +709,23 @@ mod tests {
         assert!(!in_pseudo_filesystem(Path::new("/protection/cover.png")));
     }
 
-    /// A scratch directory for the two tests that need real files.
+    /// A percent-encoded local URL names the same cover as its decoded path.
+    #[test]
+    fn a_percent_encoded_local_cover_reaches_the_page() {
+        let dir = scratch("encoded").join("My Covers");
+        std::fs::create_dir_all(&dir).expect("a cover directory");
+        let path = dir.join("folder.jpg");
+        std::fs::write(&path, b"\xff\xd8\xff\xe0not really a jpeg").expect("a cover");
+        let url = format!("file://{}", path.display()).replace(' ', "%20");
+        let art = art_url(&url);
+        assert!(
+            art.starts_with("data:image/jpeg;base64,"),
+            "the encoded cover did not survive: {art}"
+        );
+        let _ = std::fs::remove_dir_all(dir.parent().expect("the scratch directory"));
+    }
+
+    /// A scratch directory for the tests that need real files.
     fn scratch(name: &str) -> std::path::PathBuf {
         let dir =
             std::env::temp_dir().join(format!("viewport-mpris-test-{}-{name}", std::process::id()));
