@@ -339,21 +339,16 @@ impl Worker {
         // machine that has two — a dongle beside a built-in radio — and a
         // picker offering both would be asking a question about hardware
         // rather than about the headset somebody wants to use.
-        for (path, interfaces) in &objects {
-            let Some(adapter) = interfaces.get("org.bluez.Adapter1") else {
-                continue;
-            };
-            snapshot.available = true;
-            snapshot.powered = flag(adapter, "Powered");
-            snapshot.discovering = flag(adapter, "Discovering");
-            snapshot.adapter = text(adapter, "Alias");
-            let _ = path;
-            break;
-        }
-
-        if !snapshot.available {
+        let Some((_, interfaces)) = first_adapter(objects.iter()) else {
             return snapshot;
-        }
+        };
+        let Some(adapter) = interfaces.get("org.bluez.Adapter1") else {
+            return snapshot;
+        };
+        snapshot.available = true;
+        snapshot.powered = flag(adapter, "Powered");
+        snapshot.discovering = flag(adapter, "Discovering");
+        snapshot.adapter = text(adapter, "Alias");
 
         for interfaces in objects.values() {
             let Some(device) = interfaces.get("org.bluez.Device1") else {
@@ -399,10 +394,8 @@ impl Worker {
 
     /// The first adapter's object path, which every adapter call needs.
     fn adapter(&self) -> Option<zbus::OwnedObjectPath> {
-        self.objects()?
-            .into_iter()
-            .find(|(_, interfaces)| interfaces.contains_key("org.bluez.Adapter1"))
-            .map(|(path, _)| path)
+        let objects = self.objects()?;
+        first_adapter(objects.iter()).map(|(path, _)| path.clone())
     }
 
     /// The object path of the device with this address.
@@ -591,6 +584,20 @@ impl Worker {
 type Objects = HashMap<zbus::OwnedObjectPath, Interfaces>;
 type Interfaces = HashMap<String, HashMap<String, zbus::OwnedVariant>>;
 
+/// The adapter the picker and every adapter control both use.
+///
+/// `GetManagedObjects` is a map, so iteration order is not stable between the
+/// snapshot and a later button press. Pick the lexicographically first object
+/// path instead, which keeps both halves on the same radio.
+fn first_adapter<'a>(
+    objects: impl IntoIterator<Item = (&'a zbus::OwnedObjectPath, &'a Interfaces)>,
+) -> Option<(&'a zbus::OwnedObjectPath, &'a Interfaces)> {
+    objects
+        .into_iter()
+        .filter(|(_, interfaces)| interfaces.contains_key("org.bluez.Adapter1"))
+        .min_by(|(left, _), (right, _)| left.as_str().cmp(right.as_str()))
+}
+
 /// A boolean property, false when it is absent or of another type.
 ///
 /// Absent is the common case rather than the error case: BlueZ omits a
@@ -628,6 +635,33 @@ fn complaint<E: Into<zbus::Error>>(error: E) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `GetManagedObjects` is a map, so its iteration order cannot decide which
+    /// of two adapters the picker describes and the power/discovery buttons
+    /// control. Both input orders must select the same adapter.
+    #[test]
+    fn adapter_selection_does_not_depend_on_object_order() {
+        let adapter = || HashMap::from([("org.bluez.Adapter1".to_owned(), HashMap::new())]);
+        let candidates = [
+            (
+                zbus::OwnedObjectPath::try_from("/org/bluez/hci1").unwrap(),
+                adapter(),
+            ),
+            (
+                zbus::OwnedObjectPath::try_from("/org/bluez/hci0").unwrap(),
+                adapter(),
+            ),
+        ];
+        for order in [[0, 1], [1, 0]] {
+            let objects = order
+                .iter()
+                .map(|&index| (&candidates[index].0, &candidates[index].1));
+            assert_eq!(
+                first_adapter(objects).map(|(path, _)| path.as_str()),
+                Some("/org/bluez/hci0")
+            );
+        }
+    }
 
     /// The order a picker draws devices in, which is not the order BlueZ
     /// hands them over: `GetManagedObjects` answers in whatever order the
