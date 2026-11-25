@@ -27,7 +27,8 @@ use std::time::{Duration, Instant};
 
 use common::Compositor;
 use wayland_client::protocol::{
-    wl_buffer, wl_compositor, wl_output, wl_registry, wl_shm, wl_shm_pool, wl_surface,
+    wl_buffer, wl_compositor, wl_output, wl_registry, wl_shm, wl_shm_pool, wl_subcompositor,
+    wl_subsurface, wl_surface,
 };
 use wayland_client::{delegate_noop, Connection, Dispatch, EventQueue, Proxy, QueueHandle};
 use wayland_protocols::xdg::shell::client::{
@@ -157,6 +158,7 @@ struct Probe {
     wm_base: Option<xdg_wm_base::XdgWmBase>,
     layer_shell: Option<zwlr_layer_shell_v1::ZwlrLayerShellV1>,
     screencopy: Option<zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1>,
+    subcompositor: Option<wl_subcompositor::WlSubcompositor>,
     outputs: Vec<wl_output::WlOutput>,
 
     captures: std::collections::HashMap<wayland_client::backend::ObjectId, CaptureState>,
@@ -198,6 +200,9 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Probe {
             "wl_output" => state
                 .outputs
                 .push(registry.bind(name, version.min(4), qh, ())),
+            "wl_subcompositor" => {
+                state.subcompositor = Some(registry.bind(name, version.min(1), qh, ()))
+            }
             _ => {}
         }
     }
@@ -208,6 +213,8 @@ delegate_noop!(Probe: ignore wl_shm::WlShm);
 delegate_noop!(Probe: ignore wl_buffer::WlBuffer);
 delegate_noop!(Probe: ignore wl_shm_pool::WlShmPool);
 delegate_noop!(Probe: ignore wl_surface::WlSurface);
+delegate_noop!(Probe: ignore wl_subcompositor::WlSubcompositor);
+delegate_noop!(Probe: ignore wl_subsurface::WlSubsurface);
 delegate_noop!(Probe: ignore wl_output::WlOutput);
 delegate_noop!(Probe: ignore zwlr_layer_shell_v1::ZwlrLayerShellV1);
 delegate_noop!(Probe: ignore zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1);
@@ -1136,5 +1143,152 @@ fn a_layout_clip_and_frame_at_the_wire_floor_cannot_kill_the_frame_build() {
     toplevel.destroy();
     xdg.destroy();
     surface.destroy();
+    let _ = queue.roundtrip(&mut probe);
+}
+/// One client may ask for copies without limit in a single flush.
+///
+/// The protocol has no flow control, and each queued copy is an offscreen
+/// composite plus a framebuffer readback in the frame pass. Without a bound
+/// the main loop spends frame after frame serving a backlog nobody will look
+/// at, with input and every other client waiting behind it — a session that
+/// has stopped answering without having crashed, which is harder to notice
+/// and just as lost. A copy past the bound is told `failed`, the protocol's
+/// own word for one that will not be served.
+#[test]
+fn a_flood_of_queued_copies_is_refused_not_served() {
+    let mut compositor = Compositor::start("sc-flood");
+    let (connection, mut queue, mut probe) = connect(&compositor);
+    let qh = queue.handle();
+
+    // The constraints a copy is served under, from one ordinary capture.
+    let first = probe.capture_output(&qh);
+    assert!(
+        pump_until(
+            &connection,
+            &mut queue,
+            &mut probe,
+            Duration::from_secs(10),
+            |probe| probe
+                .captures
+                .get(&first.id())
+                .is_some_and(|capture| capture.answered)
+        ),
+        "the first capture was never answered:\n{}",
+        compositor.log()
+    );
+    let (width, height, stride) = {
+        let capture = probe
+            .captures
+            .get(&first.id())
+            .expect("the first capture was registered");
+        (capture.width, capture.height, capture.stride)
+    };
+    let (buffer, _fd) = shm_buffer(
+        probe.shm.as_ref().expect("wl_shm"),
+        width,
+        height,
+        stride,
+        &qh,
+    );
+
+    // More copies than any desk needs, one buffer shared by all of them and
+    // all asked for in one flush: the shape a hostile client takes.
+    const FLOOD: usize = 32;
+    let mut frames = Vec::new();
+    for _ in 0..FLOOD {
+        let frame = probe.capture_output(&qh);
+        frame.copy(&buffer);
+        frames.push(frame);
+    }
+    assert!(
+        pump_until(
+            &connection,
+            &mut queue,
+            &mut probe,
+            Duration::from_secs(30),
+            |probe| {
+                frames.iter().all(|frame| {
+                    probe
+                        .captures
+                        .get(&frame.id())
+                        .is_some_and(|capture| capture.answered)
+                })
+            }
+        ),
+        "a copy in the flood was never answered:\n{}",
+        compositor.log()
+    );
+    let refused = frames
+        .iter()
+        .filter(|frame| {
+            probe
+                .captures
+                .get(&frame.id())
+                .is_some_and(|capture| capture.failed)
+        })
+        .count();
+    assert!(
+        refused >= FLOOD - 16,
+        "the queue served {} copies of {FLOOD} and refused {refused}: a flood \
+         has to be bounded, not served one readback at a time",
+        FLOOD - refused
+    );
+    assert!(
+        still_running(&mut compositor),
+        "the flood took the session:\n{}",
+        compositor.log()
+    );
+
+    // And an ordinary capture afterwards is still served.
+    first.destroy();
+    probe.captures.clear();
+    let ordinary = probe.capture_output(&qh);
+    assert!(
+        pump_until(
+            &connection,
+            &mut queue,
+            &mut probe,
+            Duration::from_secs(10),
+            |probe| {
+                probe
+                    .captures
+                    .get(&ordinary.id())
+                    .is_some_and(|capture| capture.answered)
+            }
+        ),
+        "an ordinary capture after the flood was never answered:\n{}",
+        compositor.log()
+    );
+    // It has only announced its buffer so far; the copy is what makes it
+    // ready, so make one the way a screenshot tool would.
+    ordinary.copy(&buffer);
+    assert!(
+        pump_until(
+            &connection,
+            &mut queue,
+            &mut probe,
+            Duration::from_secs(10),
+            |probe| {
+                probe
+                    .captures
+                    .get(&ordinary.id())
+                    .is_some_and(|capture| capture.ready || capture.failed)
+            }
+        ),
+        "the ordinary copy after the flood was never served:\n{}",
+        compositor.log()
+    );
+    assert!(
+        probe
+            .captures
+            .get(&ordinary.id())
+            .is_some_and(|capture| capture.ready),
+        "the ordinary copy after the flood was refused"
+    );
+    for frame in frames {
+        frame.destroy();
+    }
+    buffer.destroy();
+    ordinary.destroy();
     let _ = queue.roundtrip(&mut probe);
 }

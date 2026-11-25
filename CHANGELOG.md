@@ -42,6 +42,12 @@ to summarise rather than to duplicate.
 
 ### Fixed
 
+- A client that floods `zwlr_screencopy_v1` with copies, or
+  `ext-image-copy-capture` with frames, can no longer make the compositor
+  serve the whole backlog of offscreen composites and framebuffer readbacks
+  in one pass. Each queue is bounded, and an entry past the bound is told
+  `failed` rather than held.
+
 - A layout clip with a negative width, or a frame rectangle at the wire's
   coordinate floor, no longer kills the frame build. The clip was honoured
   down to negative dimensions and the renderer builds its rectangle with a

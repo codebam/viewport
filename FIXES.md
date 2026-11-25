@@ -740,3 +740,23 @@ code that landed after the first. Base `4b75e40c`.
   the window is still placed. Both pinned by the clip-and-frame case in
   `tests/crash_probes.rs` and by
   `a_negative_crop_is_the_empty_one_rather_than_a_poisoned_rectangle`.
+
+- [x] **75. Every copy a client queued was served in one pass, with no
+  cap.** `crates/viewport/src/handlers/mod.rs` (`queue_copy`) pushed every
+  `zwlr_screencopy_v1` copy onto `pending_copies` with no bound, and the
+  service pass in `state/capture.rs` took every entry for the output and
+  composited it offscreen and read it back, one after another. One client
+  may ask for thousands in a single flush — the protocol has no flow
+  control — and the main loop then spends frame after frame on a backlog
+  nobody will look at while input and every other client wait behind it: a
+  session that has stopped answering without having crashed. The
+  `ext-image-copy-capture` door (`pending_capture_frames`) had the same
+  shape and the same cost per entry. Each queue now holds at most eight
+  entries — per output for copies, across sessions for frames — and an
+  entry past the bound is told `failed`, the protocol's own word for a copy
+  that will not be served, rather than held. Proven by
+  `a_flood_of_queued_copies_is_refused_not_served` in
+  `tests/crash_probes.rs`: thirty-two copies of one buffer in one flush are
+  refused past the bound, the session survives, and an ordinary capture is
+  still served; with the bound removed the same probe serves all
+  thirty-two.
