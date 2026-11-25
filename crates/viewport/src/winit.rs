@@ -18,7 +18,7 @@ use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
 use smithay::reexports::calloop::EventLoop;
 use smithay::utils::{Rectangle, Transform};
 
-use crate::state::ViewportState;
+use crate::state::{live_surfaces, ViewportState};
 
 pub fn init(
     event_loop: &mut EventLoop<'static, ViewportState>,
@@ -449,7 +449,7 @@ pub fn init(
                             },
                         );
                     }
-                    for surface in state.shell_client_surfaces() {
+                    for surface in live_surfaces(state.shell_client_surfaces()) {
                         take_presentation_feedback_surface_tree(
                             &surface,
                             &mut feedback,
@@ -530,7 +530,7 @@ pub fn init(
                 // already invites it by name; without the same thing here the
                 // shell paints one frame and stops, which reads as "the page
                 // loaded and then froze".
-                for surface in state.shell_client_surfaces() {
+                for surface in live_surfaces(state.shell_client_surfaces()) {
                     smithay::desktop::utils::send_frames_surface_tree(
                         &surface,
                         &output,
