@@ -119,6 +119,25 @@ echo "running makepkg..." >&2
         # upgrading everything in it costs nothing worth keeping.
         pacman -Syu --needed --noconfirm --disable-sandbox "${have[@]}"
 
+        # The image patched out the makepkg refusal to run as root. That
+        # patch is undone by the upgrade above whenever pacman ships a new
+        # makepkg in the same transaction — which it does on a rolling
+        # distro, and did: pacman 7.1.0.r9.g54d9411-3 upgraded to -4 and the
+        # build died on
+        #
+        #   ==> ERROR: Running makepkg as root is not allowed as it can cause
+        #   permanent, catastrophic damage to your system.
+        #
+        # Re-apply it to whatever makepkg the transaction left in place, and
+        # say so rather than silently building with a check that was not run.
+        # The guard is the identical line the image edits. Double quotes: this
+        # whole script is already inside one pair of single quotes.
+        sed -i "s/(( EUID == 0 ))/(( 0 ))/" /usr/bin/makepkg
+        grep -q "(( 0 ))" /usr/bin/makepkg || {
+            echo "could not patch the makepkg root guard; refusing to build" >&2
+            exit 1
+        }
+
         # --nodeps: they are installed above, and the ones that are not cannot
         # be. Everything else about the build is unchanged.
         makepkg --nodeps --noconfirm --clean
