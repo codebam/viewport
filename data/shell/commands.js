@@ -1812,6 +1812,11 @@ window.addEventListener('viewport', (event) => {
 
 window.addEventListener('resize', relayoutAll);
 
+/* The page is going away — a reload, or the compositor taking the window down.
+ * This is the last moment the pending arrangement can be written; the debounce
+ * has not fired and will never fire, because timers do not run after this. */
+window.addEventListener('pagehide', flushSessionSave);
+
 /* The desktop is not a web page, whatever it is made of.
  *
  * The shell is drawn by a browser engine, and a browser engine offers its own

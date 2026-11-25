@@ -138,8 +138,17 @@ function renderPowerPicker() {
       if (verb === 'lock') {
         send({ type: 'session.lock' });
       } else if (verb === 'quit') {
+        /* Nothing asks the page to save on the way out, and the debounced save
+           may still be waiting: the compositor exits and that second of
+           arrangement goes with it. The save is in front of the quit in the
+           same stream, so it is handled first. */
+        flushSessionSave();
         send({ type: 'quit' });
       } else {
+        /* Powering off and rebooting end the session too, and take the same
+           pending second with them. Suspend does not: the session comes back
+           and the timer still reaches the compositor. */
+        if (verb === 'poweroff' || verb === 'reboot') flushSessionSave();
         send({ type: 'power.action', action: verb });
       }
       closePowerPicker();

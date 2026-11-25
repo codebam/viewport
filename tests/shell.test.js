@@ -8560,6 +8560,48 @@ if (mode === 'scrolling') {
     check('Escape takes the power menu down without doing anything',
       globalThis.__shell.powerEl.hidden === true &&
       !sent.slice(before).some((m) => m.type === 'power.action'));
+
+    /* Quitting with an arrangement change still inside the one-second save
+       debounce. Nothing flushes it at quit, so the last second of arrangement
+       is lost: a window closed in it comes back as an unclaimed slot, one
+       opened comes back unplaced. */
+    emit({ type: 'view.added', id: 7901, title: 'quitprobe',
+      app_id: 'quitprobe', output: 'DP-1', min_width: 0, min_height: 0,
+      floating: true, width: 300, height: 200 });
+    emit({ type: 'view.focused', id: 7901 });
+    emit({ type: 'shell.command', command: 'window.move', args: ['right'] });
+    const quitRect = globalThis.__shell.floatingForTest(7901);
+
+    before = sent.length;
+    emit({ type: 'shell.command', command: 'power', args: [] });
+    key(dialog(), 'End');
+    key(dialog(), 'Enter');
+    const afterQuit = sent.slice(before);
+    const savedAt = afterQuit.findIndex((m) => m.type === 'session.save');
+    const quitAt = afterQuit.findIndex((m) => m.type === 'quit');
+    let savedSlots = [];
+    try {
+      savedSlots = JSON.parse(afterQuit[savedAt]?.state ?? '{}').floating ?? [];
+    } catch (_) { savedSlots = []; }
+    const savedSlot = savedSlots.find((slot) => slot.app === 'quitprobe');
+    check('quitting sends the pending arrangement before it goes',
+      savedAt >= 0 && quitAt >= 0 && savedAt < quitAt);
+    check('with the rect the window was just moved to',
+      savedSlot?.x === quitRect?.x && savedSlot?.y === quitRect?.y);
+    check('and only that one change is written',
+      afterQuit.filter((m) => m.type === 'session.save').length === 1);
+
+    /* A page going away is the same loss, so it takes the same path. */
+    emit({ type: 'view.added', id: 7902, title: 'pagehideprobe',
+      app_id: 'pagehideprobe', output: 'DP-1', min_width: 0,
+      min_height: 0, floating: true, width: 300, height: 200 });
+    before = sent.length;
+    for (const fn of windowListeners.pagehide ?? []) fn({ type: 'pagehide' });
+    check('and the page going away flushes it too',
+      sent.slice(before).some((m) => m.type === 'session.save'));
+
+    emit({ type: 'view.removed', id: 7901 });
+    emit({ type: 'view.removed', id: 7902 });
   }
 
   /* --- the notification centre --- */

@@ -193,8 +193,24 @@ function sanitizeCanvasState(saved) {
 function saveSession() {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
+    saveTimer = null;
     send({ type: 'session.save', state: JSON.stringify(serialiseSession()) });
   }, 1000);
+}
+
+/* Write the pending arrangement now, cancelling the debounce.
+ *
+ * The debounce is right for a drag, which changes the layout many times a
+ * second, but it is a second of state that only exists in this page. A quit
+ * sends its message and the compositor exits without ever asking for the file,
+ * and a page being torn down is the same loss: whatever was arranged in that
+ * second is not saved, so a window closed in it comes back as an unclaimed
+ * slot and one opened comes back unplaced. Called on the way out of both. */
+function flushSessionSave() {
+  if (saveTimer === null) return;
+  clearTimeout(saveTimer);
+  saveTimer = null;
+  send({ type: 'session.save', state: JSON.stringify(serialiseSession()) });
 }
 
 /* Rebuild the tree from a saved one, as slots waiting to be claimed.
