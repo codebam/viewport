@@ -920,6 +920,12 @@ impl ViewportState {
         let size: smithay::utils::Size<i32, smithay::utils::Physical> =
             (dmabuf.width() as i32, dmabuf.height() as i32).into();
 
+        // The arrival instant, for the gap metric: a frame that has got this
+        // far is one the desktop will show. Here rather than beside the count
+        // below, because that one is taken inside a borrow of the shell's own
+        // entry and this wants the whole state.
+        self.note_shell_frame();
+
         // Every size the shell paints at, not only the first.
         //
         // A shell whose buffer stops matching the layout is drawn at the wrong
@@ -1093,6 +1099,11 @@ impl ViewportState {
         // crash. See `forget_capture_answers`.
         self.forget_capture_answers();
         self.shell_frames = 0;
+        // The gaps are this page's, and there is no page: the next frame is
+        // the first of a new series rather than one that arrived after a pause
+        // in this one. The restart's own duration is in the line that caused
+        // it, and it is not a pacing number.
+        self.shell_pacing.clear();
         if desktop {
             // The desktop page is gone, and the count the lock screen guard
             // compares starts over with whatever replaces it.

@@ -250,6 +250,26 @@ nix develop .#rust --command bash -c \
 painted every second, including the zeroes. One frame and then `0.0 frames/s`
 for ever is this section; a rate that is merely low is `docs/benchmarks.md`.
 
+The same line now says how *evenly* as well as how fast, because a rate cannot
+separate a steady 26 frames a second from a 26 that stops for 200 ms once a
+second:
+
+```
+shell: 59.9 frames/s (60 in 1.00s) shell-pacing: window_ms=1000 count=60 period_ms=16.67 gap_p50_ms=16.61 gap_p95_ms=17.02 gap_max_ms=301.20 hitches=1 stalls=1
+```
+
+Everything after `shell-pacing:` is plain `key=value`, which is what
+`scripts/bench-shell.py` reads. `period_ms` is the panel's refresh interval —
+1/60 s when no output has reported a mode, as in a nested or headless run —
+`gap_p50_ms` the typical interval between two frames, and `hitches` and
+`stalls` the gaps over twice that period (never under 50 ms) and over 250 ms.
+Read `gap_max_ms` first: a desktop that is keeping up has one close to
+`gap_p50_ms`, and a stall of a few hundred milliseconds is the shape of "the
+whole thing froze for a moment" that a frame count is by construction unable
+to show. A line with a `count` and no `gap_*` keys is a second in which the
+shell painted fewer than twice — an idle desk, not a hitch; `docs/benchmarks.md`
+says what the columns mean on a desktop that is painting.
+
 ## A page that is up and deaf
 
 Clicking works, the page draws, and nothing typed reaches it.

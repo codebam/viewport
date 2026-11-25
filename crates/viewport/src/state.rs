@@ -32,6 +32,7 @@ use viewport_ipc::{Event, Transform};
 use smithay::xwayland::X11Wm;
 
 use crate::ipc::Ipc;
+use crate::shell_pacing::ShellPacing;
 use crate::views::{Views, NO_VIEW};
 
 /// Where an asset shipped with the compositor lives.
@@ -689,6 +690,12 @@ pub struct ViewportState {
     /// another reason. `VIEWPORT_SHELL_RATE=1` turns it on, which is what
     /// scripts/bench-shell.py sets.
     pub shell_rate_verbose: bool,
+    /// When each recent shell frame arrived, for the gap metric.
+    ///
+    /// Empty on a desktop nobody is measuring — `note_shell_frame` repeats the
+    /// gate above before it reads a clock — and what fills it is
+    /// `crate::shell_pacing`, which also says what a hitch and a stall are.
+    pub shell_pacing: ShellPacing,
     /// The ids for the copies of the shell drawn *over* the windows.
     ///
     /// Their own, because the damage tracker keys on the id and one element
@@ -2091,6 +2098,7 @@ impl ViewportState {
             shell_desktop_frames: 0,
             shell_rate_mark: None,
             shell_rate_verbose: std::env::var_os("VIEWPORT_SHELL_RATE").is_some(),
+            shell_pacing: ShellPacing::default(),
             shell_overlay_ids: Vec::new(),
             shell_overlay_blur_ids: Vec::new(),
             shell_overlays: Vec::new(),
@@ -2842,6 +2850,13 @@ impl ViewportState {
     /// own rate — the frames it produced — and not the compositor's. A frame
     /// the shell painted that was superseded before anything drew it still
     /// cost the engine what it cost.
+    ///
+    /// A rate says how much and not how *evenly*, which is why the line below
+    /// carries the gaps as well: a steady 26 frames a second and a 26 that
+    /// stalls for 200 ms once a second are the same rate and not the same
+    /// desktop. `crate::shell_pacing` defines the gaps, the two thresholds and
+    /// the attribution to a window; this is the window, the panel's period and
+    /// the line.
     pub fn report_shell_rate(&mut self) {
         // Nothing below can say anything: `shell_rate_verbose` is off and the
         // debug line is filtered out. Return before reading the clock and
@@ -2874,10 +2889,74 @@ impl ViewportState {
         // Zero included when this is on: "the shell painted nothing for four
         // seconds" is the interesting half of a paint rate, and a series with
         // the gaps left out cannot show it.
-        tracing::info!(
-            "shell: {:.1} frames/s ({painted} in {elapsed:.2}s)",
-            painted as f64 / elapsed
-        );
+        //
+        // One line, and the shape of it is a contract: `scripts/bench-shell.py`
+        // reads the half after `shell-pacing:` as plain `key=value` pairs, and
+        // `docs/debugging.md` quotes the human half. Anything added here has to
+        // be a key rather than a reworded sentence, and a key that is absent —
+        // the gap statistics of a window the shell barely painted in — has to
+        // read as absent rather than as a zero.
+        let period = self.shell_frame_period();
+        let window_ms = (elapsed * 1e3).round() as u64;
+        let period_ms = period.as_secs_f64() * 1e3;
+        let stats = self.shell_pacing.window(at, now, period);
+        let rate = painted as f64 / elapsed;
+        match stats.gaps {
+            Some(gaps) => tracing::info!(
+                "shell: {rate:.1} frames/s ({painted} in {elapsed:.2}s) shell-pacing: \
+                 window_ms={window_ms} count={} period_ms={period_ms:.2} \
+                 gap_p50_ms={:.2} gap_p95_ms={:.2} gap_max_ms={:.2} \
+                 hitches={} stalls={}",
+                stats.count,
+                gaps.p50_ms,
+                gaps.p95_ms,
+                gaps.max_ms,
+                gaps.hitches,
+                gaps.stalls
+            ),
+            None => tracing::info!(
+                "shell: {rate:.1} frames/s ({painted} in {elapsed:.2}s) shell-pacing: \
+                 window_ms={window_ms} count={} period_ms={period_ms:.2}",
+                stats.count
+            ),
+        }
+    }
+
+    /// Stamp the arrival of a shell frame for the gap metric.
+    ///
+    /// Called from the two places a frame is counted, so that a WebKit handover
+    /// and an out-of-process commit feed one series — the same reason
+    /// `shell_frames` is counted at both.
+    ///
+    /// Gated exactly like `report_shell_rate`, because the clock read is per
+    /// frame rather than per second: a desktop nobody is measuring pays
+    /// nothing, and `tracing::enabled!` is the check that costs nothing to
+    /// ask.
+    pub fn note_shell_frame(&mut self) {
+        if !self.shell_rate_verbose && !tracing::enabled!(tracing::Level::DEBUG) {
+            return;
+        }
+        self.shell_pacing.record(std::time::Instant::now());
+    }
+
+    /// The refresh interval the gap metric is measured against.
+    ///
+    /// The fastest output's, because the shell is one buffer shown on all of
+    /// them and the screen that can show a frame soonest is the one whose
+    /// cadence it is being invited at — the same choice, and for the same
+    /// reason, as `frame_interval`. This is a second function rather than a
+    /// call to that one because the fallback is part of the metric: 1/60 s is
+    /// the number `docs/benchmarks.md` prints, and it is what a nested or
+    /// headless run reports while no output has said what it can do.
+    fn shell_frame_period(&self) -> std::time::Duration {
+        self.space
+            .outputs()
+            .filter_map(|output| output.current_mode())
+            .map(|mode| {
+                std::time::Duration::from_nanos(1_000_000_000_000 / mode.refresh.max(1) as u64)
+            })
+            .min()
+            .unwrap_or(std::time::Duration::from_micros(16_667))
     }
 
     /// Work out what is under the pointer again, without it having moved.

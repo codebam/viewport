@@ -11,6 +11,35 @@ to summarise rather than to duplicate.
 
 ## [Unreleased]
 
+### Added
+- The compositor measures how *evenly* the shell paints, not only how much.
+  `VIEWPORT_SHELL_RATE=1` counted frames over a one-second tick, and a count
+  cannot separate a steady 26 frames a second from a 26 that stops for 200 ms
+  once a second — which is the sentence the smoothness section of
+  `docs/benchmarks.md` ended by admitting, and the reason both numbers were
+  called evidence about pacing rather than a measurement of hitching. Every
+  shell frame's arrival instant is now kept in a bounded ring while that
+  verbose gate (or debug logging) is open; the gate is the same early return as
+  before, so a desktop nobody is measuring still pays neither a clock read nor
+  a byte. Once a second the line that carries the rate carries the gaps behind
+  a `shell-pacing:` marker — `window_ms`, `count`, `period_ms`, and the p50,
+  p95 and worst gap in milliseconds, plus how many gaps were hitches (over
+  twice the panel's refresh period, never under 50 ms, two frames missed being
+  what a person notices) and stalls (over 250 ms, the desktop visibly frozen
+  rather than dropping frames). A second in which the shell painted fewer than
+  twice reports its count and no gap statistics at all, because an idle desk's
+  interval is not a hitch. Gaps belong to the second their later frame landed
+  in, so a pause that straddles the tick is counted once and never lost.
+  `scripts/bench-shell.py` reads the tail of that line as plain `key=value` and
+  records `shell_gap_p50`, `shell_gap_p95`, `shell_gap_max`, `shell_hitches`
+  and `shell_stalls` with the per-second pair, degrading to no gaps rather than
+  raising when a log has no pacing line — an older compositor, or one whose
+  shell painted nothing — and `scripts/bench-shell.sh` prints the columns
+  beside `steadiness`. `--nested` runs the same pipeline without `--drm` and
+  marks the result `"nested": true`, which the summary prints as indicative
+  only: it proves the pipeline end to end without a TTY and is never a number
+  to quote.
+
 ### Fixed
 - Unplugging a monitor runs `destroy` for the custom widgets mounted on its
   bar. The removal loop already stopped the film, cleared the wallpaper

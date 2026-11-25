@@ -95,9 +95,12 @@ import json, pathlib, statistics, sys
 root, backends = pathlib.Path(sys.argv[1]), sys.argv[2:]
 print("# The shell under load, whole desktop counted\n")
 print("| backend | idle cpu % | load cpu % | of which compositor % | shell fps "
-      "| animating fps | steadiness | idle pss MB | load pss MB | peak pss MB "
+      "| animating fps | steadiness | gap p50 ms | gap p95 ms | gap max ms "
+      "| hitches/s | stalls/s | idle pss MB | load pss MB | peak pss MB "
       "| processes |")
-print("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
+print("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- "
+      "| --- | --- | --- | --- |")
+nested = False
 for backend in backends:
     path = root / f"{backend}.jsonl"
     if not path.exists():
@@ -109,11 +112,26 @@ for backend in backends:
     # columns are measuring different things and the middle run of one is not
     # the middle run of another.
     r = {key: statistics.median(run[key] for run in runs) for key in runs[0]}
+    nested = nested or any(run.get("nested") for run in runs)
+
+    # A run whose log carried no pacing line has no gap columns at all, and a
+    # zero would read as a desktop that paced perfectly rather than one that was
+    # never measured. See `shell_pacing_windows`.
+    paced = r.get("shell_pacing_windows", 0)
+
+    def column(key, spec, r=r, paced=paced):
+        return format(r.get(key, 0.0), spec) if paced else "—"
+
     print(
         f"| {backend} | {r['idle_cpu_pct']:.1f} | {r['load_cpu_pct']:.1f} "
         f"| {r['compositor_cpu_pct']:.1f} | {r.get('shell_fps', 0):.1f} "
         f"| {r.get('shell_fps_animating', 0):.0f} "
         f"| {r.get('shell_fps_cov', 0):.2f} "
+        f"| {column('shell_gap_p50', '.2f')} "
+        f"| {column('shell_gap_p95', '.2f')} "
+        f"| {column('shell_gap_max', '.1f')} "
+        f"| {column('shell_hitches_per_s', '.2f')} "
+        f"| {column('shell_stalls_per_s', '.2f')} "
         f"| {r['idle_pss_mb']:.0f} | {r['load_pss_mb']:.0f} "
         f"| {r['peak_pss_mb']:.0f} | {r['processes']} |"
     )
@@ -128,9 +146,25 @@ print("was actually painting, and `steadiness` is that column's coefficient of")
 print("variation — spread over mean, so lower is steadier. Read it: a backend that")
 print("swings between 10 and 89 frames a second looks like stutter to a person even")
 print("though it painted more frames than one holding a flat 26.\n")
+print("`gap` is the interval between two consecutive shell frames: the median and")
+print("95th percentile of the loaded seconds, the worst one in the run, and per")
+print("second how many gaps were over max(2 x the panel's period, 50 ms) — a")
+print("hitch — and over 250 ms — a stall, which is the desktop visibly freezing.")
+print("These are the columns `steadiness` cannot produce: one backend can hold a")
+print("flatter rate and stutter more, and this is where that shows. Compare them")
+print("against `steadiness` and `shell fps`, never on their own: a desktop idling")
+print("at four frames a second has four gaps of 250 ms every second and nothing")
+print("wrong with it.\n")
+if nested:
+    print("**These runs were nested.** The numbers are indicative only, and are")
+    print("never a benchmark: a nested compositor's frames are paced by the")
+    print("compositor it is inside, not by a panel, so its gaps describe that")
+    print("presentation path as much as this one. Re-run from a TTY before")
+    print("quoting anything here.\n")
 print("## Every run\n")
-print("| backend | load cpu % | load pss MB | shell fps | animating fps | steadiness |")
-print("| --- | --- | --- | --- | --- | --- |")
+print("| backend | load cpu % | load pss MB | shell fps | animating fps | steadiness "
+      "| gap p50 ms | gap p95 ms | gap max ms | hitches/s | stalls/s |")
+print("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
 for backend in backends:
     path = root / f"{backend}.jsonl"
     if not path.exists():
@@ -141,5 +175,18 @@ for backend in backends:
     fps = ", ".join(f"{run.get('shell_fps', 0):.0f}" for run in runs)
     anim = ", ".join(f"{run.get('shell_fps_animating', 0):.0f}" for run in runs)
     cov = ", ".join(f"{run.get('shell_fps_cov', 0):.2f}" for run in runs)
-    print(f"| {backend} | {cpu} | {pss} | {fps} | {anim} | {cov} |")
+
+    def each(key, spec, runs=runs):
+        return ", ".join(
+            format(run[key], spec) if run.get("shell_pacing_windows") else "—"
+            for run in runs
+            if key in run
+        ) or "—"
+
+    print(
+        f"| {backend} | {cpu} | {pss} | {fps} | {anim} | {cov} "
+        f"| {each('shell_gap_p50', '.2f')} | {each('shell_gap_p95', '.2f')} "
+        f"| {each('shell_gap_max', '.1f')} | {each('shell_hitches_per_s', '.2f')} "
+        f"| {each('shell_stalls_per_s', '.2f')} |"
+    )
 PY

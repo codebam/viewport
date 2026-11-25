@@ -30,6 +30,17 @@
 # re-lays-out the whole desktop, and a resize delta is what dragging an edge
 # does sixty times a second. All three are the shell repainting, which is the
 # thing being measured.
+#
+# A rate is how *much* the shell painted, and it cannot say how evenly. The
+# compositor stamps the arrival of every shell frame while it is measuring, so
+# the same line that carries the rate carries the p50, p95 and max gap between
+# consecutive frames and how many of those gaps were hitches or stalls. That is
+# what separates a steady 26 frames a second from a 26 that stops for 200 ms
+# once a second — they are the same rate and not the same desktop. The gap
+# columns are read per window and never averaged into one: a stall is precisely
+# the window whose rate collapses, so filtering them by rate the way
+# `shell_fps_animating` is filtered would throw the evidence away before
+# counting it.
 
 import argparse
 import json
@@ -54,6 +65,12 @@ LOAD = [
     ("layout.resize.delta", ["20"]),
     ("layout.resize.delta", ["-20"]),
 ]
+
+# The marker the compositor writes in front of the gap fields, and the only
+# thing a consumer has to know to find them. `ViewportState::report_shell_rate`
+# is what writes it; what follows is plain `key=value` pairs, and a key that is
+# absent is a statistic the window could not report rather than a zero.
+PACING_MARKER = "shell-pacing:"
 
 
 def clock_ticks() -> int:
@@ -159,19 +176,59 @@ def wait_for(log: pathlib.Path, needle: str, timeout: float) -> str | None:
     return None
 
 
-def run(binary: str, out: pathlib.Path, seconds: float, clients: int, client_bin: str):
+def parse_pacing(line: str) -> dict[str, float] | None:
+    """The gap fields of one `shell-pacing:` line, or None on a line without.
+
+    Deliberately dumb, because it is a contract with a log line rather than a
+    parse of prose: everything after the marker, split on whitespace, and each
+    token cut at its first `=`. A token that is not a number is skipped rather
+    than raised on — a log line with something new appended to it is a harness
+    that still works, and a key the window could not report is simply absent.
+    """
+    if PACING_MARKER not in line:
+        return None
+    fields: dict[str, float] = {}
+    for token in line.split(PACING_MARKER, 1)[1].split():
+        key, sep, value = token.partition("=")
+        if not sep:
+            continue
+        try:
+            fields[key] = float(value)
+        except ValueError:
+            continue
+    return fields or None
+
+
+def run(
+    binary: str,
+    out: pathlib.Path,
+    seconds: float,
+    clients: int,
+    client_bin: str,
+    nested: bool = False,
+):
     out.mkdir(parents=True, exist_ok=True)
     spawned: list[subprocess.Popen] = []
     log = out / "viewport.log"
     handle = log.open("w")
 
     # `VIEWPORT_SHELL_RATE` makes the compositor say how fast the shell is
-    # painting, once a second. Without it the log has a frame *total* and no
-    # rate, and a shell producing four frames a second looks like one producing
-    # sixty.
+    # painting, once a second, and — on the same line — how evenly. Without it
+    # the log has a frame *total* and no rate, and a shell producing four
+    # frames a second looks like one producing sixty.
     environment = dict(os.environ, RUST_LOG="info", VIEWPORT_SHELL_RATE="1")
+    # A nested run is this compositor as a client of the session around it, so
+    # it takes no screens and needs no seat. It also means every number below
+    # is measured against the host's presentation path rather than a panel's:
+    # `docs/benchmarks.md` is explicit that a nested figure is evidence the
+    # pipeline exists and never a benchmark.
+    if nested and not os.environ.get("WAYLAND_DISPLAY"):
+        raise SystemExit(
+            "nested needs a WAYLAND_DISPLAY to nest inside; a headless host "
+            "compositor will do, an empty environment will not"
+        )
     compositor = subprocess.Popen(
-        [binary, "--drm"],
+        [binary] if nested else [binary, "--drm"],
         stdout=handle,
         stderr=subprocess.STDOUT,
         env=environment,
@@ -238,16 +295,40 @@ def run(binary: str, out: pathlib.Path, seconds: float, clients: int, client_bin
         # the load rather than sampled during it: the line is emitted once a
         # second by the compositor's own housekeeping tick, so the file already
         # holds the series.
-        rates = []
+        #
+        # The same lines carry the gaps, so they are read in the same pass: one
+        # line, one window, and a harness that reads the file once cannot have
+        # the rate and the gaps disagree about which windows it saw.
+        rates, pacing = [], []
         for line in log.read_text(errors="replace").splitlines():
             if "shell: " in line and "frames/s" in line:
                 try:
                     rates.append(float(line.split("shell: ")[1].split(" frames/s")[0]))
                 except (IndexError, ValueError):
-                    continue
+                    pass
+            fields = parse_pacing(line)
+            if fields is not None:
+                pacing.append(fields)
         # The last `seconds` worth, which is the loaded part of the run: the
         # ticks before it are the idle baseline and would drag the median down.
         loaded = rates[-int(elapsed) :] if rates else []
+        loaded_windows = pacing[-int(elapsed) :] if pacing else []
+
+        # What the gaps came to, over the same windows and with no filter on
+        # rate. A window the shell barely painted has no gap statistics at all
+        # — see `shell_pacing` — and the counts are a sum because a hitch that
+        # happened once is a hitch that happened, while the percentiles are a
+        # median because one bad window is what `max` is for.
+        paced = [window for window in loaded_windows if "gap_p50_ms" in window]
+        p50s = [window["gap_p50_ms"] for window in paced if "gap_p50_ms" in window]
+        p95s = [window["gap_p95_ms"] for window in paced if "gap_p95_ms" in window]
+        gap_maxes = [window["gap_max_ms"] for window in paced if "gap_max_ms" in window]
+        hitches = sum(window.get("hitches", 0.0) for window in paced)
+        stalls = sum(window.get("stalls", 0.0) for window in paced)
+        # Every window is a second by construction, but the compositor says how
+        # long each one was and a per-second column divided by a guess is not a
+        # measurement.
+        window_seconds = sum(window.get("window_ms", 1000.0) for window in paced) / 1000.0
 
         # How *evenly* it painted, which is a different question from how much.
         #
@@ -294,6 +375,21 @@ def run(binary: str, out: pathlib.Path, seconds: float, clients: int, client_bin
             "shell_fps_spread": spread,
             "shell_fps_cov": (spread / mean_rate) if mean_rate else 0.0,
             "shell_fps_floor": (min(animating) if animating else 0.0),
+            # The gaps: the typical window's p50 and p95, the worst gap of the
+            # run, and the hitches and stalls per second of loaded window. All
+            # zero when the log carried no pacing line — `shell_pacing_windows`
+            # is what tells that apart from a run that paced perfectly.
+            "shell_gap_p50": statistics.median(p50s) if p50s else 0.0,
+            "shell_gap_p95": statistics.median(p95s) if p95s else 0.0,
+            "shell_gap_max": max(gap_maxes) if gap_maxes else 0.0,
+            "shell_hitches": hitches,
+            "shell_stalls": stalls,
+            "shell_hitches_per_s": (hitches / window_seconds) if window_seconds else 0.0,
+            "shell_stalls_per_s": (stalls / window_seconds) if window_seconds else 0.0,
+            "shell_pacing_windows": len(paced),
+            # Whether this measured a panel or the host's presentation path.
+            # Nothing downstream may put a nested figure in a table.
+            "nested": nested,
             "processes": max(n for _, n in samples),
             "commands": tick,
             "seconds": elapsed,
@@ -319,14 +415,32 @@ def main() -> int:
     parser.add_argument("--seconds", type=float, default=20.0)
     parser.add_argument("--clients", type=int, default=4)
     parser.add_argument("--client-bin", default="foot")
+    parser.add_argument(
+        "--nested",
+        action="store_true",
+        help="run inside the session the compositor was started from rather "
+        "than taking the screens; the numbers are indicative only",
+    )
     args = parser.parse_args()
 
+    if args.nested:
+        # Said once, here, and again in the result JSON: this run measures the
+        # pipeline and not a desktop. A nested compositor's frames are paced by
+        # whatever compositor it is inside, so its gaps are somebody else's
+        # presentation path as much as its own.
+        print(
+            "nested run: indicative only — the frames are paced by the "
+            "compositor this one is inside, not by a panel",
+            file=sys.stderr,
+            flush=True,
+        )
     result = run(
         args.viewport,
         pathlib.Path(args.out),
         args.seconds,
         args.clients,
         args.client_bin,
+        args.nested,
     )
     print(json.dumps(result), flush=True)
     return 0

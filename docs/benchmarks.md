@@ -380,12 +380,12 @@ mixture. What smoothness depends on is the cadence *while something is moving*.
 Taking only the seconds where the shell painted at least five frames — two
 runs, from a TTY, same machine and load as above:
 
-| backend | animating fps | steadiness (spread ÷ mean) | range across the run |
-| --- | --- | --- | --- |
-| webkitgtk | 80 | 0.48 | 7–164 |
-| chromium | 64 | 0.43 | 37–115 |
-| cef | 54 | 0.47 | 10–89 |
-| servoshell | 21 | **0.31** | 6–26 |
+| backend | animating fps | steadiness (spread ÷ mean) | range across the run | hitches/s | stalls/s |
+| --- | --- | --- | --- | --- | --- |
+| webkitgtk | 80 | 0.48 | 7–164 | — | — |
+| chromium | 64 | 0.43 | 37–115 | — | — |
+| cef | 54 | 0.47 | 10–89 | — | — |
+| servoshell | 21 | **0.31** | 6–26 | — | — |
 
 **`cef` swings by a factor of eight while it animates and `servoshell` holds a
 flat 26.** More frames delivered unevenly reads as stutter; fewer frames at a
@@ -398,12 +398,48 @@ two separate sittings — an earlier three-run set gives 0.49 for `cef` against
 `shell_fps_cov` and `shell_fps_floor` for this reason, and the summary prints
 the middle two.
 
-**What this still cannot see.** The compositor emits a rate once a second, so
-these are per-second buckets: a steady 26 frames a second and a 26 that stalls
-for 200 ms once a second are the same number here. Distinguishing them needs
-per-frame timestamps rather than a per-second count, which is a change to the
-compositor's `VIEWPORT_SHELL_RATE` path and is not written. Until it is, this
-column is evidence about pacing and not a measurement of hitching.
+The last two columns are new and **deliberately empty**, because they have not
+been measured on a panel yet: the run that fills them is the next sitting at a
+TTY, and a number invented for a table is worse than a hole in it. The harness
+already records them (`shell_hitches_per_s`, `shell_stalls_per_s`, from the
+per-second line described below), so `scripts/bench-shell.sh --runs 3` fills
+both. Read them against `steadiness` and nothing else. Steadiness is the rate
+wandering between seconds; these count the stalls inside a second, and the two
+do not rank the backends the same way — a backend can hold a flatter average
+and freeze more often, which is the combination that feels worse than either
+number explains on its own.
+
+**What this measures now, and how.** The compositor stamps the arrival instant
+of every shell frame while `VIEWPORT_SHELL_RATE=1` (or debug logging) is on —
+the gate is the same early return as before, so a desktop nobody is measuring
+pays nothing for this — and once a second it reports the gaps between
+consecutive frames instead of only the count. A *hitch* is a gap over twice the
+panel's refresh period and never under 50 ms: two frames missed is what a person
+notices, and the floor keeps a slow panel from being all hitches. A *stall* is a
+gap over 250 ms, which is the desktop visibly freezing rather than dropping
+frames. Each second reports its frame count, the p50, p95 and worst gap, and how
+many gaps were hitches and how many stalls, so the steady 26 and the 26 that
+stops for 200 ms once a second are two different rows rather than one number.
+
+The gap columns are read per second and are never averaged into a single
+figure, because a stall is exactly the second whose rate collapses: filtering
+the gaps by rate the way `animating fps` is filtered would throw the evidence
+away before counting it. A second in which the shell painted fewer than twice
+reports no gaps at all — an idle desk's interval says nothing about pacing —
+which is why the columns are paired with `count` on the line and why a desktop
+idling at four frames a second has four 250 ms gaps a second and nothing wrong
+with it. Hitches and stalls mean something while the desktop is painting.
+
+**What this still cannot see.** *Why* a gap happened, and what a person saw. A
+gap says the compositor was handed no frame; it does not say whether the engine
+was late, whether the compositor was late drawing it, or whether the screen was
+late presenting it — and a frame drawing the wrong thing at a steady 60 is paced
+perfectly. It is not a latency measurement either: a desktop holding a 16 ms
+cadence with 100 ms between a key and the pixel is invisible here. What it does
+make possible is the comparison this table exists for: `chromium` at 64 frames a
+second and `servoshell` at 21 are an argument about throughput, `steadiness` is
+the argument about cadence, and the hitch columns are the argument about
+freezing. Read all three before deciding which backend the desktop ships.
 
 ### Reading the caveats
 
@@ -428,6 +464,10 @@ scripts/bench-vkcube.sh --drm --only all --runs 3
 
 # two monitors: --output is held busy, --second is measured
 scripts/bench-vkcube.sh --drm --only all --output DP-1 --second DP-3
+
+# the shell's pacing pipeline with no TTY at all — indicative only, and the
+# result says so: it is proof the line and the harness agree, not a number
+scripts/bench-shell.py --nested --viewport target/debug/viewport --out /tmp/pacing
 ```
 
 `vkcube` and niri are fetched from nixpkgs when they are not already on PATH.
