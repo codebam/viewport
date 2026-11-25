@@ -601,3 +601,22 @@ code that landed after the first. Base `4b75e40c`.
   through the overlay and copying all five on the merge; covered by
   `every_late_arriving_field_survives_the_overlay` and the round-trip
   assertions in `a_saved_overlay_reads_back_whole_through_apply`.
+
+- [x] **67. `config.layout_extensions` validates the path and then stores the
+  message's own value.**
+  `crates/viewport/src/apply.rs` (the `ConfigLayoutExtensions` arm): it
+  called the same resolver the config file uses
+  (`crate::config::layout_extension_path`, which resolves a relative path
+  beside the config file and hands back the `file://` URL the shell loads)
+  but only for its error — the resolved URL was dropped, and the message's
+  raw `url` stored, exactly the shape the comment above the loop claims
+  cannot happen ("Resolved beside the config file so the file:// the shell
+  receives is the same encoding both paths produce"). A relative path over
+  the socket reached the shell as a bare `wave.js`, which a `script.src`
+  resolves against the page rather than the config directory — the
+  extension never loads, with the same silent failure a missing file
+  already logs — and `config.save` wrote the raw value into the overlay,
+  where no path ever resolves it again. Fixed by storing the resolved URL;
+  covered by `a_relative_layout_extension_is_resolved_on_the_socket_too`
+  (`crates/viewport/tests/control_socket.rs`), which sends a relative path
+  and asserts the announced `config` event carries `file://…/wave.js`.

@@ -1562,6 +1562,7 @@ pub fn apply(state: &mut ViewportState, request: Request) {
                 // so the file:// the shell receives is the same encoding
                 // both paths produce.
                 let config_path = state.config_file_path.clone().unwrap_or_default();
+                let mut resolved = Vec::with_capacity(extensions.len());
                 for extension in &extensions {
                     if !crate::config::layout_extension_name_allowed(&extension.name) {
                         reject(
@@ -1582,18 +1583,30 @@ pub fn apply(state: &mut ViewportState, request: Request) {
                         );
                         return;
                     }
-                    if let Err(e) =
-                        crate::config::layout_extension_path(&extension.url, &config_path)
-                    {
-                        reject(
-                            state,
-                            "config.layout_extensions",
-                            &format!("layout extension {:?}: {e}", extension.name),
-                        );
-                        return;
+                    // The resolved URL is what is stored, not the value the
+                    // message carried: a bare relative path is not an
+                    // encoding the shell can load (a script.src resolves
+                    // against the page, not the config directory), and
+                    // `config.save` would write the raw value into the
+                    // overlay for every restart after that to fail the same
+                    // way. The file's own load resolves beside the config
+                    // file; this is the same resolution.
+                    match crate::config::layout_extension_path(&extension.url, &config_path) {
+                        Ok(url) => resolved.push(viewport_ipc::event::LayoutExtension {
+                            name: extension.name.clone(),
+                            url,
+                        }),
+                        Err(e) => {
+                            reject(
+                                state,
+                                "config.layout_extensions",
+                                &format!("layout extension {:?}: {e}", extension.name),
+                            );
+                            return;
+                        }
                     }
                 }
-                let mut extensions = extensions;
+                let mut extensions = resolved;
                 extensions.sort_by(|a, b| a.name.cmp(&b.name));
                 // If the layout in use names something no longer registered,
                 // it falls back to tiling — the same answer a reload gives a

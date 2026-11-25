@@ -1278,3 +1278,38 @@ fn a_layout_extension_with_a_remote_url_is_refused() {
     let error = client.expect("error");
     assert!(error.to_string().contains("tiling"), "{error}");
 }
+
+/// A relative layout-extension path is resolved on the socket too, so the
+/// shell receives the same `file://` encoding the file's own load produces.
+///
+/// The arm already called the resolver, but only for its error: the resolved
+/// URL was dropped and the message's own value stored, so a relative path —
+/// the shape the config file takes — reached the shell as a bare `wave.js`
+/// that a script.src resolves against the page instead of the config
+/// directory, never loaded, and was written back that way by `config.save`.
+#[test]
+fn a_relative_layout_extension_is_resolved_on_the_socket_too() {
+    let compositor = Compositor::start("layout-ext-relative");
+    let mut client = compositor.connect();
+    client.config();
+
+    client.send(
+        r#"{"type":"config.layout_extensions","extensions":[{"name":"wave","url":"wave.js"}]}"#,
+    );
+    let config = client.config();
+    let url = config["layout_extensions"]
+        .as_array()
+        .expect("the extension list")
+        .iter()
+        .find(|entry| entry["name"] == "wave")
+        .and_then(|entry| entry["url"].as_str())
+        .expect("the extension is carried");
+    assert!(
+        url.starts_with("file://"),
+        "the raw path reached the shell unresolved: {url}"
+    );
+    assert!(
+        url.ends_with("wave.js"),
+        "the resolved URL should name the file: {url}"
+    );
+}

@@ -12,6 +12,17 @@ to summarise rather than to duplicate.
 ## [Unreleased]
 
 ### Fixed
+- `config.layout_extensions` over the socket stores the resolved URL, not
+  the message's own value. The arm already ran the same resolver the config
+  file uses — the one that refuses a remote URL — but only for its error:
+  the resolved `file://` URL was dropped and the raw path stored, so a
+  relative path (the shape the config file takes) reached the shell as a
+  bare `wave.js` that a `script.src` resolves against the page instead of
+  the config directory, never loaded, and `config.save` wrote the raw value
+  into the overlay where nothing resolves it. The shell now receives the
+  same encoding both paths produce, as the arm's own comment always
+  claimed it did.
+
 - `config.save` keeps the settings the newest keys carry. The settings
   overlay had no field at all for `game_mode` or for the selected wallpaper
   extension's `wallpaper_options` — the write-back path the panel uses for
