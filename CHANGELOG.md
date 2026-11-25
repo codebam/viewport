@@ -12,6 +12,18 @@ to summarise rather than to duplicate.
 ## [Unreleased]
 
 ### Fixed
+- A profile load redraws what the profile changes. The `vcgt` half of a
+  profile is a CRTC ramp and shows the moment it is programmed; the baked
+  cube reaches the screen only through a frame — and nothing in the load
+  marked one. A config reload that changed nothing but the `icc` profile
+  left the two halves of the profile in visible disagreement on an
+  otherwise still desk (the calibration visibly moved while the transform
+  that compensates for it waited for the next frame some other change
+  happened to cause), and a profile that stopped describing a transform
+  kept drawing through the old cube the same way. Loading now marks a
+  frame whenever the cube it hands the renderer changes, in both
+  directions.
+
 - A profile's `vcgt` calibration applies with the colour pipeline off. The
   `outputs.<name>.icc` key reads two things, and only one of them belongs to
   the pipeline — but the gate that skips the transform when

@@ -1057,13 +1057,25 @@ impl ViewportState {
                         samples: std::sync::Arc::new(cube),
                     },
                 );
+                // The cube reaches the screen only through a frame, while
+                // the ramp above is programmed into the CRTC and shows at
+                // once: a reload that changed nothing but the profile would
+                // otherwise leave the two halves of the profile in visible
+                // disagreement on a desk with no other reason to draw.
+                self.needs_render = true;
             }
             None => {
                 tracing::debug!(
                     "{name}: {path} describes no RGB display transform — neither a \
                      matrix-and-curve nor a readable LUT; only its calibration is used"
                 );
-                self.icc_cubes.remove(name);
+                if self.icc_cubes.remove(name).is_some() {
+                    // Same reason as the insert above: the pixels that were
+                    // drawn through the old cube have to come back out
+                    // through the plain pipeline, and nothing else redraws
+                    // them on an otherwise still desk.
+                    self.needs_render = true;
+                }
             }
         }
         self.apply_effective_gamma(&output);
@@ -1201,6 +1213,25 @@ mod output_mode_tests {
         assert!(
             gated[..transform].contains("self.apply_effective_gamma(&output)"),
             "leaving the gate early must still programme the freshly stored ramp"
+        );
+    }
+
+    /// A cube change reaches the screen only through a frame, while the ramp
+    /// half of the same profile is programmed into the CRTC and shows at
+    /// once — `load_output_icc` has to mark a frame, or a reload that
+    /// changed nothing but the profile leaves the two in visible
+    /// disagreement on a desk with no other reason to draw.
+    #[test]
+    fn a_cube_change_marks_a_frame() {
+        let source = include_str!("outputs.rs");
+        let source = source.split("#[cfg(test)]").next().unwrap_or(source);
+        let start = source
+            .find("pub fn load_output_icc(")
+            .expect("load_output_icc in outputs.rs");
+        let body = &source[start..];
+        assert!(
+            body.contains("self.needs_render = true;"),
+            "load_output_icc must mark a frame when the cube it hands the renderer changes"
         );
     }
 }

@@ -639,3 +639,16 @@ code that landed after the first. Base `4b75e40c`.
   is pinned by `the_calibration_ramp_is_read_before_the_pipeline_gate`,
   the source-order test style the modeset promise in the same file
   already uses.
+
+- [x] **69. A cube change never drew the frame that would show it.**
+  `crates/viewport/src/state/outputs.rs` (`load_output_icc`): the vcgt half
+  of a profile is programmed into the CRTC and shows at once, while the
+  baked cube reaches the screen only through a frame the renderer draws —
+  and nothing in the load marked one. A config reload that changed
+  nothing but the profile left the two halves in visible disagreement on
+  an otherwise still desk (the calibration visibly moved, the transform
+  that compensates for it waited for whatever happened to draw next), and
+  a profile that no longer described a transform left the old cube's
+  pixels on screen the same way. Fixed by marking `needs_render` when the
+  cube map changes, both directions; pinned by
+  `a_cube_change_marks_a_frame` beside the source-order tests above.
