@@ -195,8 +195,11 @@ fn entry_at(text: &str, desktop: &[&str], path: Option<&Path>) -> Option<App> {
             continue;
         };
         // A locale variant is the same key in another language. There is no
-        // locale negotiation here; the base key is the one shown.
-        let key = key.split('[').next().unwrap_or(key);
+        // locale negotiation here; skip it rather than letting a later
+        // localized line overwrite the base key the launcher actually shows.
+        if key.contains('[') {
+            continue;
+        }
         let value = value.trim();
         match key {
             "Type" => e.r#type = value.to_owned(),
@@ -975,9 +978,9 @@ mod tests {
     }
 
     #[test]
-    fn locale_variants_are_the_base_keys() {
+    fn locale_variants_do_not_replace_the_base_keys() {
         let app = entry(
-            "[Desktop Entry]\nName=Firefox\nName[de]=Firefox\nExec=firefox\n",
+            "[Desktop Entry]\nName=Firefox\nName[de]=Feuerfuchs\nExec=firefox\n",
             desktop(),
         )
         .expect("parses");
