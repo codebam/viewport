@@ -987,12 +987,15 @@
             echo "  cargo test --workspace                # the Rust rewrite"
             echo "  VIEWPORT_REQUIRE_GPU=1 cargo test -p viewport-web   # dma-buf, for real"
 
-            # The checks moved into .githooks when CI was disabled, and they
-            # are off until git is told where the hooks live. Nothing else can
-            # say so: a hook that is not installed does not run, so it cannot
-            # complain about not running, and the first sign is a commit that
-            # would not have passed. This shell is the one place every
-            # contributor already goes through.
+            # The gate on a commit is `.githooks/pre-commit`; the gate on a
+            # push is the workflow in .github/workflows/ci.yml. `nix flake
+            # check` is neither — this flake has no `checks` attribute, so it
+            # would only build the packages. The hook is off until git is told
+            # where the hooks live, and nothing else can say so: a hook that
+            # is not installed does not run, so it cannot complain about not
+            # running, and the first sign is a commit that would not have
+            # passed. This shell is the one place every contributor already
+            # goes through.
             if [ -d .git ] && [ "$(git config --get core.hooksPath || true)" != ".githooks" ]; then
               echo
               echo "  ! the pre-commit checks are not installed. To enable them:"
