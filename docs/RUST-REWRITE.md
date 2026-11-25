@@ -676,13 +676,43 @@ default is removed rather than replaced.
 
 ## Known rough edges on real hardware
 
-Two things the log says on every run. Neither stops it working:
+Two things the log says on every run. Neither stops it working, and one of them
+was described here for a while in a way that made it sound like flakiness. It is
+not.
 
 - `Failed to restore previous state. Error: Invalid argument` on exit. Smithay
   restores the pre-compositor DRM state when the device drops, and that commit
-  is rejected. The session comes back regardless.
+  is rejected — by construction, on every atomic driver, every time. `Drop for
+  AtomicDrmDevice` replays *every* property it captured at creation in one
+  `ALLOW_MODESET` commit, and the snapshot (its `add_props`) filters nothing. So
+  the request carries a connector's DPMS property, which the atomic API refuses
+  by design ("legacy ... can only be set via legacy uAPI"); immutable properties
+  such as a connector's EDID and a plane's `type`, which the property validator
+  rejects; and the framebuffer objects themselves, which are not atomic targets
+  at all. `EINVAL` is that refusal — a lost fd or master would answer `EBADF` or
+  `EPERM`, and master is in fact still held here. The restore has never once
+  succeeded on this machine.
+
+  The screen is nonetheless not left in our mode: each surface's `clear_state`
+  on the way out is a real commit that resets the planes, disconnects the
+  connectors and disables the CRTCs, and it runs before this. What fails is the
+  *positive* half — the promise that the getty's framebuffer is lit again at
+  exit. It comes back when the console next repaints, which is why a session
+  "comes back regardless". The residue is gamma: night-light ramps go through
+  the legacy gamma ioctl, `clear_state` does not touch them, and replaying the
+  pre-session LUT is exactly what this dead commit would have done — so a tint
+  can outlive the compositor until the console reprograms its colour map.
+
 - `Failed to destroy old mode property blob: No such file or directory`, once
-  per output during modeset. Harmless; there was no old blob to destroy.
+  per output during a modeset. Harmless *in the shape we see it*, for a reason
+  worth writing down: the device is created with its connectors disabled, so the
+  reset leaves every CRTC with no mode and the snapshot honestly records blob id
+  0. Ids are minted from 1, so id 0 has never named a blob, nothing was
+  allocated and nothing leaked; seeing this line once per output at bring-up is
+  evidence that the reset ran. It stops being harmless in a different shape: a
+  `TEST_ONLY` commit that passes followed by a real commit that fails destroys
+  the blob, leaves `current` behind, and the retry then destroys a *real* id and
+  logs the same line beside an `Error setting crtc`.
 
 `Unable to become drm master, assuming unprivileged mode` used to be listed
 here too, with a note that master was "evidently acquired later, because the
