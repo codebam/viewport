@@ -71,6 +71,7 @@ mod settings;
 mod shell;
 mod shell_backend;
 mod shell_client;
+mod shell_pacing;
 mod shell_watch;
 mod shortcuts;
 mod sound;

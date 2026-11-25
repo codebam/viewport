@@ -566,6 +566,9 @@ impl ViewportState {
                 shell.frame_done(&pending.token);
                 shell.frame_release(pending.token);
             }
+            // The arrival instant, for the gap metric: a frame that has made
+            // it this far is one the desktop will show.
+            self.note_shell_frame();
             self.shell_frames += 1;
             if self.shells[page].desktop {
                 // The lock screen guard counts this page's frames and no
@@ -660,6 +663,11 @@ impl ViewportState {
         // the old one has to go with it, or the log claims a shell that is
         // talking and painting while the screen shows neither.
         self.shell_frames = 0;
+        // The arrival instants too: the next frame is the first of a new
+        // series, not one that arrived after a pause in this one. The restart
+        // took wall clock, and it is in the line above rather than in the
+        // pacing series, where nothing can act on it.
+        self.shell_pacing.clear();
         self.shell_announced = false;
         self.shells[page].announced = false;
         self.shells[page].size = None;
