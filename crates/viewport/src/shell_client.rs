@@ -1099,6 +1099,10 @@ impl ViewportState {
         // crash. See `forget_capture_answers`.
         self.forget_capture_answers();
         self.shell_frames = 0;
+        // The mark the rate is measured from goes with the count, or the
+        // first window after the restart subtracts the old page's frames from
+        // the new page's and prints a 0-fps second — see `report_shell_rate`.
+        self.shell_rate_mark = None;
         // The gaps are this page's, and there is no page: the next frame is
         // the first of a new series rather than one that arrived after a pause
         // in this one. The restart's own duration is in the line that caused

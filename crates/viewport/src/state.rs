@@ -6119,4 +6119,50 @@ mod tests {
             );
         }
     }
+
+    /// A shell restart zeroes the frame count and clears the pacing ring, and
+    /// the rate is a difference against a mark taken a tick earlier. Leaving
+    /// the mark holding the old page's total makes the first window after the
+    /// restart a subtraction from a number that no longer exists, reported
+    /// beside the new ring's `count` — `shell: 0.0 frames/s (0 in 1.00s) …
+    /// count=47` — which is exactly the pairing `docs/benchmarks.md` says the
+    /// line carries. Every reset of the count has to reset the mark with it.
+    ///
+    /// Both resets live behind a shell process that a unit test cannot spawn,
+    /// so the invariant is checked against the source, as
+    /// `every_udev_lock_walk_keeps_the_live_ones` checks its walk.
+    #[test]
+    fn every_shell_frame_reset_also_resets_the_rate_mark() {
+        for (file, source) in [
+            (
+                "state/shell_lifecycle.rs",
+                include_str!("state/shell_lifecycle.rs"),
+            ),
+            ("shell_client.rs", include_str!("shell_client.rs")),
+        ] {
+            let source = source.split("#[cfg(test)]").next().unwrap_or(source);
+            let reset = "self.shell_frames = 0;";
+            let mut at = 0;
+            let mut sites = 0;
+            while let Some(offset) = source[at..].find(reset) {
+                let found = at + offset;
+                sites += 1;
+                // The resets are one run at the top of the same branch, so
+                // the mark has to be cleared in that run — before the
+                // enclosing function ends and the next tick can read it.
+                let after = &source[found + reset.len()..];
+                let end = after.find("\n    }\n").unwrap_or(after.len());
+                assert!(
+                    after[..end].contains("self.shell_rate_mark = None;"),
+                    "{file}: the shell_frames reset at byte {found} leaves \
+                     shell_rate_mark holding the old page's count"
+                );
+                at = found + reset.len();
+            }
+            assert!(
+                sites > 0,
+                "{file}: no shell_frames reset found; has the reset moved?"
+            );
+        }
+    }
 }
