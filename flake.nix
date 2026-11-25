@@ -344,7 +344,15 @@
 
           buildInputs = with pkgs; [ nss nspr at-spi2-atk cups libdrm libxkbcommon mesa ];
 
-          doCheck = false;
+          # The seven unit tests in this crate's `tests` module need no engine
+          # and no display: they exercise `bookkeeping_event` and
+          # `DocumentGuard` only, which is plain bookkeeping over JSON. Nothing
+          # else in the tree runs them — the root workspace excludes this crate
+          # — and they link against `libcef` rather than starting it, so the
+          # sandbox that built the package above can run them. The dev-shell
+          # rationale for `doCheck = false` (see the compositor below) does
+          # not apply: there is no `cargoArtifacts` layer here to cache.
+          doCheck = true;
 
           # The build script copies the engine and its resources next to the
           # binary, which for a nix build is the target directory rather than
