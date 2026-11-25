@@ -8926,7 +8926,41 @@ if (mode === 'scrolling') {
   check('and a window no rule claims sends confine_pointer false',
     sent.slice(unblurredMark).some((m) => m.type === 'view.confine_pointer'
       && m.id === 81 && m.confine === false));
-  for (const id of [79, 80, 81, 82]) emit({ type: 'view.removed', id });
+
+  /* A `blur: false` rule is a decision of its own, not the absence of one:
+     a branch that only acted when a rule asked for blur would report the
+     same `false` here for the wrong reason, and would be the branch that
+     also forgets to turn the effect back off later. */
+  emit({ type: 'config', layout: mode, rules: [
+    { app_id: 'no-blur', blur: false },
+  ] });
+  const refusedMark = sent.length;
+  open(86, 'no-blur');
+  check('a blur:false rule sends view.blur false',
+    sent.slice(refusedMark).some((m) => m.type === 'view.blur'
+      && m.id === 86 && m.blur === false));
+  check('and never asks for the blur',
+    !sent.slice(refusedMark).some((m) => m.type === 'view.blur'
+      && m.id === 86 && m.blur === true));
+  /* And a window already on screen has to follow a rule that starts or stops
+     matching it. `view.blur` is current policy the compositor keeps, and
+     reapplyWindowRule is the only place the shell sends it for an open
+     window: resolving blur once at map time would leave the effect on, or
+     off, for the rest of that window's life however the rule changed. */
+  emit({ type: 'config', layout: mode, rules: [
+    { match: { title: 'blurred-later' }, blur: true },
+  ] });
+  const matchedLaterMark = sent.length;
+  emit({ type: 'view.props', id: 81, app_id: 'plain', title: 'blurred-later' });
+  check('a rule that starts matching an open window sends view.blur true',
+    sent.slice(matchedLaterMark).some((m) => m.type === 'view.blur'
+      && m.id === 81 && m.blur === true));
+  const unmatchedMark = sent.length;
+  emit({ type: 'view.props', id: 81, app_id: 'plain', title: 'plain' });
+  check('and a rule that stops matching sends view.blur false',
+    sent.slice(unmatchedMark).some((m) => m.type === 'view.blur'
+      && m.id === 81 && m.blur === false));
+  for (const id of [79, 80, 81, 82, 86]) emit({ type: 'view.removed', id });
 
   /* Hyprland's `content` matcher, from `wp_content_type_v1`. It can change
      while the window is open, through `view.props`. */
