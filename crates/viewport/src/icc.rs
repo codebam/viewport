@@ -4629,20 +4629,106 @@ mod lut_tests {
     // whose answer for out-of-range and NaN inputs, is finite and in [0, 1].
     // A profile that cannot be read is refused; a profile that can be read
     // cannot poison the cube.
+    //
+    // The budget each case is held to is relative, not a fixed wall-clock
+    // number: a known-good 33³ bake is timed once per test binary and a case
+    // may cost up to a hundred of those, bounded by a floor and a ceiling.
+    // ASan and slow runners execute the same code several times slower, and
+    // a fixed budget measures that, not the hostile profile.
 
     mod fuzz_tests {
         use super::*;
         use std::panic::catch_unwind;
+        use std::sync::OnceLock;
         use std::time::{Duration, Instant};
 
-        /// The wall-clock ceiling for one profile, debug build. The honest
-        /// worst case is the 33³ inverted bake at roughly 75 ms and the
-        /// legal hostile worst is a chain of four CLUTs whose outputs no
-        /// incoming PCS value reaches, at roughly 3.5 s — every vertex of
-        /// that chain takes the bounded out-of-gamut fallback, and a fifth
-        /// CLUT is a refusal rather than a longer bake. A profile past this
-        /// ceiling is a wedge, whatever its bytes said.
-        const CASE_BUDGET: Duration = Duration::from_millis(5_000);
+        /// The per-case budget is a multiple of a reference bake measured
+        /// at test time, because a build (ASan, debug on a slow runner) is
+        /// slower, not because a worm is longer. The floor keeps a fast
+        /// machine no tighter than the old fixed 5 s budget; the factor is
+        /// how many reference bakes one case may cost — a healthy hostile
+        /// bake runs at roughly 50x a normal bake in debug, and the legal
+        /// hostile worst measured ~47x, so 100 leaves 2x headroom — and the
+        /// ceiling still fails one pathological case on an arbitrarily slow
+        /// runner instead of hanging the job.
+        const CASE_BUDGET_FLOOR: Duration = Duration::from_secs(5);
+        const CASE_BUDGET_FACTOR: u32 = 100;
+        const CASE_BUDGET_CEILING: Duration = Duration::from_secs(120);
+
+        /// The budget for one hostile case: `CASE_BUDGET_FACTOR` reference
+        /// bakes, clamped to `[CASE_BUDGET_FLOOR, CASE_BUDGET_CEILING]`.
+        fn case_budget(baseline: Duration) -> Duration {
+            baseline
+                .saturating_mul(CASE_BUDGET_FACTOR)
+                .clamp(CASE_BUDGET_FLOOR, CASE_BUDGET_CEILING)
+        }
+
+        /// The policy above, independent of machine speed: a tiny baseline
+        /// hits the floor, a middling one scales, a huge one hits the
+        /// ceiling, and the boundaries between the branches are inclusive.
+        #[test]
+        fn the_case_budget_tracks_the_reference_bake_between_floor_and_ceiling() {
+            // 100 x 1 ms is only 100 ms, so the floor wins.
+            assert_eq!(case_budget(Duration::from_millis(1)), CASE_BUDGET_FLOOR);
+            // Exactly a hundredth of the floor: 100 x 50 ms is the floor.
+            assert_eq!(
+                case_budget(CASE_BUDGET_FLOOR / CASE_BUDGET_FACTOR),
+                CASE_BUDGET_FLOOR
+            );
+            // A slow machine: the budget tracks the bake, not a constant.
+            assert_eq!(
+                case_budget(Duration::from_millis(100)),
+                Duration::from_secs(10)
+            );
+            // One tick above that boundary scales with it.
+            assert_eq!(
+                case_budget(CASE_BUDGET_FLOOR / CASE_BUDGET_FACTOR + Duration::from_nanos(1)),
+                CASE_BUDGET_FLOOR + Duration::from_nanos(1) * CASE_BUDGET_FACTOR
+            );
+            // A very slow machine: 100 x 1.2 s is the ceiling.
+            assert_eq!(
+                case_budget(CASE_BUDGET_CEILING / CASE_BUDGET_FACTOR),
+                CASE_BUDGET_CEILING
+            );
+            assert_eq!(case_budget(Duration::from_secs(60)), CASE_BUDGET_CEILING);
+        }
+
+        /// A known-good 33³ forward (`B2A`) display profile: identity input
+        /// tables, a CLUT of PCS to linear light, gamma-2.2 output tables.
+        /// This is the bake a real display pays and the yardstick the
+        /// per-case budget is measured against.
+        fn reference_profile() -> Vec<u8> {
+            let encode = gamma_table(256, 2.2);
+            let output = [encode.clone(), encode.clone(), encode];
+            let tag = lut16_tag(
+                &IDENTITY,
+                &identity_tables(),
+                33,
+                &clut_nodes(33, pcs_to_linear),
+                &output,
+            );
+            profile_with_tags(&[(b"B2A1", tag)])
+        }
+
+        /// The median of three reference bakes, measured once per test
+        /// binary. The bakes happen here, never inside a case's timed
+        /// region, so calibration is not charged to any case.
+        fn baseline() -> Duration {
+            static BASELINE: OnceLock<Duration> = OnceLock::new();
+            *BASELINE.get_or_init(|| {
+                let profile = reference_profile();
+                let mut samples = [Duration::ZERO; 3];
+                for sample in &mut samples {
+                    let started = Instant::now();
+                    let transform = DisplayTransform::for_profile(&profile)
+                        .expect("the 33³ reference profile parses");
+                    *sample = started.elapsed();
+                    drop(transform);
+                }
+                samples.sort();
+                samples[1]
+            })
+        }
 
         /// A deterministic xorshift64* sequence: no dependency to pull, and
         /// a failure replays from its seed.
@@ -4733,9 +4819,13 @@ mod lut_tests {
             let started = Instant::now();
             let parsed = catch_unwind(|| DisplayTransform::for_profile(bytes));
             let elapsed = started.elapsed();
+            let reference = baseline();
+            let budget = case_budget(reference);
             assert!(
-                elapsed < CASE_BUDGET,
-                "one hostile profile took {elapsed:?}, past the {CASE_BUDGET:?} budget"
+                elapsed < budget,
+                "one hostile profile took {elapsed:?}, past the {budget:?} budget \
+                 (reference bake {reference:?}, budget is {CASE_BUDGET_FACTOR}x that \
+                 clamped to {CASE_BUDGET_FLOOR:?}..={CASE_BUDGET_CEILING:?})"
             );
             assert_in_contract(parsed)
         }
@@ -5471,9 +5561,14 @@ mod lut_tests {
                     let started = Instant::now();
                     let parsed = catch_unwind(|| DisplayTransform::for_profile(&mutant));
                     let elapsed = started.elapsed();
+                    let reference = baseline();
+                    let budget = case_budget(reference);
                     assert!(
-                        elapsed < CASE_BUDGET,
-                        "{name} mutant #{index} baked for {elapsed:?}, past the budget"
+                        elapsed < budget,
+                        "{name} mutant #{index} baked for {elapsed:?}, past the \
+                         {budget:?} budget (reference bake {reference:?}, budget is \
+                         {CASE_BUDGET_FACTOR}x that clamped to \
+                         {CASE_BUDGET_FLOOR:?}..={CASE_BUDGET_CEILING:?})"
                     );
                     if assert_in_contract(parsed).is_some() {
                         accepted += 1;
@@ -5635,17 +5730,8 @@ mod lut_tests {
         #[test]
         #[ignore]
         fn dump_bake_times() {
-            let encode = gamma_table(256, 2.2);
-            let output = [encode.clone(), encode.clone(), encode];
-            let forward = lut16_tag(
-                &IDENTITY,
-                &identity_tables(),
-                33,
-                &clut_nodes(33, pcs_to_linear),
-                &output,
-            );
             let started = Instant::now();
-            DisplayTransform::for_profile(&profile_with_tags(&[(b"B2A1", forward)]))
+            DisplayTransform::for_profile(&reference_profile())
                 .expect("the forward profile parses");
             println!("33^3 forward bake: {:?}", started.elapsed());
 
