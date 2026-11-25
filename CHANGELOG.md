@@ -42,6 +42,11 @@ to summarise rather than to duplicate.
 
 ### Fixed
 
+- A locker superseded because it never drew now receives
+  `ext_session_lock_v1.finished`, both when another locker takes over and when
+  the built-in lock does, instead of waiting forever on a session it no longer
+  owns. Its stale surfaces still cannot paint, take the keyboard, or unlock the
+  replacement.
 - The screens are put back the way they were found on every exit. The
   restore was only ever run by the DRM device's `Drop`, which a real exit
   does not reach — the device can outlive the compositor's teardown — so

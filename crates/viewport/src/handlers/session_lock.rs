@@ -99,6 +99,7 @@ impl SessionLockHandler for ViewportState {
         // `session.lock.drawn`, `session.unlock` and PAM verdicts all stop
         // belonging to the shell at once.
         self.lock_owned_by_shell = false;
+        self.finish_accepted_lock();
         self.accepted_lock = Some(confirmation.ext_session_lock().clone());
 
         tracing::info!("session locked");
@@ -229,6 +230,25 @@ impl SessionLockHandler for ViewportState {
 }
 
 impl ViewportState {
+    /// Tell the lock being replaced that its responsibility is over.
+    ///
+    /// `SessionLocker::drop` sends `finished` only for a lock refused before
+    /// confirmation. A confirmed lock that was not drawing can nevertheless be
+    /// superseded, and dropping its resource handle here sends no event: the
+    /// old locker would wait forever for somebody to let it exit. Ownership is
+    /// already enforced by `accepted_lock` for surfaces and by Smithay's lock
+    /// status for unlock, so this event cannot give the old locker the session
+    /// back; it just lets it retire.
+    pub(crate) fn finish_accepted_lock(&mut self) {
+        use smithay::reexports::wayland_server::Resource as _;
+
+        if let Some(lock) = self.accepted_lock.take() {
+            if lock.is_alive() {
+                lock.finished();
+            }
+        }
+    }
+
     /// Whether a lock screen is up and on at least one screen.
     ///
     /// The question both refusals ask: a locked session whose locker has gone

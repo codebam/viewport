@@ -258,7 +258,7 @@ impl ViewportState {
         // taking over is not drawn and not typed into any more, and its
         // messages name the generation just replaced above.
         self.lock_owned_by_shell = true;
-        self.accepted_lock = None;
+        self.finish_accepted_lock();
         self.cancel_gesture();
         self.locked = true;
         self.suspend_input_capture();

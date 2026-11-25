@@ -463,7 +463,9 @@ black screen rather than a desktop. The two never run together — a locker
 asking for the session while the built-in screen is drawing is refused by
 `lock()` exactly as a second swaylock is, and one asking while it is *not*
 drawing is granted, which is the same documented escape from a lock screen that
-has stopped painting.
+has stopped painting. The lock it replaces receives `finished`; only the new
+owner's surfaces can paint or take the keyboard, and an unlock from the old lock
+object is refused with `invalid_unlock` rather than dismissing the replacement.
 
 Idle inhibitors are honoured, and only while their surface is mapped — a paused
 video on a hidden workspace is not keeping anyone awake. An inhibitor counts as

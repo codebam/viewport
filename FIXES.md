@@ -932,3 +932,15 @@ code that landed after the first. Base `4b75e40c`.
   accepted (no `EINVAL`), and a 3000 K night-light LUT held live at quit
   goes with it. The console's colour on the returning VT is the visual
   half a person confirms.
+
+- [x] **92. A superseded locker was never told its lock was over.**
+  `handlers/session_lock.rs` replaced `accepted_lock` when an undrawing locker
+  lost the session, and `state/lock_power.rs` dropped it when the built-in lock
+  took over, but neither sent `ext_session_lock_v1.finished`. Smithay sends that
+  event from `SessionLocker::drop` only for a lock refused *before* confirmation,
+  so a locker that had received `locked` waited forever after a takeover. Both
+  paths now retire the old object with `finished` before installing the new
+  owner. Surface ownership still excludes its frames and keyboard, and Smithay
+  still answers its later `unlock_and_destroy` with `invalid_unlock`. Pinned by
+  the no-surface, empty-surface, stale-draw, stale-unlock and built-in takeover
+  cases in `tests/lock-lifecycle.test.sh`.
