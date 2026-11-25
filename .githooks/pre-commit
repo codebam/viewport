@@ -1,13 +1,34 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# What GitHub used to run, run here instead, before the commit is made.
+# Most of what CI runs, run here instead, before the commit is made.
 #
-# The CI workflow runs on every push and pull request again, so this is no
-# longer the only thing standing between a mistake and `main`: it runs the same
-# checks the `shell` and `rust` jobs do, in the same order, before the commit
-# exists rather than after it is pushed. The one thing it adds is the `wpe`
-# check, which CI cannot afford — see wpe_check below.
+# The CI workflow runs on every push and pull request, so this is not the only
+# thing standing between a mistake and `main`; it is the cheaper half of it,
+# before the commit exists rather than after it is pushed. What it runs:
+# `scripts/check-versions.sh`, the vendored-dependency check and the node
+# layout tests (the `shell` job), then `cargo deny`, `fmt`, `clippy` and
+# `test` over the workspace, and a `cargo check` with and without the `wpe`
+# feature (the `rust` job's cargo steps). It adds two things CI does not run:
+# the `wpe` check, which CI cannot afford without a prebuilt wpewebkit — see
+# wpe_check below — and a plain `cargo check --workspace --all-targets`,
+# which CI only reaches through clippy.
+#
+# What it deliberately does not run, all of it in CI and none of it here:
+#
+#   * `cargo build --bin viewport --bin viewport-shell-gtk` and then
+#     `scripts/integration.sh target/debug/viewport` — the `rust` job's
+#     Wayland integration tests. They start a real compositor and drive
+#     Wayland clients through it, which is the slowest thing in that job by
+#     far and not a cost to pay on every commit.
+#   * `nix build .#chromium` — the `rust` job's packaged build. It builds the
+#     shipped derivation in release: the wrapper, the data files and the
+#     out-of-process shell. CI has a runner for that; a commit does not.
+#   * The `excluded-crates` job. The CEF and Servo crates sit outside the
+#     workspace with locks of their own, so no `cargo` step here sees them;
+#     the CEF build compiles libcef_dll against 1.3 GB of engine and the
+#     Servo half is not built anywhere at all.
+#   * The AddressSanitizer job, which builds its own instrumented toolchain.
 #
 # Enable it once per clone:
 #
