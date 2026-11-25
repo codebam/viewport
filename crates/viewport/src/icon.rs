@@ -309,15 +309,29 @@ pub fn lookup(name: &str, theme_path: Option<&str>, theme: &str, size: u32) -> O
 
 /// The directories icon themes are installed into, most specific first.
 fn bases() -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
-    if let Some(home) = std::env::var_os("HOME") {
-        dirs.push(PathBuf::from(&home).join(".local/share/icons"));
-        // Deprecated for twenty years and still full on real machines.
-        dirs.push(PathBuf::from(&home).join(".icons"));
-    }
-    let data =
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let data_home = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from);
+    let data_dirs =
         std::env::var("XDG_DATA_DIRS").unwrap_or_else(|_| "/usr/local/share:/usr/share".to_owned());
-    for dir in data.split(':').filter(|d| !d.is_empty()) {
+    bases_from(home.as_deref(), data_home.as_deref(), &data_dirs)
+}
+
+/// One explicit set of XDG locations, so the search order is testable without
+/// changing the process's environment.
+fn bases_from(home: Option<&Path>, data_home: Option<&Path>, data_dirs: &str) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    let data_home = data_home
+        .filter(|path| !path.as_os_str().is_empty())
+        .map(Path::to_path_buf)
+        .or_else(|| home.map(|home| home.join(".local/share")));
+    if let Some(data_home) = data_home {
+        dirs.push(data_home.join("icons"));
+    }
+    if let Some(home) = home {
+        // Deprecated for twenty years and still full on real machines.
+        dirs.push(home.join(".icons"));
+    }
+    for dir in data_dirs.split(':').filter(|d| !d.is_empty()) {
         dirs.push(PathBuf::from(dir).join("icons"));
         dirs.push(PathBuf::from(dir).join("pixmaps"));
     }
@@ -685,6 +699,24 @@ fn base64(data: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_custom_data_home_replaces_the_default_icon_directory() {
+        let dirs = bases_from(
+            Some(Path::new("/home/user")),
+            Some(Path::new("/state")),
+            "/usr/share",
+        );
+        assert_eq!(
+            dirs,
+            [
+                PathBuf::from("/state/icons"),
+                PathBuf::from("/home/user/.icons"),
+                PathBuf::from("/usr/share/icons"),
+                PathBuf::from("/usr/share/pixmaps"),
+            ]
+        );
+    }
 
     #[test]
     fn base64_matches_the_examples_from_the_rfc() {
