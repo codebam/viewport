@@ -29,9 +29,9 @@ without breaking one.
 
 ### The IPC protocol
 
-The message vocabulary in `crates/viewport-ipc` — as of 0.10.0, 110
-`Request` variants and 43 `Event` variants, 152 distinct wire names
-(`shell.command` travels both ways) — on both transports: the page bridge
+The message vocabulary in `crates/viewport-ipc` — as of 0.11.0, 110
+`Request` variants and 43 `Event` variants, 150 distinct wire names
+(`session.lock`, `session.unlock` and `shell.command` travel both ways) — on both transports: the page bridge
 and the control socket, which speak the same set. The wire names, the
 field names, the field meanings and the documented defaults are the
 contract. `docs/ipc.md` is its reference; the MIT licence on
