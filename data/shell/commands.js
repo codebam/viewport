@@ -1450,6 +1450,14 @@ function dispatchViewport(message) {
 
     case 'output.layout':
       syncOutputs(message.outputs);
+      /* A lock screen is built from the outputs that exist when it goes up,
+         and nothing re-sends the lock when one comes or goes: Rust
+         re-announces it only from a session query, while a monitor unplugged,
+         a mode applied or a layer surface arriving announces this and nothing
+         else. Without the redraw the password box can be stranded on a screen
+         nobody can see. It is keyed, so a layout that changed nothing leaves
+         the caret where it is. */
+      refreshLockScreenForLayout();
       if (initialConfigReady) send({ type: 'view.query' });
       /* The panel's Displays section is drawn from these, so a monitor
          unplugged — or a mode that has just been applied — redraws it. */

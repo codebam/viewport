@@ -6604,6 +6604,13 @@ if (mode === 'scrolling') {
      side, an output the page does not cover is drawn black rather than left
      showing the desktop, so a pane is the only thing that says what happened
      on it. */
+  /* Say which screen is being looked at before the layout moves, so the box
+     has a decided home for the checks below. */
+  emit({ type: 'shell.command', command: 'output.focus', args: ['DP-1'] });
+  /* Something is already in the box, so a redraw can be caught losing it. */
+  field().value = 'half-typed';
+  (field().listeners.input ?? []).forEach((fn) => fn({ target: field() }));
+
   emit({ type: 'output.layout', outputs: [
     { name: 'DP-1', x: 0, y: 0, width: 2560, height: 1440,
       usable_x: 0, usable_y: 30, usable_width: 2560, usable_height: 1410,
@@ -6612,14 +6619,54 @@ if (mode === 'scrolling') {
       usable_x: 2560, usable_y: 30, usable_width: 2560, usable_height: 1410,
       scale: 1, transform: 'normal', modes: [], enabled: true },
   ] });
-  emit({ type: 'shell.command', command: 'output.focus', args: ['DP-1'] });
-  emit({ type: 'session.lock', generation: 7, can_authenticate: true });
+  /* No second `session.lock`: the layout moved, and the lock screen has to
+     follow it on its own. Rust only re-sends the lock from a session query,
+     and a monitor coming or going announces `output.layout` alone. */
   check('every monitor gets a pane', lockEl.children.length === 2);
   check('and each one is docked to its own corner of the layout',
     lockEl.children[1].style.left === '2560px');
   const boxes = lockEl.children.filter((el) => !!el.querySelector('lock-input'));
   check('but only one password box, on the screen being looked at',
     boxes.length === 1);
+  check('and what was already typed survives the redraw',
+    field()?.value === 'half-typed');
+
+  /* Put the box on the second monitor, so that the pane it is in can be the
+     one that goes away. Focus moves first; the next layout announcement is
+     what redraws the panes onto the screen being looked at. */
+  emit({ type: 'shell.command', command: 'output.focus', args: ['DP-2'] });
+  emit({ type: 'output.layout', outputs: [
+    { name: 'DP-1', x: 0, y: 0, width: 2560, height: 1440,
+      usable_x: 0, usable_y: 30, usable_width: 2560, usable_height: 1410,
+      scale: 1, transform: 'normal', modes: [], enabled: true },
+    { name: 'DP-2', x: 2560, y: 0, width: 2560, height: 1440,
+      usable_x: 2560, usable_y: 30, usable_width: 2560, usable_height: 1410,
+      scale: 1, transform: 'normal', modes: [], enabled: true },
+  ] });
+  check('the box follows the screen being looked at',
+    !!lockEl.children[1]?.querySelector('lock-input')
+      && !lockEl.children[0]?.querySelector('lock-input'));
+
+  /* The pane the box is in goes away while the session is locked. A locked
+     screen whose only password box is off every visible output is a session
+     with no way in but another VT — the compositor only re-sends the lock in
+     answer to a session query, and an unplug announces nothing else. */
+  emit({ type: 'output.layout', outputs: [
+    { name: 'DP-1', x: 100, y: 50, width: 2560, height: 1440,
+      usable_x: 100, usable_y: 80, usable_width: 2560, usable_height: 1410,
+      scale: 1, transform: 'normal', modes: [], enabled: true },
+  ] });
+  check('a monitor going away while locked re-draws the lock screen',
+    lockEl.children.length === 1);
+  check('and the password box lands on a monitor that is still there',
+    !!field());
+  check('in that monitor\'s own corner of the layout',
+    pane()?.style.left === '100px' && pane()?.style.top === '50px'
+      && pane()?.style.width === '2560px' && pane()?.style.height === '1440px');
+  check('still holding what was typed',
+    field()?.value === 'half-typed');
+  check('and still showing the last refusal',
+    messageEl()?.textContent === 'Sorry, try again.');
 
   /* A machine whose PAM could not be loaded still locks. It says so rather
      than silently swallowing every password, because the alternative is
