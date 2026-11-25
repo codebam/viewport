@@ -660,22 +660,28 @@ mod theme {
         }
 
         let base = base_directories();
+        find_in(&base, name, &current_theme())
+    }
+
+    /// Search one explicit theme chain, split out so the traversal order can
+    /// be tested without changing the process's sound-theme environment.
+    fn find_in(base: &[PathBuf], name: &str, root: &str) -> Option<PathBuf> {
         let mut seen = Vec::new();
-        let mut queue = vec![current_theme()];
+        let mut queue = std::collections::VecDeque::from([root.to_owned()]);
 
         // Breadth-first through the inheritance chain, which is a graph and
         // not a tree — two themes may inherit the same third, and one that
         // inherits itself would otherwise be an infinite loop.
-        while let Some(theme) = queue.pop() {
+        while let Some(theme) = queue.pop_front() {
             if seen.contains(&theme) {
                 continue;
             }
-            for directory in &base {
+            for directory in base {
                 if let Some(found) = look_in(&directory.join(&theme), name) {
                     return Some(found);
                 }
             }
-            queue.extend(inherits(&base, &theme));
+            queue.extend(inherits(base, &theme));
             seen.push(theme);
         }
 
@@ -807,6 +813,38 @@ mod theme {
             // has to fall through to the theme that carries the rest.
             let parents = inherits(&[], "some-partial-theme");
             assert_eq!(parents, vec![DEFAULT.to_owned()]);
+        }
+
+        #[test]
+        fn inherited_siblings_are_searched_before_a_deeper_parent() {
+            let dir = std::env::temp_dir().join(format!(
+                "viewport-sound-theme-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            for theme in ["root", "first", "second", "nested"] {
+                std::fs::create_dir_all(dir.join(theme)).expect("a theme directory");
+            }
+            std::fs::write(
+                dir.join("root/index.theme"),
+                "[Desktop Entry]\nInherits=second,first\n",
+            )
+            .expect("the root's parents");
+            std::fs::write(
+                dir.join("first/index.theme"),
+                "[Desktop Entry]\nInherits=nested\n",
+            )
+            .expect("the first parent's child");
+            std::fs::write(dir.join("second/bell.oga"), b"").expect("the sibling's sound");
+            std::fs::write(dir.join("nested/bell.oga"), b"").expect("the deeper sound");
+
+            assert_eq!(
+                find_in(std::slice::from_ref(&dir), "bell", "root"),
+                Some(dir.join("second/bell.oga")),
+                "breadth-first order keeps the earlier sibling ahead of a nested parent"
+            );
+            let _ = std::fs::remove_dir_all(&dir);
         }
 
         #[test]
