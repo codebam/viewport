@@ -42,6 +42,39 @@ to summarise rather than to duplicate.
 
 ### Fixed
 
+- The lock screen follows the outputs: a monitor unplugged, moved or
+  reconfigured while the session is locked re-draws the panes, so the
+  password box cannot be stranded on a screen nobody can see.
+- A monitor that drops and reconnects (every DisplayPort wake) comes back on
+  the workspace it was showing instead of the starting one.
+- A layout announcement that changed nothing no longer tears down and
+  re-applies every wallpaper extension; the background restarts only when the
+  selection actually changed.
+- A refused `config.save` is shown in the settings panel in the compositor's
+  words, not as the standing "not saved yet" hint.
+- Quitting, powering off or rebooting writes the pending arrangement before
+  the message that ends the session, so the last second of layout is not
+  lost.
+- HDR is refused on an output whose renderer has no colour pipeline (the
+  conversion is Vulkan-only), so a session on GLES can no longer put a panel
+  into BT.2020/PQ and light it with an SDR image while telling every client
+  it is HDR.
+- A shell restart no longer prints a 0-fps second: the rate mark is reset
+  with the frame count, so the first window after a restart is measured
+  against the new page.
+- A config reload that names no `lid` leaves the runtime lid policy and the
+  announced value alone, so `config.lid --action ignore` is not undone by an
+  unrelated edit.
+- A cleared extension registry or workspace rule set is saved as an empty
+  collection rather than omitted, so the clear survives the next start
+  instead of coming back from the file.
+- A locked session refuses `view.close`, `output.configure`, the tray actions
+  and notification actions, which previously acted behind the lock screen;
+  every request is now either refused while locked or allowed on purpose.
+- A destroyed shell or wallpaper surface can no longer reach the backends'
+  presentation-feedback, dmabuf-feedback or frame-callback passes, where it
+  panicked the same way a dead lock surface did.
+
 - A client that floods `zwlr_screencopy_v1` with copies, or
   `ext-image-copy-capture` with frames, can no longer make the compositor
   serve the whole backlog of offscreen composites and framebuffer readbacks

@@ -760,3 +760,156 @@ code that landed after the first. Base `4b75e40c`.
   refused past the bound, the session survives, and an ordinary capture is
   still served; with the bound removed the same probe serves all
   thirty-two.
+
+- [x] **76. The lock screen was drawn once per lock and never followed the
+  outputs.** `data/shell/lock.js` built its panes from the outputs as they
+  stood when the lock arrived, and nothing re-rendered them: Rust re-sends
+  the lock only from a session query, while a monitor unplugged, a mode
+  applied or a layer surface arriving announces only `output.layout`. A
+  screen that dropped or a layout that moved while locked could leave the
+  password box off every visible output — a locked session with no way in
+  but another VT. The layout announcement now re-renders the panes,
+  preserving the typed password and the last refusal; the redraw is keyed on
+  the output rectangles and the active output, so a layer-shell change that
+  moved nothing does not take the caret. `data/shell/lock.js`,
+  `data/shell/commands.js`; pinned by the lock block in
+  `tests/shell.test.js`.
+
+- [x] **77. A monitor that dropped and reconnected forgot its
+  workspace.** `data/shell/outputs.js` gave every newly created output
+  record `startingWorkspace`, and a DPMS wake deletes the record and
+  announces the same name back (docs/ipc.md's DisplayPort note), so the desk
+  came back on the starting workspace while the one it was showing was
+  hosted by nobody — and the next session save wrote the reset down, making
+  the loss permanent. The workspace a name was last showing now outlives the
+  record and is restored on re-add, unless another monitor has claimed it in
+  the meantime. `data/shell/outputs.js`, `data/shell/session.js`,
+  `data/shell/state.js`; pinned by the restore-drop-re-add case in
+  `tests/shell.test.js`.
+
+- [x] **78. Every layout announcement tore down and re-applied every
+  wallpaper extension.** `data/shell/commands.js` sends `view.query` on
+  every `output.layout`, the answer carries `config`, and the wallpaper arm
+  ran the old `clear` then `apply` unconditionally — where `syncCustomWidget`
+  already guards on a selection key. Rust announces the layout from every
+  layer-shell change, so an unrelated overlay restarted the background's
+  animation, re-applied its options and re-rasterised a frame. The selection
+  is now keyed per output (extension, resolved descriptor, options as text)
+  and skipped when unchanged; a descriptor that registers late still mounts.
+  Pinned by the wallpaper block in `tests/shell.test.js`.
+
+- [x] **79. A refused `config.save` was drawn as the standing "not saved
+  yet" hint.** `data/shell/settings.js` set `settingsSaved = null` and sent;
+  the footer renders null as the hint, and the shell's `error` case only
+  logged. A save that failed (no config path, read-only home, full disk)
+  looked exactly like one that had not been tried, so the user walked away
+  believing the settings were on disk. A `config.save` refusal now sets its
+  own error state and the footer says "Not saved: <the compositor's
+  words>", cleared by the next attempt and by a successful save. Pinned in
+  `tests/shell.test.js`.
+
+- [x] **80. Quitting lost the last second of arrangement.** `session.save`
+  is debounced one second; `data/shell/power.js` sent `quit` immediately and
+  the compositor exits without ever asking for the file, so a window closed
+  in that second came back as an unclaimed slot and one opened came back
+  unplaced. The debounce now has a flush: quitting, powering off and
+  rebooting write the pending arrangement before the message that ends the
+  session, and `pagehide` does the same for a page being torn down. Pinned
+  in `tests/shell.test.js`.
+
+- [x] **81. HDR could be switched on for a renderer with no colour
+  pipeline.** `state/output_controls.rs`'s `set_hdr` and `hdr_capable` asked
+  `render:cm_enabled` and the connector, never the renderer, while the
+  BT.2020/PQ conversion is Vulkan-only and GLES's `ColourSettings` is two
+  empty functions. A session that fell back to GLES (a VM,
+  `VIEWPORT_RENDERER=gles`, a failed bring-up) programmed the panel into PQ,
+  lit it with an SDR image, recorded the output as HDR and told every client
+  and the shell so — washed out until switched off, with nothing saying why.
+  `Gpu::colour_managed` now answers the question, both the session-level
+  capability and the per-card check ask it, and `auto_hdr` follows the
+  capability. Pinned by
+  `hdr_is_refused_when_the_renderer_has_no_colour_pipeline`.
+
+- [x] **82. A shell restart printed a 0-fps second.** The two restart paths
+  (`state/shell_lifecycle.rs`, `shell_client.rs`) zeroed `shell_frames` and
+  cleared the pacing ring but left `shell_rate_mark` holding the old page's
+  total, so the first window afterwards was a subtraction from a count that
+  no longer existed, printed beside the new ring's count — the pairing
+  docs/benchmarks.md promises. Both resets now clear the mark with the
+  count; pinned by `every_shell_frame_reset_also_resets_the_rate_mark`.
+
+- [x] **83. A config reload reverted the lid policy the socket had
+  set.** The lid block in `state/config_apply.rs` took its `None` arm — the
+  file names no `lid` — straight to `default_for(...)` and applied it,
+  unlike every other runtime-settable block, and the carried name only
+  changed on the named path, so the announced config kept the old value. A
+  laptop kept awake with the lid shut by `config.lid --action ignore` locked
+  or suspended again after any reload while the panel still showed
+  "ignore". The startup default now lives in `main` before the file is
+  applied; a load applies only a `lid` the file names. Pinned by
+  `a_reload_only_applies_a_lid_the_file_names`.
+
+- [x] **84. `config.save` could not record a clear.** The overlay
+  construction wrote `layout_extensions: None` and `workspaces: None` when
+  the live sets were empty, and absent means "leave what the file said", so
+  clearing the rules or the extension registry and pressing Save brought
+  them back from the file at the next start — the failure FIXES #66 fixed
+  for five settings, one key generation later. Both are written as empty
+  collections now; pinned by
+  `a_cleared_registry_and_rule_set_are_saved_as_empty_not_absent`.
+
+- [x] **85. A locked session still acted on five requests.**
+  `apply.rs`'s locked gate refused a hand-picked list, and the acting
+  requests added since — `view.close`, `output.configure`, `tray.activate`,
+  `tray.menu` and `notification.action` — were not on it, though the gate's
+  own doc claims the wider rule. A trusted-but-wrong sender could close the
+  focused window, reconfigure a monitor or fire a notification's action
+  behind a lock. All five are refused now, and the family has the test it
+  never had: a walk over every `Request` variant fails on one that is
+  neither refused while locked nor allowed with a written reason
+  (`every_request_is_refused_while_locked_or_allowed_on_purpose`).
+
+- [x] **86. Nothing tied a `viewport msg` row's field list to its
+  variant.** The row fields were hand-written strings and the completeness
+  test derived only *type* names from `request.rs`, which is how FIXES #56
+  and #70 stayed silent until a user hit them. A source walk now reads every
+  variant's serde field names — through `#[serde(flatten)]`, the nested
+  `ViewLayout`/`OutputConfigure` shapes and the geometry `PartialBox` — and
+  compares them against the row, with an explicit list for the JSON-blob
+  fields whose spelling is part of their type. `crates/viewport/src/msg.rs`.
+
+- [x] **87. `docs/ipc.md`'s event rows lagged the wire.** `view.props`
+  omitted `icon` and `content`, `status.update` omitted `mounts`,
+  `view.layout` omitted `square`, and the drift test the docs never had
+  found four more on `view.added` and `screencast.pick`. An alternative
+  shell — the audience docs/stability.md names — could not implement
+  content-type rules or the per-mount disk widget and drew smart-radius
+  windows with cut corners. The rows now name every serialized member, and
+  a test holds each row to the fields its variant sends, so the next added
+  field cannot go unnamed. `docs/ipc.md`, `crates/viewport-ipc/src/lib.rs`.
+
+- [x] **88. `docs/ipc.md`'s "what is written" list omitted the two newest
+  settings.** The one user-facing statement of what survives a restart
+  named 36 keys and stopped; `wallpaper_options` and `game_mode` were
+  missing. The list now names them and a test compares it with the overlay's
+  serialized keys. `docs/ipc.md`, `crates/viewport/src/settings.rs`.
+
+- [x] **89. The docs promised a tolerance the parser never had.**
+  `docs/ipc.md` said a wrong-typed member "is treated as absent, so it takes
+  the documented default", and `docs/stability.md` listed that among the
+  contract's tolerance rules — but the parser is a plain serde
+  `from_slice`, which refuses the whole message, and the crate's own test
+  pins the strict rule. The documents now say what happens (the message is
+  refused and the error names the type) rather than a defaulting behaviour
+  nobody implemented. `docs/ipc.md`, `docs/stability.md`.
+
+- [x] **90. The backends walked client surface lists without the live
+  filter.** The state's per-frame walks keep only `alive()` surfaces
+  (FIXES #3), and a guard test asserted it — over two files, while
+  `udev.rs` and `winit.rs` walked the same shell and wallpaper lists raw in
+  eight places. A destroyed shell or wallpaper surface reaching a
+  presentation-feedback, dmabuf-feedback or frame-callback pass panics in
+  Smithay the same way it does anywhere else. All eight walks now go through
+  `live_surfaces`, and the guard test names both backend files so the next
+  one cannot be added raw. `crates/viewport/src/udev.rs`,
+  `crates/viewport/src/winit.rs`, `crates/viewport/src/state/frame_barriers.rs`.
