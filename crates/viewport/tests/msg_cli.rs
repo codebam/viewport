@@ -144,6 +144,53 @@ fn a_refusal_from_the_handler_comes_back_as_a_failure() {
     assert!(accepted.status.success(), "{}", stderr(&accepted));
 }
 
+/// The colour conversion an HDR output needs is the renderer's, and only the
+/// Vulkan one has it: `ColourSettings` for GLES is two empty functions, so a
+/// display programmed into BT.2020/PQ there is lit with an SDR image — washed
+/// out — while every client is told it is HDR. The connector can say it takes
+/// HDR and the renderer still cannot deliver it, so the refusal has to name
+/// the renderer.
+///
+/// A headless compositor draws with GLES (see `headless::renderer`), which is
+/// what makes the refusal pinnable here: a real session that fell back to
+/// OpenGL — a VM, `VIEWPORT_RENDERER=gles`, a Vulkan bring-up failure — takes
+/// the same path, and it has no DRM output a test could stand up.
+#[test]
+fn hdr_is_refused_when_the_renderer_has_no_colour_pipeline() {
+    let compositor = Compositor::for_msg("hdr-gles");
+
+    let output = compositor.msg(&[
+        "-t",
+        "output.hdr",
+        "--name",
+        "HEADLESS-1",
+        "--enabled",
+        "true",
+    ]);
+
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("no colour pipeline"),
+        "the refusal has to say the renderer is why: {}",
+        stderr(&output)
+    );
+
+    // And nothing records a screen in HDR that is drawing SDR: the layout is
+    // what the shell draws its badge from, and `hdr_capable` is what offers
+    // the toggle — and what `sync_auto_hdr` consults before switching one on.
+    let layout = compositor.msg(&["-t", "output.query"]);
+    assert!(layout.status.success(), "{}", stderr(&layout));
+    let printed = lines(&layout);
+    let headless = printed[0]["outputs"]
+        .as_array()
+        .expect("an outputs array")
+        .iter()
+        .find(|output| output["name"] == "HEADLESS-1")
+        .expect("the headless output");
+    assert_eq!(headless["hdr"], false, "{headless}");
+    assert_eq!(headless["hdr_capable"], false, "{headless}");
+}
+
 /// `--raw` is the escape hatch, and it goes through the compositor's own parser
 /// on the way out — so a message it would refuse is refused here, where the
 /// complaint lands on the terminal that typed it.

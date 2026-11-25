@@ -14,6 +14,21 @@ impl ViewportState {
             .unwrap_or(false)
     }
 
+    /// Whether any renderer this session draws through has a colour pipeline.
+    ///
+    /// The DRM backend keeps one renderer per card and falls back to GLES on
+    /// a card whose Vulkan cannot drive its outputs, so `hdr_capable` and
+    /// `set_hdr` ask the card an output is on as well; this is the session's
+    /// own answer, which is all a backend with no per-output renderer — the
+    /// headless and nested ones, both GLES — has to give.
+    pub fn renderer_colour_managed(&self) -> bool {
+        self.udev.as_ref().is_some_and(|udev| {
+            udev.devices
+                .iter()
+                .any(|device| device.renderer.colour_managed())
+        })
+    }
+
     /// Whether an output's display would accept HDR at all.
     ///
     /// Read from the connector rather than remembered, because it is a
@@ -25,6 +40,13 @@ impl ViewportState {
         // things it manages, and a toggle that cannot be honoured is a
         // switch that does nothing.
         if !self.cm_enabled {
+            return false;
+        }
+        // `cm_enabled` says the pipeline was asked for, not that the renderer
+        // driving this screen has one. GLES applies none of it — the
+        // conversion is Vulkan-only — so offering the switch there is
+        // offering a panel lit with an SDR image interpreted as PQ.
+        if !self.renderer_colour_managed() {
             return false;
         }
         self.udev
@@ -40,7 +62,14 @@ impl ViewportState {
                     .outputs()
                     .find(|(_, surface)| surface.output.name() == name)
                     .map(|(id, surface)| (id, surface.connector))?;
-                let device = udev.devices.get(id.device)?.manager.device();
+                let gpu = udev.devices.get(id.device)?;
+                // And the renderer on that card: the session has one answer
+                // above, but a second card can have fallen back to GLES while
+                // the first is Vulkan, and this screen is drawn by the second.
+                if !gpu.renderer.colour_managed() {
+                    return None;
+                }
+                let device = gpu.manager.device();
                 Some(crate::hdr::capable(device, connector))
             })
             .unwrap_or(false)
@@ -55,6 +84,20 @@ impl ViewportState {
     pub fn set_hdr(&mut self, name: &str, enabled: bool) -> anyhow::Result<()> {
         if !self.cm_enabled {
             anyhow::bail!("colour management is switched off (render:cm_enabled)");
+        }
+        // Before the connector is touched: the conversion this switch exists
+        // for is the renderer's, and only Vulkan has one. A session on GLES —
+        // a virtual machine, `VIEWPORT_RENDERER=gles`, or a Vulkan bring-up
+        // that fell back — would otherwise program the panel into PQ, light
+        // it with an SDR image, record the output as HDR and tell every client
+        // and the shell so. Say why instead of doing it.
+        if !self.renderer_colour_managed() {
+            let reason = format!(
+                "{name}: the renderer has no colour pipeline (OpenGL); \
+                 HDR needs the Vulkan renderer"
+            );
+            tracing::warn!("{reason}");
+            anyhow::bail!(reason);
         }
         let Some(udev) = self.udev.as_mut() else {
             anyhow::bail!("HDR needs the drm backend");
@@ -83,6 +126,17 @@ impl ViewportState {
         let Some(gpu) = udev.devices.get_mut(crtc.device) else {
             anyhow::bail!("no such gpu");
         };
+        // The session-level answer above is not enough for this screen: this
+        // card can have fallen back to GLES while the first one is Vulkan.
+        if !gpu.renderer.colour_managed() {
+            let reason = format!(
+                "{name}: the renderer on gpu {} has no colour pipeline (OpenGL); \
+                 HDR needs the Vulkan renderer",
+                crtc.device
+            );
+            tracing::warn!("{reason}");
+            anyhow::bail!(reason);
+        }
         let device = gpu.manager.device();
         if !crate::hdr::capable(device, connector) {
             anyhow::bail!("the display does not offer BT.2020 with PQ metadata");
