@@ -185,3 +185,52 @@ pub fn load() -> String {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The startup read is bounded and refuses a symlink at the final path.
+    /// Both are security boundaries: the state directory is private, but another
+    /// process of the same user can still replace its contents with a link or an
+    /// enormous file before the compositor starts.
+    #[test]
+    fn a_session_is_small_regular_data_and_not_a_symlink() {
+        let dir = std::env::temp_dir().join(format!(
+            "viewport-session-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        let regular = dir.join("regular.json");
+        std::fs::write(&regular, b"layout").expect("a small session");
+        assert_eq!(
+            read_bounded(&regular).expect("a small regular session"),
+            "layout"
+        );
+
+        let link = dir.join("session.json");
+        std::os::unix::fs::symlink(&regular, &link).expect("a session symlink");
+        assert!(
+            read_bounded(&link).is_err(),
+            "a symlink must not be followed"
+        );
+        std::fs::remove_file(&link).expect("remove the symlink");
+
+        let oversized = dir.join("oversized.json");
+        let file = std::fs::File::create(&oversized).expect("a large session");
+        file.set_len(MAX_SESSION_BYTES as u64 + 1)
+            .expect("its reported size");
+        drop(file);
+        assert_eq!(
+            read_bounded(&oversized).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidData,
+            "a file past the cap must be refused before its contents are read"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
