@@ -3,6 +3,38 @@
 // Applying a reloaded configuration to live compositor state.
 // Included by `state.rs` to share the state module's imports and privacy.
 
+/// What a config load does to the lid policy, and to the name the `config`
+/// event carries.
+///
+/// `file_lid` is the file's own value — absent included — `current` is the
+/// policy in force and `announced` is the name the panel was last told. A file
+/// that names a valid action replaces both; anything else, whether no key at
+/// all or a name `LidAction::parse` refuses, leaves both exactly where they
+/// were.
+///
+/// The absent case is the whole point. The file is a patch: absence must not
+/// overwrite what a runtime setter put in place, or a laptop used with the lid
+/// shut (`config.lid --action ignore`) would lock, blank or suspend again on
+/// the next hinge close after somebody edited any other line — while the panel
+/// still showed "ignore". What an absent key means at *startup* (lock with a
+/// locker, blank without) is worked out once in `main`, before the file is
+/// applied.
+///
+/// A free function because `ViewportState` cannot be built in a unit test.
+fn lid_after_file(
+    file_lid: Option<&str>,
+    current: crate::power::LidAction,
+    announced: Option<String>,
+) -> (crate::power::LidAction, Option<String>) {
+    match file_lid {
+        Some(name) => match crate::power::LidAction::parse(name) {
+            Some(action) => (action, Some(name.to_owned())),
+            None => (current, announced),
+        },
+        None => (current, announced),
+    }
+}
+
 impl ViewportState {
     /// Apply a config file over the built-in defaults.
     ///
@@ -679,22 +711,21 @@ impl ViewportState {
         // tick, which only does it while one of its triggers holds.
         self.apply_idle_settings();
 
-        let lid = match file.lid.as_deref() {
-            Some(name) => match crate::power::LidAction::parse(name) {
-                Some(action) => {
-                    self.config.lid = Some(name.to_owned());
-                    action
-                }
-                None => {
-                    tracing::warn!(
-                        "lid: {name:?} is not ignore, lock, blank or suspend; leaving as {:?}",
-                        self.lid
-                    );
+        // The lid policy is a patch like every other key: the file's `lid`
+        // applies when it names one, and a load that names none leaves the
+        // live policy and the announced name exactly where they were. The
+        // absent-key default is not re-derived here — see `lid_after_file`
+        // and the one place it belongs, the startup in `main`.
+        if let Some(name) = file.lid.as_deref() {
+            if crate::power::LidAction::parse(name).is_none() {
+                tracing::warn!(
+                    "lid: {name:?} is not ignore, lock, blank or suspend; leaving as {:?}",
                     self.lid
-                }
-            },
-            None => crate::power::LidAction::default_for(self.idle_settings.lock_command.is_some()),
-        };
+                );
+            }
+        }
+        let (lid, announced) = lid_after_file(file.lid.as_deref(), self.lid, self.config.lid.clone());
+        self.config.lid = announced;
         self.apply_lid(lid);
 
         // The cursor theme, resolved against what is already loaded rather
@@ -1527,4 +1558,40 @@ fn validated_bezier(what: &str, bezier: Option<[f64; 4]>) -> Option<[f64; 4]> {
         return None;
     }
     Some(bezier)
+}
+
+#[cfg(test)]
+mod lid_reload_tests {
+    use super::lid_after_file;
+    use crate::power::LidAction;
+
+    /// The three shapes a reload can present: a named action, no key, and a
+    /// name that is not an action.
+    ///
+    /// The absent case is the bug this pins. A runtime `config.lid --action
+    /// ignore` on a laptop used with the lid shut must survive any reload that
+    /// names no `lid` — the runtime tier lives until the next *start*, not the
+    /// next reload — and the `config` event must go on saying "ignore", since
+    /// the hinge still does.
+    #[test]
+    fn a_reload_only_applies_a_lid_the_file_names() {
+        // Named: it applies, and the event carries that name.
+        assert_eq!(
+            lid_after_file(Some("suspend"), LidAction::Ignore, Some("ignore".to_owned())),
+            (LidAction::Suspend, Some("suspend".to_owned()))
+        );
+
+        // Silent: both the live policy and the announced name stand.
+        assert_eq!(
+            lid_after_file(None, LidAction::Ignore, Some("ignore".to_owned())),
+            (LidAction::Ignore, Some("ignore".to_owned()))
+        );
+
+        // Named but not an action: the same, with the warning made by the
+        // caller — this function is pure and has no log to write to.
+        assert_eq!(
+            lid_after_file(Some("nap"), LidAction::Blank, Some("blank".to_owned())),
+            (LidAction::Blank, Some("blank".to_owned()))
+        );
+    }
 }
