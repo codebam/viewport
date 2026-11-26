@@ -967,3 +967,56 @@ code that landed after the first. Base `4b75e40c`.
   `live_lock_surfaces()` on every virtual output. Pinned by the accepted,
   refused and stale-surface frame-callback assertions in
   `tests/lock-lifecycle.test.sh` and the strengthened `lock-takeover` test.
+
+## Pointer capture pass (2026-11-26)
+
+The defect a desk note named — "pointer lock doesn't auto release" — rather
+than an audit: it was found by using the compositor, and the proof is a probe
+against a real client. Base `e1b95a6d`.
+
+- [x] **95. A pointer lock outlived the window that asked for it.**
+  `zwp_pointer_constraints_v1` lets the compositor end a lock at any time and
+  tells the client with `unlocked`; nothing in this tree ever called
+  `deactivate`. The omission is a consequence of a deliberate promise:
+  `ViewportState::refresh_pointer_focus` (`crates/viewport/src/state.rs`)
+  refuses to re-aim a captured pointer, because a position is aim to the
+  client that asked for one, and that is the property `FIXES` #64 exists for.
+  The motion it skips is also the `wl_pointer.leave` Smithay ends a constraint
+  on (`src/wayland/seat/pointer.rs:283-297` in the fork), so a lock was ended
+  by the client destroying it and by nothing else. Every other way the desk
+  moves on — the shell hiding a window (`view.visible:false`, which is what a
+  workspace switch and a minimized window send; `data/shell/geometry.js`), the
+  keyboard going to another window, the overview or a launcher — left the
+  capture standing: the cursor stayed hidden, the next click landed in a
+  window that was no longer on screen, and the client that could give the
+  pointer back no longer had the keyboard to be asked for it.
+
+  Fixed in `state.rs` by `end_pointer_capture`, which sends `unlocked` for an
+  active locked constraint, and the callers that say when one is over:
+  `release_capture_of` for a window the shell puts away (the
+  `view.visible:false` arm and `set_view_minimized`, both in `apply.rs`),
+  `end_capture_if_keyboard_left` for the keyboard moving to another window or
+  to a surface that is not a window at all, asked at the top of
+  `refresh_pointer_focus` and after `focus_view` (`apply.rs`), the overview
+  arm, and `focus_layer_if_exclusive` (`handlers/layer_shell.rs`); and
+  `release_any_capture` where the desk is handed to the page rather than to
+  any window. `may_capture` is the half that makes it stick: the motion path
+  activates an inactive constraint by design (that was #57's fix, and it is
+  what keeps a lock asked for before the pointer arrives working), so a lock
+  ended by the compositor would be re-taken by the next motion over the same
+  window without it. `keyboard_holder`'s three answers are the whole policy —
+  a capture is kept while its window has the keyboard or is still what the
+  pointer is over, so a menu opening over a captured game does not end it
+  (`FIXES` #64), and ended once the keyboard is elsewhere or on the page.
+
+  **How it was verified.** `crates/viewport/tests/pointer_lock_release.rs`, a
+  dual-mode `harness = false` test like `confine_pointer_rule`: a real
+  `wayland-client` toplevel locks on `wl_pointer.enter`, reads `locked`,
+  `unlocked` and the pointer's leave, and the test drives the desk over the
+  control socket — `view.layout`, `view.focus`, `view.minimized`,
+  `view.visible`. On the parent it fails at the first put-away ("minimizing a
+  captured window left the lock held"); on the fix all four checks pass, one
+  of which pins the opposite property: an unrelated relayout under a held
+  capture hands the client neither a leave nor a position. The neighbouring
+  pointer suites (`confine_pointer_rule`, `minimize_idle_focus`,
+  `cursor_workspace_warp`, `windows_out_fade`) are unchanged and green.

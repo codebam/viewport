@@ -208,6 +208,17 @@ pub fn apply(state: &mut ViewportState, request: Request) {
                 // window's last frame stayed on screen until something else
                 // happened to cause a redraw.
                 state.needs_render = true;
+                // A window off the desk cannot hold the pointer. The page
+                // hides windows before it says where the keyboard goes — a
+                // workspace switch is the list going out before the focus
+                // comes back in — so the capture is released here, on the
+                // window, and not left to a focus change that may come a
+                // frame later or never.
+                state.release_capture_of(id);
+                // And the pointer's focus is recomputed: what it was on is
+                // gone from the space, so the leave is owed whether or not
+                // the window held a capture.
+                let _ = state.refresh_pointer_focus();
             }
         }
 
@@ -488,6 +499,12 @@ pub fn apply(state: &mut ViewportState, request: Request) {
 
         Request::ShellOverview { active } => {
             state.overview = active;
+            if active {
+                // The desk is a grid of miniatures and every click belongs to
+                // the page: a window's pointer capture would keep both, and
+                // the window that asked for it is not the one being used.
+                state.release_any_capture();
+            }
             // Every click belongs to the shell while the overview is up and to
             // the windows again when it is down, and neither transition
             // involves the pointer moving. Same reason as `set_shell_overlays`.
@@ -2421,6 +2438,13 @@ pub(crate) fn set_view_minimized(state: &mut ViewportState, id: u32, minimized: 
         }
         state.notify_focus(NO_VIEW);
     }
+    if minimized {
+        // The keyboard has left, and with it any capture the window held. A
+        // game that locked the pointer and was put away otherwise keeps the
+        // cursor hidden and the next click, with no window on screen to
+        // release it from.
+        state.release_capture_of(id);
+    }
     true
 }
 
@@ -3137,6 +3161,11 @@ pub fn focus_view(state: &mut ViewportState, id: u32) {
     }
     state.restack();
     state.notify_focus(id);
+    // Moving the keyboard is the other way a capture stops being the pointer
+    // of this desk: focus_view is the whole of the compositor's focus changes,
+    // and a locked window that is no longer the front of the desk must not go
+    // on holding the cursor. The refresh is what sends the leave.
+    let _ = state.refresh_pointer_focus();
     // The switch asked for the pointer here: the centre of the window just
     // focused, through the same absolute path a scripted move takes, so the
     // warp is subject to the same clamping and constraints as any other move.

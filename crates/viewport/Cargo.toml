@@ -34,6 +34,14 @@ harness = false
 name = "confine_pointer_rule"
 harness = false
 
+# Dual-mode: a real client locks the pointer and the test takes the window
+# away from it — minimized, then unfocused — asking for `unlocked` and the
+# pointer's leave each time, while a relayout under the capture must still
+# hand it neither.
+[[test]]
+name = "pointer_lock_release"
+harness = false
+
 # Dual-mode: a real client ignores the compositor's ping, is flagged
 # view.anr, and is disconnected when the dialog answers force quit.
 [[test]]
@@ -130,7 +138,11 @@ version = "0.31"
 
 [dependencies.wayland-protocols]
 version = "0.32"
-features = ["client", "staging"]
+# `unstable` is for the tests that speak a protocol the compositor serves but
+# does not name by hand: `pointer_lock_release` binds
+# zwp_pointer_constraints_v1 as a real client, and the module is behind that
+# feature.
+features = ["client", "staging", "unstable"]
 
 # To get at winit's `wl_display` and `wl_surface`, which is what that request
 # names. winit re-exports the same version; naming it here keeps the two from

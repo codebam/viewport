@@ -237,6 +237,21 @@ pub struct RememberedOutput {
     pub mode: Option<smithay::output::Mode>,
 }
 
+/// Where the keyboard is, as the pointer-capture policy needs it.
+///
+/// See `ViewportState::keyboard_holder`: the difference between `Nothing` and
+/// `Elsewhere` is the whole point, because a capture is ended for the one and
+/// kept for the other.
+enum KeyboardHolder {
+    /// No keyboard focus at all.
+    Nothing,
+    /// A window, named by its view.
+    View(u32),
+    /// A surface that stands for no window: the shell's page, a layer
+    /// surface, the lock screen.
+    Elsewhere,
+}
+
 pub struct ViewportState {
     pub start_time: std::time::Instant,
     pub socket_name: OsString,
@@ -2981,6 +2996,13 @@ impl ViewportState {
         let location = pointer.current_location();
         let under = self.surface_under(location);
 
+        // A capture whose window the keyboard has left is over before the
+        // question below is asked. Ending it here rather than only where the
+        // keyboard moves is what makes the release stick: every stack change
+        // already comes through this function, so a capture cannot outlive
+        // the focus in a frame the compositor never re-examined it in.
+        self.end_capture_if_keyboard_left();
+
         // A captured pointer is never re-aimed, whatever the stack did.
         //
         // The motion below is the composer's way of saying "the same pointer,
@@ -3056,6 +3078,135 @@ impl ViewportState {
             matches!(constraint.as_deref(), Some(PointerConstraint::Locked(_)))
                 && constraint.is_some_and(|constraint| constraint.is_active())
         })
+    }
+
+    /// End the pointer's capture if its window is one the desk has moved on
+    /// from.
+    ///
+    /// A lock is the compositor promising not to re-aim the pointer, and
+    /// [`Self::refresh_pointer_focus`] keeps that promise by not sending the
+    /// motion that would leave the surface — which is also the motion Smithay
+    /// ends a constraint on. So nothing else ends one: a window the shell
+    /// takes off the screen, or one whose keyboard goes to the overview or a
+    /// launcher, keeps a capture nobody is using, the cursor stays hidden,
+    /// and the next click lands in a window that is not there.
+    ///
+    /// `done` is asked about the view holding the capture; a lock that is not
+    /// active is not one to end, and a surface with no view behind it — the
+    /// shell's page, a layer surface — never holds one of these.
+    ///
+    /// Returns whether `unlocked` was sent. A caller outside
+    /// `refresh_pointer_focus` still has to recompute the pointer's focus
+    /// afterwards: ending the lock does not send the leave, it only makes it
+    /// allowed again.
+    fn end_pointer_capture(&mut self, done: impl FnOnce(u32) -> bool) -> bool {
+        use smithay::wayland::pointer_constraints::{with_pointer_constraint, PointerConstraint};
+
+        let Some(pointer) = self.seat.get_pointer() else {
+            return false;
+        };
+        let Some(surface) = pointer.current_focus() else {
+            return false;
+        };
+        let Some(held) = self.views.find_by_surface(&surface).map(|view| view.id) else {
+            return false;
+        };
+        if !done(held) {
+            return false;
+        }
+        let ended = with_pointer_constraint(&surface, &pointer, |constraint| {
+            let Some(constraint) = constraint else {
+                return false;
+            };
+            if !constraint.is_active() || !matches!(&*constraint, PointerConstraint::Locked(_)) {
+                return false;
+            }
+            constraint.deactivate();
+            true
+        });
+        if ended {
+            tracing::info!("pointer: a capture ended; view {held} is no longer the one in use");
+        }
+        ended
+    }
+
+    /// Where the keyboard is, as a capture policy needs it.
+    ///
+    /// A capture belongs to the window the person is on, and the keyboard is
+    /// how this compositor says which one that is. `Nothing` is not a verdict
+    /// — a lock is routinely asked for in the same frame the focus is set —
+    /// so only `Elsewhere`, or a different window, ends one. `Elsewhere` is
+    /// a surface that is not a window at all: the shell's page, a launcher,
+    /// the lock screen.
+    fn keyboard_holder(&self) -> KeyboardHolder {
+        let Some(keyboard) = self.seat.get_keyboard() else {
+            return KeyboardHolder::Nothing;
+        };
+        let Some(focus) = keyboard.current_focus() else {
+            return KeyboardHolder::Nothing;
+        };
+        match self.views.find_by_surface(focus.surface()) {
+            Some(view) => KeyboardHolder::View(view.id),
+            None => KeyboardHolder::Elsewhere,
+        }
+    }
+
+    /// End a capture the keyboard has already left.
+    ///
+    /// The other half of the same policy: a window keeps its lock while it is
+    /// the one with the keyboard or still what the pointer is over, so a menu
+    /// opening over a captured game does not end the capture (`FIXES` #64).
+    /// Once the keyboard is on another window — or on the shell page, which
+    /// is what the overview and a launcher give it — the capture is a pointer
+    /// this desk no longer has a use for.
+    fn end_capture_if_keyboard_left(&mut self) {
+        let keep = match self.keyboard_holder() {
+            KeyboardHolder::Nothing => return,
+            KeyboardHolder::View(focused) => Some(focused),
+            KeyboardHolder::Elsewhere => None,
+        };
+        self.end_pointer_capture(|held| Some(held) != keep);
+    }
+
+    /// End a capture held by a window that is being put away.
+    ///
+    /// `view.visible false` and `view.minimized true` reach the compositor
+    /// from the shell, which is how a workspace switch, a minimize and a
+    /// close all arrive. The keyboard need not have moved yet — a page hides
+    /// the windows before it says where the focus goes — so this asks about
+    /// the window, not about the focus, and recomputes the pointer's focus
+    /// itself: the hide is the event, and nothing else would recompute it
+    /// until the person moved a mouse they cannot see.
+    pub(crate) fn release_capture_of(&mut self, id: u32) {
+        if self.end_pointer_capture(|held| held == id) {
+            let _ = self.refresh_pointer_focus();
+        }
+    }
+
+    /// End whatever capture the pointer holds, and re-aim it.
+    ///
+    /// For the desk being handed to the shell page — the overview, a
+    /// launcher — where no window is the one being used, whichever view the
+    /// capture names.
+    pub(crate) fn release_any_capture(&mut self) {
+        if self.end_pointer_capture(|_held| true) {
+            let _ = self.refresh_pointer_focus();
+        }
+    }
+
+    /// Whether a capture on `view` may be taken right now.
+    ///
+    /// The activation half of [`Self::end_capture_if_keyboard_left`]: a lock
+    /// that was ended because the keyboard moved must not be re-taken by the
+    /// next motion over the same window, or the release would last one mouse
+    /// move. `Nothing` stays allowed for the same reason it is not a verdict
+    /// there.
+    pub(crate) fn may_capture(&self, view: u32) -> bool {
+        match self.keyboard_holder() {
+            KeyboardHolder::Nothing => true,
+            KeyboardHolder::View(focused) => focused == view,
+            KeyboardHolder::Elsewhere => false,
+        }
     }
 
     /// Longest a shell may go without a sample when nothing it draws changed.

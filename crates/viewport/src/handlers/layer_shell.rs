@@ -307,6 +307,11 @@ impl ViewportState {
         // The shell draws focus rings from this, and a layer surface is not
         // one of its views — so it has to hear that no view holds focus now.
         self.notify_focus(crate::views::NO_VIEW);
+        // A launcher that takes the keyboard is the desk being used, and a
+        // window's pointer capture belongs to the window that had it. Left
+        // alone, the capture keeps the cursor hidden and every click aimed
+        // at a window behind the launcher.
+        self.release_any_capture();
     }
 
     /// The part of an output windows may use, after exclusive zones.

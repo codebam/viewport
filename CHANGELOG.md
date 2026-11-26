@@ -42,6 +42,23 @@ to summarise rather than to duplicate.
 
 ### Fixed
 
+- A pointer lock no longer outlives the window that asked for it. The
+  compositor deliberately does not re-aim a captured pointer — a position is
+  aim to the client that holds the lock — and that also suppressed the
+  `wl_pointer.leave` the capture would otherwise end on, so a lock survived
+  everything short of the client destroying it: a window the shell took off
+  the screen (`view.visible:false`, which is what a workspace switch and a
+  minimized window send), a keyboard moved to another window, the overview, or
+  a launcher. The cursor stayed hidden and clicks kept landing in a window
+  that was no longer there. The compositor now ends such a capture with
+  `unlocked` — on a put-away, when the keyboard leaves the window for another
+  one or for the shell's page, and when the desk is handed to the overview or
+  an exclusive layer surface — and holds the ended lock off until the window
+  has the keyboard again, so the next motion over it cannot re-take it. A
+  menu or overlay opening over a captured game still does not end its capture.
+  Pinned by `crates/viewport/tests/pointer_lock_release.rs`, a real client
+  driven through the two put-aways and the focus change, plus the relayout
+  under a held capture that must hand it neither a leave nor a position.
 - Headless lock clients receive frame callbacks on every virtual output, so a
   locker no longer stalls after its first buffer waiting for presentation that
   the frame timer never offered it.

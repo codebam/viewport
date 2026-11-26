@@ -4537,7 +4537,16 @@ impl ViewportState {
                 // nothing else ever activates it: without this the
                 // constraint stays inactive for the whole session and a
                 // confined cursor leaves at the output edge.
-                constraint.activate();
+                //
+                // Unless the compositor ended this capture because the
+                // keyboard moved elsewhere: re-taking it here would undo
+                // that on the next mouse move and leave a window capturing
+                // a desk it is not the front of. See
+                // `ViewportState::may_capture`.
+                let held = self.views.find_by_surface(surface).map(|view| view.id);
+                if held.is_none_or(|held| self.may_capture(held)) {
+                    constraint.activate();
+                }
             }
             match &*constraint {
                 PointerConstraint::Locked(_) => locked = true,
