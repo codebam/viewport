@@ -124,6 +124,94 @@ fn effective_opacity(
     (base * rule * global).clamp(0.0, 1.0)
 }
 
+/// Compute output-local physical redaction bounds for a `!capture_allowed`
+/// window using wide `i64` coordinate arithmetic so an extreme subsurface or
+/// bounding box on an offset monitor cannot overflow `i32`.
+fn redaction_bounds(
+    bbox: Rectangle<i32, Logical>,
+    clip: Option<Rectangle<i32, Logical>>,
+    frame: Option<viewport_ipc::geometry::Box>,
+    output_geometry: Rectangle<i32, Logical>,
+    origin: Point<i32, Physical>,
+    scale: f64,
+    window_scale: f64,
+) -> Rectangle<i32, Physical> {
+    let mut x1 = i64::from(bbox.loc.x);
+    let mut y1 = i64::from(bbox.loc.y);
+    let mut x2 = x1 + i64::from(bbox.size.w.max(0));
+    let mut y2 = y1 + i64::from(bbox.size.h.max(0));
+
+    if let Some(clip) = clip {
+        let cx1 = i64::from(clip.loc.x);
+        let cy1 = i64::from(clip.loc.y);
+        let cx2 = cx1 + i64::from(clip.size.w.max(0));
+        let cy2 = cy1 + i64::from(clip.size.h.max(0));
+        x1 = x1.max(cx1);
+        y1 = y1.max(cy1);
+        x2 = x2.min(cx2);
+        y2 = y2.min(cy2);
+        if x2 <= x1 || y2 <= y1 {
+            x1 = 0;
+            y1 = 0;
+            x2 = 0;
+            y2 = 0;
+        }
+    }
+
+    if let Some(frame) = frame {
+        if frame.width > 0 && frame.height > 0 {
+            let fx1 = i64::from(frame.x);
+            let fy1 = i64::from(frame.y);
+            let fx2 = fx1 + i64::from(frame.width);
+            let fy2 = fy1 + i64::from(frame.height);
+            if x2 <= x1 || y2 <= y1 {
+                x1 = fx1;
+                y1 = fy1;
+                x2 = fx2;
+                y2 = fy2;
+            } else {
+                x1 = x1.min(fx1);
+                y1 = y1.min(fy1);
+                x2 = x2.max(fx2);
+                y2 = y2.max(fy2);
+            }
+        }
+    }
+
+    if x2 <= x1 || y2 <= y1 {
+        return Rectangle::default();
+    }
+
+    // Translate into output-local coordinates in f64 (avoiding `i32` overflow
+    // when a subsurface sits at `i32::MIN` on an offset monitor), apply
+    // output scale and optional overview thumbnail scaling, then clip to the
+    // physical output rectangle.
+    let mut px1 = ((x1 - i64::from(output_geometry.loc.x)) as f64) * scale;
+    let mut py1 = ((y1 - i64::from(output_geometry.loc.y)) as f64) * scale;
+    let mut px2 = ((x2 - i64::from(output_geometry.loc.x)) as f64) * scale;
+    let mut py2 = ((y2 - i64::from(output_geometry.loc.y)) as f64) * scale;
+
+    if (window_scale - 1.0).abs() > f64::EPSILON {
+        let ox = f64::from(origin.x);
+        let oy = f64::from(origin.y);
+        px1 = ox + (px1 - ox) * window_scale;
+        py1 = oy + (py1 - oy) * window_scale;
+        px2 = ox + (px2 - ox) * window_scale;
+        py2 = oy + (py2 - oy) * window_scale;
+    }
+
+    let out_w = (f64::from(output_geometry.size.w) * scale).round().max(0.0);
+    let out_h = (f64::from(output_geometry.size.h) * scale).round().max(0.0);
+    let rx1 = px1.round().clamp(0.0, out_w) as i32;
+    let ry1 = py1.round().clamp(0.0, out_h) as i32;
+    let rx2 = px2.round().clamp(0.0, out_w) as i32;
+    let ry2 = py2.round().clamp(0.0, out_h) as i32;
+    if rx2 <= rx1 || ry2 <= ry1 {
+        return Rectangle::default();
+    }
+    Rectangle::new((rx1, ry1).into(), (rx2 - rx1, ry2 - ry1).into())
+}
+
 fn placed_layer_bounds(
     location: Point<i32, Physical>,
     tree: Rectangle<i32, Logical>,
@@ -401,49 +489,25 @@ impl ViewportState {
                     })
                     .or_else(|| private_x11_popup.map(|id| (id, 1.0, None)));
                 let redaction = privacy.map(|(id, window_scale, frame)| {
-                    let mut bounds = self.space.element_bbox(window).unwrap_or(layout);
+                    let bbox = self.space.element_bbox(window).unwrap_or(layout);
                     let has_popups = window.wl_surface().is_some_and(|surface| {
                         smithay::desktop::PopupManager::popups_for_surface(&surface)
                             .next()
                             .is_some()
                     });
-                    if !has_popups {
-                        if let Some(clip) = logical_clip {
-                            bounds = bounds.intersection(clip).unwrap_or_default();
-                        }
-                    }
-                    if let Some(frame) = frame {
-                        bounds = bounds.merge(Rectangle::<i32, Logical>::new(
-                            (frame.x, frame.y).into(),
-                            (frame.width, frame.height).into(),
-                        ));
-                    }
-                    let local = Rectangle::<i32, Logical>::new(
-                        (bounds.loc.x - output_geometry.loc.x, bounds.loc.y - output_geometry.loc.y)
-                            .into(),
-                        bounds.size,
+                    let clip = (!has_popups).then_some(logical_clip).flatten();
+                    (
+                        id,
+                        redaction_bounds(
+                            bbox,
+                            clip,
+                            frame,
+                            output_geometry,
+                            origin,
+                            scale,
+                            window_scale,
+                        ),
                     )
-                    .to_f64()
-                    .to_physical(scale)
-                    .to_i32_round();
-                    let local = if (window_scale - 1.0).abs() > f64::EPSILON {
-                        let delta = (local.loc - origin).to_f64();
-                        let origin = origin.to_f64();
-                        let scaled_loc = Point::<f64, Physical>::from((
-                            origin.x + delta.x * window_scale,
-                            origin.y + delta.y * window_scale,
-                        ));
-                        Rectangle::<i32, Physical>::new(
-                            scaled_loc.to_i32_round(),
-                            local.size.to_f64().upscale(window_scale).to_i32_round(),
-                        )
-                    } else {
-                        local
-                    };
-                    let output_bounds = Rectangle::<i32, Physical>::from_size(
-                        output_geometry.size.to_f64().to_physical(scale).to_i32_round(),
-                    );
-                    (id, local.intersection(output_bounds).unwrap_or_default())
                 });
 
                 // The corner the shell drew, in physical pixels on this
@@ -664,16 +728,22 @@ impl ViewportState {
         // happy to cover part of a monitor and leave the rest to the clear
         // colour; a lock screen is not, because the part it does not cover is
         // the part the desktop would show through.
-        #[allow(unused_mut)]
-        let mut shell_covers_output = self.shell_clients.iter().any(|page| {
+        let shell_covers_output = self.shell_clients.iter().any(|page| {
             page.desktop && page.owned.is_some() && page.region.contains_rect(output_geometry)
-        });
-        #[cfg(feature = "wpe")]
-        {
-            shell_covers_output |= self.shells.iter().any(|page| {
-                page.desktop && page.owned.is_some() && page.region.contains_rect(output_geometry)
-            });
-        }
+        }) || {
+            #[cfg(feature = "wpe")]
+            {
+                self.shells.iter().any(|page| {
+                    page.desktop
+                        && page.owned.is_some()
+                        && page.region.contains_rect(output_geometry)
+                })
+            }
+            #[cfg(not(feature = "wpe"))]
+            {
+                false
+            }
+        };
 
         // This monitor's wallpaper terminal, at this monitor's own origin.
         //
@@ -1005,6 +1075,33 @@ mod frame_tests {
             before,
             ViewStamp::of([(1, true), (3, true)].into_iter()),
             "removed one and inserted one in its place: only the id moves, and it does"
+        );
+    }
+
+    #[test]
+    fn redaction_bounds_survives_wire_floor_subsurface_on_offset_monitor() {
+        let output = Rectangle::<i32, Logical>::new((100, 50).into(), (1920, 1080).into());
+        // A hostile subsurface at i32::MIN spanning back into the window at x=200.
+        let bbox = Rectangle::<i32, Logical>::new((i32::MIN, 60).into(), (i32::MAX, 200).into());
+        let frame = Some(viewport_ipc::geometry::Box {
+            x: 190,
+            y: 55,
+            width: 320,
+            height: 220,
+        });
+        let redacted = redaction_bounds(bbox, None, frame, output, (100, 10).into(), 1.0, 1.0);
+        // Must not panic or wrap; covers from output left edge (0) across the frame (410).
+        assert_eq!(
+            redacted,
+            Rectangle::<i32, Physical>::new((0, 5).into(), (410, 220).into())
+        );
+
+        // Ordinary thumbnail scaling shrinks about `origin`.
+        let normal = Rectangle::<i32, Logical>::new((200, 150).into(), (400, 200).into());
+        let scaled = redaction_bounds(normal, None, None, output, (100, 100).into(), 1.0, 0.5);
+        assert_eq!(
+            scaled,
+            Rectangle::<i32, Physical>::new((100, 100).into(), (200, 100).into())
         );
     }
 }
