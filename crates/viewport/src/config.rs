@@ -1755,8 +1755,9 @@ fn resolve_url(value: &str, named: &str) -> anyhow::Result<String> {
         // Only a local file can be checked, and only a local file is worth
         // checking: a http:// shell that is not up yet is a waiting game, not
         // a mistake.
-        if scheme == "file" {
-            let path = std::path::PathBuf::from(percent_decode(rest));
+        if scheme.eq_ignore_ascii_case("file") {
+            let raw_path = rest.split(['?', '#']).next().unwrap_or(rest);
+            let path = std::path::PathBuf::from(percent_decode(raw_path));
             anyhow::ensure!(path.exists(), "{named}: {} does not exist", path.display());
         }
         return Ok(encoded);
@@ -3602,6 +3603,13 @@ mod tests {
         let url = shell_url(&encoded).expect("exists");
         assert!(!url.contains("%2520"), "double-encoded: {url}");
         assert_eq!(url, encoded);
+
+        // Query strings and fragments belong to the URL, not the filesystem path.
+        let with_query = format!("{encoded}?debug=1#top");
+        assert_eq!(
+            shell_url(&with_query).expect("file URL with query and fragment"),
+            with_query
+        );
 
         let _ = std::fs::remove_dir_all(std::env::temp_dir().join("viewport url test2"));
     }
