@@ -8,7 +8,7 @@
 // because `wpewebkit` is packaged by nobody.
 //
 // This is the same shell against an engine that *is* packaged. WebKitGTK 6.0
-// is prebuilt in nixpkgs — the same WebKit 2.52.5 the flake otherwise compiles
+// is prebuilt in nixpkgs — the same WebKit 2.54.2 the flake otherwise compiles
 // as WPE — so the trade is: give up owning the engine, and get the engine for
 // free.
 //

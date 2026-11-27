@@ -130,8 +130,8 @@ jobs:
   # on its own would drag in WPE WebKit and a four-hour build with it.
   #
   # -D warnings rather than a bare clippy run: the point is that a warning
-  # fails the build. The three lints that are deliberate carry an #[allow] and
-  # a comment saying why, which is the form an exception should take.
+  # fails the build. Deliberate lint exceptions carry an #[allow] and a
+  # comment saying why, which is the form an exception should take.
   rust:
     name: Rust rewrite
     runs-on: ubuntu-latest

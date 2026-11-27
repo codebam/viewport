@@ -75,11 +75,13 @@ Rust binary, the compositor verified on real hardware, and a replacement for
 what the sanitizer job covered. `data/`, `protocols/`, `docs/` and `packaging/`
 are permanent.
 
-Four C files survive in `tests/`, and are not leftovers: `paint-client.c`,
-`capture-client.c`, `lock-client.c` and `frame-client.c` are Wayland *clients*.
-They link `wayland-client` and the generated marshalling code, they take the
-compositor under test as an argument, and they are what `scripts/integration.sh`
-drives against the Rust binary. `.clang-format` stays for them.
+Nineteen C files live in `tests/`, and are not leftovers: Wayland and
+XWayland test clients (`paint-client.c`, `capture-client.c`, `lock-client.c`,
+`frame-client.c`, and the protocol/XWayland suites added beside them).
+They link `wayland-client` (or Xlib/XTest) and the generated marshalling code,
+take the compositor under test as an argument, and are what
+`scripts/integration.sh` drives against the Rust binary. `.clang-format` stays
+for them.
 
 ## What Smithay gives us and what it does not
 
@@ -132,19 +134,19 @@ backend now, twice — `servo` embeds the engine in the shell process and
 `servoshell` drives nixpkgs' browser; `docs/shell-backends.md` has both. Both
 put the page in a *window*, so the second gap below is the one they close and
 the first is not on their path: a Wayland client's buffer is a DMA-BUF without
-anybody implementing `RenderingContext`. The analysis below is still the plan
-for running Servo the way `wpe` runs WebKit — inside the compositor, painting
-into a buffer this process owns — and `crates/viewport-web/src/dmabuf.rs` is
-still the working spike of its hard half.
+anybody implementing `RenderingContext`. The analysis below records the
+in-process Servo design (the experimental `dmabuf.rs` spike was retired in
+commit `14180d3c` once the out-of-process `servo` and `servoshell` backends
+shipped).
 
 **1. There is no `WPEBufferDMABuf` equivalent.** Servo's built-in
 `RenderingContext` implementations (`WindowRenderingContext`,
 `OffscreenRenderingContext`, `SoftwareRenderingContext`) are all surfman-backed
 and none exports a DMA-BUF.
 
-**This was the one unproven assumption in the plan, and it has been spiked.**
-See `crates/viewport-web/src/dmabuf.rs`. Verified against Servo `954690b`
-(2026-07-27) and run on real hardware:
+**This was the one unproven assumption in the plan, and it was spiked against
+Servo `954690b` (2026-07-27) and run on real hardware before the out-of-process
+backends landed:**
 
 - The trait (`components/shared/paint/rendering_context.rs`) is implementable
   from outside Servo. Its required methods are `size`, `resize`, `present`,

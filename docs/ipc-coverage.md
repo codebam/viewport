@@ -17,10 +17,16 @@ side (`tests/shell.test.js` stubs the DOM — it never starts a compositor).
 
 ## How the count was done
 
-- **115 wire types**: 74 `Request` variants (`crates/viewport-ipc/src/request.rs`,
-  shell → compositor) and 41 `Event` variants
-  (`crates/viewport-ipc/src/event.rs`, compositor → shell). `shell.command`
-  appears on both sides (request and event). The page bridge
+- **150 distinct wire names at current tip** (110 `Request` variants in
+  `crates/viewport-ipc/src/request.rs` and 43 `Event` variants in
+  `crates/viewport-ipc/src/event.rs`; `session.lock`, `session.unlock` and
+  `shell.command` appear in both). The original 2026-11-11 sweep below covered
+  the 115 wire types that existed then (74 `Request` + 41 `Event`); variants
+  added since (`view.blur`, `view.confine_pointer`, `view.anr_resolve`,
+  `view.decorations`, `view.anr`, `view.anr_resolved`, and the 32 runtime
+  `config.*` setters) are listed in `docs/ipc.md` and exercised in
+  `crates/viewport/tests/control_socket.rs`, `anr_dialog.rs`,
+  `confine_pointer_rule.rs`, and `tests/shell.test.js`. The page bridge
   (`js.rs` / `BRIDGE_SHIM`) carries the same set as the UNIX socket, so
   "both transports" adds no new names.
 - **Integration means headless `apply` + wire**: a test that starts

@@ -240,10 +240,10 @@ is left `Unidentified`: the compositor owns every shortcut and the shell's
 pages read `event.key`. Servo's own port has the full table in
 `ports/servoshell/desktop/keyutils.rs` if that stops being true.
 
-`crates/viewport-web/src/dmabuf.rs` is still the older spike at the *other*
+An earlier spike (`dmabuf.rs`, retired in commit `14180d3c`) explored the *other*
 shape of this — Servo painting into a buffer the compositor owns, through a
 `RenderingContext` of ours, in the compositor's own process the way `wpe` runs
-WebKit. It works, on hardware, across two EGL displays; what this backend
+WebKit. It worked on hardware across two EGL displays; what this backend
 chooses instead is the surface every other out-of-process shell already uses,
 which is a window. `docs/RUST-REWRITE.md` has that analysis.
 

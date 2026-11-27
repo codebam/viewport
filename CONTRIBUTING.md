@@ -51,7 +51,7 @@ rather than reading it.
 
 ## The checks before a commit
 
-CI runs three jobs on every push — `shell`, `rust`, `asan` — as described in
+CI runs four jobs on every push — `shell`, `rust`, `excluded-crates`, `asan` — as described in
 `.github/workflows/ci.yml`. The same checks also live in a hook, which has to
 be turned on once per clone, so there is a local pre-check before the push
 triggers anything remote:

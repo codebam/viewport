@@ -46,7 +46,7 @@ yet — and because a settings UI whose every change is forgotten at the next
 restart is not one either.
 
 **Bootstrap** — `~/.config/viewport/config.json` (or `--config PATH`), read
-before any web content loads. This tier must stay in C. The shell is fetched
+before any web content loads. This tier must stay in the compositor. The shell is fetched
 over the network; if it 404s, throws, or hangs, anything it owned dies with it.
 A keybinding defined here still works in that state, which is the difference
 between a broken desktop UI and a machine you cannot quit without switching to

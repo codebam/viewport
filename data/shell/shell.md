@@ -49,11 +49,13 @@ rather than keeping its own list, so the two cannot drift apart.
 
 | File | What is in it |
 | --- | --- |
+| `vpdebug.js` | Optional `?vpdebug=1` ring-buffer/heartbeat tracing helper, loaded ahead of vendor scripts. |
 | `state.js` | The bridge to the compositor, and every piece of shell state. Loaded first because the rest is declarations and these are the values they act on. |
 | `motion.js` | The animations that cannot be written as CSS — an element leaving, a stagger, an opacity that is an IPC message. Nothing else in the shell starts a tween. |
 | `keys.js` | The keyboard, for every surface that can be opened: arrow navigation, Enter, Delete, Escape, and the pair that takes the keyboard from the focused window and hands it back. Loaded here with `motion.js` because it is shared behaviour the surfaces further down reach for rather than anything they own. |
 | `tiling.js` | The i3-style tree, and rendering it to nested flexboxes. |
 | `scrolling.js` | niri's endless strip of columns, and the overview. |
+| `dynamic.js` | Dynamic tiling arrangements (`master-stack`, `spiral`, `bsp`, `grid`) that generate trees on top of `tiling.js`. |
 | `solar.js` | one window in the middle, the rest in orbit. Layout arithmetic rather than flexbox; see [docs/solar.md](../../docs/solar.md). |
 | `matrix.js` | the focused window large, the focus history halving away beside it. The other layout that computes rectangles; see [docs/matrix.md](../../docs/matrix.md). |
 | `canvas.js` | an unbounded plane per workspace, panned and zoomed over. The third layout that computes rectangles; see [docs/canvas.md](../../docs/canvas.md). |
@@ -73,6 +75,7 @@ rather than keeping its own list, so the two cannot drift apart.
 | `settings.js` | The settings panel, opened from `Mod4+Shift+comma`: dark mode, the wallpaper, the gaps, the window border and the monitors. A dialog rather than a dropdown, because it is five sections and one of them is a row per monitor with a mode list in it. Every switch sends a runtime setter and takes effect at once; Save sends `config.save`, which is what makes a change survive a restart. A display change raises a Keep-or-Revert bar, because the compositor puts the monitors back unless somebody says they can see them — see [docs/ipc.md](../../docs/ipc.md). Like the launcher, its fields are real typed text and it asks for the keyboard with `shell.focus`. |
 | `osk.js` | The on-screen keyboard. Docked to the bottom of an output rather than centred like the pickers above it, and the one part of the shell whose taps are not clicks on the DOM but instructions to the compositor: every key sends an `osk.key` keysym, pressed and released like a real one, and the seat's own keyboard repeat does the rest. Comes up on its own when the focused client's text-input is enabled (`osk.wanted`), or by hand with `Mod4+Shift+k`. |
 | `lock.js` | The lock screen: a clock on every monitor, a password box on the one being looked at, and a button that raises `osk.js` so a desk with no keyboard can type at it. The compositor decides everything — whether the session is locked, whether a password was right, when it is over — and this draws what it is told to and says when it has drawn it. Saying so matters: while the session is locked the compositor draws this page's buffer and nothing else, and it draws none of it until `session.lock.drawn` has arrived and a frame has landed after it, so anything short of a real lock screen is a black screen rather than the desktop. |
+| `panel.js` | OLED panel-drive sampling (mean linear drive, peak, over-half, wash) shared by `wallpaper_oled_guard` and the `panel` bar module. |
 | `commands.js` | Commands from the compositor and the inbound message loop. Loaded last: its bottom asks for the state the shell starts from, so everything handling the answer must already exist. |
 
 `shell.css` styles all of it, and `index.html` is the document.

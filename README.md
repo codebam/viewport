@@ -147,6 +147,7 @@ nix build github:codebam/viewport#wpe    # in-process; builds WebKit
 nix build github:codebam/viewport#chromium
 nix build github:codebam/viewport#cef
 nix build github:codebam/viewport#webkitgtk
+nix build github:codebam/viewport#servoshell
 ```
 
 The package attributes are named for the engine that draws the shell — `.#wpe`,
@@ -324,7 +325,9 @@ back to Smithay or wlroots, which are MIT. `docs/RUST-REWRITE.md` has the
 reasoning in full.
 
 WPE WebKit and GLib are LGPL-2.1+ and dynamically linked, which imposes no
-licence condition on this code. `crates/viewport-shell-gtk` — the shell as a
-separate process, on WebKitGTK — is MIT for the same reason the other two are:
-it is a browser window and a socket, and nothing in it is adapted from a GPL
+licence condition on this code. `crates/viewport-shell-bridge` and all
+out-of-process shell crates (`viewport-shell-gtk`, `viewport-shell-chromium`,
+`viewport-shell-servoshell`, `viewport-shell-cef`, `viewport-shell-servo`) are
+MIT for the same reason `viewport-ipc` and `viewport-web` are: they are
+browser windows/drivers and sockets, and nothing in them is adapted from a GPL
 compositor.
