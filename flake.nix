@@ -423,7 +423,7 @@
           cargoLock = ./Cargo.lock;
           outputHashes = {
             "git+https://github.com/codebam/smithay.git?rev=a1193cb87c029c0ecdf832a3959023e868881cc9#a1193cb87c029c0ecdf832a3959023e868881cc9" = "sha256-Ifq3H8/1Qr98SyLtwtGzr0cefNoRMmJ5ds/JPTgPvLM=";
-            "git+https://github.com/codebam/viewport-vulkan.git?rev=530c3214538d756339145ac213543e352175b330#530c3214538d756339145ac213543e352175b330" = "sha256-LcV1wqh7kHuqc2sP4avhZ0kVNevpVD8QIYajl2sx5k0=";
+            "git+https://github.com/codebam/viewport-vulkan.git?rev=7fd88b1c305223de8e1cd9cd4be52a65188e65d1#7fd88b1c305223de8e1cd9cd4be52a65188e65d1" = "sha256-HmS87L2qkf2YuDizx97iMYrcasP1MlZg2ntp6PC7wko=";
           };
         };
 
