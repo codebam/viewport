@@ -79,14 +79,65 @@ pub fn pump<C: Send + 'static>(
 /// required…` — which is a sentence with a fully qualified Java class in the
 /// middle of it. The message alone is the part written for a person.
 pub fn complaint<E: Into<zbus::Error>>(error: E) -> String {
+    use zbus::DBusError as _;
+
     // Generic over the two error types zbus hands back, which are the same
     // failure told twice: a method call fails with `zbus::Error` and a
     // property write with `zbus::fdo::Error`, because setting a property is a
     // call to `org.freedesktop.DBus.Properties.Set`. One conversion rather
     // than two spellings of this function.
+    //
+    // `Into<zbus::Error>` wraps `zbus::fdo::Error` in `zbus::Error::FDO(...)`,
+    // not `MethodError`, so unwrap the `FDO` arm too (including nested
+    // `fdo::Error::ZBus(MethodError)`).
     let error: zbus::Error = error.into();
     match &error {
         zbus::Error::MethodError(_, Some(message), _) => message.clone(),
+        zbus::Error::FDO(fdo) => match fdo.as_ref() {
+            zbus::fdo::Error::ZBus(inner) => match inner {
+                zbus::Error::MethodError(_, Some(message), _) => message.clone(),
+                _ => inner.to_string(),
+            },
+            other => other
+                .description()
+                .map(str::to_owned)
+                .unwrap_or_else(|| other.to_string()),
+        },
         _ => error.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn owned_converts_primitive_values() {
+        let value = owned(42u32);
+        assert_eq!(u32::try_from(value).expect("u32"), 42);
+        let text = owned("viewport");
+        assert_eq!(String::try_from(text).expect("string"), "viewport");
+    }
+
+    #[test]
+    fn with_deadline_returns_result_before_timeout_and_none_on_expiry() {
+        let fast = with_deadline(Duration::from_secs(1), "fast", || 7usize);
+        assert_eq!(fast, Some(7));
+
+        let slow = with_deadline(Duration::from_millis(20), "slow", || {
+            std::thread::sleep(Duration::from_millis(200));
+            99usize
+        });
+        assert_eq!(slow, None);
+    }
+
+    #[test]
+    fn complaint_extracts_method_error_message_and_falls_back_otherwise() {
+        let fdo = zbus::fdo::Error::Failed("Secrets were required".to_owned());
+        assert_eq!(complaint(fdo), "Secrets were required");
+
+        let other = zbus::Error::Unsupported;
+        assert_eq!(complaint(other), zbus::Error::Unsupported.to_string());
     }
 }
