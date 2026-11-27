@@ -100,3 +100,47 @@ impl ViewportState {
         self.popup_fades.retain(|id, _| live_popups.contains(id));
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fade_value_interpolates_and_clamps_to_endpoints() {
+        let start = Instant::now();
+        let duration = Duration::from_millis(200);
+        let curve = Curve::Linear;
+        let fade = Fade {
+            from: 0.4,
+            to: 1.0,
+            start,
+        };
+
+        assert!((fade.value(start, duration, curve) - 0.4).abs() < 1e-5);
+        assert!(
+            (fade.value(start + Duration::from_millis(100), duration, curve) - 0.7).abs() < 1e-5
+        );
+        assert!(
+            (fade.value(start + Duration::from_millis(200), duration, curve) - 1.0).abs() < 1e-5
+        );
+        assert!(
+            (fade.value(start + Duration::from_millis(500), duration, curve) - 1.0).abs() < 1e-5
+        );
+
+        // Decreasing fade (dimming an unfocused window) eases downwards.
+        let dim = Fade {
+            from: 1.0,
+            to: 0.5,
+            start,
+        };
+        assert!(
+            (dim.value(start + Duration::from_millis(100), duration, curve) - 0.75).abs() < 1e-5
+        );
+        assert!(
+            (dim.value(start + Duration::from_millis(200), duration, curve) - 0.5).abs() < 1e-5
+        );
+
+        // Zero duration snaps immediately to the target.
+        assert!((dim.value(start, Duration::ZERO, curve) - 0.5).abs() < 1e-5);
+    }
+}

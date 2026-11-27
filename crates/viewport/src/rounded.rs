@@ -1503,4 +1503,61 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn bands_and_cutaway_partition_every_row_without_overlap() {
+        let geometry = rect(10, 20, 100, 60);
+        for radius in [0, 1, 4, 8, 16, 40] {
+            let kept = bands(geometry, radius);
+            let cut = cutaway(geometry, radius);
+            for row in 20..80 {
+                let kept_row: Vec<_> = kept
+                    .iter()
+                    .filter(|b| b.loc.y <= row && row < b.loc.y + b.size.h)
+                    .collect();
+                assert_eq!(kept_row.len(), 1);
+                let b = kept_row[0];
+                let cut_row: Vec<_> = cut
+                    .iter()
+                    .filter(|w| w.loc.y <= row && row < w.loc.y + w.size.h)
+                    .collect();
+                let total_w: i32 = b.size.w + cut_row.iter().map(|w| w.size.w).sum::<i32>();
+                assert_eq!(
+                    total_w, geometry.size.w,
+                    "radius {radius}, row {row}: kept+cutaway must equal full width"
+                );
+                for w in &cut_row {
+                    assert!(
+                        w.loc.x + w.size.w <= b.loc.x || w.loc.x >= b.loc.x + b.size.w,
+                        "radius {radius}, row {row}: cutaway {w:?} overlaps band {b:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn bands_within_is_never_wider_than_bands() {
+        let geometry = rect(0, 0, 120, 80);
+        for radius in [2, 6, 12, 24] {
+            let outer = bands(geometry, radius);
+            let inner = bands_within(geometry, radius);
+            for row in 0..80 {
+                let outer_b = outer
+                    .iter()
+                    .find(|b| b.loc.y <= row && row < b.loc.y + b.size.h)
+                    .unwrap();
+                let inner_b = inner
+                    .iter()
+                    .find(|b| b.loc.y <= row && row < b.loc.y + b.size.h)
+                    .unwrap();
+                assert!(
+                    inner_b.size.w <= outer_b.size.w,
+                    "radius {radius}, row {row}: bands_within ({}) exceeded bands ({})",
+                    inner_b.size.w,
+                    outer_b.size.w
+                );
+            }
+        }
+    }
 }

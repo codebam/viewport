@@ -1565,9 +1565,15 @@ pub fn pick_mode(
     modes: &[smithay::reexports::drm::control::Mode],
     config: &OutputConfig,
 ) -> Option<smithay::reexports::drm::control::Mode> {
-    let fastest = |candidates: &mut dyn Iterator<
-        Item = &smithay::reexports::drm::control::Mode,
-    >| { candidates.max_by_key(|mode| mode.vrefresh()).copied() };
+    let summaries: Vec<((u16, u16), u32)> =
+        modes.iter().map(|m| (m.size(), m.vrefresh())).collect();
+    pick_mode_index(&summaries, config).map(|idx| modes[idx])
+}
+
+fn pick_mode_index(modes: &[((u16, u16), u32)], config: &OutputConfig) -> Option<usize> {
+    let fastest = |candidates: &mut dyn Iterator<Item = (usize, u32)>| {
+        candidates.max_by_key(|&(_, hz)| hz).map(|(idx, _)| idx)
+    };
 
     if let Some(spec) = config.mode.as_deref() {
         let (size, rate) = match spec.split_once('@') {
@@ -1592,15 +1598,19 @@ pub fn pick_mode(
         let (width, height) = size.trim().split_once('x')?;
         let width: u16 = width.trim().parse().ok()?;
         let height: u16 = height.trim().parse().ok()?;
-        let matching = modes.iter().filter(|mode| mode.size() == (width, height));
+        let matching = modes
+            .iter()
+            .enumerate()
+            .filter(|(_, (dims, _))| *dims == (width, height))
+            .map(|(idx, (_, hz))| (idx, *hz));
 
         return match rate {
             Some(rate) => {
                 let wanted = rate.round() as u32;
                 matching
                     .clone()
-                    .find(|mode| mode.vrefresh() == wanted)
-                    .copied()
+                    .find(|&(_, hz)| hz == wanted)
+                    .map(|(idx, _)| idx)
                     .or_else(|| {
                         // Nothing at that rate. The size is the part the user
                         // can see, so it wins, and the miss is said out loud.
@@ -1621,8 +1631,14 @@ pub fn pick_mode(
         // The fastest mode at the largest size, rather than the fastest mode
         // outright: a display will happily offer 360Hz at a resolution nobody
         // wants to use.
-        let widest = modes.iter().map(|mode| mode.size()).max()?;
-        return fastest(&mut modes.iter().filter(|mode| mode.size() == widest));
+        let widest = modes.iter().map(|(dims, _)| *dims).max()?;
+        return fastest(
+            &mut modes
+                .iter()
+                .enumerate()
+                .filter(|(_, (dims, _))| *dims == widest)
+                .map(|(idx, (_, hz))| (idx, *hz)),
+        );
     }
 
     None
@@ -4020,6 +4036,148 @@ mod tests {
                 name: "battery_graph".into(),
                 options: None,
             })
+        );
+    }
+
+    #[test]
+    fn encode_path_and_percent_decode_preserve_slashes_and_handle_malformed_escapes() {
+        let encoded = super::encode_path("/tmp/a b?c#d%e/ü-._~");
+        assert_eq!(encoded, "/tmp/a%20b%3Fc%23d%25e/%C3%BC-._~");
+        assert_eq!(super::percent_decode(&encoded), "/tmp/a b?c#d%e/ü-._~");
+        // Malformed or truncated escapes pass through untouched rather than panicking.
+        assert_eq!(super::percent_decode("/tmp/%ZZ/%2"), "/tmp/%ZZ/%2");
+    }
+
+    #[test]
+    fn layout_extension_names_reject_empty_spaces_and_path_separators() {
+        assert!(super::layout_extension_name_allowed("my-layout_2"));
+        for bad in ["", "my layout", "a/b", "a.b", "a;b"] {
+            assert!(
+                !super::layout_extension_name_allowed(bad),
+                "{bad:?} should be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_flat_rules_regex_flags_and_multi_rule_precedence_characterization() {
+        let legacy = serde_json::json!([
+            {"app_id": "keepass", "capture": false},
+            {"title": "Bank", "capture": false},
+        ]);
+        assert!(!super::initially_allows_capture(
+            Some(&legacy),
+            "org.keepassxc.KeePassXC",
+            "Main",
+            None
+        ));
+        assert!(!super::initially_allows_capture(
+            Some(&legacy),
+            "firefox",
+            "My bank login",
+            None
+        ));
+        assert!(super::initially_allows_capture(
+            Some(&legacy),
+            "foot",
+            "shell",
+            None
+        ));
+
+        // JS flags (d/g/u/v/y) are accepted; unknown flag 'z' rejects the match;
+        // an uncompilable JS lookbehind fails closed (treated as possible match).
+        let js_flag = serde_json::json!([
+            {"match": {"title": {"regex": "^secret$", "flags": "ig"}}, "capture": false}
+        ]);
+        assert!(!super::initially_allows_capture(
+            Some(&js_flag),
+            "foot",
+            "SECRET",
+            None
+        ));
+        let bad_flag = serde_json::json!([
+            {"match": {"title": {"regex": "^secret$", "flags": "z"}}, "capture": false}
+        ]);
+        assert!(super::initially_allows_capture(
+            Some(&bad_flag),
+            "foot",
+            "secret",
+            None
+        ));
+        let lookbehind = serde_json::json!([
+            {"match": {"title": {"regex": "(?<=foo)bar"}}, "capture": false}
+        ]);
+        assert!(!super::initially_allows_capture(
+            Some(&lookbehind),
+            "foot",
+            "anything",
+            None
+        ));
+
+        // rule_flag is sticky-true across matching rules; rule_text is first-match.
+        let multi = serde_json::json!([
+            {"match": {"app_id": "mpv"}, "no_auto_hdr": true, "tonemap": "clamp"},
+            {"match": {"app_id": "mpv"}, "no_auto_hdr": false, "tonemap": "off"},
+        ]);
+        assert_eq!(
+            super::rule_flag(Some(&multi), "no_auto_hdr", "mpv", "", None),
+            Some(true)
+        );
+        assert_eq!(
+            super::rule_text(Some(&multi), "tonemap", "mpv", "", None),
+            Some("clamp")
+        );
+    }
+
+    #[test]
+    fn pick_mode_selects_exact_refresh_fastest_fallback_and_max_refresh() {
+        let modes = [
+            ((1920, 1080), 60),
+            ((1920, 1080), 144),
+            ((2560, 1440), 60),
+            ((2560, 1440), 120),
+            ((1280, 720), 360),
+        ];
+
+        // Exact size and refresh rate.
+        let cfg = OutputConfig {
+            mode: Some("1920x1080@60".into()),
+            ..Default::default()
+        };
+        assert_eq!(super::pick_mode_index(&modes, &cfg), Some(0));
+
+        // Size without refresh picks the fastest mode at that size.
+        let cfg = OutputConfig {
+            mode: Some("1920x1080".into()),
+            ..Default::default()
+        };
+        assert_eq!(super::pick_mode_index(&modes, &cfg), Some(1));
+
+        // Missing refresh falls back to the fastest matching size.
+        let cfg = OutputConfig {
+            mode: Some("2560x1440@240".into()),
+            ..Default::default()
+        };
+        assert_eq!(super::pick_mode_index(&modes, &cfg), Some(3));
+
+        // Malformed refresh rate refuses the whole spec.
+        let cfg = OutputConfig {
+            mode: Some("1920x1080@NaN".into()),
+            ..Default::default()
+        };
+        assert_eq!(super::pick_mode_index(&modes, &cfg), None);
+
+        // max_refresh picks the fastest mode at the largest resolution (not 720p@360).
+        let cfg = OutputConfig {
+            max_refresh: Some(true),
+            ..Default::default()
+        };
+        assert_eq!(super::pick_mode_index(&modes, &cfg), Some(3));
+
+        // No mode or max_refresh -> None (caller uses preferred mode).
+        assert_eq!(
+            super::pick_mode_index(&modes, &OutputConfig::default()),
+            None
         );
     }
 }

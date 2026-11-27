@@ -3140,4 +3140,252 @@ mod tests {
         assert!(printed.contains("<secret>"), "{printed}");
         assert!(printed.contains("kitchen"), "{printed}");
     }
+
+    #[test]
+    fn remaining_view_session_service_and_config_requests_parse_with_defaults() {
+        assert_eq!(
+            parse(r#"{"type":"view.tearing","id":4,"tearing":true}"#),
+            Request::ViewTearing {
+                id: 4,
+                tearing: true
+            }
+        );
+        assert_eq!(
+            parse(r#"{"type":"view.idle_inhibit","id":4,"inhibit":false}"#),
+            Request::ViewIdleInhibit {
+                id: 4,
+                inhibit: false
+            }
+        );
+        assert_eq!(
+            parse(r#"{"type":"view.confine_pointer","id":4,"confine":true}"#),
+            Request::ViewConfinePointer {
+                id: 4,
+                confine: true
+            }
+        );
+        assert_eq!(
+            parse(r#"{"type":"view.anr_resolve","id":4,"action":"wait"}"#),
+            Request::ViewAnrResolve {
+                id: 4,
+                action: "wait".into()
+            }
+        );
+        assert_eq!(
+            parse(r#"{"type":"view.decorations","id":4}"#),
+            Request::ViewDecorations {
+                id: 4,
+                decorate: None
+            }
+        );
+        assert_eq!(
+            parse(r#"{"type":"view.decorations","id":4,"decorate":false}"#),
+            Request::ViewDecorations {
+                id: 4,
+                decorate: Some(false)
+            }
+        );
+        assert_eq!(
+            parse(r#"{"type":"background.focus"}"#),
+            Request::BackgroundFocus
+        );
+        assert_eq!(
+            parse(r#"{"type":"screencast.rect","x":1,"y":2,"width":3,"height":4}"#),
+            Request::ScreencastRect {
+                x: 1,
+                y: 2,
+                width: 3,
+                height: 4
+            }
+        );
+        assert_eq!(parse(r#"{"type":"session.lock"}"#), Request::SessionLock);
+        assert_eq!(
+            parse(r#"{"type":"session.lock.drawn","generation":9}"#),
+            Request::SessionLockDrawn { generation: 9 }
+        );
+        assert!(matches!(
+            parse(r#"{"type":"session.unlock","generation":9,"password":"pw"}"#),
+            Request::SessionUnlock { generation: 9, .. }
+        ));
+        assert_eq!(
+            parse(r#"{"type":"notification.list"}"#),
+            Request::NotificationList
+        );
+        assert_eq!(
+            parse(r#"{"type":"notification.forget"}"#),
+            Request::NotificationForget { id: None }
+        );
+        assert_eq!(
+            parse(r#"{"type":"notification.forget","id":11}"#),
+            Request::NotificationForget { id: Some(11) }
+        );
+        assert_eq!(
+            parse(r#"{"type":"tray.menu.click","id":":1.2/item","item":5}"#),
+            Request::TrayMenuClick {
+                id: ":1.2/item".into(),
+                item: 5
+            }
+        );
+        assert_eq!(
+            parse(r#"{"type":"tray.menu.closed","id":":1.2/item"}"#),
+            Request::TrayMenuClosed {
+                id: ":1.2/item".into()
+            }
+        );
+        assert_eq!(
+            parse(r#"{"type":"clipboard.query"}"#),
+            Request::ClipboardQuery
+        );
+        assert_eq!(
+            parse(r#"{"type":"clipboard.paste","id":2}"#),
+            Request::ClipboardPaste { id: 2 }
+        );
+        assert_eq!(
+            parse(r#"{"type":"clipboard.forget"}"#),
+            Request::ClipboardForget { id: None }
+        );
+        assert_eq!(
+            parse(r#"{"type":"launcher.query"}"#),
+            Request::LauncherQuery { filter: None }
+        );
+        assert_eq!(
+            parse(r#"{"type":"launcher.query","filter":"foot"}"#),
+            Request::LauncherQuery {
+                filter: Some("foot".into())
+            }
+        );
+        assert_eq!(
+            parse(r#"{"type":"launcher.launch","id":1,"generation":3}"#),
+            Request::LauncherLaunch {
+                id: 1,
+                generation: 3
+            }
+        );
+        assert_eq!(
+            parse(r#"{"type":"mpris.control","action":"play-pause"}"#),
+            Request::MprisControl {
+                action: "play-pause".into()
+            }
+        );
+
+        // Toggle / single-field config setters.
+        assert_eq!(
+            parse(r#"{"type":"config.logo"}"#),
+            Request::ConfigLogo { enabled: None }
+        );
+        assert_eq!(
+            parse(r#"{"type":"config.tutorial","enabled":false}"#),
+            Request::ConfigTutorial {
+                enabled: Some(false)
+            }
+        );
+        assert_eq!(
+            parse(r#"{"type":"config.tiling_mode","mode":"bsp"}"#),
+            Request::ConfigTilingMode {
+                mode: Some("bsp".into())
+            }
+        );
+        assert_eq!(
+            parse(r#"{"type":"config.layout","layout":"scrolling"}"#),
+            Request::ConfigLayout {
+                layout: Some("scrolling".into())
+            }
+        );
+        assert_eq!(
+            parse(r#"{"type":"config.focus_crosses_outputs"}"#),
+            Request::ConfigFocusCrossesOutputs { enabled: None }
+        );
+        assert_eq!(
+            parse(r#"{"type":"config.osk","mode":"manual"}"#),
+            Request::ConfigOsk {
+                mode: Some("manual".into())
+            }
+        );
+        assert_eq!(
+            parse(r#"{"type":"config.tray","enabled":true}"#),
+            Request::ConfigTray {
+                enabled: Some(true)
+            }
+        );
+        assert_eq!(
+            parse(r#"{"type":"config.clipboard_history","limit":50}"#),
+            Request::ConfigClipboardHistory { limit: Some(50) }
+        );
+        assert_eq!(
+            parse(r#"{"type":"config.icon_theme","theme":"Papirus"}"#),
+            Request::ConfigIconTheme {
+                theme: Some("Papirus".into())
+            }
+        );
+        assert_eq!(
+            parse(r#"{"type":"config.bar","mode":"auto"}"#),
+            Request::ConfigBar {
+                mode: Some("auto".into())
+            }
+        );
+        assert_eq!(
+            parse(r#"{"type":"config.bar_blur","enabled":false}"#),
+            Request::ConfigBarBlur {
+                enabled: Some(false)
+            }
+        );
+        assert_eq!(
+            parse(r#"{"type":"config.group","auto_group":true}"#),
+            Request::ConfigGroup {
+                auto_group: Some(true)
+            }
+        );
+        assert_eq!(
+            parse(r#"{"type":"config.clock","locale":"de-DE","hour12":false,"format":"%H:%M"}"#),
+            Request::ConfigClock {
+                locale: Some("de-DE".into()),
+                hour12: Some(false),
+                format: Some("%H:%M".into()),
+            }
+        );
+        assert_eq!(
+            parse(r#"{"type":"config.opacity","active":0.95,"inactive":0.8,"fullscreen":1.0}"#),
+            Request::ConfigOpacity {
+                active: Some(0.95),
+                inactive: Some(0.8),
+                fullscreen: Some(1.0),
+            }
+        );
+        assert_eq!(
+            parse(r#"{"type":"config.decorations","mode":"client"}"#),
+            Request::ConfigDecorations {
+                mode: Some("client".into())
+            }
+        );
+    }
+
+    #[test]
+    fn request_ignores_unknown_fields_and_resolves_frame_and_scale_bounds() {
+        assert_eq!(
+            parse(r#"{"type":"view.focus","id":5,"from_newer_shell":123}"#),
+            Request::ViewFocus { id: 5 }
+        );
+
+        let Request::ViewLayout(layout) = parse(
+            r#"{"type":"view.layout","id":3,"x":10,"y":20,"width":200,"height":100,"frame":{"x":8,"y":18,"width":204,"height":104},"scale":0.0001}"#,
+        ) else {
+            panic!("not view.layout");
+        };
+        let resolved = layout.resolve(Box::new(0, 0, 50, 50)).expect("valid");
+        assert_eq!(layout.frame, Some(Box::new(8, 18, 204, 104)));
+        assert!((resolved.scale - 0.0001).abs() < 1e-9);
+
+        let Request::ViewLayout(too_large_scale) =
+            parse(r#"{"type":"view.layout","id":3,"scale":1.0001}"#)
+        else {
+            panic!("not view.layout");
+        };
+        assert_eq!(
+            too_large_scale
+                .resolve(Box::new(0, 0, 50, 50))
+                .unwrap()
+                .scale,
+            1.0
+        );
+    }
 }

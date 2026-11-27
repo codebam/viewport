@@ -515,6 +515,9 @@ const EXPORTS = ';globalThis.__shell = { views, workspaces, outputs, scrollOffse
   + ' fullscreenOnForTest: fullscreenOn,'
   + ' maximizedOnForTest: maximizedOn,'
   + ' dynamicOrderForTest: dynamicOrder,'
+  + ' visibleLeavesForTest: visibleLeaves, containsNodeForTest: containsNode,'
+  + ' collapseForTest: collapse, newSplitForTest: newSplit,'
+  + ' masterStackForTest: masterStack, bspPickForTest: bspPick,'
   + ' idsOfForTest: idsOf,'
   + ' TILING_MODES, LAYOUT_MODES, layoutRegistry, registerLayout,'
   + ' get tilingMode() { return tilingModeOf(); },'
@@ -10883,6 +10886,72 @@ if (mode === 'tiling') {
   emit({ type: 'config', layout: mode, rules: HARNESS_RULES,
     group: { drag_into_group: true, merge_groups_on_drag: true,
       group_on_movetoworkspace: false } });
+}
+
+/* --- pure layout-tree characterization (tiling, collapse, dynamic) ---- */
+{
+  const sh = globalThis.__shell;
+  const groupNode = {
+    type: 'split', dir: 'horizontal', layout: 'tabbed', active: 1, weight: 1,
+    children: [
+      { type: 'leaf', id: 9901, weight: 1 },
+      { type: 'leaf', id: 9902, weight: 1 },
+    ],
+  };
+  check('visibleLeaves returns only the active child of a tabbed group',
+    sh.visibleLeavesForTest(groupNode).map((n) => n.id).join(',') === '9902');
+  check('containsNode finds nested leaf and rejects absent leaf',
+    sh.containsNodeForTest(groupNode, groupNode.children[1])
+      && !sh.containsNodeForTest(groupNode, { type: 'leaf', id: 9903 }));
+
+  const nestedTiling = {
+    type: 'split', dir: 'horizontal', layout: 'split', active: 0, weight: 1,
+    children: [{
+      type: 'split', dir: 'vertical', layout: 'split', active: 0, weight: 0.3,
+      children: [
+        { type: 'leaf', id: 9910, weight: 0.4 },
+        { type: 'split', dir: 'horizontal', layout: 'split', active: 0, weight: 1, children: [] },
+      ],
+    }],
+  };
+  sh.collapseForTest(nestedTiling, true, 1);
+  if (mode === 'tiling') {
+    check('collapse flattens single-child tiling split and resets lone child weight',
+      nestedTiling.dir === 'vertical'
+        && nestedTiling.children.length === 1
+        && nestedTiling.children[0].id === 9910
+        && nestedTiling.children[0].weight === 1);
+  } else if (mode === 'scrolling') {
+    check('collapse preserves lone column split on scrolling workspace root',
+      nestedTiling.dir === 'horizontal'
+        && nestedTiling.children.length === 1
+        && nestedTiling.children[0].type === 'split'
+        && nestedTiling.children[0].weight === 1);
+  }
+
+  const mRoot1 = sh.newSplitForTest('vertical');
+  const m1 = sh.masterStackForTest([10], mRoot1);
+  check('masterStack with 1 window puts 1 leaf under horizontal root',
+    mRoot1.dir === 'horizontal' && m1.length === 1 && m1[0].id === 10);
+  const mRoot3 = sh.newSplitForTest('vertical');
+  const m3 = sh.masterStackForTest([10, 11, 12], mRoot3);
+  check('masterStack with 3 windows pairs master with vertical stack',
+    mRoot3.dir === 'horizontal'
+      && m3.length === 2
+      && m3[0].id === 10
+      && m3[1].dir === 'vertical'
+      && m3[1].children.map((c) => c.id).join(',') === '11,12');
+
+  const g5 = sh.gridForTest.build([1, 2, 3, 4, 5], 1920, 1080);
+  const gRowCounts = g5.children.map((r) => (r.type === 'leaf' ? 1 : r.children.length));
+  const gIds = g5.children.flatMap((r) => (r.type === 'leaf' ? [r.id] : r.children.map((c) => c.id)));
+  check('grid lays out 5 windows on 16:9 as rows of 3 and 2',
+    g5.dir === 'vertical'
+      && gRowCounts.join(',') === '3,2'
+      && gIds.join(',') === '1,2,3,4,5');
+  check('bspPick splits horizontally when width >= height and vertically otherwise',
+    sh.bspPickForTest(1920, 1080) === 'horizontal'
+      && sh.bspPickForTest(1080, 1920) === 'vertical');
 }
 
 emit({ type: 'view.removed', id: 1 });

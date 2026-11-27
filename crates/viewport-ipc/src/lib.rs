@@ -722,4 +722,26 @@ mod tests {
         );
         assert!(missing.is_empty(), "rows do not name: {missing:?}");
     }
+
+    #[test]
+    fn unknown_fields_on_a_valid_request_are_tolerated() {
+        assert_eq!(
+            parse(br#"{"type":"view.close","id":9,"future_flag":true}"#).unwrap(),
+            Request::ViewClose { id: 9 }
+        );
+    }
+
+    #[test]
+    fn to_string_emits_single_line_json() {
+        let line = to_string(&Event::Error {
+            context: "ipc".into(),
+            message: "line1\nline2".into(),
+        })
+        .unwrap();
+        assert!(
+            !line.contains('\n'),
+            "wire lines must stay single-line: {line}"
+        );
+        assert!(line.contains("\\n"));
+    }
 }

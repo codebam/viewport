@@ -3409,4 +3409,95 @@ mod tests {
             assert!(!event.is_private(), "{event:?} should stay public");
         }
     }
+
+    #[test]
+    fn all_forty_three_event_variants_round_trip_and_name_their_wire_type() {
+        let missing_from_c_table = [
+            (
+                Event::ViewAnr {
+                    id: 7,
+                    app_id: "foot".into(),
+                    title: "hung".into(),
+                },
+                "view.anr",
+            ),
+            (Event::ViewAnrResolved { id: 7 }, "view.anr_resolved"),
+            (
+                Event::ViewParent {
+                    id: 8,
+                    parent: Some(7),
+                },
+                "view.parent",
+            ),
+            (
+                Event::ConfigSaved {
+                    path: "/tmp/settings.json".into(),
+                },
+                "config.saved",
+            ),
+            (
+                Event::StatusUpdate {
+                    cpu: 0.25,
+                    memory: 0.5,
+                    load: 1.0,
+                    net_rx: 100.0,
+                    net_tx: 50.0,
+                    disk_free: 10.0,
+                    disk_total: 20.0,
+                    mounts: vec![MountUsage {
+                        path: "/".into(),
+                        free: 10.0,
+                        total: 20.0,
+                    }],
+                    volume: 0.8,
+                    muted: false,
+                    mic_volume: 0.5,
+                    mic_muted: true,
+                    brightness: 0.75,
+                    osd: Some(StatusOsd::Volume),
+                },
+                "status.update",
+            ),
+            (
+                Event::AiUsage {
+                    usage: vec![AiUsage {
+                        provider: "openai".into(),
+                        primary: Some(0.4),
+                        secondary: None,
+                        remaining: Some(12.5),
+                        primary_seconds: Some(3600),
+                        secondary_seconds: None,
+                        primary_reset: Some("1h".into()),
+                        secondary_reset: None,
+                    }],
+                },
+                "ai.usage",
+            ),
+            (
+                Event::AiAuth {
+                    provider: "openai".into(),
+                    state: "pending".into(),
+                    url: Some("https://auth.example/device".into()),
+                    code: Some("ABCD-1234".into()),
+                    message: None,
+                },
+                "ai.auth",
+            ),
+            (Event::ShellReload, "shell.reload"),
+        ];
+
+        for (event, expected_type) in missing_from_c_table {
+            let text = serde_json::to_string(&event).expect("serialize");
+            let value: serde_json::Value = serde_json::from_str(&text).expect("value");
+            assert_eq!(value["type"], expected_type);
+            let decoded: Event = serde_json::from_str(&text).expect("round-trip");
+            assert_eq!(decoded, event);
+        }
+
+        // Unknown fields on an Event must be ignored for forwards-compatibility.
+        let future: Event =
+            serde_json::from_str(r#"{"type":"view.anr_resolved","id":9,"future_field":true}"#)
+                .expect("unknown fields ignored");
+        assert_eq!(future, Event::ViewAnrResolved { id: 9 });
+    }
 }
