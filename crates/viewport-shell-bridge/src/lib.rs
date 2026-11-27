@@ -95,7 +95,7 @@ impl Options {
         Ok(Self {
             url,
             socket,
-            inspector: flag("--inspector").is_some()
+            inspector: args.iter().any(|arg| arg == "--inspector")
                 || std::env::var("VIEWPORT_SHELL_INSPECTOR").is_ok(),
         })
     }
@@ -404,6 +404,20 @@ mod tests {
             assert_eq!(options.url, "http://x/");
             assert_eq!(options.socket, PathBuf::from("/tmp/s"));
         }
+    }
+
+    #[test]
+    fn trailing_inspector_flag_enables_inspector() {
+        let options = Options::parse(&args(&[
+            "shell",
+            "--url",
+            "http://localhost:3000",
+            "--socket",
+            "/tmp/s",
+            "--inspector",
+        ]))
+        .expect("trailing --inspector parses");
+        assert!(options.inspector);
     }
 
     #[test]
