@@ -1983,13 +1983,13 @@ impl ViewportState {
                                 state.arm_long_press(unmodified, action);
                                 FilterResult::Intercept(Some(Action::Swallow))
                             } else if repeating {
-                                state.suppressed_keys.push(unmodified_sym);
                                 state.arm_repeating(unmodified, action.clone());
-                                if non_consuming {
+                                if should_suppress_repeating_press(non_consuming) {
+                                    state.suppressed_keys.push(unmodified_sym);
+                                    FilterResult::Intercept(Some(Action::Bound(action)))
+                                } else {
                                     state.deferred_bindings.push(action);
                                     FilterResult::Forward
-                                } else {
-                                    FilterResult::Intercept(Some(Action::Bound(action)))
                                 }
                             } else if non_consuming {
                                 // A `non_consuming+` binding runs and
@@ -4646,6 +4646,16 @@ use smithay::wayland::compositor::RectangleKind;
 /// asked for a hole in its confinement got no confinement and the pointer
 /// left the surface entirely, the opposite of both the request and the safe
 /// direction above.
+/// Whether a matched `repeating+` binding suppresses the press and its
+/// matching release from the focused client.
+///
+/// A `repeating+non_consuming+` binding forwards the key press to the client,
+/// so it must not record the key in `suppressed_keys` (which would swallow the
+/// release and leave the key stuck down).
+fn should_suppress_repeating_press(non_consuming: bool) -> bool {
+    !non_consuming
+}
+
 /// Map a Wayland/libinput vertical axis delta to a scroll-wheel binding direction.
 ///
 /// In Wayland (`wl_pointer.axis`) and libinput, negative vertical values scroll
@@ -5579,6 +5589,12 @@ mod tests {
             tablet_to_layout(two_outputs(), 2.0, 0.0),
             Point::new(3840.0, 0.0)
         );
+    }
+
+    #[test]
+    fn repeating_non_consuming_binding_does_not_suppress_key_release() {
+        assert!(!should_suppress_repeating_press(true));
+        assert!(should_suppress_repeating_press(false));
     }
 
     #[test]
