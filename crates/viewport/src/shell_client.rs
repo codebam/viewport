@@ -605,7 +605,7 @@ impl ViewportState {
                 continue;
             };
             for (output, geometry) in &outputs {
-                let on = geometry.overlaps_or_touches(shell.region);
+                let on = shell_covers_output(*geometry, shell.region);
                 let told = shell.entered.contains(output);
                 if on && !told {
                     output.enter(surface);
@@ -1563,6 +1563,12 @@ fn shell_binary(name: &str) -> Result<PathBuf> {
     Ok(PathBuf::from(name))
 }
 
+/// Whether a shell region genuinely overlaps an output rather than merely
+/// sharing a border edge with an adjacent monitor.
+fn shell_covers_output(output: Rectangle<i32, Logical>, region: Rectangle<i32, Logical>) -> bool {
+    output.overlaps(region)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1736,6 +1742,16 @@ mod tests {
         assert_eq!(plan.len(), 1);
         assert_eq!(plan[0].region, layout);
         assert!(plan[0].desktop);
+    }
+
+    #[test]
+    fn adjacent_outputs_sharing_an_edge_do_not_enter_each_others_shell() {
+        let left = screen(0, 1920);
+        let right = screen(1920, 2560);
+        assert!(shell_covers_output(left, left));
+        assert!(shell_covers_output(right, right));
+        assert!(!shell_covers_output(left, right));
+        assert!(!shell_covers_output(right, left));
     }
 
     #[test]
