@@ -985,6 +985,7 @@ mod tests {
             workspaces: Some(serde_json::json!({
                 "2": {"output": "DP-1", "layout": null, "tiling_mode": null,
                       "gaps": {"inner": 4, "outer": null, "smart": null},
+                      "float_gaps": {"top": 1, "right": 2, "bottom": 3, "left": 4},
                       "persistent": true, "default_name": null, "on_created_empty": null},
             })),
             opacity: Some(viewport_ipc::event::Opacity {

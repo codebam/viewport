@@ -1214,6 +1214,12 @@ impl<'de> Deserialize<'de> for CssGaps {
         enum Sides {
             All(i32),
             Each(Vec<i32>),
+            Box {
+                top: i32,
+                right: i32,
+                bottom: i32,
+                left: i32,
+            },
         }
 
         match Sides::deserialize(deserializer)? {
@@ -1222,6 +1228,17 @@ impl<'de> Deserialize<'de> for CssGaps {
                 right: value,
                 bottom: value,
                 left: value,
+            }),
+            Sides::Box {
+                top,
+                right,
+                bottom,
+                left,
+            } => Ok(CssGaps {
+                top,
+                right,
+                bottom,
+                left,
             }),
             Sides::Each(values) => match values.as_slice() {
                 [all] => Ok(CssGaps {
@@ -2745,6 +2762,12 @@ mod tests {
 
         let four: CssGaps = serde_json::from_value(serde_json::json!([1, 2, 3, 4])).expect("four");
         assert_eq!((four.top, four.right, four.bottom, four.left), (1, 2, 3, 4));
+
+        // Serialized object form (used by saved settings.json and Event::Config)
+        // must round-trip cleanly.
+        let encoded = serde_json::to_value(four).expect("serialize");
+        let decoded: CssGaps = serde_json::from_value(encoded).expect("round-trip");
+        assert_eq!(decoded, four);
 
         assert!(
             serde_json::from_value::<CssGaps>(serde_json::json!([1, 2, 3, 4, 5])).is_err(),
