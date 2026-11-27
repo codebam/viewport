@@ -490,6 +490,7 @@ where
                     self.gbm,
                     self.cache,
                     self.device,
+                    buffer,
                     dmabuf,
                     surface,
                 ) {
@@ -593,21 +594,24 @@ impl<R: BackgroundEffectRenderer> BackgroundEffectRenderer for FallbackRenderer<
 
 /// A texture for a buffer the scanout card refused, or `None`.
 ///
-/// The cache first: a shadow made for an earlier commit of the same buffer
-/// is still the picture, and re-importing it is what the scanout renderer's
-/// own import cache makes cheap. A cached shadow that no longer imports —
-/// the card was reset and rebuilt under it — is dropped and copied again.
+/// The cache holds the allocated shadow buffer per client swapchain slot so we
+/// do not pay a GBM allocation on every commit — but the pixels are always
+/// re-copied from the client's buffer because Wayland swapchain clients reuse
+/// the same DMA-BUF fds across frames with new content. Returning a cached
+/// shadow without re-copying freezes every cross-GPU window on its initial
+/// swapchain frames.
 ///
-/// Then the helpers, in seat order. The GPU path is preferred on every
-/// helper before the CPU path is tried on any: a copy that stays on the
-/// cards is worth more than one that crosses the CPU, even if it means
-/// asking a second helper.
+/// Helpers are tried in seat order. The GPU path is preferred on every helper
+/// before the CPU path is tried on any: a copy that stays on the cards is worth
+/// more than one that crosses the CPU, even if it means asking a second helper.
+#[allow(clippy::too_many_arguments)]
 fn copied_texture<R>(
     scanout: &mut R,
     helpers: &mut [(usize, Gpu)],
     gbm: &GbmDevice<DrmDeviceFd>,
     cache: &mut CopyCache,
     device: usize,
+    buffer: &WlBuffer,
     dmabuf: &Dmabuf,
     surface: Option<&SurfaceData>,
 ) -> Option<R::TextureId>
@@ -619,14 +623,10 @@ where
     let format = dmabuf.format();
     let key = BufferKey::of(dmabuf);
 
-    if let Some(key) = key.as_ref() {
-        if let Some(shadow) = cache.lookup(key) {
-            match scanout.import_dmabuf(shadow, None) {
-                Ok(texture) => return Some(texture),
-                Err(_) => cache.remove(key),
-            }
-        }
-    }
+    let mut cached_shadow = key
+        .as_ref()
+        .and_then(|key| cache.lookup(key).cloned())
+        .filter(|shadow| shadow.size() == size);
 
     // The client's acquire point, if it named one: its GPU may not have
     // finished writing the buffer. The helper waits before copying;
@@ -655,7 +655,17 @@ where
             if let Some(acquire) = acquire.as_ref() {
                 let _ = helper.wait(&SyncPoint::from(acquire.clone()));
             }
-            let texture = helper.import_dmabuf(dmabuf, None).ok()?;
+            let texture = helper.import_dma_buffer(buffer, surface, &[]).ok()?;
+            if let Some(mut shadow) = cached_shadow.take() {
+                if crate::dump::copy_texture(helper, &texture, &mut shadow, physical).is_ok() {
+                    if let Ok(imported) = scanout.import_dmabuf(&shadow, None) {
+                        return Some(imported);
+                    }
+                }
+                if let Some(key) = key.as_ref() {
+                    cache.remove(key);
+                }
+            }
             let format = shadow_format?;
             let mut shadow = allocator
                 .create_buffer(
@@ -693,7 +703,7 @@ where
             if let Some(acquire) = acquire.as_ref() {
                 let _ = helper.wait(&SyncPoint::from(acquire.clone()));
             }
-            let texture = helper.import_dmabuf(dmabuf, None).ok()?;
+            let texture = helper.import_dma_buffer(buffer, surface, &[]).ok()?;
             let bytes = read_back(helper, &texture, size)?;
             let texture = scanout
                 .import_memory(&bytes, Fourcc::Argb8888, size, false)
@@ -893,6 +903,30 @@ mod tests {
         assert!(
             body.contains("Err(original)"),
             "the copy must hang off the refusal, not the success"
+        );
+    }
+
+    #[test]
+    fn cached_shadows_are_recopied_before_import() {
+        // Swapchain clients reuse the same DMA-BUF fds across frames, so a
+        // cache hit must reuse the allocated shadow buffer and re-copy pixels
+        // into it rather than returning a stale previous frame.
+        let source = include_str!("cross_gpu.rs");
+        let source = source.split("#[cfg(test)]").next().unwrap_or(source);
+        let start = source
+            .find("fn copied_texture<R>(")
+            .expect("copied_texture");
+        let end = start + source[start..].find("fn read_back<H>(").expect("read_back");
+        let body = &source[start..end];
+        let copy = body
+            .find("crate::dump::copy_texture(helper, &texture, &mut shadow, physical)")
+            .expect("cached shadow must be recopied");
+        let import = body
+            .find("scanout.import_dmabuf(&shadow, None)")
+            .expect("scanout imports the refreshed shadow");
+        assert!(
+            copy < import,
+            "the shadow must be refreshed before scanout imports it"
         );
     }
 
