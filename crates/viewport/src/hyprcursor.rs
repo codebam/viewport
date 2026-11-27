@@ -670,19 +670,20 @@ fn resample(pixels: &[u8], width: u32, height: u32, target: u32, how: Resize) ->
         }
         Resize::Bilinear => {
             for y in 0..th {
-                // Sample at pixel centres, as every resampler does, so the
-                // image is not shifted half a pixel at the edges.
-                let fy =
-                    ((y as f64 + 0.5) * f64::from(height) / f64::from(th) - 0.5).max(0.0) as u32;
+                // Sample at pixel centres, clamped to [0, height - 1] before
+                // splitting into index and weight so edge pixels interpolate
+                // instead of negatively extrapolating.
+                let sy = ((y as f64 + 0.5) * f64::from(height) / f64::from(th) - 0.5)
+                    .clamp(0.0, f64::from(height - 1));
+                let fy = sy as u32;
                 let fy_next = (fy + 1).min(height - 1);
-                let wy =
-                    ((y as f64 + 0.5) * f64::from(height) / f64::from(th) - 0.5) - f64::from(fy);
+                let wy = sy - f64::from(fy);
                 for x in 0..tw {
-                    let fx =
-                        ((x as f64 + 0.5) * f64::from(width) / f64::from(tw) - 0.5).max(0.0) as u32;
+                    let sx = ((x as f64 + 0.5) * f64::from(width) / f64::from(tw) - 0.5)
+                        .clamp(0.0, f64::from(width - 1));
+                    let fx = sx as u32;
                     let fx_next = (fx + 1).min(width - 1);
-                    let wx =
-                        ((x as f64 + 0.5) * f64::from(width) / f64::from(tw) - 0.5) - f64::from(fx);
+                    let wx = sx - f64::from(fx);
                     let mut pixel = [0u8; 4];
                     for channel in 0..4 {
                         let at = |px: u32, py: u32| {
@@ -1037,6 +1038,25 @@ mod tests {
             }
         }
         !crc
+    }
+
+    #[test]
+    fn bilinear_upscale_stays_within_source_channel_bounds_at_edges() {
+        // 2x2 image: top row 100, bottom row 255. Unclamped negative weights at
+        // y=0 / x=0 extrapolated below 100 (down to ~27).
+        let src = [
+            100, 100, 100, 255, 100, 100, 100, 255, // row 0
+            255, 255, 255, 255, 255, 255, 255, 255, // row 1
+        ];
+        let out = resample(&src, 2, 2, 32, Resize::Bilinear);
+        for pixel in out.as_chunks::<4>().0 {
+            assert!(
+                (100..=255).contains(&pixel[0]),
+                "bilinear output channel {} escaped source range 100..=255",
+                pixel[0]
+            );
+            assert_eq!(pixel[3], 255);
+        }
     }
 
     #[test]
