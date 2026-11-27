@@ -1925,7 +1925,7 @@ impl smithay::wayland::drm_lease::DrmLeaseHandler for ViewportState {
         // handles and comparing them by value reserves whichever unrelated
         // CRTC happens to share a number on this one. The same scoping
         // `scan_device` applies to its own CRTC search.
-        let taken: std::collections::HashSet<_> = udev
+        let mut taken: std::collections::HashSet<_> = udev
             .ids()
             .into_iter()
             .filter(|id| id.device == index)
@@ -1941,29 +1941,33 @@ impl smithay::wayland::drm_lease::DrmLeaseHandler for ViewportState {
             let Ok(info) = device.get_connector(connector, false) else {
                 return Err(LeaseRejected::default());
             };
-            let crtc = info
+            let candidates = info
                 .encoders()
                 .iter()
                 .filter_map(|handle| device.get_encoder(*handle).ok())
-                .flat_map(|encoder| resources.filter_crtcs(encoder.possible_crtcs()))
-                .find(|crtc| !taken.contains(crtc));
-            let Some(crtc) = crtc else {
-                tracing::warn!("a lease was asked for with no free crtc to drive it");
-                return Err(LeaseRejected::default());
-            };
-            let Ok(planes) = device.planes(&crtc) else {
-                return Err(LeaseRejected::default());
-            };
+                .flat_map(|encoder| resources.filter_crtcs(encoder.possible_crtcs()));
             // The claim is what stops the compositor's own allocator taking
-            // the plane back while the client has it.
-            let Some(claim) = device.claim_plane(planes.primary[0].handle, crtc) else {
-                tracing::warn!("the primary plane for a leased crtc could not be claimed");
+            // the plane back while the client has it. Keep trying candidate
+            // CRTCs (and primary planes) when an earlier CRTC's primary plane
+            // is already held by another active lease, and mark the chosen CRTC
+            // taken so multi-connector leases receive distinct CRTCs.
+            let Some((crtc, plane, claim)) = claim_lease_crtc(candidates, &mut taken, |crtc| {
+                let planes = device.planes(&crtc).ok()?;
+                planes.primary.iter().find_map(|plane| {
+                    device
+                        .claim_plane(plane.handle, crtc)
+                        .map(|claim| (plane.handle, claim))
+                })
+            }) else {
+                tracing::warn!(
+                    "a lease was asked for with no free crtc and primary plane to drive it"
+                );
                 return Err(LeaseRejected::default());
             };
 
             builder.add_connector(connector);
             builder.add_crtc(crtc);
-            builder.add_plane(planes.primary[0].handle, claim);
+            builder.add_plane(plane, claim);
         }
 
         Ok(builder)
@@ -1986,6 +1990,30 @@ impl smithay::wayland::drm_lease::DrmLeaseHandler for ViewportState {
             udev.leases.retain(|lease| lease.id() != lease_id);
         }
     }
+}
+
+/// Pick the first candidate CRTC not in `taken` that has a claimable primary
+/// plane, recording the chosen CRTC in `taken` so subsequent connectors in the
+/// same lease request receive distinct CRTCs.
+fn claim_lease_crtc<C, P, L, F>(
+    candidates: impl IntoIterator<Item = C>,
+    taken: &mut std::collections::HashSet<C>,
+    mut try_claim: F,
+) -> Option<(C, P, L)>
+where
+    C: Copy + Eq + std::hash::Hash,
+    F: FnMut(C) -> Option<(P, L)>,
+{
+    for crtc in candidates {
+        if taken.contains(&crtc) {
+            continue;
+        }
+        if let Some((plane, claim)) = try_claim(crtc) {
+            taken.insert(crtc);
+            return Some((crtc, plane, claim));
+        }
+    }
+    None
 }
 
 /// Where a `wp_pointer_warp_v1.warp_pointer` lands.
@@ -2135,5 +2163,32 @@ mod lease_fallback_tests {
             lease_fallback_candidates("requesting", [("one", false), ("two", false)].into_iter()),
             vec!["one", "two", "requesting"]
         );
+    }
+
+    #[test]
+    fn lease_crtc_claiming_skips_busy_crtcs_and_separates_multi_connector_claims() {
+        let mut taken = std::collections::HashSet::from([0u32]);
+        // CRTC 0 is used by a desktop output, CRTC 1 has no claimable primary
+        // plane (e.g. already leased or empty primary plane list), CRTC 2 and 3
+        // are free.
+        let try_claim = |crtc: u32| -> Option<(u32, &'static str)> {
+            match crtc {
+                1 => None,
+                2 => Some((20, "claim-2")),
+                3 => Some((30, "claim-3")),
+                _ => None,
+            }
+        };
+
+        let first = claim_lease_crtc([0, 1, 2, 3], &mut taken, try_claim);
+        assert_eq!(first, Some((2, 20, "claim-2")));
+
+        // A second connector in the same lease request must not re-pick CRTC 2.
+        let second = claim_lease_crtc([0, 1, 2, 3], &mut taken, try_claim);
+        assert_eq!(second, Some((3, 30, "claim-3")));
+
+        // No free CRTCs remain.
+        let third = claim_lease_crtc([0, 1, 2, 3], &mut taken, try_claim);
+        assert_eq!(third, None);
     }
 }
