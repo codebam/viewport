@@ -787,7 +787,7 @@ impl ViewportState {
                 let map = smithay::desktop::layer_map_for_output(&output);
                 map.layer_geometry(&layer)
             };
-            let Some(_layer_geo) = geometry else {
+            let Some(layer_geo) = geometry else {
                 return;
             };
             let Some(output_geo) = self.space.output_geometry(&output) else {
@@ -796,7 +796,7 @@ impl ViewportState {
             let parent_offset = get_popup_toplevel_coords(&PopupKind::Xdg(popup.clone()));
             (
                 output,
-                popup_target(output_geo, parent_offset, Point::from((0, 0))),
+                layer_popup_target(output_geo, layer_geo, parent_offset),
             )
         } else {
             return;
@@ -1075,6 +1075,22 @@ pub fn handle_commit(state: &mut ViewportState, surface: &WlSurface) {
     }
 }
 
+/// Target rectangle for a popup anchored to a layer surface on `output_geo`.
+///
+/// `layer_geo` is output-local (as `LayerMap::layer_geometry` returns it), so
+/// the layer's global origin is `output_geo.loc + layer_geo.loc`.
+fn layer_popup_target(
+    output_geo: Rectangle<i32, Logical>,
+    layer_geo: Rectangle<i32, Logical>,
+    parent_offset: Point<i32, Logical>,
+) -> Rectangle<i32, Logical> {
+    let layer_origin = Point::from((
+        output_geo.loc.x.saturating_add(layer_geo.loc.x),
+        output_geo.loc.y.saturating_add(layer_geo.loc.y),
+    ));
+    popup_target(output_geo, parent_offset, layer_origin)
+}
+
 #[cfg(test)]
 mod layer_popup_tests {
     use super::*;
@@ -1139,6 +1155,26 @@ mod layer_popup_tests {
     /// Both hooks reach the unconstrainer: the xdg path did; the layer path
     /// did not, and a layer-anchored menu was the one case nothing ever
     /// slid back.
+    #[test]
+    fn layer_popup_target_uses_layer_and_output_origins() {
+        // Secondary monitor at x = 1920 with a top bar at (0, 0): the popup's
+        // target starts at (0, 0), not (1920, 0).
+        let secondary = Rectangle::<i32, Logical>::new((1920, 0).into(), (1920, 1080).into());
+        let top_bar = Rectangle::<i32, Logical>::new((0, 0).into(), (1920, 32).into());
+        let target = layer_popup_target(secondary, top_bar, (0, 0).into());
+        assert_eq!(target.loc, (0, 0).into());
+        assert_eq!(target.size, secondary.size);
+
+        // Bottom bar at y = 1048 on a 1920x1080 monitor: the output runs from
+        // y = -1048 to y = 32 in the bar's coordinates, so upward menus fit and
+        // downward menus slide back onto the screen.
+        let primary = Rectangle::<i32, Logical>::new((0, 0).into(), (1920, 1080).into());
+        let bottom_bar = Rectangle::<i32, Logical>::new((0, 1048).into(), (1920, 32).into());
+        let target = layer_popup_target(primary, bottom_bar, (0, 0).into());
+        assert_eq!(target.loc, (0, -1048).into());
+        assert_eq!(target.size, primary.size);
+    }
+
     #[test]
     fn both_popup_hooks_unconstrain() {
         let xdg = include_str!("xdg_shell.rs");
