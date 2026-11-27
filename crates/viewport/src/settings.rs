@@ -564,39 +564,65 @@ pub fn apply(into: &mut crate::config::File, overlay: &Overlay) {
         }
     }
     if let Some(motion) = overlay.motion.as_ref() {
-        // The overlay's block lands in the config file's own shape — every
-        // field, not the four an earlier copy of this code wrote by hand
-        // while dropping the curve tree. The validation the file's block
-        // gets (unknown styles dropped with a warning, non-physical springs
-        // inherited over) happens in the one conversion both paths share:
-        // `motion_event`, which `apply_config` builds the wire event from.
-        // An overlay that wrote nothing keeps the default, and the
-        // `!=` gate below is what lets a file's block stand.
-        let file_block = crate::config::MotionConfig {
-            enabled: motion.enabled,
-            duration: motion.duration,
-            slow: motion.slow,
-            ease: motion.ease.clone(),
-            bezier: motion.bezier,
-            windows: motion.windows.clone().map(wire_category_to_config),
-            windows_in: motion.windows_in.clone().map(wire_category_to_config),
-            windows_out: motion.windows_out.clone().map(wire_category_to_config),
-            windows_move: motion.windows_move.clone().map(wire_category_to_config),
-            workspaces: motion.workspaces.clone().map(wire_category_to_config),
-            layers: motion.layers.clone().map(wire_category_to_config),
-            border: motion.border.clone().map(wire_category_to_config),
-            fade_dim: motion.fade_dim.clone().map(wire_category_to_config),
-            fade_popups: motion.fade_popups.clone().map(wire_category_to_config),
-        };
-        if file_block != crate::config::MotionConfig::default() {
-            into.motion = file_block;
+        // Merge field-by-field like every other block so a partial saved
+        // overlay (for instance `{"motion": {"duration": 120}}`) preserves the
+        // rest of the motion tree from `config.json`.
+        if let Some(value) = motion.enabled {
+            into.motion.enabled = Some(value);
+        }
+        if let Some(value) = motion.duration {
+            into.motion.duration = Some(value);
+        }
+        if let Some(value) = motion.slow {
+            into.motion.slow = Some(value);
+        }
+        if let Some(value) = motion.ease.as_ref() {
+            into.motion.ease = Some(value.clone());
+        }
+        if let Some(value) = motion.bezier {
+            into.motion.bezier = Some(value);
+        }
+        if let Some(value) = motion.windows.as_ref() {
+            into.motion.windows = Some(wire_category_to_config(value.clone()));
+        }
+        if let Some(value) = motion.windows_in.as_ref() {
+            into.motion.windows_in = Some(wire_category_to_config(value.clone()));
+        }
+        if let Some(value) = motion.windows_out.as_ref() {
+            into.motion.windows_out = Some(wire_category_to_config(value.clone()));
+        }
+        if let Some(value) = motion.windows_move.as_ref() {
+            into.motion.windows_move = Some(wire_category_to_config(value.clone()));
+        }
+        if let Some(value) = motion.workspaces.as_ref() {
+            into.motion.workspaces = Some(wire_category_to_config(value.clone()));
+        }
+        if let Some(value) = motion.layers.as_ref() {
+            into.motion.layers = Some(wire_category_to_config(value.clone()));
+        }
+        if let Some(value) = motion.border.as_ref() {
+            into.motion.border = Some(wire_category_to_config(value.clone()));
+        }
+        if let Some(value) = motion.fade_dim.as_ref() {
+            into.motion.fade_dim = Some(wire_category_to_config(value.clone()));
+        }
+        if let Some(value) = motion.fade_popups.as_ref() {
+            into.motion.fade_popups = Some(wire_category_to_config(value.clone()));
         }
     }
     if let Some(group) = overlay.group.as_ref() {
-        into.group.auto_group = group.auto_group;
-        into.group.drag_into_group = group.drag_into_group;
-        into.group.merge_groups_on_drag = group.merge_groups_on_drag;
-        into.group.group_on_movetoworkspace = group.group_on_movetoworkspace;
+        if let Some(value) = group.auto_group {
+            into.group.auto_group = Some(value);
+        }
+        if let Some(value) = group.drag_into_group {
+            into.group.drag_into_group = Some(value);
+        }
+        if let Some(value) = group.merge_groups_on_drag {
+            into.group.merge_groups_on_drag = Some(value);
+        }
+        if let Some(value) = group.group_on_movetoworkspace {
+            into.group.group_on_movetoworkspace = Some(value);
+        }
     }
     if let Some(clock) = overlay.clock.as_ref() {
         if let Some(value) = clock.locale.as_ref() {
@@ -1447,6 +1473,36 @@ mod tests {
 
         assert_eq!(into.group.drag_into_group, Some(false));
         assert_eq!(into.group.group_on_movetoworkspace, Some(true));
+    }
+
+    #[test]
+    fn partial_motion_and_group_overlays_preserve_base_fields() {
+        let mut base = crate::config::File::default();
+        base.motion.slow = Some(400.0);
+        base.motion.bezier = Some([0.2, 0.0, 0.2, 1.0]);
+        base.group.merge_groups_on_drag = Some(false);
+        base.group.drag_into_group = Some(true);
+
+        let overlay = Overlay {
+            motion: Some(viewport_ipc::event::Motion {
+                duration: Some(120.0),
+                ..Default::default()
+            }),
+            group: Some(viewport_ipc::event::Group {
+                auto_group: Some(true),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        apply(&mut base, &overlay);
+
+        assert_eq!(base.motion.duration, Some(120.0));
+        assert_eq!(base.motion.slow, Some(400.0));
+        assert_eq!(base.motion.bezier, Some([0.2, 0.0, 0.2, 1.0]));
+        assert_eq!(base.group.auto_group, Some(true));
+        assert_eq!(base.group.merge_groups_on_drag, Some(false));
+        assert_eq!(base.group.drag_into_group, Some(true));
     }
 
     /// The fields that arrived after the overlay's shape was settled ride the
