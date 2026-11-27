@@ -465,7 +465,7 @@ impl<R: ImportDma> ImportDma for FallbackRenderer<'_, R> {
 
 impl<R> ImportDmaWl for FallbackRenderer<'_, R>
 where
-    R: Renderer + ImportDma + ImportMem,
+    R: Renderer + ImportDma + ImportDmaWl + ImportMem,
     R::TextureId: Clone + 'static,
 {
     fn import_dma_buffer(
@@ -474,11 +474,16 @@ where
         surface: Option<&SurfaceData>,
         damage: &[Rectangle<i32, BufferCoord>],
     ) -> Result<Self::TextureId, Self::Error> {
-        let dmabuf = smithay::wayland::dmabuf::get_dmabuf(buffer)
-            .expect("import_dma_buffer without checking buffer type?");
-        match self.scanout.import_dmabuf(dmabuf, Some(damage)) {
+        // Forward through `ImportDmaWl`, not bare `ImportDma::import_dmabuf`:
+        // `VulkanRenderer` stamps `wp_color_management_v1`,
+        // `wp_color_representation_v1`, `SdrEotf`, and `tonemap` from `surface`
+        // only in `import_dma_buffer`.
+        match self.scanout.import_dma_buffer(buffer, surface, damage) {
             Ok(texture) => Ok(texture),
             Err(original) => {
+                let Ok(dmabuf) = smithay::wayland::dmabuf::get_dmabuf(buffer) else {
+                    return Err(original);
+                };
                 match copied_texture(
                     self.scanout,
                     self.helpers,
@@ -881,8 +886,8 @@ mod tests {
                 .expect("the next impl");
         let body = &source[start..end];
         let ask = body
-            .find("self.scanout.import_dmabuf(dmabuf, Some(damage))")
-            .expect("the scanout is asked");
+            .find("self.scanout.import_dma_buffer(buffer, surface, damage)")
+            .expect("the scanout is asked through ImportDmaWl so surface colour metadata survives");
         let copy = body.find("copied_texture(").expect("the copy");
         assert!(ask < copy, "the scanout must be asked before any copy");
         assert!(
