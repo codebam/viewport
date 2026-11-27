@@ -2096,20 +2096,31 @@ impl ViewportState {
                         .raw_latin_sym_or_raw_current_sym()
                         .map(|sym| sym.raw())
                         .unwrap_or_else(|| keysym.raw());
-                    if let Some(bound) = crate::binding::find_binding(
-                        &state.bindings,
-                        modifiers,
-                        unmodified,
-                        &state.binding_mode,
-                        state.locked,
-                        true,
-                        state.current_input_device.as_deref(),
-                    ) {
-                        let action = bound.action.clone();
-                        if bound.non_consuming {
-                            state.deferred_bindings.push(action);
-                        } else {
-                            result = FilterResult::Intercept(Some(Action::Bound(action)));
+                    if state.picker.is_none() {
+                        if let Some(bound) = crate::binding::find_binding(
+                            &state.bindings,
+                            modifiers,
+                            unmodified,
+                            &state.binding_mode,
+                            state.locked,
+                            true,
+                            state.current_input_device.as_deref(),
+                        ) {
+                            if allow_release_binding(
+                                state.picker.is_some(),
+                                inhibited,
+                                bound.dont_inhibit,
+                            ) {
+                                let action = bound.action.clone();
+                                if bound.non_consuming
+                                    || (bound.auto_consuming && !state.binding_will_act(&action))
+                                    || web
+                                {
+                                    state.deferred_bindings.push(action);
+                                } else {
+                                    result = FilterResult::Intercept(Some(Action::Bound(action)));
+                                }
+                            }
                         }
                     }
                     result
@@ -4646,6 +4657,15 @@ use smithay::wayland::compositor::RectangleKind;
 /// asked for a hole in its confinement got no confinement and the pointer
 /// left the surface entirely, the opposite of both the request and the safe
 /// direction above.
+/// Whether a matched `release+` key binding is permitted to run.
+///
+/// Release bindings obey the same picker and keyboard-shortcut-inhibitor gates
+/// as press bindings: nothing fires behind an active picker, and an inhibited
+/// client only yields to bindings marked `dont_inhibit+`.
+fn allow_release_binding(picker_open: bool, inhibited: bool, dont_inhibit: bool) -> bool {
+    !picker_open && (!inhibited || dont_inhibit)
+}
+
 /// Whether a matched `repeating+` binding suppresses the press and its
 /// matching release from the focused client.
 ///
@@ -5589,6 +5609,15 @@ mod tests {
             tablet_to_layout(two_outputs(), 2.0, 0.0),
             Point::new(3840.0, 0.0)
         );
+    }
+
+    #[test]
+    fn release_bindings_respect_picker_and_shortcut_inhibitors() {
+        assert!(!allow_release_binding(true, false, false));
+        assert!(!allow_release_binding(true, false, true));
+        assert!(!allow_release_binding(false, true, false));
+        assert!(allow_release_binding(false, true, true));
+        assert!(allow_release_binding(false, false, false));
     }
 
     #[test]
