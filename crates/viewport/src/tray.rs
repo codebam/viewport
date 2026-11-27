@@ -266,16 +266,54 @@ enum Admission {
     Full,
 }
 
+/// One entry in the watcher's registry.
+///
+/// Tracks the exposed item key (`<service><path>`) alongside the registering
+/// connection's unique D-Bus name (`owner`) and object `path`. D-Bus signals
+/// always carry the unique bus name in `header.sender()`, never a well-known
+/// name such as `org.kde.StatusNotifierItem-<pid>-<id>`, so matching signals
+/// against `owner` + `path` is what keeps well-known-name (Qt/KDE) tray items
+/// updating after initial registration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RegisteredItem {
+    key: String,
+    owner: String,
+    path: String,
+}
+
+impl RegisteredItem {
+    fn service(&self) -> Option<&str> {
+        self.key.split_once('/').map(|(service, _)| service)
+    }
+}
+
 /// Add a key to the watcher's registry, within [`MAX_ITEMS`].
-fn admit(items: &mut Vec<String>, key: &str) -> Admission {
-    if items.iter().any(|item| item == key) {
+fn admit(items: &mut Vec<RegisteredItem>, key: &str, owner: &str, path: &str) -> Admission {
+    if let Some(existing) = items.iter_mut().find(|item| item.key == key) {
+        existing.owner.clear();
+        existing.owner.push_str(owner);
+        existing.path.clear();
+        existing.path.push_str(path);
         Admission::Known
     } else if items.len() >= MAX_ITEMS {
         Admission::Full
     } else {
-        items.push(key.to_owned());
+        items.push(RegisteredItem {
+            key: key.to_owned(),
+            owner: owner.to_owned(),
+            path: path.to_owned(),
+        });
         Admission::Added
     }
+}
+
+/// Find every registered item key owned by `sender` at `path`.
+fn matching_signal_keys(items: &[RegisteredItem], sender: &str, path: &str) -> Vec<String> {
+    items
+        .iter()
+        .filter(|item| item.owner == sender && item.path == path)
+        .map(|item| item.key.clone())
+        .collect()
 }
 
 /// The path half of a registration: the sender's unique name and the object
@@ -429,7 +467,7 @@ fn start(
     // because it is the one that learns when a name has died, and an answer
     // that lists the dead forever is worse than none. One list, two readers,
     // and the worker does the pruning.
-    let items: std::sync::Arc<std::sync::Mutex<Vec<String>>> = std::sync::Arc::default();
+    let items: std::sync::Arc<std::sync::Mutex<Vec<RegisteredItem>>> = std::sync::Arc::default();
     // One queued change per item key, shared with the signal feed so a burst
     // from one item is one command rather than one per message.
     let pending: PendingItems = std::sync::Arc::default();
@@ -477,19 +515,22 @@ fn start(
                         let (Some(sender), Some(path)) = (header.sender(), header.path()) else {
                             return;
                         };
-                        let key = key(sender.as_str(), path.as_str());
-                        // Only a registered item is worth a fetch, and that
+                        // Only registered items are worth a fetch, and that
                         // keeps the pending map bounded by the same cap the
                         // registry has rather than by whatever paths a peer
-                        // feels like putting on the wire.
-                        let known = items
+                        // feels like putting on the wire. Match by unique
+                        // `owner` and `path` because D-Bus signals always carry
+                        // the sender's unique name even for items registered
+                        // under a well-known bus name.
+                        let keys = items
                             .lock()
-                            .map(|items| items.iter().any(|item| item == &key))
-                            .unwrap_or(false);
-                        if !known {
-                            return;
+                            .map(|items| {
+                                matching_signal_keys(&items, sender.as_str(), path.as_str())
+                            })
+                            .unwrap_or_default();
+                        for key in keys {
+                            queue_item_change(&pending, commands, key, false);
                         }
-                        queue_item_change(&pending, commands, key, false);
                     },
                 ) {
                     tracing::warn!("the system tray: could not follow tray items: {e:#}");
@@ -524,10 +565,9 @@ fn start(
                         let known = items
                             .lock()
                             .map(|items| {
-                                items.iter().any(|key| {
-                                    key.split_once('/')
-                                        .is_some_and(|(service, _)| service == name)
-                                })
+                                items
+                                    .iter()
+                                    .any(|item| item.service() == Some(name.as_str()))
                             })
                             .unwrap_or(false);
                         if known {
@@ -576,7 +616,7 @@ struct Watcher {
     /// has stopped answering. Shared with the worker — one list, not two — so
     /// that a name the worker watches die is pruned from it instead of being
     /// reported until the session ends.
-    items: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    items: std::sync::Arc<std::sync::Mutex<Vec<RegisteredItem>>>,
     /// Shared with the signal feed so a re-registration coalesces with a
     /// signal already queued for the same item.
     pending: PendingItems,
@@ -637,7 +677,7 @@ impl Watcher {
 
         let key = key(&service, &path);
         let admission = match self.items.lock() {
-            Ok(mut items) => admit(&mut items, &key),
+            Ok(mut items) => admit(&mut items, &key, &sender, &path),
             // A poisoned registry cannot answer `RegisteredStatusNotifierItems`
             // honestly; refusing the registration is the safe side of that.
             Err(_) => return,
@@ -675,7 +715,7 @@ impl Watcher {
     fn registered_status_notifier_items(&self) -> Vec<String> {
         self.items
             .lock()
-            .map(|items| items.clone())
+            .map(|items| items.iter().map(|item| item.key.clone()).collect())
             .unwrap_or_default()
     }
 
@@ -767,7 +807,7 @@ struct Worker {
     /// The watcher's half of the registry, shared so that a name the worker
     /// watches die can be taken out of `RegisteredStatusNotifierItems` the
     /// moment it dies, rather than reported to the end of the session.
-    registry: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    registry: std::sync::Arc<std::sync::Mutex<Vec<RegisteredItem>>>,
     /// One queued change per item key, shared with the signal feed. Taken out
     /// when the command is handled so a later change queues again.
     pending: PendingItems,
@@ -801,7 +841,7 @@ impl Worker {
     fn new(
         connection: crate::dbus::sync::Connection,
         events: smithay::reexports::calloop::channel::Sender<Message>,
-        registry: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+        registry: std::sync::Arc<std::sync::Mutex<Vec<RegisteredItem>>>,
         pending: PendingItems,
         session_compositor: bool,
     ) -> Self {
@@ -1066,8 +1106,8 @@ impl Worker {
         let before = self.entries.len();
         self.entries.retain(|entry| entry.service != name);
         if let Ok(mut items) = self.registry.lock() {
-            items.retain(|key| match key.split_once('/') {
-                Some((service, _)) => service != name,
+            items.retain(|item| match item.service() {
+                Some(service) => service != name,
                 // A key with no path half cannot have come from `register`,
                 // which always appends one. Nobody to match it against, so it
                 // stays — pruning on a guess is how live items get lost.
@@ -1720,15 +1760,41 @@ mod tests {
     fn the_registry_caps_items_and_accepts_repeats() {
         let mut items = Vec::new();
         for n in 0..MAX_ITEMS {
+            let owner = format!(":1.{n}");
             assert_eq!(
-                admit(&mut items, &format!(":1.{n}/item")),
+                admit(&mut items, &format!("{owner}/item"), &owner, "/item"),
                 Admission::Added,
                 "row {n}"
             );
         }
-        assert_eq!(admit(&mut items, ":1.0/item"), Admission::Known);
-        assert_eq!(admit(&mut items, ":1.999/item"), Admission::Full);
+        assert_eq!(
+            admit(&mut items, ":1.0/item", ":1.0", "/item"),
+            Admission::Known
+        );
+        assert_eq!(
+            admit(&mut items, ":1.999/item", ":1.999", "/item"),
+            Admission::Full
+        );
         assert_eq!(items.len(), MAX_ITEMS);
+    }
+
+    #[test]
+    fn signals_from_unique_sender_resolve_well_known_tray_registrations() {
+        let mut items = Vec::new();
+        let well_known_key = key("org.kde.StatusNotifierItem-100-1", DEFAULT_PATH);
+        assert_eq!(
+            admit(&mut items, &well_known_key, ":1.42", DEFAULT_PATH),
+            Admission::Added
+        );
+        // D-Bus signals always carry the unique bus name (`:1.42`), never the
+        // well-known name.
+        assert_eq!(
+            matching_signal_keys(&items, ":1.42", DEFAULT_PATH),
+            vec![well_known_key.clone()]
+        );
+        // Unrelated senders or paths must not match.
+        assert!(matching_signal_keys(&items, ":1.99", DEFAULT_PATH).is_empty());
+        assert!(matching_signal_keys(&items, ":1.42", "/Other").is_empty());
     }
 
     /// A signal burst for one item is one command, and a registration arriving
