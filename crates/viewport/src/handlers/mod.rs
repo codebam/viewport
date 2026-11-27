@@ -1432,12 +1432,19 @@ impl smithay::wayland::pointer_warp::PointerWarpHandler for ViewportState {
         }
 
         // The client's position is a point in its own surface, at `origin` in
-        // the layout. Where the surface ends is the size it is drawn at,
-        // which is what the renderer crops it to.
+        // the layout. Root toplevels use the layout box they are cropped to;
+        // subsurfaces, popups, and layer surfaces fall back to their committed
+        // logical surface size so warps on them are still bounds-checked.
         let size = self
             .views
             .find_by_surface(&surface)
-            .map(|view| smithay::utils::Size::from((view.box_.width, view.box_.height)));
+            .map(|view| smithay::utils::Size::from((view.box_.width, view.box_.height)))
+            .or_else(|| {
+                smithay::backend::renderer::utils::with_renderer_surface_state(&surface, |state| {
+                    state.surface_size()
+                })
+                .flatten()
+            });
         let Some(to) = warp_target(origin, position, size) else {
             tracing::debug!("a pointer warp outside its surface is refused");
             return;
@@ -1993,17 +2000,18 @@ fn warp_target(
     position: smithay::utils::Point<f64, smithay::utils::Logical>,
     surface_size: Option<smithay::utils::Size<i32, smithay::utils::Logical>>,
 ) -> Option<smithay::utils::Point<f64, smithay::utils::Logical>> {
-    let to = origin + position;
-    if let Some(size) = surface_size {
-        let inside = position.x >= 0.0
-            && position.y >= 0.0
-            && position.x < f64::from(size.w)
-            && position.y < f64::from(size.h);
-        if !inside {
-            return None;
-        }
+    let size = surface_size?;
+    if size.w <= 0 || size.h <= 0 {
+        return None;
     }
-    Some(to)
+    let inside = position.x >= 0.0
+        && position.y >= 0.0
+        && position.x < f64::from(size.w)
+        && position.y < f64::from(size.h);
+    if !inside {
+        return None;
+    }
+    Some(origin + position)
 }
 
 #[cfg(test)]
@@ -2043,13 +2051,21 @@ mod warp_tests {
         // client asks for its own (400, 300).
         let origin = Point::from((1920.0, 0.0));
         assert_eq!(
-            warp_target(origin, Point::from((400.0, 300.0)), None),
+            warp_target(
+                origin,
+                Point::from((400.0, 300.0)),
+                Some(Size::from((800, 600)))
+            ),
             Some(Point::from((2320.0, 300.0)))
         );
         // And the trivial case: a window at the origin still names global
         // coordinates through its own surface.
         assert_eq!(
-            warp_target(Point::from((0.0, 0.0)), Point::from((50.0, 50.0)), None),
+            warp_target(
+                Point::from((0.0, 0.0)),
+                Point::from((50.0, 50.0)),
+                Some(Size::from((100, 100)))
+            ),
             Some(Point::from((50.0, 50.0)))
         );
     }
@@ -2071,12 +2087,17 @@ mod warp_tests {
             None,
             "before the left edge"
         );
-        // Without a size to check against — a client with no committed
-        // geometry yet — the target stands: the caller's own surface check
-        // is the only gate left.
+        // Without valid committed surface bounds, fail closed so a client
+        // cannot warp the pointer arbitrarily across the desktop.
         assert_eq!(
             warp_target(origin, Point::from((400.0, 300.0)), None),
-            Some(Point::from((2320.0, 300.0)))
+            None,
+            "unknown surface bounds must refuse warp"
+        );
+        assert_eq!(
+            warp_target(origin, Point::from((0.0, 0.0)), Some(Size::from((0, 0)))),
+            None,
+            "degenerate surface bounds must refuse warp"
         );
     }
 }
