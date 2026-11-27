@@ -180,7 +180,7 @@ impl SessionLockHandler for ViewportState {
         // screen can still have been taken by an external locker; telling the
         // shell to put a lock screen away then drew a page that owned nothing
         // over a session somebody else holds, and one nobody could click.
-        if self.lock_shell_drawn.take().is_some() || self.lock_owned_by_shell {
+        if self.lock_shell_drawn.take().is_some() {
             self.notify(&viewport_ipc::Event::SessionUnlock);
         }
         self.lock_attempt = None;
@@ -229,6 +229,21 @@ impl SessionLockHandler for ViewportState {
             );
             return;
         };
+        // Smithay checks `duplicate_output` per `WlOutput` resource, so a
+        // client that bound the same output global twice can reach here with
+        // two lock surfaces for one monitor. Enforce the protocol's
+        // one-surface-per-output invariant across distinct `wl_output` globals.
+        if self
+            .lock_surfaces
+            .get(&output.name())
+            .is_some_and(|existing| smithay::utils::IsAlive::alive(existing.wl_surface()))
+        {
+            surface.ext_session_lock().post_error(
+                SessionLockError::DuplicateOutput,
+                "Output already has a lock surface.",
+            );
+            return;
+        }
         tracing::info!("lock surface on {}", output.name());
 
         // The whole output, because that is the only size a lock surface may
@@ -452,11 +467,29 @@ impl ViewportState {
             self.focus_lock_shell();
             return;
         }
-        let surface = self
-            .lock_surfaces
-            .values()
-            .next()
-            .map(|lock| lock.wl_surface().clone());
+        use smithay::utils::IsAlive as _;
+
+        let surface = {
+            let candidates: Vec<(&str, bool, bool, _)> = self
+                .lock_surfaces
+                .iter()
+                .map(|(name, lock)| {
+                    (
+                        name.as_str(),
+                        lock.wl_surface().alive(),
+                        lock_surface_is_drawing(lock),
+                        lock.wl_surface().clone(),
+                    )
+                })
+                .collect();
+            pick_lock_surface_index(
+                self.active_output.as_deref(),
+                candidates
+                    .iter()
+                    .map(|(name, alive, drawing, _)| (*name, *alive, *drawing)),
+            )
+            .map(|index| candidates[index].3.clone())
+        };
         if let Some(surface) = surface {
             self.focus_lock_surface(&surface);
         }
@@ -493,9 +526,26 @@ impl ViewportState {
     }
 }
 
+/// Choose which lock surface receives keyboard focus during `refocus_lock`.
+///
+/// Prefers a live drawing surface on the active output, then any live drawing
+/// surface, then a live surface on the active output, then any live surface.
+/// Dead surfaces are never selected.
+fn pick_lock_surface_index<'a>(
+    active_output: Option<&str>,
+    candidates: impl IntoIterator<Item = (&'a str, bool, bool)>,
+) -> Option<usize> {
+    candidates
+        .into_iter()
+        .enumerate()
+        .filter(|(_, (_, alive, _))| *alive)
+        .max_by_key(|(_, (name, _, drawing))| (*drawing, active_output == Some(*name)))
+        .map(|(index, _)| index)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{lock_surface_drawing, surface_lock_matches};
+    use super::{lock_surface_drawing, pick_lock_surface_index, surface_lock_matches};
 
     /// An alive locker that never committed a buffer is not drawing: that is
     /// what lets a takeover rescue a hung locker, and what makes
@@ -517,6 +567,30 @@ mod tests {
         assert!(
             !surface_lock_matches(None, &7),
             "with no accepted locker there is no surface of ours"
+        );
+    }
+
+    #[test]
+    fn refocus_lock_prefers_live_drawing_surface_on_active_output() {
+        // Dead surfaces are never focused even if they are on the active output.
+        assert_eq!(
+            pick_lock_surface_index(Some("DP-1"), [("DP-1", false, true), ("DP-2", true, false)]),
+            Some(1)
+        );
+        // Drawing beats non-drawing even across outputs.
+        assert_eq!(
+            pick_lock_surface_index(Some("DP-1"), [("DP-1", true, false), ("DP-2", true, true)]),
+            Some(1)
+        );
+        // Between two drawing surfaces, the active output wins.
+        assert_eq!(
+            pick_lock_surface_index(Some("DP-2"), [("DP-1", true, true), ("DP-2", true, true)]),
+            Some(1)
+        );
+        // No live surfaces -> None.
+        assert_eq!(
+            pick_lock_surface_index(Some("DP-1"), [("DP-1", false, false)]),
+            None
         );
     }
 }

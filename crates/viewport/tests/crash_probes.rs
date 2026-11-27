@@ -31,6 +31,9 @@ use wayland_client::protocol::{
     wl_subsurface, wl_surface,
 };
 use wayland_client::{delegate_noop, Connection, Dispatch, EventQueue, Proxy, QueueHandle};
+use wayland_protocols::ext::session_lock::v1::client::{
+    ext_session_lock_manager_v1, ext_session_lock_surface_v1, ext_session_lock_v1,
+};
 use wayland_protocols::xdg::shell::client::{
     xdg_popup, xdg_positioner, xdg_surface, xdg_toplevel, xdg_wm_base,
 };
@@ -159,7 +162,12 @@ struct Probe {
     layer_shell: Option<zwlr_layer_shell_v1::ZwlrLayerShellV1>,
     screencopy: Option<zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1>,
     subcompositor: Option<wl_subcompositor::WlSubcompositor>,
+    session_lock_manager: Option<ext_session_lock_manager_v1::ExtSessionLockManagerV1>,
     outputs: Vec<wl_output::WlOutput>,
+    /// Extra bindings of the first `wl_output` global, so a probe can bind the
+    /// same physical monitor through two distinct `wl_output` proxies.
+    output_globals: Vec<(u32, u32)>,
+    registry: Option<wl_registry::WlRegistry>,
 
     captures: std::collections::HashMap<wayland_client::backend::ObjectId, CaptureState>,
 
@@ -167,6 +175,12 @@ struct Probe {
     configured: std::collections::HashMap<wayland_client::backend::ObjectId, u32>,
     /// The serial the last layer configure carried, by surface.
     layer_serials: std::collections::HashMap<wayland_client::backend::ObjectId, u32>,
+    /// Lock lifecycle events keyed by `ext_session_lock_v1` object id.
+    locks_locked: std::collections::HashSet<wayland_client::backend::ObjectId>,
+    locks_finished: std::collections::HashSet<wayland_client::backend::ObjectId>,
+    /// Lock surface configure events keyed by `ext_session_lock_surface_v1` id.
+    lock_surface_configured:
+        std::collections::HashMap<wayland_client::backend::ObjectId, (u32, u32)>,
     closed: bool,
 }
 
@@ -197,11 +211,18 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Probe {
             "zwlr_screencopy_manager_v1" => {
                 state.screencopy = Some(registry.bind(name, version.min(3), qh, ()))
             }
-            "wl_output" => state
-                .outputs
-                .push(registry.bind(name, version.min(4), qh, ())),
+            "wl_output" => {
+                state.registry = Some(registry.clone());
+                state.output_globals.push((name, version.min(4)));
+                state
+                    .outputs
+                    .push(registry.bind(name, version.min(4), qh, ()));
+            }
             "wl_subcompositor" => {
                 state.subcompositor = Some(registry.bind(name, version.min(1), qh, ()))
+            }
+            "ext_session_lock_manager_v1" => {
+                state.session_lock_manager = Some(registry.bind(name, version.min(1), qh, ()))
             }
             _ => {}
         }
@@ -218,8 +239,53 @@ delegate_noop!(Probe: ignore wl_subsurface::WlSubsurface);
 delegate_noop!(Probe: ignore wl_output::WlOutput);
 delegate_noop!(Probe: ignore zwlr_layer_shell_v1::ZwlrLayerShellV1);
 delegate_noop!(Probe: ignore zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1);
+delegate_noop!(Probe: ignore ext_session_lock_manager_v1::ExtSessionLockManagerV1);
 delegate_noop!(Probe: ignore xdg_positioner::XdgPositioner);
 delegate_noop!(Probe: ignore xdg_popup::XdgPopup);
+
+impl Dispatch<ext_session_lock_v1::ExtSessionLockV1, ()> for Probe {
+    fn event(
+        state: &mut Self,
+        lock: &ext_session_lock_v1::ExtSessionLockV1,
+        event: ext_session_lock_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            ext_session_lock_v1::Event::Locked => {
+                state.locks_locked.insert(lock.id());
+            }
+            ext_session_lock_v1::Event::Finished => {
+                state.locks_finished.insert(lock.id());
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<ext_session_lock_surface_v1::ExtSessionLockSurfaceV1, ()> for Probe {
+    fn event(
+        state: &mut Self,
+        surface: &ext_session_lock_surface_v1::ExtSessionLockSurfaceV1,
+        event: ext_session_lock_surface_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let ext_session_lock_surface_v1::Event::Configure {
+            serial,
+            width,
+            height,
+        } = event
+        {
+            surface.ack_configure(serial);
+            state
+                .lock_surface_configured
+                .insert(surface.id(), (width, height));
+        }
+    }
+}
 
 impl Dispatch<xdg_wm_base::XdgWmBase, ()> for Probe {
     fn event(
@@ -1291,4 +1357,309 @@ fn a_flood_of_queued_copies_is_refused_not_served() {
     buffer.destroy();
     ordinary.destroy();
     let _ = queue.roundtrip(&mut probe);
+}
+
+/// Hostile `ext-session-lock-v1` protocol violations must terminate only the
+/// offending client with a protocol error while leaving the compositor alive
+/// and recoverable by a clean locker afterwards.
+#[test]
+fn session_lock_duplicate_output_and_already_constructed_are_refused() {
+    let mut compositor = Compositor::start("lock-proto-errors");
+
+    // 1. Bind the same physical `wl_output` global twice and call
+    // `get_lock_surface` on both proxies. Smithay checks duplicate outputs per
+    // `WlOutput` resource, so our handler must still enforce `duplicate_output`
+    // across distinct bindings of the same monitor.
+    {
+        let (connection, mut queue, mut probe) = connect(&compositor);
+        let qh = queue.handle();
+        let manager = probe
+            .session_lock_manager
+            .as_ref()
+            .expect("ext_session_lock_manager_v1")
+            .clone();
+        let comp = probe.compositor.as_ref().expect("wl_compositor").clone();
+        let first_out = probe.first_output();
+        let (global_name, global_ver) = probe.output_globals[0];
+        let second_out: wl_output::WlOutput =
+            probe
+                .registry
+                .as_ref()
+                .expect("wl_registry")
+                .bind(global_name, global_ver, &qh, ());
+        assert!(queue.roundtrip(&mut probe).is_ok());
+
+        let lock = manager.lock(&qh, ());
+        assert!(
+            pump_until(
+                &connection,
+                &mut queue,
+                &mut probe,
+                Duration::from_secs(10),
+                |p| p.locks_locked.contains(&lock.id()),
+            ),
+            "initial lock was never confirmed:\n{}",
+            compositor.log()
+        );
+
+        let s1 = comp.create_surface(&qh, ());
+        let _ls1 = lock.get_lock_surface(&s1, &first_out, &qh, ());
+        let s2 = comp.create_surface(&qh, ());
+        let _ls2 = lock.get_lock_surface(&s2, &second_out, &qh, ());
+        let _ = connection.flush();
+
+        // Expect a protocol error disconnecting this client.
+        let disconnected = !pump_until(
+            &connection,
+            &mut queue,
+            &mut probe,
+            Duration::from_secs(5),
+            |_| false,
+        ) || queue.roundtrip(&mut probe).is_err();
+        assert!(
+            disconnected,
+            "duplicate get_lock_surface across dual wl_output bindings must raise a protocol error:\n{}",
+            compositor.log()
+        );
+        let proto_err = connection.protocol_error();
+        assert!(
+            proto_err.is_some(),
+            "expected Wayland protocol error on duplicate output, got None:\n{}",
+            compositor.log()
+        );
+    }
+    assert!(
+        still_running(&mut compositor),
+        "duplicate_output killed the compositor:\n{}",
+        compositor.log()
+    );
+
+    // 2. Call `get_lock_surface` on a surface that already committed a buffer
+    // (must raise `already_constructed` and not panic or map the surface).
+    {
+        let (connection, mut queue, mut probe) = connect(&compositor);
+        let qh = queue.handle();
+        let manager = probe
+            .session_lock_manager
+            .as_ref()
+            .expect("ext_session_lock_manager_v1")
+            .clone();
+        let comp = probe.compositor.as_ref().expect("wl_compositor").clone();
+        let shm = probe.shm.as_ref().expect("wl_shm").clone();
+        let out = probe.first_output();
+
+        let lock = manager.lock(&qh, ());
+        assert!(
+            pump_until(
+                &connection,
+                &mut queue,
+                &mut probe,
+                Duration::from_secs(10),
+                |p| p.locks_locked.contains(&lock.id()),
+            ),
+            "second locker could not take over after crashed non-drawing locker:\n{}",
+            compositor.log()
+        );
+
+        let precommitted = comp.create_surface(&qh, ());
+        let (buf, _fd) = shm_buffer(&shm, 16, 16, 16 * 4, &qh);
+        precommitted.attach(Some(&buf), 0, 0);
+        precommitted.commit();
+        assert!(queue.roundtrip(&mut probe).is_ok());
+
+        let _ls = lock.get_lock_surface(&precommitted, &out, &qh, ());
+        let _ = connection.flush();
+        let disconnected = queue.roundtrip(&mut probe).is_err();
+        assert!(
+            disconnected,
+            "get_lock_surface on pre-committed surface must raise already_constructed:\n{}",
+            compositor.log()
+        );
+        assert!(
+            connection.protocol_error().is_some(),
+            "expected protocol error for already_constructed:\n{}",
+            compositor.log()
+        );
+    }
+    assert!(
+        still_running(&mut compositor),
+        "already_constructed killed the compositor:\n{}",
+        compositor.log()
+    );
+
+    // 3. A well-behaved locker can still take over, unlock cleanly, and leave
+    // the session healthy.
+    {
+        let (connection, mut queue, mut probe) = connect(&compositor);
+        let qh = queue.handle();
+        let manager = probe
+            .session_lock_manager
+            .as_ref()
+            .expect("ext_session_lock_manager_v1")
+            .clone();
+        let lock = manager.lock(&qh, ());
+        assert!(
+            pump_until(
+                &connection,
+                &mut queue,
+                &mut probe,
+                Duration::from_secs(10),
+                |p| p.locks_locked.contains(&lock.id()),
+            ),
+            "recovery locker never received locked:\n{}",
+            compositor.log()
+        );
+        lock.unlock_and_destroy();
+        assert!(queue.roundtrip(&mut probe).is_ok());
+        assert!(
+            capture_to_completion(&connection, &mut queue, &mut probe),
+            "ordinary capture failed after session lock recovery:\n{}",
+            compositor.log()
+        );
+    }
+    assert!(still_running(&mut compositor));
+}
+
+/// Immediate unlock-then-relock round-trips, takeover of a non-drawing locker
+/// (with refusal of the superseded locker's late unlock), and refusal of a
+/// competing locker while an active locker is drawing.
+#[test]
+fn session_lock_unlock_relock_and_takeover_preserve_security() {
+    let mut compositor = Compositor::start("lock-lifecycle");
+
+    let (conn_a, mut queue_a, mut probe_a) = connect(&compositor);
+    let qh_a = queue_a.handle();
+    let mgr_a = probe_a
+        .session_lock_manager
+        .as_ref()
+        .expect("ext_session_lock_manager_v1")
+        .clone();
+
+    // Immediate lock -> unlock_and_destroy -> relock round-trip.
+    let first = mgr_a.lock(&qh_a, ());
+    assert!(
+        pump_until(
+            &conn_a,
+            &mut queue_a,
+            &mut probe_a,
+            Duration::from_secs(10),
+            |p| p.locks_locked.contains(&first.id()),
+        ),
+        "first lock was never confirmed:\n{}",
+        compositor.log()
+    );
+    first.unlock_and_destroy();
+    let hung = mgr_a.lock(&qh_a, ());
+    assert!(
+        pump_until(
+            &conn_a,
+            &mut queue_a,
+            &mut probe_a,
+            Duration::from_secs(10),
+            |p| p.locks_locked.contains(&hung.id()),
+        ),
+        "immediate relock after unlock_and_destroy was never confirmed:\n{}",
+        compositor.log()
+    );
+
+    // Locker A has NOT drawn anything; Locker B takes over.
+    let (conn_b, mut queue_b, mut probe_b) = connect(&compositor);
+    let qh_b = queue_b.handle();
+    let mgr_b = probe_b
+        .session_lock_manager
+        .as_ref()
+        .expect("ext_session_lock_manager_v1")
+        .clone();
+    let lock_b = mgr_b.lock(&qh_b, ());
+    assert!(
+        pump_until(
+            &conn_b,
+            &mut queue_b,
+            &mut probe_b,
+            Duration::from_secs(10),
+            |p| p.locks_locked.contains(&lock_b.id()),
+        ),
+        "locker B could not take over from non-drawing locker A:\n{}",
+        compositor.log()
+    );
+    // Superseded locker A must be told `finished`.
+    assert!(
+        pump_until(
+            &conn_a,
+            &mut queue_a,
+            &mut probe_a,
+            Duration::from_secs(10),
+            |p| p.locks_finished.contains(&hung.id()),
+        ),
+        "superseded locker A never received finished:\n{}",
+        compositor.log()
+    );
+    // And locker A attempting `unlock_and_destroy` after losing ownership must
+    // be refused with a protocol error rather than unlocking locker B's screen.
+    hung.unlock_and_destroy();
+    assert!(
+        queue_a.roundtrip(&mut probe_a).is_err() && conn_a.protocol_error().is_some(),
+        "superseded locker A's unlock_and_destroy was not refused with a protocol error:\n{}",
+        compositor.log()
+    );
+
+    // Locker B now creates a lock surface and commits a buffer (actively drawing).
+    let comp_b = probe_b.compositor.as_ref().expect("wl_compositor").clone();
+    let shm_b = probe_b.shm.as_ref().expect("wl_shm").clone();
+    let out_b = probe_b.first_output();
+    let surf_b = comp_b.create_surface(&qh_b, ());
+    let lock_surf_b = lock_b.get_lock_surface(&surf_b, &out_b, &qh_b, ());
+    assert!(
+        pump_until(
+            &conn_b,
+            &mut queue_b,
+            &mut probe_b,
+            Duration::from_secs(10),
+            |p| p.lock_surface_configured.contains_key(&lock_surf_b.id()),
+        ),
+        "locker B lock surface never received configure:\n{}",
+        compositor.log()
+    );
+    let (w, h) = probe_b.lock_surface_configured[&lock_surf_b.id()];
+    let (buf_b, _fd_b) = shm_buffer(&shm_b, w as i32, h as i32, w as i32 * 4, &qh_b);
+    surf_b.attach(Some(&buf_b), 0, 0);
+    surf_b.commit();
+    assert!(queue_b.roundtrip(&mut probe_b).is_ok());
+
+    // Locker C tries to steal the session while Locker B is drawing -> refused (`finished`).
+    let (conn_c, mut queue_c, mut probe_c) = connect(&compositor);
+    let qh_c = queue_c.handle();
+    let mgr_c = probe_c
+        .session_lock_manager
+        .as_ref()
+        .expect("ext_session_lock_manager_v1")
+        .clone();
+    let lock_c = mgr_c.lock(&qh_c, ());
+    assert!(
+        pump_until(
+            &conn_c,
+            &mut queue_c,
+            &mut probe_c,
+            Duration::from_secs(10),
+            |p| p.locks_finished.contains(&lock_c.id()),
+        ),
+        "locker C was not refused while locker B was drawing:\n{}",
+        compositor.log()
+    );
+    assert!(!probe_c.locks_locked.contains(&lock_c.id()));
+    lock_c.destroy();
+    let _ = queue_c.roundtrip(&mut probe_c);
+
+    // Locker B unlocks cleanly and the session resumes serving captures.
+    lock_surf_b.destroy();
+    surf_b.destroy();
+    buf_b.destroy();
+    lock_b.unlock_and_destroy();
+    assert!(queue_b.roundtrip(&mut probe_b).is_ok());
+    assert!(
+        capture_to_completion(&conn_b, &mut queue_b, &mut probe_b),
+        "capture failed after clean session unlock:\n{}",
+        compositor.log()
+    );
+    assert!(still_running(&mut compositor));
 }
