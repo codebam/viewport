@@ -1024,7 +1024,7 @@ fn parse_args(args: &[String]) -> Result<Option<Invocation>, String> {
     let mut kind: Option<String> = None;
     let mut raw: Option<String> = None;
     let mut socket: Option<PathBuf> = None;
-    let mut timeout = DEFAULT_TIMEOUT;
+    let mut timeout = Some(Duration::from_secs_f64(DEFAULT_TIMEOUT));
     let mut pretty = false;
     // Named and typed but not yet assembled: which fields a message may have
     // depends on which message it is, and `-t` can come after them.
@@ -1076,17 +1076,15 @@ fn parse_args(args: &[String]) -> Result<Option<Invocation>, String> {
             }
             "--timeout" => {
                 let given = value().ok_or("--timeout needs a number of seconds")?;
-                timeout = given
+                let seconds = given
                     .parse::<f64>()
                     .map_err(|_| format!("--timeout is not a number: {given}"))?;
-                // The upper bound is not pedantry: `Duration::from_secs_f64`
-                // panics past `Duration::MAX`, and `1e30` parses as happily
-                // as `2` does. Same complaint as the other two, because it
-                // is the same mistake — a number that is not a length of
-                // time.
-                if timeout < 0.0 || !timeout.is_finite() || timeout > Duration::MAX.as_secs_f64() {
-                    return Err(format!("--timeout is not a length of time: {given}"));
-                }
+                // Convert via `try_from_secs_f64` rather than comparing against
+                // `Duration::MAX.as_secs_f64()`: the float rounds up to 2^64,
+                // which passes `<=` and then panics inside `from_secs_f64`.
+                let parsed = Duration::try_from_secs_f64(seconds)
+                    .map_err(|_| format!("--timeout is not a length of time: {given}"))?;
+                timeout = (!parsed.is_zero()).then_some(parsed);
             }
             "--pretty" => pretty = true,
             "--raw" => {
@@ -1110,8 +1108,6 @@ fn parse_args(args: &[String]) -> Result<Option<Invocation>, String> {
             _ => positional.push(arg.to_owned()),
         }
     }
-
-    let timeout = (timeout > 0.0).then(|| Duration::from_secs_f64(timeout));
 
     if let Some(raw) = raw {
         if kind.is_some() || !given.is_empty() {
@@ -2348,10 +2344,13 @@ mod tests {
 
     #[test]
     fn a_timeout_past_what_a_duration_holds_is_refused_not_a_panic() {
-        // `Duration::from_secs_f64` panics above `Duration::MAX`, and `1e30`
-        // parses as happily as `2` does.
+        // `Duration::from_secs_f64` panics above `Duration::MAX`, including at
+        // `Duration::MAX.as_secs_f64()` itself (which rounds up to 2^64).
         let complaint = build(&["-t", "quit", "--timeout", "1e30"]).expect_err("should refuse");
         assert!(complaint.contains("not a length of time"), "{complaint}");
+        let boundary = build(&["-t", "quit", "--timeout", "18446744073709551616"])
+            .expect_err("2^64 must be refused rather than panic");
+        assert!(boundary.contains("not a length of time"), "{boundary}");
         // One the duration holds but the clock may not is still accepted
         // here; `run` treats a deadline the clock cannot represent as no
         // deadline at all, which is what a wait that long means.
