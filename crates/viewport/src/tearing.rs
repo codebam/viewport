@@ -95,6 +95,10 @@ impl TearingControlState {
     }
 
     fn set(&mut self, surface: &WlSurface, wants: bool) {
+        self.wants_tearing.retain(smithay::utils::IsAlive::alive);
+        if !smithay::utils::IsAlive::alive(surface) {
+            return;
+        }
         let held = self.wants_tearing(surface);
         if wants && !held {
             self.wants_tearing.push(surface.clone());
@@ -105,6 +109,7 @@ impl TearingControlState {
 
     /// Record a control object for `surface`, at its creation.
     fn bind(&mut self, surface: &WlSurface) {
+        self.bound.retain(smithay::utils::IsAlive::alive);
         if !self.bound(surface) {
             self.bound.push(surface.clone());
         }
@@ -113,7 +118,15 @@ impl TearingControlState {
     /// Drop the record of one control object for `surface`. Whether the
     /// surface's hint goes with it is the caller's question: another control
     /// may still be alive, and destroying one must not clear the other's.
+    ///
+    /// Dead entries are pruned without matching against `surface` when
+    /// `surface` itself is dead, so a control outliving its destroyed surface
+    /// cannot remove a newer live surface that recycled the same object id.
     fn unbind(&mut self, surface: &WlSurface) {
+        self.bound.retain(smithay::utils::IsAlive::alive);
+        if !smithay::utils::IsAlive::alive(surface) {
+            return;
+        }
         self.bound.retain(|other| other != surface);
     }
 }
@@ -277,6 +290,9 @@ mod live_surface_lookups {
             "pub fn wants_tearing",
             "pub fn any_wants_tearing",
             "fn bound",
+            "fn set",
+            "fn bind",
+            "fn unbind",
         ] {
             let start = source
                 .find(needle)
