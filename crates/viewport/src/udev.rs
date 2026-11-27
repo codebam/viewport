@@ -1596,9 +1596,16 @@ pub fn init(
                 InputEvent::PointerButton { event, .. } => {
                     state.current_input_device = Some(event.device().name().into_owned());
                 }
+                InputEvent::PointerAxis { event, .. } => {
+                    state.current_input_device = Some(event.device().name().into_owned());
+                }
                 _ => {}
             }
             state.process_local_input_event(event);
+            // Clear immediately after dispatch so subsequent virtual-keyboard,
+            // libei, or IPC-injected input does not inherit the last physical
+            // device name.
+            state.current_input_device = None;
         })
         .map_err(|e| anyhow!("inserting the libinput source: {e}"))?;
 
