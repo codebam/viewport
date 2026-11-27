@@ -311,6 +311,59 @@ impl ViewportState {
             .or_else(|| self.shell_under(pos))
     }
 
+    /// Topmost layer surface hit at `pos`, together with its root `WlSurface`
+    /// and declared `KeyboardInteractivity`.
+    ///
+    /// When `above` is true, searches `Layer::Overlay | Layer::Top`; when
+    /// false, searches `Layer::Bottom | Layer::Background`.
+    pub(crate) fn layer_hit_at(
+        &self,
+        pos: Point<f64, Logical>,
+        above: bool,
+    ) -> Option<(
+        WlSurface,
+        smithay::wayland::shell::wlr_layer::KeyboardInteractivity,
+    )> {
+        use smithay::wayland::shell::wlr_layer::Layer;
+
+        let output = self
+            .space
+            .output_under(pos)
+            .next()
+            .cloned()
+            .or_else(|| self.space.outputs().next().cloned())?;
+        let output_geometry = self.space.output_geometry(&output).unwrap_or_default();
+        let map = smithay::desktop::layer_map_for_output(&output);
+        let mut best = None;
+        for (mapped_at, layer) in map.layers().enumerate().filter(|(_, layer)| {
+            matches!(layer.layer(), Layer::Overlay | Layer::Top) == above
+        }) {
+            let Some(layer_geometry) = map.layer_geometry(layer) else {
+                continue;
+            };
+            let at = layer_geometry.loc.to_f64() + output_geometry.loc.to_f64();
+            if layer
+                .surface_under(pos - at, WindowSurfaceType::ALL)
+                .is_none()
+            {
+                continue;
+            }
+            let policy = crate::layer::policy(layer, &self.layer_rules);
+            let key = (layer.layer(), policy.z_index, mapped_at);
+            if best
+                .as_ref()
+                .is_none_or(|(best_key, _, _)| crate::layer::stacking_order(key, *best_key).is_lt())
+            {
+                best = Some((
+                    key,
+                    layer.wl_surface().clone(),
+                    layer.cached_state().keyboard_interactivity,
+                ));
+            }
+        }
+        best.map(|(_, surface, interactivity)| (surface, interactivity))
+    }
+
     fn layer_surface_under(
         &self,
         output: &Output,

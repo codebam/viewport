@@ -2478,18 +2478,21 @@ impl ViewportState {
         // modifier down and was taken for a gesture. What that looks
         // like is a bar whose workspace pills and window titles do
         // nothing at all.
-        let on_overlay =
-            crate::pointer::over_overlay(&self.shell_overlay_hits, pointer.current_location());
+        let pos = pointer.current_location();
+        let top_layer = self.layer_hit_at(pos, true);
+        let on_overlay = crate::pointer::over_overlay(&self.shell_overlay_hits, pos);
 
         // Nothing is dragged, moved, resized or panned behind a lock
         // screen. `window_under` answers by geometry alone — unlike
         // `surface_under`, which refuses while locked — so the guard
         // has to be here, in front of every path that hit-tests.
+        // A Top/Overlay layer surface sits above shell overlays and windows,
+        // so it blocks window/desktop gestures just like a shell overlay does.
         if !self.locked
             && starts_gesture(
                 state == ButtonState::Pressed,
                 pointer.is_grabbed(),
-                on_overlay,
+                on_overlay || top_layer.is_some(),
                 keyboard.modifier_state().logo,
                 event.button_code(),
             )
@@ -2570,41 +2573,73 @@ impl ViewportState {
         if state == ButtonState::Pressed
             && !pointer.is_grabbed()
             && !self.locked
-            && !crate::pointer::over_overlay(
-                &self.shell_overlay_keep_focus,
-                pointer.current_location(),
-            )
+            && !crate::pointer::over_overlay(&self.shell_overlay_keep_focus, pos)
         {
-            let hit = self.window_under(pointer.current_location());
-            // Clicking a notification must not raise and focus the
-            // window behind it — the click never reached that window.
-            // `on_overlay` is worked out above, where the gesture is
-            // declined for the same reason.
-            match hit.filter(|_| !self.overview && !on_overlay) {
-                Some(window) => {
-                    let id = self
-                        .views
-                        .iter()
-                        .find(|v| v.window == window)
-                        .map(|v| v.id)
-                        .unwrap_or(NO_VIEW);
-
-                    self.space.raise_element(&window, false);
-                    // A click on a tiled window must not bury the
-                    // floating one that was over it.
-                    self.restack();
-                    // By window rather than by toplevel: an X11
-                    // window has no toplevel, and reaching for one
-                    // focused nothing at all.
-                    if let Some(focus) = crate::keyboard_focus::KeyboardFocus::for_window(&window) {
-                        keyboard.set_focus(self, Some(focus), serial);
-                    }
-                    self.activate_view(id);
-                    if id != self.focused {
-                        self.notify_focus(id);
+            let hit = self.window_under(pos);
+            let bottom_layer =
+                if top_layer.is_none() && hit.is_none() && !self.overview && !on_overlay {
+                    self.layer_hit_at(pos, false)
+                } else {
+                    None
+                };
+            match click_focus_target(
+                top_layer.as_ref().map(|(_, interactivity)| *interactivity),
+                on_overlay,
+                self.overview,
+                hit.is_some(),
+                bottom_layer
+                    .as_ref()
+                    .map(|(_, interactivity)| *interactivity),
+            ) {
+                ClickFocus::Keep => {}
+                ClickFocus::TopLayer => {
+                    if let Some((surface, _)) = top_layer {
+                        self.activate_view(NO_VIEW);
+                        keyboard.set_focus(self, Some(surface.into()), serial);
+                        if self.focused != NO_VIEW {
+                            self.notify_focus(NO_VIEW);
+                        }
+                        self.release_any_capture();
                     }
                 }
-                None => {
+                ClickFocus::BottomLayer => {
+                    if let Some((surface, _)) = bottom_layer {
+                        self.activate_view(NO_VIEW);
+                        keyboard.set_focus(self, Some(surface.into()), serial);
+                        if self.focused != NO_VIEW {
+                            self.notify_focus(NO_VIEW);
+                        }
+                        self.release_any_capture();
+                    }
+                }
+                ClickFocus::Window => {
+                    if let Some(window) = hit {
+                        let id = self
+                            .views
+                            .iter()
+                            .find(|v| v.window == window)
+                            .map(|v| v.id)
+                            .unwrap_or(NO_VIEW);
+
+                        self.space.raise_element(&window, false);
+                        // A click on a tiled window must not bury the
+                        // floating one that was over it.
+                        self.restack();
+                        // By window rather than by toplevel: an X11
+                        // window has no toplevel, and reaching for one
+                        // focused nothing at all.
+                        if let Some(focus) =
+                            crate::keyboard_focus::KeyboardFocus::for_window(&window)
+                        {
+                            keyboard.set_focus(self, Some(focus), serial);
+                        }
+                        self.activate_view(id);
+                        if id != self.focused {
+                            self.notify_focus(id);
+                        }
+                    }
+                }
+                ClickFocus::Shell => {
                     // The pointer is over the shell, or the overview is
                     // up and every click belongs to it.
                     self.activate_view(NO_VIEW);
@@ -2614,8 +2649,7 @@ impl ViewportState {
                     // in this process there is no surface to focus and
                     // the focus has to stay empty, which is what tells
                     // the key path to hand keys to the engine instead.
-                    let where_ = pointer.current_location();
-                    if !self.focus_shell_at(Some(where_)) {
+                    if !self.focus_shell_at(Some(pos)) {
                         keyboard.set_focus(
                             self,
                             Option::<crate::keyboard_focus::KeyboardFocus>::None,
@@ -4333,9 +4367,16 @@ impl ViewportState {
 
         // Focus follows the pointer: give the keyboard to whichever window
         // the pointer is now over, subject to the distance threshold. Not
-        // while locked, while dragging, or while the overview is up — those
+        // while locked, while dragging, while the overview is up, or while
+        // hovering a shell overlay or Top/Overlay layer surface — those
         // are the same gates the click-to-focus path uses.
-        if self.follow_mouse && !self.locked && !pointer.is_grabbed() && !self.overview {
+        if self.follow_mouse
+            && !self.locked
+            && !pointer.is_grabbed()
+            && !self.overview
+            && !crate::pointer::over_overlay(&self.shell_overlay_hits, pos)
+            && self.layer_hit_at(pos, true).is_none()
+        {
             let threshold = self.follow_mouse_threshold;
             if threshold > 0.0 {
                 if let Some(last) = self.follow_mouse_pos {
@@ -4657,6 +4698,52 @@ use smithay::wayland::compositor::RectangleKind;
 /// asked for a hole in its confinement got no confinement and the pointer
 /// left the surface entirely, the opposite of both the request and the safe
 /// direction above.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClickFocus {
+    /// Leave keyboard focus untouched (e.g. clicking a non-interactive layer panel).
+    Keep,
+    /// Focus the Top/Overlay layer surface under the pointer.
+    TopLayer,
+    /// Focus the Bottom/Background layer surface under the pointer.
+    BottomLayer,
+    /// Raise and focus the toplevel window under the pointer.
+    Window,
+    /// Clear view focus and hand keyboard focus to the shell page.
+    Shell,
+}
+
+fn click_focus_target(
+    top_layer: Option<smithay::wayland::shell::wlr_layer::KeyboardInteractivity>,
+    on_overlay: bool,
+    overview: bool,
+    window_under: bool,
+    bottom_layer: Option<smithay::wayland::shell::wlr_layer::KeyboardInteractivity>,
+) -> ClickFocus {
+    use smithay::wayland::shell::wlr_layer::KeyboardInteractivity;
+
+    if let Some(interactivity) = top_layer {
+        return match interactivity {
+            KeyboardInteractivity::OnDemand | KeyboardInteractivity::Exclusive => {
+                ClickFocus::TopLayer
+            }
+            KeyboardInteractivity::None => ClickFocus::Keep,
+        };
+    }
+    if overview || on_overlay {
+        return ClickFocus::Shell;
+    }
+    if window_under {
+        return ClickFocus::Window;
+    }
+    if matches!(
+        bottom_layer,
+        Some(KeyboardInteractivity::OnDemand | KeyboardInteractivity::Exclusive)
+    ) {
+        return ClickFocus::BottomLayer;
+    }
+    ClickFocus::Shell
+}
+
 /// Whether a matched `release+` key binding is permitted to run.
 ///
 /// Release bindings obey the same picker and keyboard-shortcut-inhibitor gates
@@ -5608,6 +5695,71 @@ mod tests {
         assert_eq!(
             tablet_to_layout(two_outputs(), 2.0, 0.0),
             Point::new(3840.0, 0.0)
+        );
+    }
+
+    #[test]
+    fn clicks_on_layer_surfaces_respect_keyboard_interactivity_and_do_not_pierce() {
+        use smithay::wayland::shell::wlr_layer::KeyboardInteractivity;
+
+        // Top/Overlay layer surfaces intercept clicks before windows or shell overlays.
+        assert_eq!(
+            click_focus_target(
+                Some(KeyboardInteractivity::Exclusive),
+                false,
+                false,
+                true,
+                None
+            ),
+            ClickFocus::TopLayer
+        );
+        assert_eq!(
+            click_focus_target(
+                Some(KeyboardInteractivity::OnDemand),
+                false,
+                false,
+                true,
+                None
+            ),
+            ClickFocus::TopLayer
+        );
+        assert_eq!(
+            click_focus_target(Some(KeyboardInteractivity::None), false, false, true, None),
+            ClickFocus::Keep
+        );
+        // Without a Top/Overlay layer, shell overlays and overview win over windows.
+        assert_eq!(
+            click_focus_target(None, true, false, true, None),
+            ClickFocus::Shell
+        );
+        assert_eq!(
+            click_focus_target(None, false, true, true, None),
+            ClickFocus::Shell
+        );
+        // Otherwise a window wins, or an interactive Bottom/Background layer when empty.
+        assert_eq!(
+            click_focus_target(
+                None,
+                false,
+                false,
+                true,
+                Some(KeyboardInteractivity::OnDemand)
+            ),
+            ClickFocus::Window
+        );
+        assert_eq!(
+            click_focus_target(
+                None,
+                false,
+                false,
+                false,
+                Some(KeyboardInteractivity::OnDemand)
+            ),
+            ClickFocus::BottomLayer
+        );
+        assert_eq!(
+            click_focus_target(None, false, false, false, Some(KeyboardInteractivity::None)),
+            ClickFocus::Shell
         );
     }
 
