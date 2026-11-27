@@ -870,6 +870,19 @@ impl Views {
         self.views.get_mut(at)
     }
 
+    /// The view backing an X11 window, even before Xwayland associates its
+    /// `wl_surface`.
+    pub fn find_by_x11(&self, window: &smithay::xwayland::X11Surface) -> Option<&View> {
+        if let Some(surface) = window.wl_surface() {
+            if let Some(view) = self.find_by_surface(&surface) {
+                return Some(view);
+            }
+        }
+        self.views
+            .iter()
+            .find(|view| view.window.x11_surface() == Some(window))
+    }
+
     fn position_of_surface(&self, surface: &WlSurface) -> Option<usize> {
         self.by_surface
             .find(&self.views, &surface.id(), View::surface_id)

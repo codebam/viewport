@@ -137,10 +137,7 @@ impl XwmHandler for ViewportState {
     }
 
     fn unmapped_window(&mut self, _xwm: XwmId, window: X11Surface) {
-        let Some(surface) = window.wl_surface() else {
-            return;
-        };
-        let Some(view) = self.views.find_by_surface(&surface) else {
+        let Some(view) = self.views.find_by_x11(&window) else {
             // Override-redirect: in the space but not in the registry.
             let element = self
                 .space
