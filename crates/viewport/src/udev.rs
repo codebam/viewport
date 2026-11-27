@@ -1060,6 +1060,21 @@ fn primary_index(online: &[bool]) -> usize {
     online.iter().position(|online| *online).unwrap_or(0)
 }
 
+/// Where a monitor is put when its connector comes up.
+///
+/// `remembered` is the position the connector was arranged at, and it wins
+/// whenever there is one: a screen coming back does not get to move because the
+/// kernel reported its connector in a different order this time. Without an
+/// entry — a connector this session has never seen — the arrangement is the
+/// right edge of everything already mapped, so two new panels sit side by side
+/// rather than stacked at the origin.
+pub(crate) fn appearing_position(
+    remembered: Option<(i32, i32)>,
+    right_of_everything: i32,
+) -> (i32, i32) {
+    remembered.unwrap_or((right_of_everything, 0))
+}
+
 impl Udev {
     /// The GPU everything defaults to: where the shell allocates, what clients
     /// are told about, and the one a single-GPU machine has.
@@ -2746,21 +2761,38 @@ impl ViewportState {
 
             match result {
                 Ok(drm_output) => {
-                    // Side by side, left to right in the order the connectors
-                    // are enumerated. Mapping every output at the origin
-                    // instead stacks them, and the second monitor shows the
-                    // first one's pixels.
+                    // Where this monitor goes.
                     //
-                    // Real placement belongs to the shell, which sends
-                    // output.configure once it is running; this is only a
-                    // sane arrangement to start from.
-                    let x = self
+                    // A connector that has been seen before goes back to the
+                    // position it was arranged at, never to the backend's own
+                    // guess. The guess is the right edge of whatever happens
+                    // to be mapped at this instant, which makes a returning
+                    // screen's place depend on which connector the kernel
+                    // reported first — and after a DPMS wake that is the order
+                    // the two links finish training in, not the order they
+                    // were in. Two panels therefore came back swapped, and
+                    // stayed swapped until something arranged them again.
+                    // Asking the memory first removes the ordering entirely:
+                    // whichever connector returns first lands in its own
+                    // place.
+                    //
+                    // With no entry — a connector this session has never seen
+                    // — the arrangement is still the right edge of everything
+                    // mapped, side by side and left to right. Mapping them all
+                    // at the origin instead stacks them, and the second
+                    // monitor shows the first one's pixels.
+                    let remembered = self
+                        .output_memory
+                        .get(&name)
+                        .map(|saved| (saved.x, saved.y));
+                    let right_edge = self
                         .space
                         .outputs()
                         .filter_map(|o| self.space.output_geometry(o))
                         .map(|geometry| geometry.loc.x.saturating_add(geometry.size.w))
                         .max()
                         .unwrap_or(0);
+                    let (x, y) = appearing_position(remembered, right_edge);
 
                     // The format is logged because it is chosen by
                     // negotiation: the preference order says what was asked
@@ -2769,16 +2801,21 @@ impl ViewportState {
                     // answer short of dumping the planes.
                     let format = drm_output.with_compositor(|c| c.format());
                     tracing::info!(
-                        "{name}: {}x{} at x={x}, {format:?}",
+                        "{name}: {}x{} at {x},{y} ({}), {format:?}",
                         mode.size().0,
-                        mode.size().1
+                        mode.size().1,
+                        if remembered.is_some() {
+                            "where it was"
+                        } else {
+                            "new"
+                        }
                     );
                     // `map_output_at` inlined: `udev` is borrowed for the whole
                     // arm, so taking `&mut self` again here does not compile.
                     // Both halves still have to happen, or the second monitor
                     // tells clients it is at the origin like the first.
-                    self.space.map_output(&output, (x, 0));
-                    output.change_current_state(None, None, None, Some((x, 0).into()));
+                    self.space.map_output(&output, (x, y));
+                    output.change_current_state(None, None, None, Some((x, y).into()));
                     if self.active_output.is_none() {
                         self.active_output = Some(name);
                     }
@@ -4403,6 +4440,78 @@ impl ViewportState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A monitor that has been seen before keeps the position it was arranged
+    /// at, whatever is mapped when its connector comes back.
+    ///
+    /// The bug this pins is the one a DPMS wake produced: the two panels
+    /// returned in the order their links finished training, the first one back
+    /// was placed at the origin and the second to its right, and whether that
+    /// matched the arrangement depended entirely on which connector won the
+    /// race that morning. With two identical 2560-wide panels, DP-1 last
+    /// arranged on the right and DP-3 on the left, a DP-1-first wake put DP-1
+    /// at x=0 — the two desktops swapped — and the next wake could put them
+    /// back.
+    #[test]
+    fn a_returning_monitor_appears_where_it_was_arranged() {
+        // The arranged desk: DP-3 at the origin, DP-1 to its right.
+        assert_eq!(appearing_position(Some((2560, 0)), 0), (2560, 0));
+        assert_eq!(appearing_position(Some((0, 0)), 2560), (0, 0));
+        // An entry wins even when the invented placement would agree: the
+        // arithmetic must not depend on that coincidence.
+        assert_eq!(appearing_position(Some((0, 0)), 0), (0, 0));
+        // A vertical arrangement is kept as it was too, not flattened.
+        assert_eq!(appearing_position(Some((0, 1440)), 0), (0, 1440));
+    }
+
+    /// A connector this session has never seen is still placed side by side
+    /// rather than stacked at the origin, which is what the memory cannot
+    /// answer for.
+    #[test]
+    fn a_new_monitor_appears_to_the_right_of_everything() {
+        assert_eq!(appearing_position(None, 0), (0, 0));
+        assert_eq!(appearing_position(None, 2560), (2560, 0));
+        assert_eq!(appearing_position(None, 5120), (5120, 0));
+    }
+
+    /// The scan has to ask the memory before it invents a position; the two
+    /// lines above pin the arithmetic, and this pins the wiring, which is what
+    /// a later edit to `scan_device` would break silently. A `ViewportState`
+    /// with a DRM backend cannot be built in a unit test, so the invariant is
+    /// checked against the source the placement is written in, as the frame
+    /// walks and the lock-surface walks are.
+    #[test]
+    fn the_scan_places_a_returning_monitor_from_the_memory() {
+        let source = include_str!("udev.rs");
+        let source = source.split("#[cfg(test)]").next().unwrap_or(source);
+        let start = source
+            .find("fn scan_device(&mut self, index: usize) {")
+            .expect("scan_device");
+        let rest = &source[start..];
+        let end = rest
+            .find("fn finish_unplugged(")
+            .expect("the end of scan_device");
+        let body = &rest[..end];
+
+        let remembered = body
+            .find("output_memory")
+            .expect("the scan must ask the memory for this connector's position");
+        let invented = body
+            .find(".map(|geometry| geometry.loc.x.saturating_add(geometry.size.w))")
+            .expect("the invented placement is the fallback");
+        assert!(
+            remembered < invented,
+            "the arrangement has to be consulted before the backend invents one"
+        );
+        assert!(
+            body.contains("appearing_position(remembered, right_edge)"),
+            "the placement must go through the one helper the tests pin"
+        );
+        assert!(
+            body.contains("self.space.map_output(&output, (x, y))"),
+            "the remembered y must reach the space, not only the x"
+        );
+    }
 
     #[test]
     fn input_identifier_is_stable_and_config_ready() {

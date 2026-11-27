@@ -569,8 +569,17 @@ impl ViewportState {
             }
             // `wlr-randr` and the display panel of a settings app arrange
             // monitors through here rather than through `output.configure`, and
-            // an arrangement made with one of those is worth restoring too.
-            self.remember_output(&output);
+            // an arrangement made with one of those is worth restoring too. A
+            // change that named no position refreshes everything but the
+            // position, for the reason `remember_output_shape` gives: the live
+            // rectangle mid-scan is the backend's invented placement, not an
+            // arrangement anybody asked for.
+            let asked = change.position;
+            if crate::state::names_a_position(asked.map(|p| p.x), asked.map(|p| p.y)) {
+                self.remember_output(&output);
+            } else {
+                self.remember_output_shape(&output);
+            }
         }
 
         // Put every window that should be on screen back in the space.
@@ -1108,6 +1117,23 @@ impl ViewportState {
 
 #[cfg(test)]
 mod output_mode_tests {
+    /// `wlr-output-management` arrives the same way `output.configure` does:
+    /// a change that names no position is about the mode, the scale, the
+    /// rotation or the power, and must not overwrite the remembered rectangle
+    /// with the placement the scan invented while bringing a monitor up.
+    #[test]
+    fn a_configuration_without_a_position_keeps_the_remembered_one() {
+        let source = include_str!("outputs.rs");
+        let source = source.split("#[cfg(test)]").next().unwrap_or(source);
+        assert!(
+            source.contains("names_a_position(asked.map(|p| p.x), asked.map(|p| p.y))"),
+            "the write has to ask whether the change named a position"
+        );
+        assert!(
+            source.contains("remember_output_shape(&output)"),
+            "a change without a position must keep the remembered rectangle"
+        );
+    }
     /// The promise a refused modeset used to break: a client must never be
     /// told a change landed while the CRTC refused it. Programming cannot run
     /// without a DRM rig in a unit test, so — as the blank-path guard in

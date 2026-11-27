@@ -417,6 +417,15 @@ impl ViewportState {
                 }
                 if empty {
                     self.on_connectors_changed();
+                    // The scan places whatever it just brought up, and a
+                    // rebuilt output is placed by the backend's own guess
+                    // unless this runs. Every other rescan in the tree —
+                    // the hotplug handler, `on_gpu_added`, `rebuild_renderer`
+                    // — puts the arrangement back before anything announces
+                    // it; this one did not, so a desk rebuilt here came back
+                    // in the scan's order rather than the arranged one.
+                    self.restore_output_layout();
+                    self.apply_output_config();
                 }
                 again = true;
                 continue;
@@ -1391,6 +1400,40 @@ mod tests {
     /// compositor waking two and a half times a second for the rest of the
     /// session. The branch now contributes its remaining backoff to the same
     /// `retry_in` the never-opened cards use.
+    /// A desk the watchdog rebuilds has its arrangement put back.
+    ///
+    /// `gpu_tick`'s settle rescan is the fourth place a scan is run from, and
+    /// the only one that did not follow it with `restore_output_layout` — the
+    /// hotplug handler, `on_gpu_added` and `rebuild_renderer` all do. Outputs
+    /// it brought up therefore stayed at the backend's invented positions:
+    /// side by side in connector-enumeration order, which is not the arranged
+    /// one whenever the two disagree. A `ViewportState` with a DRM backend
+    /// cannot be built in a unit test, so the ordering is checked against the
+    /// source, as the other re-arm invariants here are.
+    #[test]
+    fn a_rebuilt_desk_restores_its_arrangement() {
+        let source = include_str!("recovery.rs");
+        let source = source.split("#[cfg(test)]").next().unwrap_or(source);
+        let start = source
+            .find("if device.settle > 0 {")
+            .expect("the settle branch in gpu_tick");
+        let end = start
+            + source[start..]
+                .find("let oldest = device")
+                .expect("the end of the settle branch");
+        let body = &source[start..end];
+        let scan = body
+            .find("self.on_connectors_changed()")
+            .expect("the settle rescan");
+        let restore = body
+            .find("self.restore_output_layout()")
+            .expect("the desk rebuilt here must have its positions put back");
+        assert!(
+            scan < restore,
+            "the arrangement is restored after the scan, never before it"
+        );
+    }
+
     #[test]
     fn an_offline_slot_waits_out_its_backoff() {
         assert_eq!(offline_wait(0, Duration::ZERO), backoff(0));

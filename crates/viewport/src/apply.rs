@@ -3580,8 +3580,17 @@ fn output_configure(state: &mut ViewportState, config: OutputConfigure) {
     }
 
     // Where this monitor goes when it is plugged in again. Asked for rather
-    // than drifted into, which is the only kind of arrangement worth restoring.
-    state.remember_output(&output);
+    // than drifted into, which is the only kind of arrangement worth restoring
+    // — so a request that named no position refreshes the mode, the scale and
+    // the rotation and leaves the position it remembered alone. The live
+    // rectangle is the backend's invented placement while a monitor is being
+    // brought back up, and writing that down is how one wake's ordering
+    // accident became the arrangement every later wake restored.
+    if crate::state::names_a_position(config.x, config.y) {
+        state.remember_output(&output);
+    } else {
+        state.remember_output_shape(&output);
+    }
     state.notify_output_layout();
     state.advertise_outputs();
     state.needs_render = true;
@@ -3686,6 +3695,34 @@ fn install_binding(bindings: &mut Vec<crate::binding::Binding>, chord: &str, act
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A configure that names no position must leave the remembered one alone.
+    ///
+    /// The mode, scale and rotation requests are the ones that arrive while a
+    /// monitor is being brought back up — a panel changing a refresh rate, a
+    /// settings dialog setting a rotation — and the rectangle at that moment is
+    /// the backend's invented placement. Writing it down turns one wake's
+    /// connector ordering into the arrangement every later wake restores; the
+    /// guarded write is what keeps the two apart.
+    #[test]
+    fn an_output_configure_without_a_position_keeps_the_remembered_one() {
+        let source = include_str!("apply.rs");
+        let source = source.split("#[cfg(test)]").next().unwrap_or(source);
+        let start = source
+            .find("fn output_configure(state: &mut ViewportState, config: OutputConfigure) {")
+            .expect("output_configure in apply.rs");
+        let rest = &source[start..];
+        let end = rest.find("\n/// ").expect("the end of output_configure");
+        let body = &rest[..end];
+        assert!(
+            body.contains("names_a_position(config.x, config.y)"),
+            "the write has to ask whether the request named a position"
+        );
+        assert!(
+            body.contains("remember_output_shape(&output)"),
+            "a request without a position must keep the remembered rectangle"
+        );
+    }
 
     #[test]
     fn an_empty_crop_is_a_crop_and_a_misplaced_one_is_not() {

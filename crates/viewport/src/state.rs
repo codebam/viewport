@@ -237,6 +237,15 @@ pub struct RememberedOutput {
     pub mode: Option<smithay::output::Mode>,
 }
 
+/// Whether a configure request named a position at all.
+///
+/// A request naming neither axis is about a mode, a scale, a rotation or the
+/// power, and must not write the live rectangle down as the arrangement — see
+/// `ViewportState::remember_output_shape`.
+pub(crate) fn names_a_position(x: Option<i32>, y: Option<i32>) -> bool {
+    x.is_some() || y.is_some()
+}
+
 /// Where the keyboard is, as the pointer-capture policy needs it.
 ///
 /// See `ViewportState::keyboard_holder`: the difference between `Nothing` and
@@ -3606,6 +3615,42 @@ impl ViewportState {
         );
     }
 
+    /// Write down how an output is turned, keeping the position it was
+    /// arranged at.
+    ///
+    /// A request that names neither axis is about the mode, the scale, the
+    /// rotation or the power. Those arrive on an output whose rectangle is
+    /// whatever the backend last put there — and in the middle of a rescan
+    /// that is the invented placement, the right edge of whatever happened to
+    /// be mapped first. Taking the position from the live geometry there turns
+    /// one wake's ordering accident into the arrangement every later wake
+    /// restores, which is why a swapped desk stayed swapped.
+    ///
+    /// Everything else does not drift, so it is refreshed from the live
+    /// output; a head with no entry at all still records where it really is,
+    /// because there is nothing better to say.
+    pub fn remember_output_shape(&mut self, output: &Output) {
+        let Some(geometry) = self.space.output_geometry(output) else {
+            return;
+        };
+        let name = output.name();
+        let (x, y) = self
+            .output_memory
+            .get(&name)
+            .map(|saved| (saved.x, saved.y))
+            .unwrap_or((geometry.loc.x, geometry.loc.y));
+        self.output_memory.insert(
+            name,
+            RememberedOutput {
+                x,
+                y,
+                transform: output.current_transform(),
+                scale: output.current_scale().fractional_scale(),
+                mode: output.current_mode(),
+            },
+        );
+    }
+
     /// Put the monitors back the way they were, and note down the ones being
     /// seen for the first time.
     ///
@@ -5678,6 +5723,19 @@ fn undrawn_action(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A request that names an axis is an arrangement; one that names neither
+    /// is about the mode, the scale or the rotation and must leave the
+    /// remembered position alone. Writing the live rectangle down on those is
+    /// how a monitor placed by a rescan became the arrangement restored from
+    /// then on.
+    #[test]
+    fn only_a_request_that_names_a_position_may_move_the_memory() {
+        assert!(names_a_position(Some(0), None));
+        assert!(names_a_position(None, Some(1440)));
+        assert!(names_a_position(Some(2560), Some(0)));
+        assert!(!names_a_position(None, None));
+    }
 
     /// The see-through schedule: a fade gets its beat, then the window is paid
     /// out. Nothing heals on the first sighting and nothing waits past the
