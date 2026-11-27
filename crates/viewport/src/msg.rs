@@ -1119,12 +1119,14 @@ fn parse_args(args: &[String]) -> Result<Option<Invocation>, String> {
             .and_then(Value::as_str)
             .ok_or("--raw: the object needs a string `type`")?
             .to_owned();
+        let compact = message.to_string();
         // Through the compositor's own parser, so a message it would refuse is
         // refused here instead — where the complaint arrives on the terminal
-        // that typed it.
-        viewport_ipc::parse(raw.as_bytes()).map_err(|e| e.to_string())?;
+        // that typed it. Serialised compactly so pretty-printed multi-line JSON
+        // is not split across frames on the newline-delimited control socket.
+        viewport_ipc::parse(compact.as_bytes()).map_err(|e| e.to_string())?;
         return Ok(Some(Invocation {
-            message: Some(raw),
+            message: Some(compact),
             watching: Vec::new(),
             reply: reply_for(&kind),
             socket,
@@ -2398,6 +2400,17 @@ mod tests {
         let complaint =
             build(&["--raw", r#"{"type":"view.focus","id":"seven"}"#]).expect_err("should refuse");
         assert!(complaint.contains("view.focus"), "{complaint}");
+
+        let multiline = build(&["--raw", "{\n  \"type\": \"view.focus\",\n  \"id\": 1\n}"])
+            .expect("multiline raw JSON should parse");
+        assert!(
+            !multiline.contains('\n'),
+            "control socket message must be single-line: {multiline:?}"
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(&multiline).expect("valid json"),
+            serde_json::json!({"type": "view.focus", "id": 1})
+        );
     }
 
     #[test]
