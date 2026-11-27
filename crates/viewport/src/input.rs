@@ -2691,31 +2691,28 @@ impl ViewportState {
         // swipe. Fires once per wheel notch (axis batch) while the
         // modifier is held, and consumes the scroll — nothing is passed
         // on to the window under the pointer.
-        if source != AxisSource::Finger && vertical != 0.0 {
-            if let Some(keyboard) = self.seat.get_keyboard() {
-                let wheel = if vertical > 0.0 {
-                    crate::binding::Wheel::Up
-                } else {
-                    crate::binding::Wheel::Down
-                };
-                if let Some(bound) = crate::binding::find_wheel(
-                    &self.bindings,
-                    &keyboard.modifier_state(),
-                    wheel,
-                    &self.binding_mode,
-                    self.locked,
-                    false,
-                    self.current_input_device.as_deref(),
-                ) {
-                    let consuming = !bound.non_consuming
-                        && (!bound.auto_consuming || self.binding_will_act(&bound.action));
-                    let action = bound.action.clone();
-                    self.handle_action(Action::Bound(action));
-                    if consuming {
-                        return;
+        if source != AxisSource::Finger {
+            if let Some(wheel) = wheel_direction(vertical) {
+                if let Some(keyboard) = self.seat.get_keyboard() {
+                    if let Some(bound) = crate::binding::find_wheel(
+                        &self.bindings,
+                        &keyboard.modifier_state(),
+                        wheel,
+                        &self.binding_mode,
+                        self.locked,
+                        false,
+                        self.current_input_device.as_deref(),
+                    ) {
+                        let consuming = !bound.non_consuming
+                            && (!bound.auto_consuming || self.binding_will_act(&bound.action));
+                        let action = bound.action.clone();
+                        self.handle_action(Action::Bound(action));
+                        if consuming {
+                            return;
+                        }
+                        // `non_consuming+`: the action has run, and the
+                        // scroll goes on to the client below.
                     }
-                    // `non_consuming+`: the action has run, and the
-                    // scroll goes on to the client below.
                 }
             }
         }
@@ -4649,6 +4646,20 @@ use smithay::wayland::compositor::RectangleKind;
 /// asked for a hole in its confinement got no confinement and the pointer
 /// left the surface entirely, the opposite of both the request and the safe
 /// direction above.
+/// Map a Wayland/libinput vertical axis delta to a scroll-wheel binding direction.
+///
+/// In Wayland (`wl_pointer.axis`) and libinput, negative vertical values scroll
+/// up (away from the hand) and positive values scroll down (toward the hand).
+fn wheel_direction(vertical: f64) -> Option<crate::binding::Wheel> {
+    if vertical < 0.0 {
+        Some(crate::binding::Wheel::Up)
+    } else if vertical > 0.0 {
+        Some(crate::binding::Wheel::Down)
+    } else {
+        None
+    }
+}
+
 /// Decide whether a pointer constraint should be activated and whether its
 /// lock/confinement should be applied to the current motion event.
 ///
@@ -5568,6 +5579,14 @@ mod tests {
             tablet_to_layout(two_outputs(), 2.0, 0.0),
             Point::new(3840.0, 0.0)
         );
+    }
+
+    #[test]
+    fn vertical_axis_sign_maps_negative_to_wheel_up_and_positive_to_wheel_down() {
+        assert_eq!(wheel_direction(-15.0), Some(crate::binding::Wheel::Up));
+        assert_eq!(wheel_direction(15.0), Some(crate::binding::Wheel::Down));
+        assert_eq!(wheel_direction(0.0), None);
+        assert_eq!(wheel_direction(f64::NAN), None);
     }
 
     #[test]
