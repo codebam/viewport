@@ -169,7 +169,7 @@ fn fitted(ramp: Ramp, size: usize) -> Ramp {
 /// untouched, so the common case costs nothing and moves no value by a
 /// rounding step.
 pub fn scaled(ramp: &Ramp, level: f64) -> Ramp {
-    if level >= 1.0 {
+    if !level.is_finite() || level >= 1.0 {
         return ramp.clone();
     }
     let level = level.clamp(0.0, 1.0);
@@ -447,8 +447,17 @@ where
             return;
         }
 
-        let Some(size) = state.gamma_size(&data.output) else {
+        let fail_control = |state: &mut D, control: &ZwlrGammaControlV1, data: &ControlData| {
+            data.failed.store(true, Ordering::Relaxed);
+            let managed = state.gamma_control_state();
+            if managed.controls.get(&data.output) == Some(control) {
+                managed.controls.remove(&data.output);
+            }
             control.failed();
+        };
+
+        let Some(size) = state.gamma_size(&data.output) else {
+            fail_control(state, control, data);
             return;
         };
 
@@ -457,7 +466,7 @@ where
             Ok(bytes) => bytes,
             Err(e) => {
                 tracing::warn!("could not read a gamma ramp: {e}");
-                control.failed();
+                fail_control(state, control, data);
                 return;
             }
         };
@@ -471,7 +480,7 @@ where
         };
 
         if !state.set_gamma(&data.output, Some(&ramp)) {
-            control.failed();
+            fail_control(state, control, data);
         }
     }
 
@@ -540,6 +549,7 @@ fn read_exactly(fd: &OwnedFd, len: usize) -> std::io::Result<Vec<u8>> {
                 ));
             }
             Ok(n) => filled += n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
@@ -554,19 +564,24 @@ fn read_exactly(fd: &OwnedFd, len: usize) -> std::io::Result<Vec<u8>> {
     // that has miscounted, and taking the first part of it would program a
     // ramp made of the wrong numbers.
     let mut extra = [0u8; 1];
-    match file.read(&mut extra) {
-        Ok(0) => Ok(bytes),
-        // A pipe whose writer is still open but has said everything it had to
-        // say reports WouldBlock here rather than end of file. That is
-        // "nothing more arrived", which for a ramp of exactly the right length
-        // is success; refusing it would punish a client for holding its own
-        // descriptor open.
-        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(bytes),
-        Ok(_) => Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "the ramp is longer than this output's gamma size",
-        )),
-        Err(e) => Err(e),
+    loop {
+        match file.read(&mut extra) {
+            Ok(0) => return Ok(bytes),
+            // A pipe whose writer is still open but has said everything it had to
+            // say reports WouldBlock here rather than end of file. That is
+            // "nothing more arrived", which for a ramp of exactly the right length
+            // is success; refusing it would punish a client for holding its own
+            // descriptor open.
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return Ok(bytes),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Ok(_) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "the ramp is longer than this output's gamma size",
+                ));
+            }
+            Err(e) => return Err(e),
+        }
     }
 }
 
@@ -748,6 +763,14 @@ mod tests {
     #[test]
     fn no_ramp_at_all_is_the_identity_at_the_lut_size() {
         assert_eq!(effective_ramp(None, None, 256), identity(256));
+    }
+
+    #[test]
+    fn non_finite_scale_factor_leaves_the_ramp_untouched() {
+        let ramp = identity(16);
+        assert_eq!(scaled(&ramp, f64::NAN), ramp);
+        assert_eq!(scaled(&ramp, f64::INFINITY), ramp);
+        assert_eq!(scaled(&ramp, f64::NEG_INFINITY), ramp);
     }
 
     /// The bug this guards needs two plugs of the same connector to reach: a
