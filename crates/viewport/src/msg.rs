@@ -1026,9 +1026,9 @@ fn parse_args(args: &[String]) -> Result<Option<Invocation>, String> {
     let mut socket: Option<PathBuf> = None;
     let mut timeout = Some(Duration::from_secs_f64(DEFAULT_TIMEOUT));
     let mut pretty = false;
-    // Named and typed but not yet assembled: which fields a message may have
-    // depends on which message it is, and `-t` can come after them.
-    let mut given: Vec<(String, Value)> = Vec::new();
+    // Named but not yet typed: which fields are strings depends on which
+    // message type `-t` selects, and `-t` can come after them.
+    let mut given: Vec<(String, Option<String>)> = Vec::new();
     let mut positional: Vec<String> = Vec::new();
 
     let mut at = 0;
@@ -1095,12 +1095,7 @@ fn parse_args(args: &[String]) -> Result<Option<Invocation>, String> {
                 if field.is_empty() {
                     return Err("`--` is not a field".into());
                 }
-                let literal = match value() {
-                    Some(text) => literal(field, &text),
-                    // `--floating`, with nothing after it.
-                    None => Value::Bool(true),
-                };
-                given.push((field.to_owned(), literal));
+                given.push((field.to_owned(), value()));
             }
             _ if name.starts_with('-') && name.len() > 1 => {
                 return Err(format!("unknown option {name}"));
@@ -1177,22 +1172,18 @@ fn parse_args(args: &[String]) -> Result<Option<Invocation>, String> {
         ));
     };
 
-    // The type's own string fields, applied after the fact. `literal` runs
-    // while `-t` may still be ahead of the field, so it cannot know which
-    // message a leaf belongs to and the global table has to stay name-only.
-    // What arrived here as JSON and belongs to a string field goes back to
-    // text: `--id 42` on a tray message names the item called "42", and the
-    // compositor refuses item 42 because there is no such thing.
+    // Type each raw field value now that `entry` is known, so per-type string
+    // fields (such as `session.unlock --password` or `tray.* --id`) never pass
+    // through `serde_json::from_str` and cannot be mangled by JSON parsing.
     let given: Vec<(String, Value)> = given
         .into_iter()
-        .map(|(field, value)| {
-            let leaf = field.rsplit('.').next().unwrap_or_default();
-            let wants_text = entry.strings.contains(&leaf);
-            if wants_text && !value.is_string() {
-                (field, Value::String(value.to_string()))
-            } else {
-                (field, value)
-            }
+        .map(|(field, text)| {
+            let value = match text {
+                Some(text) => literal(&field, &text, entry.strings),
+                // `--floating`, with nothing after it.
+                None => Value::Bool(true),
+            };
+            (field, value)
         })
         .collect();
 
@@ -1240,9 +1231,9 @@ fn parse_args(args: &[String]) -> Result<Option<Invocation>, String> {
 /// the boolean — which is what the protocol wants in each case and what anyone
 /// would write. The fields the protocol types as a string are exempt, so that
 /// an output called `2` stays its name and a saved session stays a document.
-fn literal(field: &str, text: &str) -> Value {
+fn literal(field: &str, text: &str, extra_strings: &[&str]) -> Value {
     let leaf = field.rsplit('.').next().unwrap_or(field);
-    if STRING_FIELDS.contains(&leaf) {
+    if STRING_FIELDS.contains(&leaf) || extra_strings.contains(&leaf) {
         return Value::String(text.to_owned());
     }
     serde_json::from_str(text).unwrap_or_else(|_| Value::String(text.to_owned()))
@@ -2318,6 +2309,27 @@ mod tests {
             value(&["-t", "view.focus", "--id", "42"]),
             serde_json::json!({"type": "view.focus", "id": 42})
         );
+    }
+
+    #[test]
+    fn per_type_string_fields_are_preserved_verbatim_without_json_parsing() {
+        for raw_password in ["1.00", "1e2", " 123 ", "\"secret\""] {
+            assert_eq!(
+                value(&[
+                    "--password",
+                    raw_password,
+                    "--generation",
+                    "1",
+                    "-t",
+                    "session.unlock",
+                ]),
+                serde_json::json!({
+                    "type": "session.unlock",
+                    "generation": 1,
+                    "password": raw_password,
+                })
+            );
+        }
     }
 
     #[test]
