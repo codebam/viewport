@@ -815,6 +815,17 @@ struct Connection {
     capabilities: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CaptureRoute {
+    /// Consumed by the active input-capture session.
+    Intercepted,
+    /// Dispatched locally using normal seat modifier state.
+    Local,
+    /// Dispatched locally for an `allow_input_capture+` binding using the live
+    /// modifiers held during capture, restoring local modifiers afterwards.
+    AllowedBinding,
+}
+
 #[derive(Clone)]
 struct Active {
     session: OwnedObjectPath,
@@ -822,10 +833,32 @@ struct Active {
     id: u32,
     ignored_keys: HashSet<u32>,
     ignored_buttons: HashSet<u32>,
+    /// Keys and buttons whose press bypassed capture via `allow_input_capture+`
+    /// so their matching release also goes to the local path instead of EIS.
+    allowed_keys: HashSet<u32>,
+    allowed_buttons: HashSet<u32>,
     captured_keys: HashSet<u32>,
     captured_buttons: HashSet<u32>,
     last_absolute: Option<Point<f64, Logical>>,
     modifiers: ModifiersState,
+}
+
+impl Active {
+    fn note_allowed_key(&mut self, code: u32) {
+        self.allowed_keys.insert(code);
+    }
+
+    fn take_allowed_key(&mut self, code: u32) -> bool {
+        self.allowed_keys.remove(&code)
+    }
+
+    fn note_allowed_button(&mut self, button: u32) {
+        self.allowed_buttons.insert(button);
+    }
+
+    fn take_allowed_button(&mut self, button: u32) -> bool {
+        self.allowed_buttons.remove(&button)
+    }
 }
 
 impl crate::state::ViewportState {
@@ -1290,6 +1323,8 @@ impl crate::state::ViewportState {
             id,
             ignored_keys: self.input_capture_connections.down_keys.clone(),
             ignored_buttons: self.input_capture_connections.down_buttons.clone(),
+            allowed_keys: HashSet::new(),
+            allowed_buttons: HashSet::new(),
             captured_keys: HashSet::new(),
             captured_buttons: HashSet::new(),
             last_absolute,
@@ -1302,16 +1337,42 @@ impl crate::state::ViewportState {
     }
 
     pub fn process_local_input_event<I: InputBackend>(&mut self, event: InputEvent<I>) {
-        if self.intercept_input_capture(&event) {
-            // The event was the capture's, so `process_input_event` — where
-            // the idle deadlines normally move — never saw it. A captured
-            // keystroke or motion is still somebody using the desk; without
-            // this the blank and lock deadlines run down under the person
-            // typing mid-capture.
-            self.note_input_activity(&event);
-            return;
+        match self.intercept_input_capture(&event) {
+            CaptureRoute::Intercepted => {
+                // The event was the capture's, so `process_input_event` — where
+                // the idle deadlines normally move — never saw it. A captured
+                // keystroke or motion is still somebody using the desk; without
+                // this the blank and lock deadlines run down under the person
+                // typing mid-capture.
+                self.note_input_activity(&event);
+                return;
+            }
+            CaptureRoute::Local => {
+                self.process_input_event(event);
+            }
+            CaptureRoute::AllowedBinding => {
+                // Evaluate the allowed binding against the live modifiers held
+                // during capture, then restore the pre-capture local modifier
+                // state if capture is still active.
+                let restore = self
+                    .input_capture_connections
+                    .active
+                    .as_ref()
+                    .map(|active| active.modifiers)
+                    .and_then(|capture| {
+                        let keyboard = self.seat.get_keyboard()?;
+                        let local = keyboard.modifier_state();
+                        keyboard.set_modifier_state(capture);
+                        Some((keyboard, local))
+                    });
+                self.process_input_event(event);
+                if self.input_capture_connections.active.is_some() {
+                    if let Some((keyboard, local)) = restore {
+                        keyboard.set_modifier_state(local);
+                    }
+                }
+            }
         }
-        self.process_input_event(event);
         self.sync_input_capture_modifiers();
     }
 
@@ -1319,21 +1380,26 @@ impl crate::state::ViewportState {
     ///
     /// The event is offered to the bindings before the capture takes it: a
     /// chord marked `allow_input_capture+` still belongs to the desk while a
-    /// client holds the input. Only a press is offered; a release reaches
-    /// the local path anyway, where a `release+` binding fires and a
-    /// suppressed press is swallowed.
+    /// client holds the input. Only a press is offered; its matching release
+    /// is tracked in `active.allowed_keys` so it reaches the local path rather
+    /// than leaking to EIS.
     ///
     /// The keysym is read off the seat's xkb state the same way the seat
     /// filter reads it — the unmodified symbol, so a chord is written
-    /// `Mod4+q` and still matches under Shift.
+    /// `Mod4+q` and still matches under Shift. Modifiers come from
+    /// `active.modifiers`, which tracks keys pressed during capture.
     fn capture_allows_key<I: InputBackend>(&mut self, event: &I::KeyboardKeyEvent) -> bool {
-        if self.input_capture_connections.active.is_none() {
+        let Some(modifiers) = self
+            .input_capture_connections
+            .active
+            .as_ref()
+            .map(|active| active.modifiers)
+        else {
             return false;
-        }
+        };
         let Some(keyboard) = self.seat.get_keyboard() else {
             return false;
         };
-        let modifiers = keyboard.modifier_state();
         let keysym = keyboard.with_xkb_state(self, |ctx| {
             smithay::input::keyboard::KeysymHandle::new(ctx.xkb(), event.key_code())
                 .raw_latin_sym_or_raw_current_sym()
@@ -1356,13 +1422,14 @@ impl crate::state::ViewportState {
 
     /// Whether a binding that asks to fire during capture matches this button.
     fn capture_allows_button<I: InputBackend>(&mut self, event: &I::PointerButtonEvent) -> bool {
-        if self.input_capture_connections.active.is_none() {
-            return false;
-        }
-        let Some(keyboard) = self.seat.get_keyboard() else {
+        let Some(modifiers) = self
+            .input_capture_connections
+            .active
+            .as_ref()
+            .map(|active| active.modifiers)
+        else {
             return false;
         };
-        let modifiers = keyboard.modifier_state();
         crate::binding::find_button(
             &self.bindings,
             &modifiers,
@@ -1375,7 +1442,7 @@ impl crate::state::ViewportState {
         .is_some_and(|bound| bound.allow_input_capture)
     }
 
-    fn intercept_input_capture<I: InputBackend>(&mut self, event: &InputEvent<I>) -> bool {
+    fn intercept_input_capture<I: InputBackend>(&mut self, event: &InputEvent<I>) -> CaptureRoute {
         if self.locked {
             self.deactivate_input_capture();
             // The locked path is not allowed to touch the seat, but a release
@@ -1395,7 +1462,7 @@ impl crate::state::ViewportState {
                 }
                 _ => {}
             }
-            return false;
+            return CaptureRoute::Local;
         }
         if let InputEvent::Keyboard { event } = event {
             let code = event.key_code().raw().saturating_sub(8);
@@ -1413,16 +1480,29 @@ impl crate::state::ViewportState {
             }
             // A chord that asks to fire during capture is handed back to the
             // local path, which runs the binding and suppresses the key;
-            // the capture never sees it.
+            // record it in `allowed_keys` so its release returns locally too
+            // instead of leaking as an unmatched release over EIS.
             if pressed && self.capture_allows_key::<I>(event) {
-                return false;
+                self.input_capture_connections.down_keys.insert(code);
+                if let Some(active) = self.input_capture_connections.active.as_mut() {
+                    active.note_allowed_key(code);
+                }
+                return CaptureRoute::AllowedBinding;
             }
             if pressed {
                 self.input_capture_connections.down_keys.insert(code);
             } else {
                 self.input_capture_connections.down_keys.remove(&code);
                 if self.input_capture_connections.suppressed_keys.remove(&code) {
-                    return true;
+                    return CaptureRoute::Intercepted;
+                }
+                if self
+                    .input_capture_connections
+                    .active
+                    .as_mut()
+                    .is_some_and(|active| active.take_allowed_key(code))
+                {
+                    return CaptureRoute::AllowedBinding;
                 }
                 if self
                     .input_capture_connections
@@ -1437,7 +1517,7 @@ impl crate::state::ViewportState {
                     // `process_input_event` this returns into then found no
                     // holder and forwarded nothing — the client that saw the
                     // press never saw the key come back up.
-                    return false;
+                    return CaptureRoute::Local;
                 }
             }
             if code == 1
@@ -1456,7 +1536,7 @@ impl crate::state::ViewportState {
                 self.update_input_capture_key::<I>(event);
                 self.suspend_input_capture();
                 self.sync_input_capture_modifiers();
-                return true;
+                return CaptureRoute::Intercepted;
             }
         }
         if let InputEvent::PointerButton { event } = event {
@@ -1465,7 +1545,11 @@ impl crate::state::ViewportState {
             // A button binding that asks to fire during capture is handed
             // back to the local path, as for a key above.
             if pressed && self.capture_allows_button::<I>(event) {
-                return false;
+                self.input_capture_connections.down_buttons.insert(button);
+                if let Some(active) = self.input_capture_connections.active.as_mut() {
+                    active.note_allowed_button(button);
+                }
+                return CaptureRoute::AllowedBinding;
             }
             if pressed {
                 self.input_capture_connections.down_buttons.insert(button);
@@ -1476,7 +1560,15 @@ impl crate::state::ViewportState {
                     .suppressed_buttons
                     .remove(&button)
                 {
-                    return true;
+                    return CaptureRoute::Intercepted;
+                }
+                if self
+                    .input_capture_connections
+                    .active
+                    .as_mut()
+                    .is_some_and(|active| active.take_allowed_button(button))
+                {
+                    return CaptureRoute::AllowedBinding;
                 }
                 if self
                     .input_capture_connections
@@ -1484,13 +1576,13 @@ impl crate::state::ViewportState {
                     .as_mut()
                     .is_some_and(|active| active.ignored_buttons.remove(&button))
                 {
-                    return false;
+                    return CaptureRoute::Local;
                 }
             }
         }
         if self.input_capture_connections.active.is_none() {
             let Some(pointer) = self.seat.get_pointer() else {
-                return false;
+                return CaptureRoute::Local;
             };
             let from = pointer.current_location();
             let to = match event {
@@ -1502,13 +1594,13 @@ impl crate::state::ViewportState {
                         .next()
                         .and_then(|output| self.space.output_geometry(output))
                     else {
-                        return false;
+                        return CaptureRoute::Local;
                     };
                     self.glass_to_content(
                         event.position_transformed(geometry.size) + geometry.loc.to_f64(),
                     )
                 }
-                _ => return false,
+                _ => return CaptureRoute::Local,
             };
             let trigger = {
                 let shared = self.input_capture_shared.0.lock().unwrap();
@@ -1527,12 +1619,12 @@ impl crate::state::ViewportState {
                     .map(|(path, barrier)| (path.clone(), barrier.id))
             };
             let Some((session, barrier)) = trigger else {
-                return false;
+                return CaptureRoute::Local;
             };
             let last_absolute =
                 matches!(event, InputEvent::PointerMotionAbsolute { .. }).then_some(from);
             if !self.activate_input_capture(session, barrier, to, last_absolute) {
-                return false;
+                return CaptureRoute::Local;
             }
         }
         let active = self
@@ -1540,7 +1632,9 @@ impl crate::state::ViewportState {
             .active
             .as_ref()
             .map(|active| active.session.clone());
-        let Some(active) = active else { return false };
+        let Some(active) = active else {
+            return CaptureRoute::Local;
+        };
         let capability = match event {
             InputEvent::Keyboard { .. } => DeviceCapability::Keyboard,
             InputEvent::PointerMotion { .. } | InputEvent::PointerMotionAbsolute { .. } => {
@@ -1548,7 +1642,7 @@ impl crate::state::ViewportState {
             }
             InputEvent::PointerButton { .. } => DeviceCapability::Button,
             InputEvent::PointerAxis { .. } => DeviceCapability::Scroll,
-            _ => return false,
+            _ => return CaptureRoute::Local,
         };
         // Ask whether any ready device has the capability *before* the key is
         // fed into the seat. `update_input_capture_key` registers it under the
@@ -1568,14 +1662,14 @@ impl crate::state::ViewportState {
                     .any(|device| device.has_capability(capability))
             });
         if !ready_has_capability {
-            return false;
+            return CaptureRoute::Local;
         }
         let modifiers = match event {
             InputEvent::Keyboard { event } => self.update_input_capture_key::<I>(event),
             _ => None,
         };
         let Some(live) = self.input_capture_connections.live.get(&active) else {
-            return false;
+            return CaptureRoute::Local;
         };
         let time = event_time_us(event);
         match event {
@@ -1701,7 +1795,7 @@ impl crate::state::ViewportState {
                     }
                 }
             }
-            _ => return false,
+            _ => return CaptureRoute::Local,
         }
         if let Some(connection) = &live.connection {
             let _ = connection.flush();
@@ -1709,7 +1803,7 @@ impl crate::state::ViewportState {
         if let Some(modifiers) = modifiers {
             self.broadcast_input_capture_modifiers(modifiers);
         }
-        true
+        CaptureRoute::Intercepted
     }
 
     fn update_input_capture_key<I: InputBackend>(
@@ -1994,6 +2088,61 @@ mod tests {
             }),
             (1, 4, 2, 8)
         );
+    }
+
+    #[test]
+    fn allowed_capture_keys_and_buttons_are_tracked_until_release() {
+        let mut active = Active {
+            session: OwnedObjectPath::try_from("/org/freedesktop/portal/desktop/session/1")
+                .unwrap(),
+            generation: 1,
+            id: 1,
+            ignored_keys: HashSet::new(),
+            ignored_buttons: HashSet::new(),
+            allowed_keys: HashSet::new(),
+            allowed_buttons: HashSet::new(),
+            captured_keys: HashSet::new(),
+            captured_buttons: HashSet::new(),
+            last_absolute: None,
+            modifiers: ModifiersState {
+                logo: true,
+                ..Default::default()
+            },
+        };
+        let bindings = vec![
+            crate::binding::parse("allow_input_capture+Mod4+q=close").unwrap(),
+            crate::binding::parse("allow_input_capture+Mod4+Mouse1=shell overview").unwrap(),
+        ];
+        // Active capture modifiers match the chord even when pre-capture local
+        // modifiers are empty.
+        assert!(crate::binding::find_binding(
+            &bindings,
+            &active.modifiers,
+            smithay::input::keyboard::keysyms::KEY_q,
+            "",
+            false,
+            false,
+            None,
+        )
+        .is_some_and(|bound| bound.allow_input_capture));
+        assert!(crate::binding::find_button(
+            &bindings,
+            &active.modifiers,
+            0x110,
+            "",
+            false,
+            false,
+            None,
+        )
+        .is_some_and(|bound| bound.allow_input_capture));
+
+        active.note_allowed_key(16);
+        assert!(active.take_allowed_key(16));
+        assert!(!active.take_allowed_key(16));
+
+        active.note_allowed_button(0x110);
+        assert!(active.take_allowed_button(0x110));
+        assert!(!active.take_allowed_button(0x110));
     }
 
     #[test]
