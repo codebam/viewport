@@ -391,9 +391,11 @@ fn stream(path: &Path, pcm: &Arc<Pcm>) -> anyhow::Result<()> {
     )
     .map_err(|e| anyhow::anyhow!("creating a pipewire stream: {e}"))?;
 
-    // How far into `samples` the next buffer starts. Only the process
-    // callback touches it, and PipeWire calls that from one thread.
+    // How far into `samples` the next buffer starts. Both callbacks run on the
+    // main loop thread (no RT_PROCESS), so `Cell` and `WeakMainLoopRc` stay
+    // strictly single-threaded.
     let position = std::cell::Cell::new(0usize);
+    let draining = std::cell::Cell::new(false);
     let audio = pcm.clone();
     let finishing = main_loop.downgrade();
     let finished = main_loop.downgrade();
@@ -435,10 +437,16 @@ fn stream(path: &Path, pcm: &Arc<Pcm>) -> anyhow::Result<()> {
             *chunk.stride_mut() = stride as i32;
             *chunk.size_mut() = (taking / audio.channels as usize * stride) as u32;
 
+            // Queue the buffer before calling `flush(true)`: `Buffer::drop` is
+            // what calls `pw_stream_queue_buffer`, so draining while `buffer`
+            // is still live starts the drain before the final audio chunk is
+            // queued.
+            drop(buffer);
+
             // The last buffer. Draining rather than quitting here: what has
             // been queued has not necessarily been heard yet, and tearing the
             // loop down now would cut the tail off every sound.
-            if position.get() >= audio.samples.len() {
+            if position.get() >= audio.samples.len() && !draining.replace(true) {
                 if let Err(e) = stream.flush(true) {
                     tracing::debug!("draining a sound: {e}");
                     if let Some(main_loop) = finishing.upgrade() {
@@ -464,14 +472,11 @@ fn stream(path: &Path, pcm: &Arc<Pcm>) -> anyhow::Result<()> {
             spa::utils::Direction::Output,
             None,
             // AUTOCONNECT so the session manager routes it to whatever the
-            // default sink is, which is what a notification wants and what
-            // makes this need no configuration. MAP_BUFFERS because the
-            // process callback above writes into them with the CPU, and
-            // RT_PROCESS because that callback is real-time safe: it copies
-            // out of a Vec that was decoded before the stream existed.
-            pw::stream::StreamFlags::AUTOCONNECT
-                | pw::stream::StreamFlags::MAP_BUFFERS
-                | pw::stream::StreamFlags::RT_PROCESS,
+            // default sink is, and MAP_BUFFERS because the process callback
+            // writes into them with the CPU. Omit RT_PROCESS so PipeWire
+            // invokes `.process` on this thread's main loop rather than the RT
+            // data thread, keeping `WeakMainLoopRc` and `Cell` sound.
+            pw::stream::StreamFlags::AUTOCONNECT | pw::stream::StreamFlags::MAP_BUFFERS,
             &mut params,
         )
         .map_err(|e| anyhow::anyhow!("connecting a pipewire stream: {e}"))?;
