@@ -248,6 +248,15 @@ pub const TICK_FLOOR: Duration = Duration::from_millis(50);
 /// open — and, before `on_gpu_removed` pruned it, one card that had been
 /// unplugged while waiting — kept the session waking two and a half times a
 /// second for ever.
+/// Combine an optional accumulated wait with a new candidate wait, keeping the
+/// sooner of the two without collapsing an initial `None` to `Duration::ZERO`.
+fn sooner_wait(current: Option<Duration>, candidate: Duration) -> Option<Duration> {
+    Some(match current {
+        Some(existing) => existing.min(candidate),
+        None => candidate,
+    })
+}
+
 pub fn next_tick(again: bool, retry_in: Option<Duration>) -> Option<Duration> {
     let retry = retry_in.map(|wait| wait.max(TICK_FLOOR));
     match (again, retry) {
@@ -382,7 +391,7 @@ impl ViewportState {
                     // wait is read fresh on the next tick.
                     continue;
                 }
-                offline_wait_out = Some(offline_wait_out.unwrap_or(Duration::ZERO).min(wait));
+                offline_wait_out = sooner_wait(offline_wait_out, wait);
                 continue;
             }
 
@@ -1391,5 +1400,13 @@ mod tests {
             offline_wait(0, backoff(0) + Duration::from_secs(1)),
             Duration::ZERO
         );
+        // Combining into an initially empty accumulator must keep the slot's
+        // backoff instead of clamping against Duration::ZERO.
+        let mut combined = None;
+        combined = sooner_wait(combined, Duration::from_secs(30));
+        assert_eq!(combined, Some(Duration::from_secs(30)));
+        combined = sooner_wait(combined, Duration::from_secs(8));
+        assert_eq!(combined, Some(Duration::from_secs(8)));
+        assert_eq!(next_tick(false, combined), Some(Duration::from_secs(8)));
     }
 }
