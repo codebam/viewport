@@ -4528,25 +4528,15 @@ impl ViewportState {
             // A constraint that exists but has not been activated does not
             // apply: activation is what the client is told about, and acting
             // before it would capture a pointer the client is not expecting.
-            if !constraint.is_active() {
-                // The pointer is over this surface now — this whole
-                // resolution is keyed on `under` — so this is the moment
-                // the protocol wants the activation. A native client can
-                // ask for a constraint while the pointer is not yet over
-                // it (`new_constraint` refuses to activate then), and
-                // nothing else ever activates it: without this the
-                // constraint stays inactive for the whole session and a
-                // confined cursor leaves at the output edge.
-                //
-                // Unless the compositor ended this capture because the
-                // keyboard moved elsewhere: re-taking it here would undo
-                // that on the next mouse move and leave a window capturing
-                // a desk it is not the front of. See
-                // `ViewportState::may_capture`.
-                let held = self.views.find_by_surface(surface).map(|view| view.id);
-                if held.is_none_or(|held| self.may_capture(held)) {
-                    constraint.activate();
-                }
+            let held = self.views.find_by_surface(surface).map(|view| view.id);
+            let may_capture = held.is_none_or(|held| self.may_capture(held));
+            let (activate, apply) =
+                resolve_constraint_activation(constraint.is_active(), may_capture);
+            if activate {
+                constraint.activate();
+            }
+            if !apply {
+                return;
             }
             match &*constraint {
                 PointerConstraint::Locked(_) => locked = true,
@@ -4659,6 +4649,22 @@ use smithay::wayland::compositor::RectangleKind;
 /// asked for a hole in its confinement got no confinement and the pointer
 /// left the surface entirely, the opposite of both the request and the safe
 /// direction above.
+/// Decide whether a pointer constraint should be activated and whether its
+/// lock/confinement should be applied to the current motion event.
+///
+/// An inactive constraint whose activation is refused by `may_capture` must
+/// not be applied either — otherwise the cursor stays pinned to an unfocused
+/// surface without ever sending `locked`/`confined` to the client.
+fn resolve_constraint_activation(is_active: bool, may_capture: bool) -> (bool, bool) {
+    if is_active {
+        (false, true)
+    } else if may_capture {
+        (true, true)
+    } else {
+        (false, false)
+    }
+}
+
 fn confinement_rects(rects: &[(RectangleKind, Rectangle<i32, Logical>)]) -> Option<ConfineRects> {
     let mut additive = ConfineRects::new();
     for (kind, rect) in rects {
@@ -5562,6 +5568,14 @@ mod tests {
             tablet_to_layout(two_outputs(), 2.0, 0.0),
             Point::new(3840.0, 0.0)
         );
+    }
+
+    #[test]
+    fn refused_inactive_pointer_constraint_is_neither_activated_nor_applied() {
+        assert_eq!(resolve_constraint_activation(false, false), (false, false));
+        assert_eq!(resolve_constraint_activation(false, true), (true, true));
+        assert_eq!(resolve_constraint_activation(true, false), (false, true));
+        assert_eq!(resolve_constraint_activation(true, true), (false, true));
     }
 
     #[test]
