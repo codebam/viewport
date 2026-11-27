@@ -55,6 +55,15 @@ impl LoadGate {
         self.url_allowed = Some(url.is_some_and(viewport_ipc::js::shell_url_allowed));
     }
 
+    /// Record the URL reported by a `Page.getFrameTree` query.
+    ///
+    /// Unlike `Page.frameNavigated`, a frame-tree reply inspects the current
+    /// document rather than starting a navigation, so it updates the origin
+    /// check without clearing `loaded`.
+    pub fn url_seen(&mut self, url: Option<&str>) {
+        self.url_allowed = Some(url.is_some_and(viewport_ipc::js::shell_url_allowed));
+    }
+
     /// Context bookkeeping: a cleared or replaced main-frame context is the
     /// old document going away, so the gate closes until its load event.
     pub fn context_created(&mut self) {
@@ -289,8 +298,10 @@ impl DocumentGuard {
         if !self.guard.note(message) {
             return false;
         }
-        if frame_tree || main_navigation {
+        if main_navigation {
             self.gate.frame_navigated(self.guard.main_url.as_deref());
+        } else if frame_tree {
+            self.gate.url_seen(self.guard.main_url.as_deref());
         }
         // Context bookkeeping rides the same note — a cleared or replaced
         // execution context is the old document going away, which is what
@@ -613,5 +624,70 @@ mod tests {
         );
         assert!(!doc.gate.ready());
         assert!(doc.load_event_fired());
+    }
+
+    /// Re-querying `Page.getFrameTree` on an already-loaded document (for
+    /// example after a stale-guard probe) must not clear `loaded`, because no
+    /// second `Page.loadEventFired` will ever arrive.
+    #[test]
+    fn frame_tree_requery_keeps_a_loaded_document_ready() {
+        let mut doc = DocumentGuard::default();
+        doc.note(&json!({
+            "method": "Page.frameNavigated",
+            "params": {"frame": {"id": "main", "url": "file:///shell/index.html"}},
+        }));
+        doc.note(&json!({
+            "method": "Runtime.executionContextCreated",
+            "params": {"context": {
+                "id": 1,
+                "auxData": {"isDefault": true, "frameId": "main"},
+            }},
+        }));
+        assert!(doc.load_event_fired());
+
+        // Stale-guard re-query: forget URL, then receive Page.getFrameTree.
+        doc.guard.forget_url();
+        assert!(doc.note(&json!({
+            "result": {"frameTree": {"frame": {
+                "id": "main",
+                "url": "file:///shell/index.html",
+            }}},
+        })));
+        assert!(
+            doc.gate.ready(),
+            "a frame-tree reply for the loaded shell must keep the gate open"
+        );
+
+        // If the reply reveals a disallowed origin, the gate still shuts.
+        assert!(doc.note(&json!({
+            "result": {"frameTree": {"frame": {
+                "id": "main",
+                "url": "https://example.com/",
+            }}},
+        })));
+        assert!(!doc.gate.ready());
+    }
+
+    /// If `Page.loadEventFired` beats the initial `Page.getFrameTree` reply,
+    /// the frame-tree reply opens the gate once the context and URL are known.
+    #[test]
+    fn frame_tree_after_load_event_opens_the_gate() {
+        let mut doc = DocumentGuard::default();
+        doc.note(&json!({
+            "method": "Runtime.executionContextCreated",
+            "params": {"context": {
+                "id": 1,
+                "auxData": {"isDefault": true, "frameId": "main"},
+            }},
+        }));
+        // Load fires before Page.getFrameTree names the URL.
+        assert!(!doc.load_event_fired());
+        assert!(doc.note(&json!({
+            "result": {"frameTree": {"frame": {
+                "id": "main",
+                "url": "file:///shell/index.html",
+            }}},
+        })));
+        assert!(doc.gate.ready());
     }
 }
