@@ -602,6 +602,14 @@ fn decode_png(bytes: &[u8]) -> Option<(Vec<u8>, u32, u32)> {
     let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = decoder.read_info().ok()?;
+    let header = reader.info();
+    if header.width == 0
+        || header.height == 0
+        || header.width > MAX_SIDE
+        || header.height > MAX_SIDE
+    {
+        return None;
+    }
     let size = reader.output_buffer_size()?;
     let mut buffer = vec![0; size];
     let info = reader.next_frame(&mut buffer).ok()?;
@@ -1002,6 +1010,35 @@ mod tests {
     /// A resample to a sane size cannot overflow: the products are widened
     /// before they are multiplied, so even a theme that ships a 2x2 png
     /// against a 1024 target costs what a 1024 cursor costs.
+    #[test]
+    fn oversized_png_header_is_rejected_before_allocating_pixel_buffer() {
+        // Minimal PNG signature + valid IHDR claiming 100000x100000 RGBA (~40 GiB)
+        // with no IDAT; decode_png must reject it from header dimensions alone.
+        let mut bytes = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+        let mut ihdr = Vec::new();
+        ihdr.extend_from_slice(b"IHDR");
+        ihdr.extend_from_slice(&100_000u32.to_be_bytes());
+        ihdr.extend_from_slice(&100_000u32.to_be_bytes());
+        ihdr.extend_from_slice(&[8, 6, 0, 0, 0]); // 8-bit RGBA
+        let crc = crc32_ieee(&ihdr);
+        bytes.extend_from_slice(&13u32.to_be_bytes());
+        bytes.extend_from_slice(&ihdr);
+        bytes.extend_from_slice(&crc.to_be_bytes());
+        assert!(decode_png(&bytes).is_none());
+    }
+
+    fn crc32_ieee(data: &[u8]) -> u32 {
+        let mut crc = 0xffff_ffffu32;
+        for &byte in data {
+            crc ^= u32::from(byte);
+            for _ in 0..8 {
+                let mask = (crc & 1).wrapping_neg();
+                crc = (crc >> 1) ^ (0xedb8_8320 & mask);
+            }
+        }
+        !crc
+    }
+
     #[test]
     fn a_resample_at_the_cap_is_a_cursor_worth_of_pixels() {
         let four = vec![255u8; 4 * 4];
