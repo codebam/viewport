@@ -3658,6 +3658,12 @@ fn same_chord(a: &crate::binding::Binding, b: &crate::binding::Binding) -> bool 
         && a.wheel == b.wheel
         && a.locked == b.locked
         && a.release == b.release
+        && a.long_press == b.long_press
+        && a.click == b.click
+        && a.drag == b.drag
+        && a.universal == b.universal
+        && a.ignore_mods == b.ignore_mods
+        && a.device == b.device
 }
 
 /// Register a runtime binding from a `bind.add` message.
@@ -3859,6 +3865,37 @@ mod tests {
             crate::binding::match_wheel(&bindings, &held, Wheel::Up, "", false),
             Some(&Action::Shell("workspace.switch 2".to_owned()))
         );
+
+        // Distinct trigger selectors (long_press, click/drag, device, universal,
+        // ignore_mods) must coexist rather than overwriting each other.
+        let mut distinct = Vec::new();
+        assert!(install_binding(&mut distinct, "Mod4+q", "close"));
+        assert!(install_binding(
+            &mut distinct,
+            "long_press+Mod4+q",
+            "shell overview"
+        ));
+        assert!(install_binding(
+            &mut distinct,
+            "click+Mod4+Mouse1",
+            "shell click"
+        ));
+        assert!(install_binding(
+            &mut distinct,
+            "drag+Mod4+Mouse1",
+            "shell drag"
+        ));
+        assert!(install_binding(
+            &mut distinct,
+            "device:KeyboardA+Mod4+q",
+            "shell a"
+        ));
+        assert!(install_binding(
+            &mut distinct,
+            "device:KeyboardB+Mod4+q",
+            "shell b"
+        ));
+        assert_eq!(distinct.len(), 6);
     }
 
     /// The shell's `output.configure` used to call `change_current_state` with
