@@ -1,0 +1,13 @@
+{
+  "id": "workspace-pill",
+  "name": "Workspace Pill",
+  "version": "1.0.0",
+  "description": "Minimal bar-center pill showing the active workspace and open window count with live hot-reload.",
+  "slot": "bar-center",
+  "script": "index.js",
+  "style": "style.css",
+  "enabled": true,
+  "options": {
+    "prefix": "WS"
+  }
+}

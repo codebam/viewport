@@ -113,6 +113,8 @@ of what was asked.
 | `ai.usage` | `usage[]` with `provider`, optional `primary`, `secondary`, `remaining`, `primary_seconds`, `secondary_seconds`, `primary_reset`, `secondary_reset` — the normalised result of polling each configured AI provider's usage API; failed providers are omitted. Private (see `Event::is_private`); only the shell and the compositor binary receive it |
 | `ai.auth` | `provider`, `state` (`pending`, `complete` or `error`), optional `url`, `code`, `message` — progress of an interactive provider OAuth login (`ai.login`); `pending` carries the one-time device code (`url` and `code`), `complete`/`error` finish it. Private for the same reason as `ai.usage` |
 | `shell.reload` | — throw the page away and load it again, ignoring the HTTP cache. Sent to out-of-process shell processes on reload (the in-process engine is reloaded directly); a shell that forwards events ignores unknown types. See `reload_shells` in `shell_watch.rs` |
+| `extensions.list` | `extensions[]` of `{id,name,slot,script,style?,revision,version?,description?,options?}` — the active user shell extensions discovered on disk, with asset paths validated and resolved to cache-busted `file://` URLs. Replayed on `view.query` and sent in answer to `extensions.query`. See [User shell extensions](shell-extensions.md) |
+| `extensions.changed` | `extensions[]` (full authoritative list), optional `changed[]` (IDs added or modified) and optional `removed[]` (IDs removed or disabled) — broadcast when watched extension directories change on disk, on `extensions.reload`, or when `config.extensions` changes the active set |
 | `error` | `context`, `message` |
 
 The chooser is drawn by the shell and steered by the compositor, which is the
@@ -254,6 +256,9 @@ Also accepted on the UNIX socket, which speaks the same message set.
 | `config.notifications` | optional `sound_file`, optional `sound_name` (either blank is silence), optional `history` — set what a notification that names no sound of its own sounds like, and how many the centre keeps, at runtime, as the `notifications` block in the config file. The sound player is re-read and a lowered history drops the oldest entries there and then. Only the fields given change. The current value is in the `config` event's `notifications` |
 | `config.magnify` | optional `step`, optional `max` (a non-finite or non-positive value is refused) — set the screen magnifier's step and ceiling at runtime, as the `magnify` block in the config file. A lowered ceiling below where the screen is brings the picture back down to meet it; the event carries the clamped, effective values. Only the fields given change. The current value is in the `config` event's `magnify` |
 | `config.save` | — write the runtime settings down so they survive a restart. Answers with `config.saved`, or an `error`. See below |
+| `extensions.query` | — ask for the active discovered user shell extensions (`extensions.list`). Read-only |
+| `extensions.reload` | optional `id` — rescan extension directories and broadcast `extensions.changed` with a bumped revision for `id` (or every active extension when omitted), triggering live hot-reload in the shell |
+| `config.extensions` | optional `enabled`, optional `hot_reload`, optional `enable[]`, optional `disable[]` — adjust user shell extension policy and live hot-reload at runtime without editing the config file |
 | `shell.command` | `command`, optional `args[]` — re-emitted as the `shell.command` *event*; see below |
 | `quit` | — |
 

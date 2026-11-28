@@ -2140,6 +2140,32 @@ the debounce, a `git checkout` would reload it once per file.
 Reloading resets shell state, so windows return via the `view.added` replay but
 workspace assignments do not survive.
 
+### User shell extensions
+
+For modular user UI widgets and panels with **surgical live hot-reload** (no
+full-page reload and no lost windows), place extension folders containing an
+`extension.json` manifest under `~/.config/viewport/extensions/<id>/` and
+optionally configure the `extensions` block:
+
+```jsonc
+{
+  "extensions": {
+    "enabled": true,
+    "hot_reload": true,
+    "dirs": ["~/.config/viewport/extensions"],
+    "enable": [],
+    "disable": []
+  }
+}
+```
+
+`hot_reload` defaults to `true`: saving an extension's `extension.json`,
+script, or stylesheet triggers an `extensions.changed` event and cleanly
+unmounts and remounts only that extension in place. See
+[docs/shell-extensions.md](shell-extensions.md) for the manifest schema, slots
+(`bar-left`, `bar-center`, `bar-right`, `desktop`, `overlay`), and the
+`window.viewportExtensions` JavaScript API.
+
 **Runtime** — the shell renders display settings in HTML and drives the
 compositor over the same JSON channel it uses for window layout, and may
 register further bindings with `bind.add`. That layer is additive and
