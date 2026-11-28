@@ -26,6 +26,7 @@ mod cursor;
 mod dbus;
 mod dbus_util;
 mod dump;
+mod extensions;
 mod fade;
 mod focus;
 mod foreign_toplevel;
@@ -454,6 +455,10 @@ fn run() -> Result<()> {
     // is what says which directory to watch, and before any of it is loaded,
     // because a change between here and the first paint should still count.
     state.config_file_path = config_path.clone();
+    // Discover user shell extensions from configured directories and attach
+    // the live hot-reload inotify watcher.
+    state.sync_shell_extensions(None, false);
+    state.watch_shell_extensions();
     if shell_watch::wanted(&args) {
         state.watch_shell_assets();
         state.watch_config_file();

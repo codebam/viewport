@@ -14,7 +14,7 @@ pub mod geometry;
 pub mod js;
 pub mod request;
 
-pub use event::{CastSource, Event, GestureKind, ShortcutRow};
+pub use event::{CastSource, Event, ExtensionSlot, GestureKind, ShellExtension, ShortcutRow};
 pub use geometry::{Box, PartialBox, Transform};
 pub use request::{GestureCaptureSpec, Request};
 
@@ -246,6 +246,9 @@ fn is_known_type(name: &str) -> bool {
             | "config.magnify"
             | "config.save"
             | "output.revert"
+            | "extensions.query"
+            | "extensions.reload"
+            | "config.extensions"
     )
 }
 

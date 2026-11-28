@@ -970,6 +970,9 @@ pub struct File {
     /// The name of a [`Self::notification_extensions`] script to draw or filter
     /// notification popups with. Absent means the shell's own popups.
     pub notification_extension: Option<String>,
+    /// User shell extensions discovered from `$XDG_CONFIG_HOME/viewport/extensions/`
+    /// (or custom directories) with live hot-reload.
+    pub extensions: ExtensionsConfig,
     pub logo: Option<bool>,
     pub tutorial: Option<bool>,
     pub bar: Option<String>,
@@ -1173,6 +1176,28 @@ pub struct File {
     pub drag_threshold: Option<f64>,
 }
 
+/// Configuration for auto-discovered user shell extensions (`extensions` block).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct ExtensionsConfig {
+    /// Master switch. Absent means enabled (`true`).
+    pub enabled: Option<bool>,
+    /// Watch extension directories with inotify and push live hot-reload events
+    /// to the shell when files change. Absent means enabled (`true`).
+    pub hot_reload: Option<bool>,
+    /// Directories to scan for `<id>/extension.json` subdirectories. When
+    /// omitted, scans `$XDG_CONFIG_HOME/viewport/extensions` (or
+    /// `~/.config/viewport/extensions`). Relative paths resolve beside the
+    /// config file; `~/` expands against `$HOME`.
+    pub dirs: Option<Vec<String>>,
+    /// Extension IDs explicitly enabled (overrides `"enabled": false` in
+    /// `extension.json`).
+    pub enable: Option<Vec<String>>,
+    /// Extension IDs explicitly disabled (takes precedence over `enable` and
+    /// `extension.json`).
+    pub disable: Option<Vec<String>>,
+}
+
 /// What a `binds` entry says: an action, or an action with the extras a richer
 /// binding carries.
 ///
@@ -1300,6 +1325,56 @@ pub fn load(path: &Path) -> anyhow::Result<Option<File>> {
             *value = layout_extension_url(value, path).map_err(|e| {
                 anyhow::anyhow!("{}: notification extension {name:?}: {e}", path.display())
             })?;
+        }
+    }
+    if let Some(dirs) = file.extensions.dirs.as_mut() {
+        for dir in dirs {
+            let trimmed = dir.trim();
+            anyhow::ensure!(
+                !trimmed.is_empty(),
+                "{}: extensions.dirs contains an empty path",
+                path.display()
+            );
+            anyhow::ensure!(
+                !trimmed.contains('\0'),
+                "{}: extensions.dirs path contains a NUL byte",
+                path.display()
+            );
+            anyhow::ensure!(
+                !trimmed.contains("://"),
+                "{}: extensions.dirs only accepts local directory paths",
+                path.display()
+            );
+            let expanded = match trimmed.strip_prefix("~/") {
+                Some(rest) => std::env::var_os("HOME")
+                    .map(PathBuf::from)
+                    .unwrap_or_default()
+                    .join(rest),
+                None => PathBuf::from(trimmed),
+            };
+            let resolved = if expanded.is_absolute() {
+                expanded
+            } else {
+                path.parent()
+                    .filter(|parent| !parent.as_os_str().is_empty())
+                    .unwrap_or_else(|| Path::new("."))
+                    .join(expanded)
+            };
+            *dir = resolved.to_string_lossy().into_owned();
+        }
+    }
+    for (field, ids) in [
+        ("extensions.enable", file.extensions.enable.as_ref()),
+        ("extensions.disable", file.extensions.disable.as_ref()),
+    ] {
+        if let Some(ids) = ids {
+            for id in ids {
+                anyhow::ensure!(
+                    crate::extensions::valid_id(id),
+                    "{}: invalid extension id {id:?} in {field}",
+                    path.display()
+                );
+            }
         }
     }
     if let Some(workspaces) = file.workspaces.as_ref() {
@@ -1964,7 +2039,7 @@ pub fn parse_osk_mode(value: &str) -> anyhow::Result<OskMode> {
 /// `/` is kept, because it is the path separator rather than data. Everything
 /// outside the unreserved set goes, which over-encodes a little — `@` and `+`
 /// would have been legal — and is never wrong.
-fn encode_path(path: &str) -> String {
+pub(crate) fn encode_path(path: &str) -> String {
     let mut out = String::with_capacity(path.len());
     for byte in path.as_bytes() {
         match byte {
@@ -4179,5 +4254,56 @@ mod tests {
             super::pick_mode_index(&modes, &OutputConfig::default()),
             None
         );
+    }
+
+    #[test]
+    fn extensions_config_resolves_relative_dirs_and_validates_ids() {
+        let dir = std::env::temp_dir().join(format!("viewport-cfg-ext-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+
+        std::fs::write(
+            &path,
+            r#"{
+              "extensions": {
+                "enabled": true,
+                "hot_reload": false,
+                "dirs": ["my-exts"],
+                "enable": ["workspace-pill"],
+                "disable": ["broken_ext"]
+              }
+            }"#,
+        )
+        .unwrap();
+        let file = super::load(&path).unwrap().unwrap();
+        assert_eq!(file.extensions.enabled, Some(true));
+        assert_eq!(file.extensions.hot_reload, Some(false));
+        assert_eq!(
+            file.extensions.dirs.as_deref(),
+            Some(&[dir.join("my-exts").to_string_lossy().into_owned()][..])
+        );
+        assert_eq!(
+            file.extensions.enable.as_deref(),
+            Some(&["workspace-pill".to_owned()][..])
+        );
+        assert_eq!(
+            file.extensions.disable.as_deref(),
+            Some(&["broken_ext".to_owned()][..])
+        );
+
+        // Remote URLs in extensions.dirs are refused.
+        std::fs::write(
+            &path,
+            r#"{"extensions":{"dirs":["https://evil.test/ext"]}}"#,
+        )
+        .unwrap();
+        assert!(super::load(&path).is_err());
+
+        // Path traversal / invalid IDs in enable/disable are refused.
+        std::fs::write(&path, r#"{"extensions":{"disable":["../evil"]}}"#).unwrap();
+        assert!(super::load(&path).is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

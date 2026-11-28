@@ -83,6 +83,8 @@ fn acts_while_locked(request: &Request) -> bool {
             | Request::TrayActivate { .. }
             | Request::TrayMenuClick { .. }
             | Request::NotificationAction { .. }
+            | Request::ExtensionsReload { .. }
+            | Request::ConfigExtensions { .. }
     )
 }
 
@@ -114,6 +116,7 @@ fn reads_only(request: &Request) -> bool {
             | Request::ClipboardQuery
             | Request::NotificationList
             | Request::OutputQuery
+            | Request::ExtensionsQuery
     )
 }
 
@@ -360,6 +363,7 @@ pub fn apply(state: &mut ViewportState, request: Request) {
 
         Request::ViewQuery => {
             state.notify_config();
+            state.notify_extensions_list();
             state.notify(&viewport_ipc::Event::ScreencastActive {
                 active: !state.casts.is_empty(),
             });
@@ -2244,6 +2248,77 @@ pub fn apply(state: &mut ViewportState, request: Request) {
         }
 
         Request::ConfigSave => config_save(state),
+
+        Request::ExtensionsQuery => {
+            let event = Event::ExtensionsList {
+                extensions: state.shell_extensions.clone(),
+            };
+            if state.dispatch_client != 0 {
+                state.ipc.send_to(state.dispatch_client, &event);
+            } else {
+                state.notify(&event);
+            }
+        }
+
+        Request::ExtensionsReload { id } => {
+            if let Some(ref ext_id) = id {
+                if !crate::extensions::valid_id(ext_id) {
+                    reject(
+                        state,
+                        "extensions.reload",
+                        &format!("invalid extension id {ext_id:?}"),
+                    );
+                    return;
+                }
+            }
+            state.extensions_reload_gen = state.extensions_reload_gen.saturating_add(1);
+            state.sync_shell_extensions(id.as_deref(), true);
+        }
+
+        Request::ConfigExtensions {
+            enabled,
+            hot_reload,
+            enable,
+            disable,
+        } => {
+            if let Some(ref ids) = enable {
+                for id in ids {
+                    if !crate::extensions::valid_id(id) {
+                        reject(
+                            state,
+                            "config.extensions",
+                            &format!("invalid extension id {id:?} in enable"),
+                        );
+                        return;
+                    }
+                }
+            }
+            if let Some(ref ids) = disable {
+                for id in ids {
+                    if !crate::extensions::valid_id(id) {
+                        reject(
+                            state,
+                            "config.extensions",
+                            &format!("invalid extension id {id:?} in disable"),
+                        );
+                        return;
+                    }
+                }
+            }
+            if let Some(enabled) = enabled {
+                state.extensions_policy.enabled = enabled;
+            }
+            if let Some(hot_reload) = hot_reload {
+                state.extensions_hot_reload = hot_reload;
+            }
+            if let Some(enable) = enable {
+                state.extensions_policy.enable = enable;
+            }
+            if let Some(disable) = disable {
+                state.extensions_policy.disable = disable;
+            }
+            state.sync_shell_extensions(None, false);
+        }
 
         Request::Quit => state.shutdown(),
     }
@@ -4181,7 +4256,14 @@ mod tests {
     #[rustfmt::skip]
     const ALLOWED_WHILE_LOCKED: &[(&[&str], &str)] = &[
         (
-            &["ViewQuery", "ClipboardQuery", "NotificationList", "LauncherQuery", "OutputQuery"],
+            &[
+                "ViewQuery",
+                "ClipboardQuery",
+                "NotificationList",
+                "LauncherQuery",
+                "OutputQuery",
+                "ExtensionsQuery",
+            ],
             "a read: they answer the asker from data the compositor already owns and change nothing",
         ),
         (

@@ -137,6 +137,46 @@ impl ViewportState {
             self.config.notification_extension =
                 if name.trim().is_empty() { None } else { Some(name) };
         }
+        {
+            let mut ext_changed = false;
+            let mut dirs_changed = false;
+            if let Some(enabled) = file.extensions.enabled {
+                if self.extensions_policy.enabled != enabled {
+                    self.extensions_policy.enabled = enabled;
+                    ext_changed = true;
+                }
+            }
+            if let Some(hot_reload) = file.extensions.hot_reload {
+                self.extensions_hot_reload = hot_reload;
+            }
+            if let Some(enable) = file.extensions.enable {
+                if self.extensions_policy.enable != enable {
+                    self.extensions_policy.enable = enable;
+                    ext_changed = true;
+                }
+            }
+            if let Some(disable) = file.extensions.disable {
+                if self.extensions_policy.disable != disable {
+                    self.extensions_policy.disable = disable;
+                    ext_changed = true;
+                }
+            }
+            if let Some(dirs) = file.extensions.dirs {
+                let next_dirs: Vec<std::path::PathBuf> =
+                    dirs.into_iter().map(std::path::PathBuf::from).collect();
+                if self.extensions_dirs != next_dirs {
+                    self.extensions_dirs = next_dirs;
+                    ext_changed = true;
+                    dirs_changed = true;
+                }
+            }
+            if ext_changed {
+                self.sync_shell_extensions(None, false);
+            }
+            if dirs_changed && self.extensions_watch_token.is_some() {
+                self.watch_shell_extensions();
+            }
+        }
         if let Some(layout) = file.layout {
             // Checked here for the same reason tiling_mode is, below: this is
             // where the name can be rejected while the file it came from is

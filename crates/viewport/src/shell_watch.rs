@@ -552,6 +552,235 @@ impl ViewportState {
         self.apply_config(file);
         self.notify_config();
     }
+
+    /// Watch configured user shell extension directories for live hot-reload.
+    ///
+    /// Unlike `--watch-shell` (which reloads the entire page), editing an
+    /// extension pushes `extensions.changed` so the shell surgically unmounts
+    /// and remounts only the affected extension in place without losing
+    /// windows or restarting the compositor.
+    ///
+    /// If a configured root directory does not exist yet (e.g. a user has not
+    /// created `~/.config/viewport/extensions` yet), watches its immediate
+    /// parent directory if present so creating the directory later starts hot-
+    /// reloading automatically.
+    pub fn watch_shell_extensions(&mut self) {
+        use smithay::reexports::rustix::fs::inotify;
+
+        if let Some(token) = self.extensions_watch_token.take() {
+            self.loop_handle.remove(token);
+        }
+
+        let roots = self.extensions_dirs.clone();
+        if roots.is_empty() {
+            return;
+        }
+
+        let fd = match inotify::init(inotify::CreateFlags::NONBLOCK | inotify::CreateFlags::CLOEXEC)
+        {
+            Ok(fd) => fd,
+            Err(e) => {
+                tracing::warn!("extensions watch: no inotify ({e}); live hot-reload disabled");
+                return;
+            }
+        };
+
+        let watching = inotify::WatchFlags::CLOSE_WRITE
+            | inotify::WatchFlags::MOVED_TO
+            | inotify::WatchFlags::MOVED_FROM
+            | inotify::WatchFlags::CREATE
+            | inotify::WatchFlags::DELETE;
+
+        let mut watches: std::collections::HashMap<i32, PathBuf> = std::collections::HashMap::new();
+        // Parent directories watched solely to detect creation of a missing
+        // extensions root (keyed by wd -> expected root child name).
+        let mut pending_roots: std::collections::HashMap<i32, Vec<(String, PathBuf)>> =
+            std::collections::HashMap::new();
+
+        for root in &roots {
+            if root.is_dir() {
+                let mut dirs = Vec::new();
+                tree(root, DEPTH, &mut dirs);
+                for directory in dirs {
+                    match inotify::add_watch(&fd, &directory, watching) {
+                        Ok(wd) => {
+                            watches.insert(wd, directory);
+                        }
+                        Err(e) => {
+                            tracing::warn!("extensions watch: {}: {e}", directory.display());
+                        }
+                    }
+                }
+            } else if let (Some(parent), Some(child_name)) = (
+                root.parent().filter(|p| p.is_dir()),
+                root.file_name().map(|n| n.to_string_lossy().into_owned()),
+            ) {
+                match inotify::add_watch(&fd, parent, watching) {
+                    Ok(wd) => {
+                        pending_roots
+                            .entry(wd)
+                            .or_default()
+                            .push((child_name, root.clone()));
+                    }
+                    Err(e) => {
+                        tracing::warn!("extensions watch: {}: {e}", parent.display());
+                    }
+                }
+            }
+        }
+
+        if watches.is_empty() && pending_roots.is_empty() {
+            return;
+        }
+
+        if self.extensions_reload_timer.is_none() {
+            self.extensions_reload_timer =
+                self.create_tick("extensions watch", Self::extensions_settled);
+        }
+
+        let watched_count = watches.len();
+        match self.loop_handle.insert_source(
+            Generic::new(fd, Interest::READ, Mode::Level),
+            move |_, fd, state: &mut Self| {
+                let mut buffer = [std::mem::MaybeUninit::<u8>::uninit(); 4096];
+                let mut reader = inotify::Reader::new(&*fd, &mut buffer);
+                let mut interesting = false;
+                let mut appeared: Vec<PathBuf> = Vec::new();
+                let mut gone: Vec<i32> = Vec::new();
+                loop {
+                    match reader.next() {
+                        Ok(event) => {
+                            let name = event
+                                .file_name()
+                                .map(|name| name.to_string_lossy().into_owned())
+                                .unwrap_or_default();
+                            let flags = event.events();
+                            let wd = event.wd();
+
+                            if flags.contains(inotify::ReadFlags::IGNORED) {
+                                gone.push(wd);
+                            }
+
+                            if let Some(expected) = pending_roots.get(&wd) {
+                                for (target_name, full_root) in expected {
+                                    if &name == target_name
+                                        && flags.intersects(
+                                            inotify::ReadFlags::CREATE
+                                                | inotify::ReadFlags::MOVED_TO,
+                                        )
+                                        && full_root.is_dir()
+                                    {
+                                        appeared.push(full_root.clone());
+                                        interesting = true;
+                                    }
+                                }
+                                // Events in a parent directory for unrelated files
+                                // do not trigger extension rescans.
+                                if !watches.contains_key(&wd) {
+                                    continue;
+                                }
+                            }
+
+                            if flags.contains(inotify::ReadFlags::ISDIR) {
+                                if flags.intersects(
+                                    inotify::ReadFlags::CREATE | inotify::ReadFlags::MOVED_TO,
+                                ) {
+                                    if let Some(parent) = watches.get(&wd) {
+                                        if !name.starts_with('.') {
+                                            appeared.push(parent.join(&name));
+                                        }
+                                    }
+                                    interesting = true;
+                                } else if flags.intersects(
+                                    inotify::ReadFlags::DELETE | inotify::ReadFlags::MOVED_FROM,
+                                ) && !name.starts_with('.')
+                                {
+                                    // Removing or moving an extension directory away
+                                    // must trigger a rescan so the shell unmounts it.
+                                    interesting = true;
+                                }
+                            } else if is_asset(&name) {
+                                interesting = true;
+                            }
+                        }
+                        Err(smithay::reexports::rustix::io::Errno::WOULDBLOCK) => break,
+                        Err(e) => {
+                            tracing::warn!("extensions watch: {e}");
+                            break;
+                        }
+                    }
+                }
+                for wd in gone {
+                    watches.remove(&wd);
+                    pending_roots.remove(&wd);
+                }
+                for directory in appeared {
+                    let mut fresh = Vec::new();
+                    tree(&directory, DEPTH, &mut fresh);
+                    for directory in fresh {
+                        match inotify::add_watch(&*fd, &directory, watching) {
+                            Ok(wd) => {
+                                watches.insert(wd, directory);
+                            }
+                            Err(e) => {
+                                tracing::warn!("extensions watch: {}: {e}", directory.display());
+                            }
+                        }
+                    }
+                }
+                if interesting && state.extensions_hot_reload {
+                    state.extensions_changed();
+                }
+                Ok(PostAction::Continue)
+            },
+        ) {
+            Ok(token) => {
+                self.extensions_watch_token = Some(token);
+                tracing::info!(
+                    "watching {watched_count} extension director{} for live hot-reload",
+                    if watched_count == 1 { "y" } else { "ies" }
+                );
+            }
+            Err(e) => {
+                tracing::warn!("extensions watch: could not attach inotify source ({e})");
+            }
+        }
+    }
+
+    /// Files inside an extension directory changed: rescan once changes settle.
+    fn extensions_changed(&mut self) {
+        if Self::arm_tick(
+            "extensions watch",
+            self.extensions_reload_timer.as_ref(),
+            SETTLE,
+        ) {
+            return;
+        }
+        if self.extensions_reload_pending {
+            return;
+        }
+        self.extensions_reload_pending = true;
+        let timer = smithay::reexports::calloop::timer::Timer::from_duration(SETTLE);
+        if let Err(e) = self
+            .loop_handle
+            .insert_source(timer, move |_, _, state: &mut Self| {
+                state.extensions_settled();
+                smithay::reexports::calloop::timer::TimeoutAction::Drop
+            })
+        {
+            tracing::warn!("extensions watch: {e}");
+            self.extensions_reload_pending = false;
+        }
+    }
+
+    /// Extension directory edits have settled. Re-discover and push delta.
+    fn extensions_settled(&mut self) {
+        self.extensions_reload_pending = false;
+        if !self.extensions_hot_reload {
+            return;
+        }
+        self.sync_shell_extensions(None, false);
+    }
 }
 
 #[cfg(test)]

@@ -1514,6 +1514,24 @@ pub struct ViewportState {
     /// Whether a reload is already waiting on the fallback loop timer, so a
     /// save touching twenty files queues one rather than twenty.
     pub shell_reload_pending: bool,
+    /// Policy governing auto-discovered user shell extensions.
+    pub extensions_policy: crate::extensions::Policy,
+    /// Root directories scanned for `<id>/extension.json` shell extensions.
+    pub extensions_dirs: Vec<std::path::PathBuf>,
+    /// Whether inotify changes inside `extensions_dirs` trigger live hot-reload.
+    pub extensions_hot_reload: bool,
+    /// Currently active discovered user shell extensions, sorted by `id`.
+    pub shell_extensions: Vec<viewport_ipc::event::ShellExtension>,
+    /// Monotonic counter bumped by explicit `extensions.reload` requests so a
+    /// manual reload always issues a fresh cache-busting revision.
+    pub extensions_reload_gen: u64,
+    /// Debounce timerfd for user shell extension hot-reload.
+    pub extensions_reload_timer: Option<std::os::fd::OwnedFd>,
+    /// Fallback loop-timer guard when timerfd is unavailable.
+    pub extensions_reload_pending: bool,
+    /// Calloop registration token for the active extensions inotify source so
+    /// changing `extensions.dirs` on config reload can replace the watch cleanly.
+    pub extensions_watch_token: Option<smithay::reexports::calloop::RegistrationToken>,
     /// How many ticks in a row have released nothing.
     pub barrier_quiet: u32,
     /// Whether any surface has ever been seen holding fifo or commit-timing
@@ -2286,6 +2304,14 @@ impl ViewportState {
             config_reload_pending: false,
             shell_reload_timer: None,
             shell_reload_pending: false,
+            extensions_policy: crate::extensions::Policy::default(),
+            extensions_dirs: crate::extensions::default_dirs(),
+            extensions_hot_reload: true,
+            shell_extensions: Vec::new(),
+            extensions_reload_gen: 0,
+            extensions_reload_timer: None,
+            extensions_reload_pending: false,
+            extensions_watch_token: None,
             barrier_quiet: 0,
             barrier_ever_armed: std::cell::Cell::new(false),
             _security_context_state: security_context_state,
@@ -4367,6 +4393,48 @@ impl ViewportState {
             .collect();
         let event = Event::Config(Box::new(config));
         self.notify(&event);
+    }
+
+    /// Broadcast the full active user shell extensions list (`extensions.list`).
+    pub fn notify_extensions_list(&mut self) {
+        let event = Event::ExtensionsList {
+            extensions: self.shell_extensions.clone(),
+        };
+        self.notify(&event);
+    }
+
+    /// Re-scan configured user shell extension directories and broadcast
+    /// `extensions.changed` if anything was added, edited, removed, or when
+    /// `always_notify` is true (e.g. an explicit `extensions.reload` request).
+    pub fn sync_shell_extensions(&mut self, force_id: Option<&str>, always_notify: bool) {
+        let force_gen = if always_notify {
+            self.extensions_reload_gen
+        } else {
+            0
+        };
+        let next = crate::extensions::discover(
+            &self.extensions_dirs,
+            &self.extensions_policy,
+            force_gen,
+            force_id,
+        );
+        let (changed, removed) = crate::extensions::diff(&self.shell_extensions, &next);
+        let any_delta = !changed.is_empty() || !removed.is_empty();
+        self.shell_extensions = next;
+        if any_delta || always_notify {
+            tracing::info!(
+                "shell extensions updated: {} active, {} changed, {} removed",
+                self.shell_extensions.len(),
+                changed.len(),
+                removed.len()
+            );
+            let event = Event::ExtensionsChanged {
+                extensions: self.shell_extensions.clone(),
+                changed,
+                removed,
+            };
+            self.notify(&event);
+        }
     }
 }
 

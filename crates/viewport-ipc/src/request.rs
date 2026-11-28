@@ -1669,6 +1669,33 @@ pub enum Request {
 
     #[serde(rename = "config.save")]
     ConfigSave,
+
+    /// Ask for the currently discovered user shell extensions (`extensions.list`).
+    #[serde(rename = "extensions.query")]
+    ExtensionsQuery,
+
+    /// Re-scan user shell extensions on disk and trigger live hot-reload.
+    /// When `id` is set, forces a revision bump for that extension; when absent,
+    /// forces a reload of every active extension.
+    #[serde(rename = "extensions.reload")]
+    ExtensionsReload {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+    },
+
+    /// Adjust user shell extension policy at runtime without editing the config
+    /// file. Omitted fields keep their current value.
+    #[serde(rename = "config.extensions")]
+    ConfigExtensions {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        enabled: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hot_reload: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        enable: Option<Vec<String>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        disable: Option<Vec<String>>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -3355,6 +3382,31 @@ mod tests {
             parse(r#"{"type":"config.decorations","mode":"client"}"#),
             Request::ConfigDecorations {
                 mode: Some("client".into())
+            }
+        );
+        assert_eq!(
+            parse(r#"{"type":"extensions.query"}"#),
+            Request::ExtensionsQuery
+        );
+        assert_eq!(
+            parse(r#"{"type":"extensions.reload"}"#),
+            Request::ExtensionsReload { id: None }
+        );
+        assert_eq!(
+            parse(r#"{"type":"extensions.reload","id":"workspace-pill"}"#),
+            Request::ExtensionsReload {
+                id: Some("workspace-pill".into())
+            }
+        );
+        assert_eq!(
+            parse(
+                r#"{"type":"config.extensions","enabled":true,"hot_reload":false,"enable":["a"],"disable":["b"]}"#
+            ),
+            Request::ConfigExtensions {
+                enabled: Some(true),
+                hot_reload: Some(false),
+                enable: Some(vec!["a".into()]),
+                disable: Some(vec!["b".into()]),
             }
         );
     }

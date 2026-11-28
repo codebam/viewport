@@ -63,7 +63,14 @@ const BARRIER_CONTEXT: &str = "viewport.msg.barrier";
 
 /// The fields whose values are always a list, so that one `--args right`
 /// builds `["right"]` rather than `"right"`.
-const ARRAY_FIELDS: &[&str] = &["args", "rects", "workspaces", "gestures"];
+const ARRAY_FIELDS: &[&str] = &[
+    "args",
+    "rects",
+    "workspaces",
+    "gestures",
+    "enable",
+    "disable",
+];
 
 /// The fields the protocol types as a string, which are therefore never read
 /// as JSON.
@@ -862,6 +869,24 @@ const TYPES: &[Type] = &[
         hint: "(write the runtime settings to settings.json beside the config file)",
     },
     Type {
+        name: "extensions.query",
+        fields: &[],
+        strings: &[],
+        hint: "(list active user shell extensions)",
+    },
+    Type {
+        name: "extensions.reload",
+        fields: &["id"],
+        strings: &["id"],
+        hint: "[--id NAME]   (rescan and hot-reload one or all user shell extensions)",
+    },
+    Type {
+        name: "config.extensions",
+        fields: &["enabled", "hot_reload", "enable", "disable"],
+        strings: &["enable", "disable"],
+        hint: "[--enabled BOOL --hot_reload BOOL --enable ID --disable ID]   (adjust user shell extension policy at runtime)",
+    },
+    Type {
         name: "shell.command",
         fields: &["command", "args"],
         strings: &[],
@@ -1016,6 +1041,8 @@ fn reply_for(kind: &str) -> Reply {
         // empty clipboard and an empty notification centre.
         "clipboard.query" => Reply::First("clipboard.history"),
         "notification.list" => Reply::First("notification.history"),
+        "extensions.query" => Reply::First("extensions.list"),
+        "extensions.reload" => Reply::First("extensions.changed"),
         _ => Reply::None,
     }
 }

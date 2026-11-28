@@ -544,6 +544,28 @@ pub enum Event {
     #[serde(rename = "shell.reload")]
     ShellReload,
 
+    /// The full list of active user shell extensions discovered on disk.
+    ///
+    /// Sent in answer to `extensions.query` and replayed alongside `config` on
+    /// `view.query` so a freshly loaded shell mounts every enabled extension
+    /// without waiting for a file change.
+    #[serde(rename = "extensions.list")]
+    ExtensionsList { extensions: Vec<ShellExtension> },
+
+    /// User shell extensions were added, edited, removed, or reloaded on disk.
+    ///
+    /// Carries the full authoritative list plus the IDs that changed or were
+    /// removed so the shell can surgically unmount, swap cache-busted assets,
+    /// and remount only affected extensions without reloading the page.
+    #[serde(rename = "extensions.changed")]
+    ExtensionsChanged {
+        extensions: Vec<ShellExtension>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        changed: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        removed: Vec<String>,
+    },
+
     /// A rejected message. Delivered to the client that caused it where there
     /// is one, and broadcast otherwise — an error the shell caused is one it
     /// must see on the channel it already listens to.
@@ -577,6 +599,38 @@ impl Event {
                 | Self::AiUsage { .. }
         )
     }
+}
+
+/// Where a user shell extension mounts in the desktop shell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ExtensionSlot {
+    BarLeft,
+    BarCenter,
+    BarRight,
+    Desktop,
+    Overlay,
+}
+
+/// One discovered, validated user shell extension.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ShellExtension {
+    pub id: String,
+    pub name: String,
+    pub slot: ExtensionSlot,
+    /// Resolved local `file://` script URL carrying a cache-busting revision.
+    pub script: String,
+    /// Optional resolved local `file://` stylesheet URL carrying a cache-busting revision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub style: Option<String>,
+    /// Revision token that changes whenever the extension's manifest or assets change.
+    pub revision: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub options: Option<serde_json::Value>,
 }
 
 /// Transient feedback a shell should draw for a user-requested status change.
@@ -3484,6 +3538,30 @@ mod tests {
                 "ai.auth",
             ),
             (Event::ShellReload, "shell.reload"),
+            (
+                Event::ExtensionsList {
+                    extensions: vec![ShellExtension {
+                        id: "workspace-pill".into(),
+                        name: "Workspace Pill".into(),
+                        slot: ExtensionSlot::BarCenter,
+                        script: "file:///ext/workspace-pill/index.js?v=abc".into(),
+                        style: Some("file:///ext/workspace-pill/style.css?v=abc".into()),
+                        revision: "abc".into(),
+                        version: Some("1.0.0".into()),
+                        description: Some("Shows active workspace".into()),
+                        options: Some(serde_json::json!({ "compact": true })),
+                    }],
+                },
+                "extensions.list",
+            ),
+            (
+                Event::ExtensionsChanged {
+                    extensions: vec![],
+                    changed: vec!["workspace-pill".into()],
+                    removed: vec!["old-ext".into()],
+                },
+                "extensions.changed",
+            ),
         ];
 
         for (event, expected_type) in missing_from_c_table {
