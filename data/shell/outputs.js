@@ -169,6 +169,10 @@ function syncOutputs(list) {
       if (typeof applyStoredWallpaperExtension === 'function') {
         applyStoredWallpaperExtension(output);
       }
+      /* Mount active per-output user shell extensions onto this monitor. */
+      if (typeof mountExtensionsForOutput === 'function') {
+        mountExtensionsForOutput(output);
+      }
       output.workspace = workspaceForOutput(info.name);
       if (activeOutput === null) activeOutput = info.name;
     }
@@ -233,6 +237,10 @@ function syncOutputs(list) {
     /* The wallpaper extension this output was running comes down with it. */
     if (typeof clearOutputWallpaperExtension === 'function') {
       clearOutputWallpaperExtension(output);
+    }
+    /* Cleanly unmount per-output user shell extensions before removing DOM. */
+    if (typeof unmountExtensionsForOutput === 'function') {
+      unmountExtensionsForOutput(output);
     }
     /* And so does every custom widget mounted on its bar. The element is
        about to be removed, and destroy is the only hook a widget gets to

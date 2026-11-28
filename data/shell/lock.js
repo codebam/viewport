@@ -94,6 +94,7 @@ function applySessionLock(generation, canAuthenticate) {
   document.documentElement?.classList?.toggle(
     'lock-transparent', typeof lockTransparent !== 'undefined' && lockTransparent);
   renderLockScreen();
+  if (typeof syncExtensionOverlays === 'function') syncExtensionOverlays();
   /* The lock clock is minute-precision, and a session with no bar clock and
      no calendar would otherwise have no reason to keep the one tick armed. */
   armClockTick();
@@ -113,6 +114,7 @@ function applySessionUnlock() {
   lockEl.hidden = true;
   document.documentElement?.classList?.remove('locked');
   document.documentElement?.classList?.remove('lock-transparent');
+  if (typeof syncExtensionOverlays === 'function') syncExtensionOverlays();
   /* The lock's claim on the tick is over; a visible bar clock (or an open
      calendar) takes it back if it needs one. */
   armClockTick();

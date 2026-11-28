@@ -104,6 +104,13 @@
 <div id="osk" role="group" aria-label="On-screen keyboard" hidden></div>
 
 <!--
+  User shell extensions mounted in the `overlay` slot. Page level and below
+  the lock screen so extensions can never paint over a locked session; lifted
+  above client windows via `setOverlay` whenever non-empty.
+-->
+<div id="extensions-overlay" class="ext-slot ext-slot-overlay" data-ext-slot="overlay" hidden></div>
+
+<!--
   The lock screen. Page level and above everything, including the keyboard's
   own container, because while the session is locked the compositor draws this
   page's buffer and nothing else — so anything this does not cover is the
@@ -163,18 +170,27 @@
       <div class="bar-left">
         <div class="workspaces" role="group" aria-label="Workspaces"></div>
         <div class="taskbar" role="group" aria-label="Open windows"></div>
+        <div class="ext-slot ext-slot-bar-left" data-ext-slot="bar-left"></div>
       </div>
-      <div class="bar-right">
-        <span class="mode" aria-live="polite" hidden></span>
-        <span class="module tray" role="group" aria-label="System tray"></span>
-        <span class="module net" title="network" aria-label="network"></span>
-        <span class="module disk" title="free on /" aria-label="free on /"></span>
-        <span class="module cpu" title="cpu" aria-label="cpu"></span>
-        <span class="module load" title="load average" aria-label="load average"></span>
-        <span class="module memory" title="memory" aria-label="memory"></span>
-        <span class="module clock" aria-live="polite" aria-label="clock"></span>
+      <div class="bar-center">
+        <div class="ext-slot ext-slot-bar-center" data-ext-slot="bar-center"></div>
+      </div>
+      <div class="bar-end">
+        <div class="bar-right">
+          <span class="mode" aria-live="polite" hidden></span>
+          <span class="module tray" role="group" aria-label="System tray"></span>
+          <span class="module net" title="network" aria-label="network"></span>
+          <span class="module disk" title="free on /" aria-label="free on /"></span>
+          <span class="module cpu" title="cpu" aria-label="cpu"></span>
+          <span class="module load" title="load average" aria-label="load average"></span>
+          <span class="module memory" title="memory" aria-label="memory"></span>
+          <span class="module clock" aria-live="polite" aria-label="clock"></span>
+        </div>
+        <div class="ext-slot ext-slot-bar-right" data-ext-slot="bar-right"></div>
       </div>
     </nav>
+
+    <div class="ext-slot ext-slot-desktop" data-ext-slot="desktop"></div>
 
     <div class="windows"></div>
 
@@ -277,4 +293,5 @@ Mod4+d       launcher</pre>
 <script src="osk.js"></script>
 <script src="lock.js"></script>
 <script src="panel.js"></script>
+<script src="extensions.js"></script>
 <script src="commands.js"></script>

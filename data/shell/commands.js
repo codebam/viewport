@@ -1518,6 +1518,7 @@ function dispatchViewport(message) {
         if (typeof message.content === 'string') view.content = message.content;
         reapplyWindowRule(message.id);
         renderBars();
+        notifyShellExtensionsState();
       }
       break;
     }
@@ -1601,6 +1602,7 @@ function dispatchViewport(message) {
       lastStatus = message;
       renderBarsModules();
       if (message.osd) showStatusOsd(message);
+      notifyShellExtensionsState();
       break;
 
     case 'ai.usage':
@@ -1674,10 +1676,12 @@ function dispatchViewport(message) {
          the widgets and nothing else: a track starting cannot move a window. */
       mprisPlayer = message.player ?? null;
       renderBarsWidgets();
+      notifyShellExtensionsState();
       break;
 
     case 'power.update':
       applyPower(message);
+      notifyShellExtensionsState();
       break;
 
     case 'osk.wanted':
@@ -1747,12 +1751,25 @@ function dispatchViewport(message) {
       /* Most commands rearrange something; saving is debounced, so asking on
          every one of them costs a timer reset. */
       saveSession();
+      notifyShellExtensionsState();
       break;
 
     case 'gesture.begin':
     case 'gesture.update':
     case 'gesture.end':
       handleLiveGesture(message);
+      break;
+
+    case 'extensions.list':
+      applyShellExtensions(message.extensions ?? []);
+      break;
+
+    case 'extensions.changed':
+      applyShellExtensions(
+        message.extensions ?? [],
+        message.changed ?? [],
+        message.removed ?? [],
+      );
       break;
 
     case 'error':

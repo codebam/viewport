@@ -462,7 +462,31 @@ html.behind .desktop {
  * had already left. So the strip only ever fades, and the contents move: a
  * transform on a child changes no ancestor's box, and nothing measures these
  * two. */
-.bar-left, .bar-right { display: flex; align-items: center; gap: .35rem; }
+.bar-left, .bar-center, .bar-end, .bar-right { display: flex; align-items: center; gap: .35rem; }
+.bar-center:empty,
+.ext-slot:empty { display: none; }
+.ext-slot-bar-left,
+.ext-slot-bar-center,
+.ext-slot-bar-right {
+  display: flex;
+  align-items: center;
+  gap: .35rem;
+}
+.ext-slot-desktop {
+  position: absolute;
+  inset: var(--rsv-top) var(--rsv-right) var(--rsv-bottom) var(--rsv-left);
+  z-index: 0;
+  pointer-events: none;
+}
+.ext-slot-desktop > * { pointer-events: auto; }
+#extensions-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 140;
+  pointer-events: none;
+}
+#extensions-overlay[hidden] { display: none; }
+#extensions-overlay > * { pointer-events: auto; }
 
 .workspaces { display: flex; gap: .25rem; }
 
@@ -2834,7 +2858,9 @@ html.no-tutorial .empty .tutorial { display: none; }
 :root.locked.lock-transparent #lock {
   background: var(--lock-scrim, rgba(0, 0, 0, 0.55));
 }
+:root.locked #extensions-overlay { display: none !important; }
 :root.locked.lock-transparent .desktop .bar,
+:root.locked.lock-transparent .desktop .ext-slot-desktop,
 :root.locked.lock-transparent .desktop .windows,
 :root.locked.lock-transparent .desktop .notifications,
 :root.locked.lock-transparent .desktop .status-osd,

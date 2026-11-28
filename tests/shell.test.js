@@ -185,19 +185,47 @@ function buildDesktop() {
      here and against real markup on a real screen. */
   const bar = new El('div');
   bar.className = 'bar';
-  for (const [half, contents] of [['bar-left', ['workspaces', 'taskbar']],
-    ['bar-right', ['mode', 'tray', 'clock', 'cpu', 'memory', 'load', 'disk',
-      'net']]]) {
-    const el = new El('div');
-    el.className = half;
-    for (const c of contents) {
-      const child = new El('div');
-      child.className = `${c} module`;
-      el.append(child);
-    }
-    bar.append(el);
+  const barLeft = new El('div');
+  barLeft.className = 'bar-left';
+  for (const c of ['workspaces', 'taskbar']) {
+    const child = new El('div');
+    child.className = `${c} module`;
+    barLeft.append(child);
   }
-  main.append(bar);
+  const extBarLeft = new El('div');
+  extBarLeft.className = 'ext-slot ext-slot-bar-left';
+  extBarLeft.dataset.extSlot = 'bar-left';
+  barLeft.append(extBarLeft);
+  bar.append(barLeft);
+
+  const barCenter = new El('div');
+  barCenter.className = 'bar-center';
+  const extBarCenter = new El('div');
+  extBarCenter.className = 'ext-slot ext-slot-bar-center';
+  extBarCenter.dataset.extSlot = 'bar-center';
+  barCenter.append(extBarCenter);
+  bar.append(barCenter);
+
+  const barEnd = new El('div');
+  barEnd.className = 'bar-end';
+  const barRight = new El('div');
+  barRight.className = 'bar-right';
+  for (const c of ['mode', 'tray', 'clock', 'cpu', 'memory', 'load', 'disk',
+    'net']) {
+    const child = new El('div');
+    child.className = `${c} module`;
+    barRight.append(child);
+  }
+  const extBarRight = new El('div');
+  extBarRight.className = 'ext-slot ext-slot-bar-right';
+  extBarRight.dataset.extSlot = 'bar-right';
+  barEnd.append(barRight, extBarRight);
+  bar.append(barEnd);
+
+  const extDesktop = new El('div');
+  extDesktop.className = 'ext-slot ext-slot-desktop';
+  extDesktop.dataset.extSlot = 'desktop';
+  main.append(bar, extDesktop);
   root.append(main);
   return root;
 }
@@ -267,6 +295,11 @@ const calendarEl = new El('div');
    what it sends are only visible if the element the shell drew into is the one
    the test reads back. */
 const lockEl = new El('div');
+const extensionsOverlayEl = new El('div');
+extensionsOverlayEl.id = 'extensions-overlay';
+extensionsOverlayEl.className = 'ext-slot ext-slot-overlay';
+extensionsOverlayEl.hidden = true;
+const headEl = new El('head');
 /* And the moving wallpaper's video element, on the same terms: which URL it
    was given, whether it is hidden and whether it is playing are only visible
    if the element the shell drives is the one the test reads back. The media
@@ -306,6 +339,7 @@ Object.defineProperty(documentElement, 'offsetWidth', {
 const documentListeners = {};
 global.document = {
   documentElement,
+  head: headEl,
   getElementById: (id) => ({
     outputs: outputsEl,
     notifications: notificationsEl,
@@ -322,6 +356,7 @@ global.document = {
     osk: oskEl,
     calendar: calendarEl,
     lock: lockEl,
+    'extensions-overlay': extensionsOverlayEl,
     'wallpaper-media': wallpaperMediaEl,
     'desktop-template': desktopTemplate,
     'window-template': windowTemplate,
@@ -656,6 +691,8 @@ const EXPORTS = ';globalThis.__shell = { views, workspaces, outputs, scrollOffse
   + ' notificationsMap: typeof notifications !== "undefined" ? notifications : undefined,'
   + ' applyGameMode: typeof applyGameMode !== "undefined" ? applyGameMode : undefined,'
   + ' get gameModeForTest() { return typeof gameMode !== "undefined" ? gameMode : undefined; },'
+  + ' viewportExtensions: typeof viewportExtensionsApi !== "undefined" ? viewportExtensionsApi : undefined,'
+  + ' applyShellExtensions: typeof applyShellExtensions !== "undefined" ? applyShellExtensions : undefined,'
   /* The initial-config gate and the queue behind it, so a test can put the
      page back in the state a fresh load starts in — before the first config —
      and watch what opens the gate again. That gate is what a throwing
@@ -10952,6 +10989,307 @@ if (mode === 'tiling') {
   check('bspPick splits horizontally when width >= height and vertically otherwise',
     sh.bspPickForTest(1920, 1080) === 'horizontal'
       && sh.bspPickForTest(1080, 1920) === 'vertical');
+}
+
+/* --- user shell extensions + live hot-reload -------------------------- */
+{
+  const sh = globalThis.__shell;
+  const api = window.viewportExtensions;
+  const hasApi = typeof api === 'object' && typeof api.register === 'function';
+  check('window.viewportExtensions API is installed and frozen',
+    hasApi && Object.isFrozen(api));
+
+  /* Helper to simulate browser loading of the latest injected script tag for
+     an extension id, running `registerFn` while `document.currentScript` points
+     at that script tag, then firing `onload`. */
+  const finishScriptLoad = (id, registerFn) => {
+    const script = [...headEl.children].reverse().find(
+      (el) => el.tagName === 'script' && el.dataset.shellExtId === id,
+    );
+    if (!script) return false;
+    document.currentScript = script;
+    try {
+      registerFn();
+    } finally {
+      document.currentScript = null;
+    }
+    script.onload?.();
+    return true;
+  };
+
+  let pillMounts = 0;
+  let pillUnmounts = 0;
+  let pillCleanups = 0;
+  let lastSeenState = null;
+  let pillMountedText = '';
+  let sideMounts = 0;
+  let sideUnmounts = 0;
+  let overlayMounts = 0;
+
+  const pillV1 = {
+    id: 'workspace-pill',
+    name: 'Workspace Pill',
+    slot: 'bar-center',
+    script: 'file:///ext/workspace-pill/index.js?v=rev1',
+    style: 'file:///ext/workspace-pill/style.css?v=rev1',
+    revision: 'rev1',
+    options: { prefix: 'WS' },
+  };
+  const sideExt = {
+    id: 'side-badge',
+    name: 'Side Badge',
+    slot: 'bar-right',
+    script: 'file:///ext/side-badge/index.js?v=s1',
+    revision: 's1',
+  };
+  const overlayExt = {
+    id: 'hud-card',
+    name: 'HUD Card',
+    slot: 'overlay',
+    script: 'file:///ext/hud-card/index.js?v=o1',
+    revision: 'o1',
+  };
+
+  emit({ type: 'extensions.list', extensions: [pillV1, sideExt, overlayExt] });
+
+  const pillLinkV1 = headEl.children.find(
+    (el) => el.tagName === 'link' && el.dataset.shellExtId === 'workspace-pill',
+  );
+  check('extensions.list injects cache-busted stylesheet link into document.head',
+    pillLinkV1?.href === pillV1.style && pillLinkV1?.rel === 'stylesheet');
+
+  const loadedPillV1 = finishScriptLoad('workspace-pill', () => {
+    api.register('workspace-pill', {
+      mount(container, ctx) {
+        pillMounts++;
+        const span = document.createElement('span');
+        span.textContent = `v1:${ctx.options.prefix}`;
+        container.append(span);
+        pillMountedText = span.textContent;
+        const unsub = ctx.subscribe((state) => {
+          lastSeenState = state;
+        });
+        ctx.onCleanup(() => { pillCleanups++; });
+        return () => unsub();
+      },
+      unmount() {
+        pillUnmounts++;
+      },
+    });
+  });
+  const loadedSide = finishScriptLoad('side-badge', () => {
+    api.register('side-badge', {
+      mount(container) {
+        sideMounts++;
+        const el = document.createElement('span');
+        el.textContent = 'side';
+        container.append(el);
+      },
+      unmount() {
+        sideUnmounts++;
+      },
+    });
+  });
+  const loadedOverlay = finishScriptLoad('hud-card', () => {
+    api.register('hud-card', {
+      mount(container, ctx) {
+        overlayMounts++;
+        container.__rect = { left: 100, top: 100, width: 200, height: 80 };
+        ctx.setOverlayOptions({ passthrough: true, blur: true });
+      },
+    });
+  });
+
+  const out = sh.outputs.get('DP-1');
+  const centerSlot = out?.el?.querySelector('.ext-slot-bar-center');
+  const rightSlot = out?.el?.querySelector('.ext-slot-bar-right');
+  check('extensions mount into their declared slots (bar-center, bar-right, overlay)',
+    loadedPillV1 && loadedSide && loadedOverlay
+      && pillMounts === 1 && sideMounts === 1 && overlayMounts === 1
+      && centerSlot?.children.length === 1
+      && rightSlot?.children.length === 1
+      && pillMountedText === 'v1:WS'
+      && !extensionsOverlayEl.hidden
+      && extensionsOverlayEl.children.length === 1);
+
+  check('extension state snapshot is frozen and reflects live desktop state',
+    lastSeenState !== null
+      && Object.isFrozen(lastSeenState)
+      && Object.isFrozen(lastSeenState.windows)
+      && Object.isFrozen(lastSeenState.workspaces)
+      && Object.isFrozen(lastSeenState.status)
+      && lastSeenState.activeOutput === 'DP-1');
+
+  /* Reactive state updates reach subscribers on status, mpris, and power events. */
+  emit({
+    type: 'status.update', cpu: 42, memory: 60, load: 1.2,
+    net_rx: 10, net_tx: 20, disk_free: 100, disk_total: 200,
+    volume: 0.75, muted: false, mic_volume: 0.5, mic_muted: true, brightness: 0.9,
+  });
+  emit({
+    type: 'mpris.update',
+    player: {
+      id: 'p1', title: 'Track A', artist: 'Artist B', album: '',
+      status: 'playing', art: '', can_go_next: true, can_go_previous: true,
+      can_pause: true, can_play: true,
+    },
+  });
+  check('ctx.subscribe receives live status and mpris updates',
+    lastSeenState.status.cpu === 42
+      && lastSeenState.status.volume === 0.75
+      && lastSeenState.mpris?.title === 'Track A');
+
+  /* Overlay extension publishes a shell.overlay rect and hides while locked. */
+  const lastOverlayMsg = [...sent].reverse().find((m) => m.type === 'shell.overlay');
+  check('overlay extension registers a shell.overlay rectangle with its options',
+    lastOverlayMsg?.rects?.some(
+      (r) => r.x === 100 && r.y === 100 && r.width === 200 && r.passthrough === true && r.blur === true,
+    ));
+
+  sh.applySessionLock(77, true);
+  check('overlay extensions hide while the session is locked',
+    extensionsOverlayEl.hidden === true);
+  sh.applySessionUnlock();
+  check('overlay extensions restore when the session unlocks',
+    extensionsOverlayEl.hidden === false);
+
+  /* Surgical live hot-reload: edit workspace-pill to rev2 while keeping
+     side-badge unchanged -> workspace-pill unmounts, swaps head assets, and
+     remounts v2; side-badge is untouched! */
+  const pillV2 = {
+    ...pillV1,
+    script: 'file:///ext/workspace-pill/index.js?v=rev2',
+    style: 'file:///ext/workspace-pill/style.css?v=rev2',
+    revision: 'rev2',
+    options: { prefix: 'HOT' },
+  };
+  emit({
+    type: 'extensions.changed',
+    extensions: [pillV2, sideExt, overlayExt],
+    changed: ['workspace-pill'],
+    removed: [],
+  });
+  const loadedPillV2 = finishScriptLoad('workspace-pill', () => {
+    api.register('workspace-pill', {
+      mount(container, ctx) {
+        pillMounts++;
+        const span = document.createElement('span');
+        span.textContent = `v2:${ctx.options.prefix}`;
+        container.append(span);
+        pillMountedText = span.textContent;
+      },
+      unmount() {
+        pillUnmounts++;
+      },
+    });
+  });
+
+  const pillLinksNow = headEl.children.filter(
+    (el) => el.tagName === 'link' && el.dataset.shellExtId === 'workspace-pill',
+  );
+  const pillScriptsNow = headEl.children.filter(
+    (el) => el.tagName === 'script' && el.dataset.shellExtId === 'workspace-pill',
+  );
+  check('hot-reload unmounts v1, runs cleanup, swaps head assets, and mounts v2',
+    loadedPillV2
+      && pillUnmounts === 1
+      && pillCleanups === 1
+      && pillMounts === 2
+      && pillMountedText === 'v2:HOT'
+      && pillLinksNow.length === 1 && pillLinksNow[0].href === pillV2.style
+      && pillScriptsNow.length === 1 && pillScriptsNow[0].src === pillV2.script
+      && centerSlot.children.length === 1);
+  check('hot-reload leaves untouched extensions mounted without flickering',
+    sideMounts === 1 && sideUnmounts === 0);
+
+  /* Error isolation: a broken extension throwing in mount/subscribe/unmount
+     never crashes the shell or breaks healthy extensions. */
+  const brokenExt = {
+    id: 'broken-ext',
+    name: 'Broken Ext',
+    slot: 'desktop',
+    script: 'file:///ext/broken-ext/index.js?v=b1',
+    revision: 'b1',
+  };
+  const savedConsoleError = console.error;
+  let extErrorsLogged = 0;
+  console.error = () => { extErrorsLogged++; };
+  let shellCrashed = false;
+  try {
+    emit({
+      type: 'extensions.changed',
+      extensions: [pillV2, sideExt, overlayExt, brokenExt],
+      changed: ['broken-ext'],
+      removed: [],
+    });
+    finishScriptLoad('broken-ext', () => {
+      api.register('broken-ext', {
+        mount(_container, ctx) {
+          ctx.subscribe(() => { throw new Error('boom in subscriber'); });
+          throw new Error('boom in mount');
+        },
+      });
+    });
+  } catch (_) {
+    shellCrashed = true;
+  }
+  console.error = savedConsoleError;
+
+  const brokenMeta = api.list().find((entry) => entry.id === 'broken-ext');
+  const desktopSlot = out?.el?.querySelector('.ext-slot-desktop');
+  check('a throwing extension is isolated, records error status, and leaves no partial DOM',
+    !shellCrashed
+      && extErrorsLogged >= 2
+      && brokenMeta?.status === 'error'
+      && brokenMeta?.error === 'boom in mount'
+      && desktopSlot?.children.length === 0
+      && centerSlot?.children.length === 1);
+
+  /* window.viewportExtensions.reload() sends extensions.reload IPC request. */
+  const beforeReloadSend = sent.length;
+  api.reload('workspace-pill');
+  check('viewportExtensions.reload sends extensions.reload request',
+    sent.slice(beforeReloadSend).some(
+      (m) => m.type === 'extensions.reload' && m.id === 'workspace-pill',
+    ));
+
+  /* Multi-monitor hotplug mounts and cleanly unmounts per-output extensions. */
+  const mountsBeforeSecondOut = pillMounts;
+  const unmountsBeforeUnplug = pillUnmounts;
+  emit({
+    type: 'output.layout',
+    outputs: ['DP-1', 'DP-2'].map((name, idx) => ({
+      name, x: idx * 1920, y: 0, width: 1920, height: 1080,
+      usable_x: idx * 1920, usable_y: 30, usable_width: 1920,
+      usable_height: 1050, scale: 1, transform: 'normal', modes: [], enabled: true,
+    })),
+  });
+  check('adding a monitor mounts active per-output extensions onto it',
+    pillMounts === mountsBeforeSecondOut + 1);
+  emit({
+    type: 'output.layout',
+    outputs: [{
+      name: 'DP-1', x: 0, y: 0, width: 1920, height: 1080,
+      usable_x: 0, usable_y: 30, usable_width: 1920,
+      usable_height: 1050, scale: 1, transform: 'normal', modes: [], enabled: true,
+    }],
+  });
+  check('unplugging a monitor cleanly unmounts its extension instances',
+    pillUnmounts === unmountsBeforeUnplug + 1);
+
+  /* Removing all extensions cleans up DOM, overlays, and head assets. */
+  emit({
+    type: 'extensions.changed',
+    extensions: [],
+    changed: [],
+    removed: ['workspace-pill', 'side-badge', 'hud-card', 'broken-ext'],
+  });
+  check('removing extensions cleans up slots, overlay, and head tags',
+    api.list().length === 0
+      && centerSlot.children.length === 0
+      && rightSlot.children.length === 0
+      && extensionsOverlayEl.hidden === true
+      && headEl.children.filter((el) => el.dataset?.shellExtId).length === 0);
 }
 
 emit({ type: 'view.removed', id: 1 });

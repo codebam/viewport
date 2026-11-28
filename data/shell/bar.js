@@ -1568,6 +1568,9 @@ function renderClocks() {
      it does something. The tick is where midnight has to be noticed, and
      toggleCalendar arms the timer for it while a calendar is up. */
   refreshCalendarDay();
+  if (typeof notifyShellExtensionsState === 'function') {
+    notifyShellExtensionsState();
+  }
 }
 
 /* Whether an output's bar is actually on screen: neither toggled off nor

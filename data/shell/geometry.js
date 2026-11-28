@@ -1442,6 +1442,13 @@ function relayoutAll() {
     armClockTick();
     armWeatherRefresh();
   }
+
+  /* Keep reactive user shell extension subscribers in sync with window,
+     workspace, focus and output changes. Early-returns with zero work when no
+     extension has subscribed. */
+  if (typeof notifyShellExtensionsState === 'function') {
+    notifyShellExtensionsState();
+  }
 }
 
 /* Claim only what the active layout can consume. Repeated relayouts are the
